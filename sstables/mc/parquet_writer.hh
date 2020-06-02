@@ -290,6 +290,10 @@ struct parquet_writer_schema {
     int leaves;
 };
 
+// FIXME: Support for the following types remains to be added:
+// - counter
+// - non-frozen compound types (collections and UDTs)
+//   (and frozen compound types are only written as binary blobs)
 bool is_supported_type(const parquet_writer_schema& pws, int ordinal_id) {
     const auto& pq_type = pws.cell_mappings[ordinal_id].pq_type;
     const auto& col_def = pws.scylla_sch->column_at((ordinal_column_id)ordinal_id);
@@ -357,6 +361,7 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
                 int id = (int)col_def.ordinal_id;
                 logical_type::logical_type pq_type = pws.cell_mappings[id].pq_type;
                 if (!is_supported_type(pws, id)) {
+                    parquet_logger.warn("Skipping unsupported type {} for column {}", col_def.type->name(), col_def.name_as_text());
                     continue;
                 }
 
@@ -394,6 +399,7 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
             int id = (int)col_def.ordinal_id;
             logical_type::logical_type pq_type = pws.cell_mappings[id].pq_type;
             if (!is_supported_type(pws, id)) {
+                parquet_logger.warn("Skipping unsupported type {} for column {}", col_def.type->name(), col_def.name_as_text());
                 continue;
             }
 
@@ -474,6 +480,7 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
                 int id = (int)col_def.ordinal_id;
                 logical_type::logical_type pq_type = pws.cell_mappings[id].pq_type;
                 if (!is_supported_type(pws, id)) {
+                    parquet_logger.warn("Skipping unsupported type {} for column {}", col_def.type->name(), col_def.name_as_text());
                     continue;
                 }
 
@@ -491,6 +498,7 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
                 int id = (int)col_def.ordinal_id;
                 logical_type::logical_type pq_type = pws.cell_mappings[id].pq_type;
                 if (!is_supported_type(pws, id)) {
+                    parquet_logger.warn("Skipping unsupported type {} for column {}", col_def.type->name(), col_def.name_as_text());
                     continue; // TODO: support all abstract types
                 }
 
