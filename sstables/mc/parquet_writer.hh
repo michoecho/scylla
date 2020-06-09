@@ -370,7 +370,9 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
                 pws.cell_mappings[id].value = leaf_idx++;
                 header_partition_key.fields.push_back(std::move(header_partition_key_X));
             }
-            header.fields.push_back(std::move(header_partition_key));
+            if (header_partition_key.fields.size()) {
+                header.fields.push_back(std::move(header_partition_key));
+            }
         }
         // header_deletion
         {
@@ -421,7 +423,9 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
             pws.cell_mappings[id].value = leaf_idx++;
             static_row_cells.fields.push_back(std::move(static_row_cells_X));
         }
-        static_row.fields.push_back(std::move(static_row_cells));
+        if (static_row_cells.fields.size()) {
+            static_row.fields.push_back(std::move(static_row_cells));
+        }
         pws.p4s_schema.fields.push_back(std::move(static_row));
     }
     // row
@@ -489,7 +493,9 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
                 pws.cell_mappings[id].value = leaf_idx++;
                 row_cells_key.fields.push_back(std::move(row_cells_key_X));
             }
-            row.fields.push_back(std::move(row_cells_key));
+            if (row_cells_key.fields.size()) {
+                row.fields.push_back(std::move(row_cells_key));
+            }
         }
         // row_cells_regular
         {
@@ -520,7 +526,9 @@ scylla_schema_to_parquet_writer_schema(const scylla_schema& scylla_sch) {
                 pws.cell_mappings[id].value = leaf_idx++;
                 row_cells_regular.fields.push_back(std::move(row_cells_regular_X));
             }
-            row.fields.push_back(std::move(row_cells_regular));
+            if (row_cells_regular.fields.size()) {
+                row.fields.push_back(std::move(row_cells_regular));
+            }
         }
         rows.element.reset(new node(std::move(row)));
         pws.p4s_schema.fields.push_back(std::move(rows));
