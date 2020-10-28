@@ -63,7 +63,7 @@ requires std::is_integral<ExplicitIntegerType>::value && std::is_integral<Intege
     *it++ = 'a';
 }
 inline
-void serialize_int(CharOutputIterator& out, IntegerType val) {
+void serialize_int(CharOutputIterator&& out, IntegerType val) {
     ExplicitIntegerType nval = net::hton(ExplicitIntegerType(val));
     out = std::copy_n(reinterpret_cast<const char*>(&nval), sizeof(nval), out);
 }
@@ -72,31 +72,31 @@ void serialize_int(CharOutputIterator& out, IntegerType val) {
 
 template <typename CharOutputIterator>
 inline
-void serialize_int8(CharOutputIterator& out, uint8_t val) {
+void serialize_int8(CharOutputIterator&& out, uint8_t val) {
     internal_impl::serialize_int<uint8_t>(out, val);
 }
 
 template <typename CharOutputIterator>
 inline
-void serialize_int16(CharOutputIterator& out, uint16_t val) {
+void serialize_int16(CharOutputIterator&& out, uint16_t val) {
     internal_impl::serialize_int<uint16_t>(out, val);
 }
 
 template <typename CharOutputIterator>
 inline
-void serialize_int32(CharOutputIterator& out, uint32_t val) {
+void serialize_int32(CharOutputIterator&& out, uint32_t val) {
     internal_impl::serialize_int<uint32_t>(out, val);
 }
 
 template <typename CharOutputIterator>
 inline
-void serialize_int64(CharOutputIterator& out, uint64_t val) {
+void serialize_int64(CharOutputIterator&& out, uint64_t val) {
     internal_impl::serialize_int<uint64_t>(out, val);
 }
 
 template <typename CharOutputIterator>
 inline
-void serialize_bool(CharOutputIterator& out, bool val) {
+void serialize_bool(CharOutputIterator&& out, bool val) {
     serialize_int8(out, val ? 1 : 0);
 }
 
@@ -112,7 +112,7 @@ requires requires (CharOutputIterator it) {
     *it++ = 'a';
 }
 inline
-void serialize_string(CharOutputIterator& out, const sstring& s) {
+void serialize_string(CharOutputIterator&& out, const sstring& s) {
     // Java specifies that nulls in the string need to be replaced by the
     // two bytes 0xC0, 0x80. Let's not bother with such transformation
     // now, but just verify wasn't needed.
@@ -135,7 +135,7 @@ requires requires (CharOutputIterator it) {
     *it++ = 'a';
 }
 inline
-void serialize_string(CharOutputIterator& out, const char* s) {
+void serialize_string(CharOutputIterator&& out, const char* s) {
     // TODO: like above, need to change UTF-8 when above 16-bit.
     auto len = strlen(s);
     if (len > std::numeric_limits<uint16_t>::max()) {
@@ -155,7 +155,7 @@ size_t serialize_string_size(const sstring& s) {;
 
 template<typename T, typename CharOutputIterator>
 static inline
-void write(CharOutputIterator& out, const T& val) {
+void write(CharOutputIterator&& out, const T& val) {
     auto v = net::ntoh(val);
     out = std::copy_n(reinterpret_cast<char*>(&v), sizeof(v), out);
 }
