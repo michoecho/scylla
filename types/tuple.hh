@@ -125,6 +125,25 @@ public:
         boost::range::for_each(range, put);
         return ret;
     }
+    template <typename RangeOfManagedBytesView>
+    static bytes_ostream build_value_fragmented(RangeOfManagedBytesView&& range) {
+        size_t size = 0;
+        for (auto&& v : range) {
+            size += 4 + (v ? v->size() : 0);
+        }
+        auto out = bytes_ostream(size);
+        for (auto&& v : range) {
+            if (v) {
+                write(out.write_place_holder<int32_t>().ptr, int32_t(v->size()));
+                for (auto&& fragment : v->as_fragment_range()) {
+                    out.write(fragment);
+                }
+            } else {
+                write(out.write_place_holder<int32_t>().ptr, int32_t(-1));
+            }
+        }
+        return out;
+    }
 private:
     static sstring make_name(const std::vector<data_type>& types);
     friend abstract_type;

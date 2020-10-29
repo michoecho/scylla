@@ -1213,6 +1213,7 @@ size_t collection_size_len(cql_serialization_format sf);
 size_t collection_value_len(cql_serialization_format sf);
 void write_collection_size(bytes::iterator& out, int size, cql_serialization_format sf);
 void write_collection_value(bytes::iterator& out, cql_serialization_format sf, bytes_view val_bytes);
+void write_collection_value(bytes_ostream& out, cql_serialization_format sf, managed_bytes_fragment_range_view val);
 void write_collection_value(bytes::iterator& out, cql_serialization_format sf, data_type type, const data_value& value);
 
 using user_type = shared_ptr<const user_type_impl>;

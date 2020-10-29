@@ -54,6 +54,8 @@ public:
     virtual bool is_value_compatible_with_frozen(const collection_type_impl& previous) const = 0;
     template <typename BytesViewIterator>
     static bytes pack(BytesViewIterator start, BytesViewIterator finish, int elements, cql_serialization_format sf);
+    template <typename  ManagedBytesViewIterator>
+    static bytes_ostream pack_fragmented(ManagedBytesViewIterator start, ManagedBytesViewIterator finish, int elements, cql_serialization_format sf);
     virtual data_value deserialize(bytes_view v, cql_serialization_format sf) const = 0;
     data_value deserialize_value(bytes_view v, cql_serialization_format sf) const {
         return deserialize(v, sf);
@@ -100,6 +102,28 @@ collection_type_impl::pack(BytesViewIterator start, BytesViewIterator finish, in
     write_collection_size(i, elements, sf);
     while (start != finish) {
         write_collection_value(i, sf, *start++);
+    }
+    return out;
+}
+
+template <typename ManagedBytesViewIterator>
+bytes_ostream
+collection_type_impl::pack_fragmented(ManagedBytesViewIterator start, ManagedBytesViewIterator finish, int elements, cql_serialization_format sf) {
+    size_t csl = collection_size_len(sf);
+    size_t psz = collection_value_len(sf);
+
+    size_t len = csl;
+    for (auto j = start; j != finish; j++) {
+        len += j->size() + psz;
+    }
+    bytes_ostream out(len);
+
+    auto len_placeholder = out.write_place_holder(csl);
+    write_collection_size(len_placeholder, elements, sf);
+
+    while (start != finish) {
+        auto mbv = *start++;
+        write_collection_value(out, sf, mbv.as_fragment_range());
     }
     return out;
 }
