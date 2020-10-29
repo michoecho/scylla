@@ -679,6 +679,22 @@ void write_collection_value(bytes::iterator& out, cql_serialization_format sf, b
     out = std::copy_n(val_bytes.begin(), val_bytes.size(), out);
 }
 
+void write_collection_value(bytes_ostream& out, cql_serialization_format sf, data::value_view val) {
+    if (sf.using_32_bits_for_collections()) {
+        serialize_int32(out.write_place_holder<int32_t>().ptr, int32_t(val.size_bytes()));
+    } else {
+        if (val.size_bytes() > std::numeric_limits<uint16_t>::max()) {
+            throw marshal_exception(
+                    format("Collection value exceeds the length limit for protocol v{:d}. Collection values are limited to {:d} bytes but {:d} bytes value provided",
+                            sf.protocol_version(), std::numeric_limits<uint16_t>::max(), val.size_bytes()));
+        }
+        serialize_int16(out.write_place_holder<int16_t>().ptr, uint16_t(val.size_bytes()));
+    }
+    for (auto&& fragment : val) {
+        out.write(fragment);
+    }
+}
+
 shared_ptr<const abstract_type> abstract_type::underlying_type() const {
     struct visitor {
         shared_ptr<const abstract_type> operator()(const abstract_type& t) { return t.shared_from_this(); }
@@ -2918,56 +2934,45 @@ std::optional<data_type> abstract_type::update_user_type(const shared_ptr<const 
     return visit(*this, visitor{updated});
 }
 
-static bytes_view linearized(const data::value_view& v, std::vector<bytes>& store) {
-    if (v.is_fragmented()) {
-        return store.emplace_back(v.linearize());
-    }
-
-    return v.first_fragment();
-}
-
-static bytes serialize_for_cql_aux(const map_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
-    std::vector<bytes> linearized_values;
-    std::vector<bytes_view> tmp;
+static bytes_ostream serialize_for_cql_aux(const map_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
+    std::vector<data::value_view> tmp;
     tmp.reserve(mut.cells.size() * 2);
     for (auto&& e : mut.cells) {
         if (e.second.is_live(mut.tomb, false)) {
-            tmp.push_back(e.first);
-            tmp.push_back(linearized(e.second.value(), linearized_values));
+            tmp.push_back(data::value_view(e.first));
+            tmp.push_back(e.second.value());
         }
     }
-    return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size() / 2, sf);
+    return collection_type_impl::pack_fragmented(tmp.begin(), tmp.end(), tmp.size() / 2, sf);
 }
 
-static bytes serialize_for_cql_aux(const set_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
-    std::vector<bytes_view> tmp;
+static bytes_ostream serialize_for_cql_aux(const set_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
+    std::vector<data::value_view> tmp;
     tmp.reserve(mut.cells.size());
     for (auto&& e : mut.cells) {
         if (e.second.is_live(mut.tomb, false)) {
-            tmp.emplace_back(e.first);
+            tmp.emplace_back(data::value_view(e.first));
         }
     }
-    return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size(), sf);
+    return collection_type_impl::pack_fragmented(tmp.begin(), tmp.end(), tmp.size(), sf);
 }
 
-static bytes serialize_for_cql_aux(const list_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
-    std::vector<bytes> linearized_values;
-    std::vector<bytes_view> tmp;
+static bytes_ostream serialize_for_cql_aux(const list_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
+    std::vector<data::value_view> tmp;
     tmp.reserve(mut.cells.size());
     for (auto&& e : mut.cells) {
         if (e.second.is_live(mut.tomb, false)) {
-            tmp.push_back(linearized(e.second.value(), linearized_values));
+            tmp.push_back(e.second.value());
         }
     }
-    return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size(), sf);
+    return collection_type_impl::pack_fragmented(tmp.begin(), tmp.end(), tmp.size(), sf);
 }
 
-static bytes serialize_for_cql_aux(const user_type_impl& type, collection_mutation_view_description mut, cql_serialization_format) {
+static bytes_ostream serialize_for_cql_aux(const user_type_impl& type, collection_mutation_view_description mut, cql_serialization_format) {
     assert(type.is_multi_cell());
     assert(mut.cells.size() <= type.size());
 
-    std::vector<bytes> linearized_values;
-    std::vector<bytes_view_opt> tmp;
+    std::vector<std::optional<data::value_view>> tmp;
     tmp.resize(type.size());
 
     size_t curr_field_pos = 0;
@@ -2981,7 +2986,7 @@ static bytes serialize_for_cql_aux(const user_type_impl& type, collection_mutati
         }
 
         if (e.second.is_live(mut.tomb, false)) {
-            tmp[curr_field_pos++] = linearized(e.second.value(), linearized_values);
+            tmp[curr_field_pos++] = e.second.value();
         } else {
             tmp[curr_field_pos++] = std::nullopt;
         }
@@ -2992,10 +2997,10 @@ static bytes serialize_for_cql_aux(const user_type_impl& type, collection_mutati
         tmp[curr_field_pos++] = std::nullopt;
     }
 
-    return tuple_type_impl::build_value(std::move(tmp));
+    return tuple_type_impl::build_value_fragmented(std::move(tmp));
 }
 
-bytes serialize_for_cql(const abstract_type& type, collection_mutation_view v, cql_serialization_format sf) {
+bytes_ostream serialize_for_cql(const abstract_type& type, collection_mutation_view v, cql_serialization_format sf) {
     assert(type.is_multi_cell());
 
     return v.with_deserialized(type, [&] (collection_mutation_view_description mv) {
@@ -3004,7 +3009,7 @@ bytes serialize_for_cql(const abstract_type& type, collection_mutation_view v, c
             [&] (const set_type_impl& ctype) { return serialize_for_cql_aux(ctype, std::move(mv), sf); },
             [&] (const list_type_impl& ctype) { return serialize_for_cql_aux(ctype, std::move(mv), sf); },
             [&] (const user_type_impl& utype) { return serialize_for_cql_aux(utype, std::move(mv), sf); },
-            [&] (const abstract_type& o) -> bytes {
+            [&] (const abstract_type& o) -> bytes_ostream {
                 throw std::runtime_error(format("attempted to serialize a collection of cells with type: {}", o.name()));
             }
         ));

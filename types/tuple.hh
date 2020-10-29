@@ -125,6 +125,23 @@ public:
         boost::range::for_each(range, put);
         return ret;
     }
+    template <typename RangeOf_value_view_opt>  // also accepts bytes_view_opt
+    static bytes_ostream build_value_fragmented(RangeOf_value_view_opt&& range) {
+        auto item_size = [] (auto&& v) { return 4 + (v ? v->size_bytes() : 0); };
+        auto size = boost::accumulate(range | boost::adaptors::transformed(item_size), 0);
+        auto out = bytes_ostream(size);
+        for (auto&& v : range) {
+            if (v) {
+                write(out.write_place_holder<int32_t>().ptr, int32_t(v->size_bytes()));
+                for (auto&& fragment : *v) {
+                    out.write(fragment);
+                }
+            } else {
+                write(out.write_place_holder<int32_t>().ptr, int32_t(-1));
+            }
+        }
+        return out;
+    }
 private:
     static sstring make_name(const std::vector<data_type>& types);
     friend abstract_type;
