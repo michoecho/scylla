@@ -182,6 +182,7 @@ concept FragmentedMutableView = requires (T view) {
 template<FragmentedView View>
 struct fragment_range {
     View view;
+    using fragment_type = typename View::fragment_type;
     class fragment_iterator {
         using iterator_category = std::input_iterator_tag;
         using value_type = typename View::fragment_type;
@@ -209,9 +210,12 @@ struct fragment_range {
         pointer operator->() const { return &_current; }
         bool operator==(const fragment_iterator& i) const { return _view.size_bytes() == i._view.size_bytes(); }
     };
+    using iterator = fragment_iterator;
     fragment_range(const View& v) : view(v) {}
     fragment_iterator begin() const { return fragment_iterator(view); }
     fragment_iterator end() const { return fragment_iterator(); }
+    size_t size_bytes() const { return view.size_bytes(); }
+    bool empty() const { return view.empty(); }
 };
 
 template<FragmentedView View>
@@ -286,5 +290,37 @@ void write_fragmented(Dest& dest, Src src) {
         memcpy(dest.current_fragment().data(), src.current_fragment().data(), n);
         dest.remove_prefix(n);
         src.remove_prefix(n);
+    }
+}
+
+template <FragmentRange SourceBuffer, FragmentRange DestinationBuffer>
+requires std::is_same_v<typename DestinationBuffer::fragment_type, bytes_mutable_view>
+void copy_fragment_range(const SourceBuffer& src, DestinationBuffer& dst) {
+    if (src.empty()) {
+        return;
+    }
+    if (src.size_bytes() > dst.size_bytes()) {
+        throw std::runtime_error(
+                fmt::format("copy_fragment_range(): source buffer is larger than destination buffer: {} > {}", src.size_bytes(), dst.size_bytes()));
+    }
+
+    auto dst_it = dst.begin();
+    auto dst_fragment_it = dst_it->begin();
+
+    for (const auto src_frag : src) {
+        auto src_fragment_it = src_frag.begin();
+
+        while (src_fragment_it != src_frag.end()) {
+            const auto n = std::min(src_frag.end() - src_fragment_it, dst_it->end() - dst_fragment_it);
+            std::copy_n(src_fragment_it, n, dst_fragment_it);
+
+            src_fragment_it += n;
+            dst_fragment_it += n;
+
+            if (dst_fragment_it == dst_it->end()) {
+                ++dst_it;
+                dst_fragment_it = dst_it->begin();
+            }
+        }
     }
 }

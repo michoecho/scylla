@@ -32,10 +32,10 @@
 #include <unordered_map>
 #include <type_traits>
 
-template <mutable_view is_mutable_view>
-class managed_bytes_basic_view;
+template <mutable_view is_mutable> class managed_bytes_basic_view;
 using managed_bytes_view = managed_bytes_basic_view<mutable_view::no>;
 using managed_bytes_mutable_view = managed_bytes_basic_view<mutable_view::yes>;
+class managed_bytes;
 
 struct blob_storage {
     struct [[gnu::packed]] ref_type {
@@ -79,6 +79,135 @@ struct blob_storage {
         memcpy(data, o.data, frag_size);
     }
 } __attribute__((packed));
+
+template <mutable_view is_mutable>
+class managed_bytes_basic_view_base {
+public:
+    using fragment_type = std::conditional_t<is_mutable == mutable_view::yes, bytes_mutable_view, bytes_view>;
+    using owning_type = std::conditional_t<is_mutable == mutable_view::yes, managed_bytes, const managed_bytes>;
+    using value_type = typename fragment_type::value_type;
+private:
+    fragment_type _current_fragment = {};
+    blob_storage* _next_fragments = nullptr;
+    size_t _size = 0;
+public:
+    managed_bytes_basic_view_base() = default;
+    managed_bytes_basic_view_base(const managed_bytes_basic_view_base&) = default;
+    managed_bytes_basic_view_base(owning_type& mb) {
+        if (mb._u.small.size != -1) {
+            _current_fragment = fragment_type(mb._u.small.data, mb._u.small.size);
+            _size = mb._u.small.size;
+        } else {
+            auto p = mb._u.ptr;
+            _current_fragment = fragment_type(p->data, p->frag_size);
+            _next_fragments = p->next;
+            _size = p->size;
+        }
+    }
+    managed_bytes_basic_view_base(fragment_type bv)
+        : _current_fragment(bv)
+        , _size(bv.size()) {
+    }
+    size_t size() const { return _size; }
+    size_t size_bytes() const { return _size; }
+    bool empty() const { return _size == 0; }
+    fragment_type current_fragment() const { return _current_fragment; }
+    bool is_fragmented() const { return size_bytes() != _current_fragment.size(); }
+    void remove_prefix(size_t n) {
+        while (n >= _current_fragment.size() && n > 0) {
+            n -= _current_fragment.size();
+            remove_current();
+        }
+        _size -= n;
+        _current_fragment.remove_prefix(n);
+    }
+    void remove_current() {
+        _size -= _current_fragment.size();
+        if (_size) {
+            _current_fragment = fragment_type(_next_fragments->data, _next_fragments->frag_size);
+            _next_fragments = _next_fragments->next;
+            _current_fragment = _current_fragment.substr(0, _size);
+        } else {
+            _current_fragment = fragment_type();
+        }
+    }
+    managed_bytes_basic_view_base prefix(size_t len) const {
+        managed_bytes_basic_view_base v = *this;
+        v._size = len;
+        v._current_fragment = v._current_fragment.substr(0, len);
+        return v;
+    }
+    managed_bytes_basic_view_base substr(size_t offset, size_t len) const {
+        size_t end = std::min(offset + len, _size);
+        managed_bytes_basic_view_base v = prefix(end);
+        v.remove_prefix(offset);
+        return v;
+    }
+    const value_type& operator[](size_t index) const {
+        auto v = *this;
+        v.remove_prefix(index);
+        return v.current_fragment().front();
+    }
+
+    friend class managed_bytes_basic_view_base<mutable_view::no>;
+    managed_bytes_basic_view_base(const managed_bytes_basic_view_base<mutable_view::yes>& other)
+    requires (is_mutable == mutable_view::no)
+    : _current_fragment(other._current_fragment.data(), other._current_fragment.size())
+    , _next_fragments(other._next_fragments)
+    , _size(other._size)
+    {}
+};
+static_assert(FragmentedView<managed_bytes_basic_view_base<mutable_view::no>>);
+static_assert(FragmentedMutableView<managed_bytes_basic_view_base<mutable_view::yes>>);
+
+template <mutable_view is_mutable>
+class managed_bytes_iterator {
+public:
+    using iterator_category	= std::forward_iterator_tag;
+    using value_type = std::conditional_t<is_mutable == mutable_view::no, const bytes_view::value_type, bytes_view::value_type>;
+    using pointer = value_type*;
+    using reference = value_type&;
+    using difference_type = std::ptrdiff_t;
+
+private:
+    managed_bytes_basic_view_base<is_mutable> _view;
+
+public:
+    managed_bytes_iterator(managed_bytes_basic_view_base<is_mutable> view) noexcept
+        : _view(view)
+    { }
+
+    managed_bytes_iterator() = default;
+
+    reference operator*() const {
+        return *_view.current_fragment().begin();
+    }
+    pointer operator->() const {
+        return _view.current_fragment().begin();
+    }
+
+    managed_bytes_iterator& operator++() {
+        _view.remove_prefix(1);
+        return *this;
+    }
+    managed_bytes_iterator operator++(int) {
+        auto it = *this;
+        ++(*this);
+        return it;
+    }
+    managed_bytes_iterator& operator+=(unsigned n) {
+        _view.remove_prefix(n);
+        return *this;
+    }
+    managed_bytes_iterator operator+(unsigned n) const {
+        auto it = *this;
+        return it += n;
+    }
+
+    bool operator==(const managed_bytes_iterator& o) const {
+        return o._view.size_bytes() == _view.size_bytes();
+    }
+};
 
 // A managed version of "bytes" (can be used with LSA).
 class managed_bytes {
@@ -371,8 +500,24 @@ public:
         }
     }
 
+    managed_bytes_iterator<mutable_view::no> begin() const {
+        return managed_bytes_iterator<mutable_view::no>(*this);
+    }
+    managed_bytes_iterator<mutable_view::no> end() const {
+        return managed_bytes_iterator<mutable_view::no>();
+    }
+    managed_bytes_iterator<mutable_view::yes> begin() {
+        return managed_bytes_iterator<mutable_view::yes>(*this);
+    }
+    managed_bytes_iterator<mutable_view::yes> end() {
+        return managed_bytes_iterator<mutable_view::yes>();
+    }
+
     template <mutable_view is_mutable_view>
-    friend class managed_bytes_basic_view;
+    friend class managed_bytes_basic_view_base;
+
+    template <mutable_view is_mutable_view>
+    friend class managed_bytes_iterator;
 };
 
 // blob_storage is a variable-size type
@@ -383,68 +528,49 @@ size_for_allocation_strategy(const blob_storage& bs) {
 }
 
 template <mutable_view is_mutable>
-class managed_bytes_basic_view {
+class managed_bytes_basic_view : public managed_bytes_basic_view_base<is_mutable> {
 public:
-    using fragment_type = std::conditional_t<is_mutable == mutable_view::yes, bytes_mutable_view, bytes_view>;
-    using owning_type = std::conditional_t<is_mutable == mutable_view::yes, managed_bytes, const managed_bytes>;
-    using value_type = typename fragment_type::value_type;
-private:
-    fragment_type _current_fragment = {};
-    blob_storage* _next_fragments = nullptr;
-    size_t _size = 0;
-public:
+    using typename managed_bytes_basic_view_base<is_mutable>::owning_type;
+    using typename managed_bytes_basic_view_base<is_mutable>::fragment_type;
+    using iterator = managed_bytes_iterator<is_mutable>;
+    using base = managed_bytes_basic_view_base<is_mutable>;
+    using self = managed_bytes_basic_view;
     managed_bytes_basic_view() = default;
-    managed_bytes_basic_view(owning_type& mb) {
-        if (mb._u.small.size != -1) {
-            _current_fragment = fragment_type(mb._u.small.data, mb._u.small.size);
-            _size = mb._u.small.size;
-        } else {
-            auto p = mb._u.ptr;
-            _current_fragment = fragment_type(p->data, p->frag_size);
-            _next_fragments = p->next;
-            _size = p->size;
-        }
+    managed_bytes_basic_view(const self&) = default;
+    managed_bytes_basic_view(base b) : base(b) {};
+    managed_bytes_basic_view(owning_type& mb) : base(mb) {};
+    managed_bytes_basic_view(fragment_type bv) : base(bv) {};
+    iterator begin() {
+        return managed_bytes_iterator<is_mutable>((base)*this);
     }
-    managed_bytes_basic_view(fragment_type bv)
-        : _current_fragment(bv)
-        , _size(bv.size()) {
+    iterator end() {
+        return managed_bytes_iterator<is_mutable>();
     }
-    size_t size() const { return _size; }
-    size_t size_bytes() const { return _size; }
-    bool empty() const { return _size == 0; }
-    fragment_type current_fragment() const { return _current_fragment; }
-    void remove_prefix(size_t n) {
-        while (n >= _current_fragment.size() && n > 0) {
-            n -= _current_fragment.size();
-            remove_current();
-        }
-        _size -= n;
-        _current_fragment.remove_prefix(n);
+    const iterator begin() const {
+        return managed_bytes_iterator<is_mutable>((base)*this);
     }
-    void remove_current() {
-        _size -= _current_fragment.size();
-        if (_size) {
-            _current_fragment = fragment_type(_next_fragments->data, _next_fragments->frag_size);
-            _next_fragments = _next_fragments->next;
-            _current_fragment = _current_fragment.substr(0, _size);
-        } else {
-            _current_fragment = fragment_type();
-        }
+    const iterator end() const {
+        return managed_bytes_iterator<is_mutable>();
     }
     managed_bytes_basic_view prefix(size_t len) const {
-        managed_bytes_basic_view v = *this;
-        v._size = len;
-        v._current_fragment = v._current_fragment.substr(0, len);
-        return v;
+        return managed_bytes_basic_view_base<is_mutable>::prefix(len);
     }
-    const value_type& operator[](size_t index) const {
-        auto v = *this;
-        v.remove_prefix(index);
-        return v.current_fragment().front();
+    managed_bytes_basic_view substr(size_t offset, size_t len) const {
+        return managed_bytes_basic_view_base<is_mutable>::substr(offset, len);
     }
+    fragment_range<base> as_fragment_range() const {
+        return fragment_range((base)*this);
+    }
+    bytes linearize() const {
+        return linearized(*this);
+    }
+
+    friend class managed_bytes_basic_view<mutable_view::no>;
+    managed_bytes_basic_view(const managed_bytes_basic_view<mutable_view::yes>& other)
+    requires (is_mutable == mutable_view::no)
+    : base((base)other)
+    {}
 };
-static_assert(FragmentedView<managed_bytes_view>);
-static_assert(FragmentedMutableView<managed_bytes_mutable_view>);
 
 inline bytes to_bytes(const managed_bytes& v) {
     return linearized(managed_bytes_view(v));
