@@ -1204,7 +1204,7 @@ table::make_memtable_list() {
     return make_lw_shared<memtable_list>(std::move(seal), std::move(get_schema), _config.dirty_memory_manager, _stats, _config.memory_compaction_scheduling_group);
 }
 
-table::table(schema_ptr schema, config config, db::commitlog* cl, compaction_manager& compaction_manager,
+table::table(schema_ptr schema, config config, db::commitlog* cl, bool& durable_writes, compaction_manager& compaction_manager,
              cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
     : _schema(std::move(schema))
     , _config(std::move(config))
@@ -1217,6 +1217,7 @@ table::table(schema_ptr schema, config config, db::commitlog* cl, compaction_man
     , _sstables(make_lw_shared<sstables::sstable_set>(_compaction_strategy.make_sstable_set(_schema)))
     , _cache(_schema, sstables_as_snapshot_source(), row_cache_tracker, is_continuous::yes)
     , _commitlog(cl)
+    , _durable_writes(durable_writes)
     , _compaction_manager(compaction_manager)
     , _index_manager(*this)
     , _counter_cell_locks(_schema->is_counter() ? std::make_unique<cell_locker>(_schema, cl_stats) : nullptr)
@@ -2214,4 +2215,8 @@ table::as_mutation_source_excluding(std::vector<sstables::shared_sstable>& ssts)
                                    mutation_reader::forwarding fwd_mr) {
         return this->make_reader_excluding_sstables(std::move(s), std::move(permit), ssts, range, slice, pc, std::move(trace_state), fwd, fwd_mr);
     });
+}
+
+bool table::durable_writes() const {
+    return _durable_writes;
 }

@@ -464,6 +464,7 @@ private:
 
     // Provided by the database that owns this commitlog
     db::commitlog* _commitlog;
+    bool& _durable_writes;
     compaction_manager& _compaction_manager;
     secondary_index::secondary_index_manager _index_manager;
     int _compaction_disabled = 0;
@@ -727,17 +728,18 @@ public:
 
     logalloc::occupancy_stats occupancy() const;
 private:
-    table(schema_ptr schema, config cfg, db::commitlog* cl, compaction_manager&, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker);
+    table(schema_ptr schema, config cfg, db::commitlog* cl, bool& durable_writes, compaction_manager&, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker);
 public:
-    table(schema_ptr schema, config cfg, db::commitlog& cl, compaction_manager& cm, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
-        : table(schema, std::move(cfg), &cl, cm, cl_stats, row_cache_tracker) {}
-    table(schema_ptr schema, config cfg, no_commitlog, compaction_manager& cm, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
-        : table(schema, std::move(cfg), nullptr, cm, cl_stats, row_cache_tracker) {}
+    table(schema_ptr schema, config cfg, db::commitlog& cl, bool& durable_writes, compaction_manager& cm, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
+        : table(schema, std::move(cfg), &cl, durable_writes, cm, cl_stats, row_cache_tracker) {}
+    table(schema_ptr schema, config cfg, no_commitlog, bool& durable_writes, compaction_manager& cm, cell_locker_stats& cl_stats, cache_tracker& row_cache_tracker)
+        : table(schema, std::move(cfg), nullptr, durable_writes, cm, cl_stats, row_cache_tracker) {}
     table(column_family&&) = delete; // 'this' is being captured during construction
     ~table();
     const schema_ptr& schema() const { return _schema; }
     void set_schema(schema_ptr);
     db::commitlog* commitlog() { return _commitlog; }
+    bool durable_writes() const;
     future<const_mutation_partition_ptr> find_partition(schema_ptr, reader_permit permit, const dht::decorated_key& key) const;
     future<const_mutation_partition_ptr> find_partition_slow(schema_ptr, reader_permit permit, const partition_key& key) const;
     future<const_row_ptr> find_row(schema_ptr, reader_permit permit, const dht::decorated_key& partition_key, clustering_key clustering_key) const;
@@ -1136,6 +1138,7 @@ private:
     lw_shared_ptr<keyspace_metadata> _metadata;
     shared_promise<> _populated;
     config _config;
+    std::unique_ptr<bool> _durable_writes; // Read by tables in this keyspace
 public:
     explicit keyspace(lw_shared_ptr<keyspace_metadata> metadata, config cfg);
 
@@ -1175,6 +1178,10 @@ public:
 
     const sstring& datadir() const {
         return _config.datadir;
+    }
+
+    bool& durable_writes() const {
+        return *_durable_writes;
     }
 
     sstring column_family_directory(const sstring& base_path, const sstring& name, utils::UUID uuid) const;

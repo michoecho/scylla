@@ -141,6 +141,7 @@ void keyspace_metadata::remove_user_type(const user_type ut) {
 keyspace::keyspace(lw_shared_ptr<keyspace_metadata> metadata, config cfg)
     : _metadata(std::move(metadata))
     , _config(std::move(cfg))
+    , _durable_writes(std::make_unique<bool>(_metadata->durable_writes()))
 {}
 
 lw_shared_ptr<keyspace_metadata> keyspace::metadata() const {
@@ -732,9 +733,9 @@ void database::add_column_family(keyspace& ks, schema_ptr schema, column_family:
 
     lw_shared_ptr<column_family> cf;
     if (cfg.enable_commitlog && _commitlog) {
-       cf = make_lw_shared<column_family>(schema, std::move(cfg), *_commitlog, *_compaction_manager, *_cl_stats, _row_cache_tracker);
+       cf = make_lw_shared<column_family>(schema, std::move(cfg), *_commitlog, ks.durable_writes(), *_compaction_manager, *_cl_stats, _row_cache_tracker);
     } else {
-       cf = make_lw_shared<column_family>(schema, std::move(cfg), column_family::no_commitlog(), *_compaction_manager, *_cl_stats, _row_cache_tracker);
+       cf = make_lw_shared<column_family>(schema, std::move(cfg), column_family::no_commitlog(), ks.durable_writes(), *_compaction_manager, *_cl_stats, _row_cache_tracker);
     }
 
     auto uuid = schema->id();
@@ -922,6 +923,7 @@ keyspace::set_replication_strategy(std::unique_ptr<locator::abstract_replication
 
 void keyspace::update_from(const locator::token_metadata& tm, ::lw_shared_ptr<keyspace_metadata> ksm) {
     _metadata = std::move(ksm);
+    *_durable_writes = _metadata->durable_writes();
    create_replication_strategy(tm, _metadata->strategy_options());
 }
 
@@ -1558,7 +1560,7 @@ static future<> maybe_handle_reorder(std::exception_ptr exp) {
 }
 
 future<> database::apply_with_commitlog(column_family& cf, const mutation& m, db::timeout_clock::time_point timeout) {
-    if (cf.commitlog() != nullptr) {
+    if (cf.commitlog() != nullptr && cf.durable_writes()) {
         return do_with(freeze(m), [this, &m, &cf, timeout] (frozen_mutation& fm) {
             commitlog_entry_writer cew(m.schema(), fm, db::commitlog::force_sync::no);
             return cf.commitlog()->add_entry(m.schema()->id(), cew, timeout);
@@ -1572,7 +1574,7 @@ future<> database::apply_with_commitlog(column_family& cf, const mutation& m, db
 future<> database::apply_with_commitlog(schema_ptr s, column_family& cf, utils::UUID uuid, const frozen_mutation& m, db::timeout_clock::time_point timeout,
         db::commitlog::force_sync sync) {
     auto cl = cf.commitlog();
-    if (cl != nullptr) {
+    if (cl != nullptr && cf.durable_writes()) {
         commitlog_entry_writer cew(s, m, sync);
         return cf.commitlog()->add_entry(uuid, cew, timeout).then([&m, this, s, timeout, cl](db::rp_handle h) {
             return this->apply_in_memory(m, s, std::move(h), timeout).handle_exception(maybe_handle_reorder);
@@ -1663,7 +1665,7 @@ database::make_keyspace_config(const keyspace_metadata& ksm) {
         }
         cfg.enable_disk_writes = !_cfg.enable_in_memory_data_store();
         cfg.enable_disk_reads = true; // we allways read from disk
-        cfg.enable_commitlog = ksm.durable_writes() && _cfg.enable_commitlog() && !_cfg.enable_in_memory_data_store();
+        cfg.enable_commitlog = _cfg.enable_commitlog() && !_cfg.enable_in_memory_data_store();
         cfg.enable_cache = _cfg.enable_cache();
 
     } else {
