@@ -39,7 +39,7 @@ struct atomic_column_update {
 struct nonatomic_column_update {
     column_id id;
     tombstone t; // optional
-    utils::chunked_vector<std::pair<bytes, atomic_cell>> cells;
+    utils::chunked_vector<std::pair<managed_bytes, atomic_cell>> cells;
 };
 
 struct static_row_update {

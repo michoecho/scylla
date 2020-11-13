@@ -45,7 +45,7 @@ struct collection_mutation_description {
     // we never iterate over `cells` more than once, so there is no need to store them in memory.
     // In some cases instead of constructing the `cells` vector, it would be more efficient to provide
     // a one-time-use forward iterator which returns the cells.
-    utils::chunked_vector<std::pair<bytes, atomic_cell>> cells;
+    utils::chunked_vector<std::pair<managed_bytes, atomic_cell>> cells;
 
     // Expires cells based on query_time. Expires tombstones based on max_purgeable and gc_before.
     // Removes cells covered by tomb or this->tomb.

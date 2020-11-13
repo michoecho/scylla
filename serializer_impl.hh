@@ -499,7 +499,7 @@ public:
 
     [[gnu::always_inline]]
     operator managed_bytes() && {
-        bytes v(managed_bytes::initialized_later(), _stream.size());
+        bytes v(bytes::initialized_later(), _stream.size());
         // FIXME: read fragmented in the first place
         _stream.read(reinterpret_cast<char*>(v.begin()), _stream.size());
         return managed_bytes(v);

@@ -170,8 +170,8 @@ bool collection_mutation_description::compact_and_expire(column_id id, row_tombs
         tomb = tombstone();
     }
     t.apply(base_tomb.regular());
-    utils::chunked_vector<std::pair<bytes, atomic_cell>> survivors;
-    utils::chunked_vector<std::pair<bytes, atomic_cell>> losers;
+    utils::chunked_vector<std::pair<managed_bytes, atomic_cell>> survivors;
+    utils::chunked_vector<std::pair<managed_bytes, atomic_cell>> losers;
     for (auto&& name_and_cell : cells) {
         atomic_cell& cell = name_and_cell.second;
         auto cannot_erase_cell = [&] {
@@ -227,7 +227,7 @@ static collection_mutation serialize_collection_mutation(
         write(out, tomb.timestamp);
         write(out, tomb.deletion_time.time_since_epoch().count());
     }
-    auto writek = [&out] (bytes_view v) {
+    auto writek = [&out] (managed_bytes_view v) {
         serialize_int32(out, v.size());
         out = std::copy_n(v.begin(), v.size(), out);
     };

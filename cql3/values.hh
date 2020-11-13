@@ -178,11 +178,17 @@ public:
     explicit operator bool() const {
         return is_value();
     }
-    const bytes* operator->() const {
-        return &std::get<bytes>(_data);
+    [[deprecated]]
+    const managed_bytes* operator->() const {
+        static managed_bytes xd;
+        return &xd;
+        // return &std::get<bytes>(_data);
     }
-    const bytes& operator*() const {
-        return std::get<bytes>(_data);
+    [[deprecated]]
+    const managed_bytes& operator*() const {
+        static managed_bytes xd;
+        return xd;
+        //return std::get<bytes>(_data);
     }
     bytes&& extract_value() && {
         auto b = std::get_if<bytes>(&_data);
