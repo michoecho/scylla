@@ -129,3 +129,16 @@ int compare_unsigned(const managed_bytes_view v1, const managed_bytes_view v2) {
 std::ostream& operator<<(std::ostream& os, const managed_bytes& b) {
     return os << managed_bytes_view(b);
 }
+
+sstring to_hex(managed_bytes_view b) {
+    static char digits[] = "0123456789abcdef";
+    sstring out = uninitialized_string(b.size() * 2);
+    size_t i = 0;
+    for (auto ch : b) {
+        uint8_t x = ch;
+        out[2*i] = digits[x >> 4];
+        out[2*i+1] = digits[x & 0xf];
+        ++i;
+    }
+    return out;
+}

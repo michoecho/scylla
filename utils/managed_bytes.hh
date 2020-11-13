@@ -852,6 +852,7 @@ inline std::ostream& operator<<(std::ostream& os, const managed_bytes_basic_view
     return os;
 }
 
+sstring to_hex(managed_bytes_view b);
 bytes to_bytes(const managed_bytes& b);
 bytes to_bytes(managed_bytes_view v);
 int compare_unsigned(const managed_bytes_view v1, const managed_bytes_view v2);
