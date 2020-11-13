@@ -132,22 +132,34 @@ sets::literal::to_string() const {
 }
 
 sets::value
-sets::value::from_serialized(const fragmented_temporary_buffer::view& val, const set_type_impl& type, cql_serialization_format sf) {
+sets::value::from_serialized(bytes_view v, const set_type_impl& type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but compose does the validation (so we're fine).
-        // FIXME: deserializeForNativeProtocol?!
-      return with_linearized(val, [&] (bytes_view v) {
+        // FIXME: deserialize_for_native_protocol?!
         auto s = value_cast<set_type_impl::native_type>(type.deserialize(v, sf));
         std::set<bytes, serialized_compare> elements(type.get_elements_type()->as_less_comparator());
         for (auto&& element : s) {
             elements.insert(elements.end(), type.get_elements_type()->decompose(element));
         }
         return value(std::move(elements));
-      });
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
     }
+}
+
+sets::value
+sets::value::from_serialized(const fragmented_temporary_buffer::view& val, const set_type_impl& type, cql_serialization_format sf) {
+    return with_linearized(val, [&] (bytes_view v) {
+        return from_serialized(v, type, sf);
+    });
+}
+
+sets::value
+sets::value::from_serialized(managed_bytes_view val, const set_type_impl& type, cql_serialization_format sf) {
+    return val.with_linearized([&] (bytes_view v) {
+        return from_serialized(v, type, sf);
+    });
 }
 
 cql3::raw_value

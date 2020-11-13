@@ -78,7 +78,9 @@ public:
         explicit value(std::vector<bytes_opt>);
         explicit value(std::vector<bytes_view_opt>);
 
+        static value from_serialized(bytes_view, const user_type_impl&);
         static value from_serialized(const fragmented_temporary_buffer::view&, const user_type_impl&);
+        static value from_serialized(managed_bytes_view, const user_type_impl&);
 
         virtual cql3::raw_value get(const query_options&) override;
         virtual const std::vector<bytes_opt>& get_elements() const override;

@@ -131,6 +131,13 @@ lists::value::from_serialized(const fragmented_temporary_buffer::view& val, cons
 }
 
 lists::value
+lists::value::from_serialized(managed_bytes_view val, const list_type_impl& type, cql_serialization_format sf) {
+    return val.with_linearized([&] (bytes_view v) {
+        return from_serialized(v, type, sf);
+    });
+}
+
+lists::value
 lists::value::from_serialized(bytes_view v, const list_type_impl& type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,

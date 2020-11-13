@@ -81,6 +81,7 @@ public:
             : _elements(std::move(elements)) {
         }
         static value from_serialized(const fragmented_temporary_buffer::view& v, const list_type_impl& type, cql_serialization_format sf);
+        static value from_serialized(managed_bytes_view v, const list_type_impl& type, cql_serialization_format sf);
         virtual cql3::raw_value get(const query_options& options) override;
         virtual bytes get_with_protocol_version(cql_serialization_format sf) override;
         bool equals(const list_type_impl& lt, const value& v);

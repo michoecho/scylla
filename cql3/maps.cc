@@ -153,12 +153,11 @@ maps::literal::to_string() const {
 }
 
 maps::value
-maps::value::from_serialized(const fragmented_temporary_buffer::view& fragmented_value, const map_type_impl& type, cql_serialization_format sf) {
+maps::value::from_serialized(bytes_view value, const map_type_impl& type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but compose does the validation (so we're fine).
         // FIXME: deserialize_for_native_protocol?!
-      return with_linearized(fragmented_value, [&] (bytes_view value) {
         auto m = value_cast<map_type_impl::native_type>(type.deserialize(value, sf));
         std::map<bytes, bytes, serialized_compare> map(type.get_keys_type()->as_less_comparator());
         for (auto&& e : m) {
@@ -166,10 +165,23 @@ maps::value::from_serialized(const fragmented_temporary_buffer::view& fragmented
                         type.get_values_type()->decompose(e.second));
         }
         return maps::value { std::move(map) };
-      });
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
     }
+}
+
+maps::value
+maps::value::from_serialized(const fragmented_temporary_buffer::view& fragmented_value, const map_type_impl& type, cql_serialization_format sf) {
+    return with_linearized(fragmented_value, [&] (bytes_view value) {
+        return from_serialized(value, type, sf);
+    });
+}
+
+maps::value
+maps::value::from_serialized(managed_bytes_view fragmented_value, const map_type_impl& type, cql_serialization_format sf) {
+    return fragmented_value.with_linearized([&] (bytes_view value) {
+        return from_serialized(value, type, sf);
+    });
 }
 
 cql3::raw_value

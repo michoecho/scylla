@@ -154,15 +154,25 @@ user_types::value::value(std::vector<bytes_view_opt> elements)
     : value(to_bytes_opt_vec(std::move(elements))) {
 }
 
+user_types::value user_types::value::from_serialized(bytes_view val, const user_type_impl& type) {
+    auto elements = type.split(val);
+    if (elements.size() > type.size()) {
+        throw exceptions::invalid_request_exception(
+                format("User Defined Type value contained too many fields (expected {}, got {})", type.size(), elements.size()));
+    }
+
+    return value(elements);
+}
+
+user_types::value user_types::value::from_serialized(managed_bytes_view v, const user_type_impl& type) {
+    return v.with_linearized([&] (bytes_view val) {
+        return from_serialized(val, type);
+    });
+}
+
 user_types::value user_types::value::from_serialized(const fragmented_temporary_buffer::view& v, const user_type_impl& type) {
     return with_linearized(v, [&] (bytes_view val) {
-        auto elements = type.split(val);
-        if (elements.size() > type.size()) {
-            throw exceptions::invalid_request_exception(
-                    format("User Defined Type value contained too many fields (expected {}, got {})", type.size(), elements.size()));
-        }
-
-        return value(elements);
+        return from_serialized(val, type);
     });
 }
 

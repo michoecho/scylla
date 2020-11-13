@@ -482,11 +482,11 @@ function_call::contains_bind_marker() const {
 
 shared_ptr<terminal>
 function_call::make_terminal(shared_ptr<function> fun, cql3::raw_value result, cql_serialization_format sf)  {
-    static constexpr auto to_buffer = [] (const cql3::raw_value& v) {
+    static constexpr auto to_buffer = [] (const cql3::raw_value& v) -> managed_bytes_view {
         if (v) {
-            return fragmented_temporary_buffer::view{bytes_view{*v}};
+            return *v;
         }
-        return fragmented_temporary_buffer::view{};
+        return {};
     };
 
     return visit(*fun->return_type(), make_visitor(
