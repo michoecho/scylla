@@ -81,11 +81,11 @@ tuples::literal::prepare(database& db, const sstring& keyspace, const std::vecto
 }
 
 tuples::in_value
-tuples::in_value::from_serialized(const fragmented_temporary_buffer::view& value_view, const list_type_impl& type, const query_options& options) {
+tuples::in_value::from_serialized(const raw_value_view& value_view, const list_type_impl& type, const query_options& options) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but the deserialization does the validation (so we're fine).
-      return with_linearized(value_view, [&] (bytes_view value) {
+      return value_view.with_linearized([&] (bytes_view value) {
         auto l = value_cast<list_type_impl::native_type>(type.deserialize(value, options.get_cql_serialization_format()));
         auto ttype = dynamic_pointer_cast<const tuple_type_impl>(type.get_elements_type());
         assert(ttype);
@@ -142,7 +142,7 @@ shared_ptr<terminal> tuples::in_marker::bind(const query_options& options) {
         auto& type = static_cast<const list_type_impl&>(*_receiver->type);
         auto& elem_type = static_cast<const tuple_type_impl&>(*type.get_elements_type());
         try {
-            with_linearized(*value, [&] (bytes_view v) {
+            value.with_linearized([&] (bytes_view v) {
                 type.validate(v, options.get_cql_serialization_format());
                 auto l = value_cast<list_type_impl::native_type>(type.deserialize(v, options.get_cql_serialization_format()));
 
@@ -153,7 +153,7 @@ shared_ptr<terminal> tuples::in_marker::bind(const query_options& options) {
         } catch (marshal_exception& e) {
             throw exceptions::invalid_request_exception(e.what());
         }
-        return make_shared<tuples::in_value>(tuples::in_value::from_serialized(*value, type, options));
+        return make_shared<tuples::in_value>(tuples::in_value::from_serialized(value, type, options));
     }
 }
 

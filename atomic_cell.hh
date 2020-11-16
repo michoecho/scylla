@@ -40,6 +40,10 @@ class abstract_type;
 class collection_type_impl;
 class atomic_cell_or_collection;
 
+namespace cql3 {
+    class raw_value_view;
+}
+
 using atomic_cell_value = managed_bytes;
 template <mutable_view is_mutable>
 using atomic_cell_value_basic_view = managed_bytes_basic_view<is_mutable>;
@@ -343,6 +347,10 @@ public:
                                  collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, managed_bytes_view value,
                                  collection_member = collection_member::no);
+    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, managed_bytes_fragment_range_view value,
+                                 collection_member = collection_member::no);
+    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const cql3::raw_value_view& value,
+                                 collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, ser::buffer_view<bytes_ostream::fragment_iterator> value,
                                  collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const fragmented_temporary_buffer::view& value,
@@ -360,6 +368,8 @@ public:
         gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type&, api::timestamp_type timestamp, const fragmented_temporary_buffer::view& value,
         gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
+    static atomic_cell make_live(const abstract_type&, api::timestamp_type timestamp, const cql3::raw_value_view& value,
+                                 gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value,
                                  gc_clock::time_point expiry, gc_clock::duration ttl, collection_member cm = collection_member::no)
     {

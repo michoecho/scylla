@@ -522,6 +522,7 @@ public:
     void validate(const fragmented_temporary_buffer::view& view, cql_serialization_format sf) const;
     void validate(bytes_view view, cql_serialization_format sf) const;
     void validate(managed_bytes_view view, cql_serialization_format sf) const;
+    void validate(managed_bytes_fragment_range_view view, cql_serialization_format sf) const;
     bool is_compatible_with(const abstract_type& previous) const;
     /*
      * Types which are wrappers over other types return the inner type.

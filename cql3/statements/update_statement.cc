@@ -179,7 +179,7 @@ void update_statement::add_update_for_key(mutation& m, const query::clustering_r
 }
 
 modification_statement::json_cache_opt insert_prepared_json_statement::maybe_prepare_json_cache(const query_options& options) const {
-    sstring json_string = with_linearized(_term->bind_and_get(options).data().value(), [&] (bytes_view value) {
+    sstring json_string = _term->bind_and_get(options).with_linearized([&] (bytes_view value) {
         return utf8_type->to_string(bytes(value));
     });
     return json_helpers::parse(std::move(json_string), s->all_columns(), options.get_cql_serialization_format());

@@ -1600,6 +1600,13 @@ void abstract_type::validate(managed_bytes_view v, cql_serialization_format sf) 
     });
 }
 
+void abstract_type::validate(managed_bytes_fragment_range_view v, cql_serialization_format sf) const {
+    // FIXME: don't linearize
+    return with_linearized(v, [&] (bytes_view v) {
+        return validate(v, sf);
+    });
+}
+
 static void serialize_aux(const tuple_type_impl& type, const tuple_type_impl::native_type* val, bytes::iterator& out) {
     assert(val);
     auto& elems = *val;

@@ -181,7 +181,9 @@ public:
             try {
                 auto value = options.get_value_at(_bind_index);
                 if (value) {
-                    _receiver->type->validate(*value, options.get_cql_serialization_format());
+                    value.with_fragment_range([&] (auto range) {
+                        _receiver->type->validate(range, options.get_cql_serialization_format());
+                    });
                 }
                 return value;
             } catch (const marshal_exception& e) {
@@ -195,7 +197,7 @@ public:
             if (!bytes) {
                 return ::shared_ptr<terminal>{};
             }
-            return ::make_shared<constants::value>(std::move(cql3::raw_value::make_value(to_bytes(*bytes))));
+            return ::make_shared<constants::value>(std::move(cql3::raw_value::make_value(to_bytes(bytes))));
         }
     };
 
@@ -212,7 +214,9 @@ public:
             if (value.is_null()) {
                 m.set_cell(prefix, column, std::move(make_dead_cell(params)));
             } else if (value.is_value()) {
-                m.set_cell(prefix, column, std::move(make_cell(*column.type, *value, params)));
+                value.with_fragment_range([&] (auto range) {
+                    m.set_cell(prefix, column, std::move(make_cell(*column.type, value, params)));
+                });
             }
         }
     };
@@ -227,7 +231,7 @@ public:
             } else if (value.is_unset_value()) {
                 return;
             }
-            auto increment = with_linearized(*value, [] (bytes_view value_view) {
+            auto increment = value.with_linearized([] (bytes_view value_view) {
                 return value_cast<int64_t>(long_type->deserialize_value(value_view));
             });
             m.set_cell(prefix, column, make_counter_update_cell(increment, params));
@@ -244,7 +248,7 @@ public:
             } else if (value.is_unset_value()) {
                 return;
             }
-            auto increment = with_linearized(*value, [] (bytes_view value_view) {
+            auto increment = value.with_linearized([] (bytes_view value_view) {
                 return value_cast<int64_t>(long_type->deserialize_value(value_view));
             });
             if (increment == std::numeric_limits<int64_t>::min()) {

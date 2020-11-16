@@ -44,7 +44,7 @@ class raw_value;
 ///
 /// \see raw_value
 struct raw_value_view {
-    std::variant<fragmented_temporary_buffer::view, null_value, unset_value> _data;
+    std::variant<managed_bytes_view, fragmented_temporary_buffer::view, null_value, unset_value> _data;
     // Temporary storage is only useful if a raw_value_view needs to be instantiated
     // with a value which lifetime is bounded only to the view itself.
     // This hack is introduced in order to avoid storing temporary storage
@@ -54,7 +54,7 @@ struct raw_value_view {
     // - pointers are cheap to copy
     // - it makes the view keep its semantics - it's safe to copy a view multiple times
     //   and all copies still refer to the same underlying data.
-    lw_shared_ptr<bytes> _temporary_storage = nullptr;
+    lw_shared_ptr<managed_bytes> _temporary_storage = nullptr;
 
     raw_value_view(null_value&& data)
         : _data{std::move(data)}
@@ -65,9 +65,12 @@ struct raw_value_view {
     raw_value_view(fragmented_temporary_buffer::view data)
         : _data{data}
     {}
+    raw_value_view(managed_bytes_view data)
+            : _data{data}
+    {}
     // This constructor is only used by make_temporary() and it acquires ownership
     // of the given buffer. The view created that way refers to its own temporary storage.
-    explicit raw_value_view(bytes&& temporary_storage);
+    explicit raw_value_view(managed_bytes&& temporary_storage);
 public:
     static raw_value_view make_null() {
         return raw_value_view{std::move(null_value{})};
@@ -78,6 +81,9 @@ public:
     static raw_value_view make_value(fragmented_temporary_buffer::view view) {
         return raw_value_view{view};
     }
+    static raw_value_view make_value(managed_bytes_view view) {
+        return raw_value_view{view};
+    }
     static raw_value_view make_temporary(raw_value&& value);
     bool is_null() const {
         return std::holds_alternative<null_value>(_data);
@@ -86,36 +92,77 @@ public:
         return std::holds_alternative<unset_value>(_data);
     }
     bool is_value() const {
-        return std::holds_alternative<fragmented_temporary_buffer::view>(_data);
-    }
-    std::optional<fragmented_temporary_buffer::view> data() const {
-        if (auto pdata = std::get_if<fragmented_temporary_buffer::view>(&_data)) {
-            return *pdata;
-        }
-        return {};
+        return _data.index() <= 1;
     }
     explicit operator bool() const {
         return is_value();
     }
+#if 0
     const fragmented_temporary_buffer::view* operator->() const {
         return &std::get<fragmented_temporary_buffer::view>(_data);
     }
     const fragmented_temporary_buffer::view& operator*() const {
         return std::get<fragmented_temporary_buffer::view>(_data);
     }
+#endif
+    template <std::invocable<bytes_view> Func>
+    std::invoke_result_t<Func, bytes_view> with_linearized(Func&& func) const {
+        if (auto pdata = std::get_if<fragmented_temporary_buffer::view>(&_data)) {
+            return ::with_linearized(*pdata, std::forward<Func>(func));
+        } else {
+            return std::get<managed_bytes_view>(_data).with_linearized(std::forward<Func>(func));
+        }
+    }
+    template <std::invocable<bytes_view> Func>
+    void with_fragmented(Func&& func) const {
+        if (auto pdata = std::get_if<fragmented_temporary_buffer::view>(&_data)) {
+            for (bytes_view frag : *pdata) {
+                func(frag);
+            }
+        } else {
+            for (bytes_view frag : std::get<managed_bytes_view>(_data).as_fragment_range()) {
+                func(frag);
+            }
+        }
+    }
+    template <typename Func>
+    decltype(auto) with_fragment_range(Func&& func) const {
+        if (auto pdata = std::get_if<fragmented_temporary_buffer::view>(&_data)) {
+            return func(*pdata);
+        } else {
+            return func(std::get<managed_bytes_view>(_data).as_fragment_range());
+        }
+    }
+    size_t size_bytes() const {
+        if (auto pdata = std::get_if<fragmented_temporary_buffer::view>(&_data)) {
+            return pdata->size_bytes();
+        }
+        if (auto pdata = std::get_if<managed_bytes_view>(&_data)) {
+            return pdata->size();
+        }
+        return 0;
+    }
 
+#if 0
     bool operator==(const raw_value_view& other) const {
-        if (_data.index() != other._data.index()) {
-            return false;
+        if (is_value() && other.is_value()) {
+            if (auto p1 = std::get_if<fragmented_temporary_buffer::view>(&_data)) {
+                if (auto p2 = std::get_if<fragmented_temporary_buffer::view>(&other._data)) {
+                } else {
+                    auto& p2 = std::get<managed_bytes_view>(other._data);
+                }
+            }
+            if (auto pdata = std::get_if<managed_bytes_view>(&_data)) {
+                return pdata->size();
+            }
+        } else {
+            return _data.index() == other._data.index();
         }
-        if (is_value() && **this != *other) {
-            return false;
-        }
-        return true;
     }
     bool operator!=(const raw_value_view& other) const {
         return !(*this == other);
     }
+#endif
 
     friend std::ostream& operator<<(std::ostream& os, const raw_value_view& value);
 };
@@ -126,7 +173,7 @@ public:
 /// protocol. A raw value can hold either a null value, an unset value, or a byte
 /// blob that represents the value.
 class raw_value {
-    std::variant<bytes, null_value, unset_value> _data;
+    std::variant<managed_bytes, null_value, unset_value> _data;
 
     raw_value(null_value&& data)
         : _data{std::move(data)}
@@ -139,6 +186,12 @@ class raw_value {
     {}
     raw_value(const bytes& data)
         : _data{data}
+    {}
+    raw_value(managed_bytes&& data)
+            : _data{std::move(data)}
+    {}
+    raw_value(const managed_bytes& data)
+            : _data{data}
     {}
 public:
     static raw_value make_null() {
@@ -160,6 +213,18 @@ public:
         }
         return make_null();
     }
+    static raw_value make_value(managed_bytes&& bytes) {
+        return raw_value{std::move(bytes)};
+    }
+    static raw_value make_value(const managed_bytes& bytes) {
+        return raw_value{bytes};
+    }
+    static raw_value make_value(const std::optional<managed_bytes>& bytes) {
+        if (bytes) {
+            return make_value(*bytes);
+        }
+        return make_null();
+    }
     bool is_null() const {
         return std::holds_alternative<null_value>(_data);
     }
@@ -167,10 +232,10 @@ public:
         return std::holds_alternative<unset_value>(_data);
     }
     bool is_value() const {
-        return std::holds_alternative<bytes>(_data);
+        return std::holds_alternative<managed_bytes>(_data);
     }
-    bytes_opt data() const {
-        if (auto pdata = std::get_if<bytes>(&_data)) {
+    std::optional<managed_bytes> data() const {
+        if (auto pdata = std::get_if<managed_bytes>(&_data)) {
             return *pdata;
         }
         return {};
@@ -178,20 +243,14 @@ public:
     explicit operator bool() const {
         return is_value();
     }
-    [[deprecated]]
     const managed_bytes* operator->() const {
-        static managed_bytes xd;
-        return &xd;
-        // return &std::get<bytes>(_data);
+        return &std::get<managed_bytes>(_data);
     }
-    [[deprecated]]
     const managed_bytes& operator*() const {
-        static managed_bytes xd;
-        return xd;
-        //return std::get<bytes>(_data);
+        return std::get<managed_bytes>(_data);
     }
-    bytes&& extract_value() && {
-        auto b = std::get_if<bytes>(&_data);
+    managed_bytes&& extract_value() && {
+        auto b = std::get_if<managed_bytes>(&_data);
         assert(b);
         return std::move(*b);
     }
@@ -202,13 +261,16 @@ public:
 
 inline bytes to_bytes(const cql3::raw_value_view& view)
 {
-    return linearized(*view);
+    return view.with_linearized([] (bytes_view bv) {
+        return bytes(bv);
+    });
 }
 
 inline bytes_opt to_bytes_opt(const cql3::raw_value_view& view) {
-    auto buffer_view = view.data();
-    if (buffer_view) {
-        return bytes_opt(linearized(*buffer_view));
+    if (view.is_value()) {
+        return view.with_linearized([] (bytes_view bv) {
+            return bytes_opt(bytes(bv));
+        });
     }
     return bytes_opt();
 }

@@ -149,6 +149,13 @@ sets::value::from_serialized(bytes_view v, const set_type_impl& type, cql_serial
 }
 
 sets::value
+sets::value::from_serialized(const raw_value_view& val, const set_type_impl& type, cql_serialization_format sf) {
+    return val.with_linearized([&] (bytes_view v) {
+        return from_serialized(v, type, sf);
+    });
+}
+
+sets::value
 sets::value::from_serialized(const fragmented_temporary_buffer::view& val, const set_type_impl& type, cql_serialization_format sf) {
     return with_linearized(val, [&] (bytes_view v) {
         return from_serialized(v, type, sf);
@@ -224,13 +231,13 @@ sets::delayed_value::bind(const query_options& options) {
             return constants::UNSET_VALUE;
         }
         // We don't support value > 64K because the serialization format encode the length as an unsigned short.
-        if (b->size_bytes() > std::numeric_limits<uint16_t>::max()) {
+        if (b.size_bytes() > std::numeric_limits<uint16_t>::max()) {
             throw exceptions::invalid_request_exception(format("Set value is too long. Set values are limited to {:d} bytes but {:d} bytes value provided",
                     std::numeric_limits<uint16_t>::max(),
-                    b->size_bytes()));
+                    b.size_bytes()));
         }
 
-        buffers.insert(buffers.end(), std::move(to_bytes(*b)));
+        buffers.insert(buffers.end(), std::move(to_bytes(b)));
     }
     return ::make_shared<value>(std::move(buffers));
 }
@@ -251,14 +258,14 @@ sets::marker::bind(const query_options& options) {
     } else {
         auto& type = static_cast<const set_type_impl&>(*_receiver->type);
         try {
-            with_linearized(*value, [&] (bytes_view v) {
+            value.with_linearized([&] (bytes_view v) {
                 type.validate(v, options.get_cql_serialization_format());
             });
         } catch (marshal_exception& e) {
             throw exceptions::invalid_request_exception(
                     format("Exception while binding column {:s}: {:s}", _receiver->name->to_cql_string(), e.what()));
         }
-        return make_shared<cql3::sets::value>(value::from_serialized(*value, type, options.get_cql_serialization_format()));
+        return make_shared<cql3::sets::value>(value::from_serialized(value, type, options.get_cql_serialization_format()));
     }
 }
 

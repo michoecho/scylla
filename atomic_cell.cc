@@ -23,6 +23,7 @@
 #include "atomic_cell_or_collection.hh"
 #include "counters.hh"
 #include "types.hh"
+#include "cql3/values.hh"
 
 atomic_cell atomic_cell::make_dead(api::timestamp_type timestamp, gc_clock::time_point deletion_time) {
     return atomic_cell_type::make_dead(timestamp, deletion_time);
@@ -32,8 +33,18 @@ atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_typ
     return atomic_cell_type::make_live(timestamp, single_fragment_range(value));
 }
 
+atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, const cql3::raw_value_view& value, atomic_cell::collection_member cm) {
+    return value.with_fragment_range([timestamp] (auto&& range) {
+        return atomic_cell_type::make_live(timestamp, std::forward<decltype(range)>(range));
+    });
+}
+
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, managed_bytes_view value, atomic_cell::collection_member cm) {
     return atomic_cell_type::make_live(timestamp, value.as_fragment_range());
+}
+
+atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, managed_bytes_fragment_range_view value, atomic_cell::collection_member cm) {
+    return atomic_cell_type::make_live(timestamp, value);
 }
 
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, ser::buffer_view<bytes_ostream::fragment_iterator> value, atomic_cell::collection_member cm) {
@@ -58,6 +69,14 @@ atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_typ
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, ser::buffer_view<bytes_ostream::fragment_iterator> value,
                              gc_clock::time_point expiry, gc_clock::duration ttl, atomic_cell::collection_member cm) {
     return atomic_cell_type::make_live(timestamp, value, expiry, ttl);
+}
+
+atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, const cql3::raw_value_view& value,
+                                   gc_clock::time_point expiry, gc_clock::duration ttl, collection_member cm)
+{
+    return value.with_fragment_range([=] (auto&& range) {
+        return atomic_cell_type::make_live(timestamp, range, expiry, ttl);
+    });
 }
 
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, const fragmented_temporary_buffer::view& value,

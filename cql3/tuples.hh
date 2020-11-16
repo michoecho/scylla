@@ -121,6 +121,11 @@ public:
               return value(type.split(view));
           });
         }
+        static value from_serialized(const cql3::raw_value_view& buffer, const tuple_type_impl& type) {
+            return buffer.with_linearized([&] (bytes_view view) {
+                return value(type.split(view));
+            });
+        }
         virtual cql3::raw_value get(const query_options& options) override {
             return cql3::raw_value::make_value(tuple_type_impl::build_value(_elements));
         }
@@ -213,7 +218,7 @@ public:
             }
         }
 
-        static in_value from_serialized(const fragmented_temporary_buffer::view& value_view, const list_type_impl& type, const query_options& options);
+        static in_value from_serialized(const raw_value_view& value_view, const list_type_impl& type, const query_options& options);
 
         virtual cql3::raw_value get(const query_options& options) override {
             throw exceptions::unsupported_operation_exception();
@@ -317,14 +322,14 @@ public:
             } else {
                 auto& type = static_cast<const tuple_type_impl&>(*_receiver->type);
                 try {
-                    with_linearized(*value, [&] (bytes_view v) {
+                    value.with_linearized([&] (bytes_view v) {
                         type.validate(v, options.get_cql_serialization_format());
                     });
                 } catch (marshal_exception& e) {
                     throw exceptions::invalid_request_exception(
                             format("Exception while binding column {:s}: {:s}", _receiver->name->to_cql_string(), e.what()));
                 }
-                return make_shared<tuples::value>(value::from_serialized(*value, type));
+                return make_shared<tuples::value>(value::from_serialized(value, type));
             }
         }
     };

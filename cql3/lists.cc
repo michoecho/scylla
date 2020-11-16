@@ -226,7 +226,7 @@ lists::delayed_value::bind(const query_options& options) {
             return constants::UNSET_VALUE;
         }
 
-        buffers.push_back(std::move(to_bytes(*bo)));
+        buffers.push_back(std::move(to_bytes(bo)));
     }
     return ::make_shared<value>(buffers);
 }
@@ -241,7 +241,7 @@ lists::marker::bind(const query_options& options) {
         return constants::UNSET_VALUE;
     } else {
         try {
-            return with_linearized(*value, [&] (bytes_view v) {
+            return value.with_linearized([&] (bytes_view v) {
                 ltype.validate(v, options.get_cql_serialization_format());
                 return make_shared<lists::value>(value::from_serialized(v, ltype, options.get_cql_serialization_format()));
             });
@@ -315,7 +315,7 @@ lists::setter_by_index::execute(mutation& m, const clustering_key_prefix& prefix
         return;
     }
 
-    auto idx = with_linearized(*index, [] (bytes_view v) {
+    auto idx = index.with_linearized([] (bytes_view v) {
         return value_cast<int32_t>(data_type_for<int32_t>()->deserialize(v));
     });
     auto&& existing_list_opt = params.get_prefetched_list(m.key(), prefix, column);
@@ -337,8 +337,7 @@ lists::setter_by_index::execute(mutation& m, const clustering_key_prefix& prefix
     if (!value) {
         mut.cells.emplace_back(std::move(eidx), params.make_dead_cell());
     } else {
-        mut.cells.emplace_back(std::move(eidx),
-                params.make_cell(*ltype->value_comparator(), *value, atomic_cell::collection_member::yes));
+        mut.cells.emplace_back(std::move(eidx), params.make_cell(*ltype->value_comparator(), value, atomic_cell::collection_member::yes));
     }
 
     m.set_cell(prefix, column, mut.serialize(*ltype));
@@ -367,9 +366,9 @@ lists::setter_by_uuid::execute(mutation& m, const clustering_key_prefix& prefix,
     mut.cells.reserve(1);
 
     if (!value) {
-        mut.cells.emplace_back(to_bytes(*index), params.make_dead_cell());
+        mut.cells.emplace_back(to_bytes(index), params.make_dead_cell());
     } else {
-        mut.cells.emplace_back(to_bytes(*index), params.make_cell(*ltype->value_comparator(), *value, atomic_cell::collection_member::yes));
+        mut.cells.emplace_back(to_bytes(index), params.make_cell(*ltype->value_comparator(), value, atomic_cell::collection_member::yes));
     }
 
     m.set_cell(prefix, column, mut.serialize(*ltype));

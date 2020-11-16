@@ -99,7 +99,7 @@ public:
         return params.make_cell(type, value);
     }
 
-    static atomic_cell make_cell(const abstract_type& type, managed_bytes_view value, const update_parameters& params) {
+    static atomic_cell make_cell(const abstract_type& type, const raw_value_view& value, const update_parameters& params) {
         return params.make_cell(type, value);
     }
 

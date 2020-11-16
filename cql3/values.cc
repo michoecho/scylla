@@ -27,7 +27,12 @@ std::ostream& operator<<(std::ostream& os, const raw_value_view& value) {
     seastar::visit(value._data, [&] (fragmented_temporary_buffer::view v) {
         os << "{ value: ";
         using boost::range::for_each;
-        for_each(v, [&os] (bytes_view bv) { os << bv; });
+        for_each(v, [&os](bytes_view bv) { os << bv; });
+        os << " }";
+    }, [&] (managed_bytes_view v) {
+        os << "{ value: ";
+        using boost::range::for_each;
+        for_each(v.as_fragment_range(), [&os](bytes_view bv) { os << bv; });
         os << " }";
     }, [&] (null_value) {
         os << "{ null }";
@@ -39,7 +44,7 @@ std::ostream& operator<<(std::ostream& os, const raw_value_view& value) {
 
 raw_value_view raw_value::to_view() const {
     switch (_data.index()) {
-    case 0:  return raw_value_view::make_value(fragmented_temporary_buffer::view(bytes_view{std::get<bytes>(_data)}));
+    case 0:  return raw_value_view::make_value(managed_bytes_view(std::get<managed_bytes>(_data)));
     case 1:  return raw_value_view::make_null();
     default: return raw_value_view::make_unset_value();
     }
@@ -52,7 +57,12 @@ raw_value raw_value::make_value(const raw_value_view& view) {
     if (view.is_unset_value()) {
         return make_unset_value();
     }
-    return make_value(linearized(*view));
+    managed_bytes b(managed_bytes::initialized_later(), view.size_bytes());
+    auto it = b.begin();
+    view.with_fragmented([&b, &it] (bytes_view bv) {
+        it = std::copy(bv.begin(), bv.end(), it);
+    });
+    return make_value(b);
 }
 
 raw_value_view raw_value_view::make_temporary(raw_value&& value) {
@@ -62,9 +72,9 @@ raw_value_view raw_value_view::make_temporary(raw_value&& value) {
     return raw_value_view(std::move(value).extract_value());
 }
 
-raw_value_view::raw_value_view(bytes&& tmp) {
-    _temporary_storage = make_lw_shared<bytes>(std::move(tmp));
-    _data = fragmented_temporary_buffer::view(bytes_view(*_temporary_storage));
+raw_value_view::raw_value_view(managed_bytes&& tmp) {
+    _temporary_storage = make_lw_shared<managed_bytes>(std::move(tmp));
+    _data = managed_bytes_view(*_temporary_storage);
 }
 
 }
