@@ -1142,8 +1142,11 @@ T read_simple(managed_bytes_view& v) {
     if (v.size() < sizeof(T)) {
         throw_with_backtrace<marshal_exception>(format("read_simple - not enough bytes (expected {:d}, got {:d})", sizeof(T), v.size()));
     }
-    // FIXME: implement
-    return T();
+    T x;
+    // FIXME: improve
+    std::copy_n(v.begin(), sizeof(T), reinterpret_cast<bytes::value_type*>(&x));
+    v.remove_prefix(sizeof(T));
+    return net::ntoh(x);
 }
 
 template<typename T>
@@ -1160,8 +1163,10 @@ T read_simple_exactly(managed_bytes_view v) {
     if (v.size() != sizeof(T)) {
         throw_with_backtrace<marshal_exception>(format("read_simple_exactly - size mismatch (expected {:d}, got {:d})", sizeof(T), v.size()));
     }
-    // FIXME: implement
-    return T();
+    T x;
+    // FIXME: improve
+    std::copy_n(v.begin(), sizeof(T), reinterpret_cast<bytes::value_type*>(&x));
+    return net::ntoh(x);
 }
 
 inline
@@ -1181,8 +1186,9 @@ read_simple_bytes(managed_bytes_view& v, size_t n) {
     if (v.size() < n) {
         throw_with_backtrace<marshal_exception>(format("read_simple_bytes - not enough bytes (requested {:d}, got {:d})", n, v.size()));
     }
-    // FIXME: implement
-    return managed_bytes_view();
+    auto prefix = v.substr(0, n);
+    v.remove_prefix(n);
+    return prefix;
 }
 
 template<typename T>
