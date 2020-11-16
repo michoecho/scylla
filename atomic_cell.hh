@@ -151,7 +151,7 @@ public:
         managed_bytes b(managed_bytes::initialized_later(), flags_size + timestamp_size + deletion_time_size);
         b[0] = 0;
         set_field(b, timestamp_offset, timestamp);
-        set_field(b, deletion_time_offset, deletion_time.time_since_epoch().count());
+        set_field(b, deletion_time_offset, static_cast<int32_t>(deletion_time.time_since_epoch().count()));
         return b;
     }
     template <FragmentRange Buffer>
@@ -177,8 +177,8 @@ public:
         managed_bytes b(managed_bytes::initialized_later(), value_offset + value.size_bytes());
         b[0] = EXPIRY_FLAG | LIVE_FLAG;
         set_field(b, timestamp_offset, timestamp);
-        set_field(b, expiry_offset, expiry.time_since_epoch().count());
-        set_field(b, ttl_offset, ttl.count());
+        set_field(b, expiry_offset, static_cast<int32_t>(expiry.time_since_epoch().count()));
+        set_field(b, ttl_offset, static_cast<int32_t>(ttl.count()));
         set_value(b, value_offset, value);
         return b;
     }
