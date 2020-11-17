@@ -294,12 +294,11 @@ protected:
 private:
     class shard_iterator : public std::iterator<std::input_iterator_tag, basic_counter_shard_view<is_mutable>> {
         managed_bytes_basic_view<is_mutable> _current;
-        size_t _pos = 0;
         basic_counter_shard_view<is_mutable> _current_view;
+        size_t _pos = 0;
     public:
-        shard_iterator() = default;
-        shard_iterator(managed_bytes_basic_view<is_mutable> v) noexcept
-            : _current(v), _current_view(_current) { }
+        shard_iterator(managed_bytes_basic_view<is_mutable> v, size_t offset) noexcept
+            : _current(v), _current_view(_current), _pos(offset) { }
 
         basic_counter_shard_view<is_mutable>& operator*() noexcept {
             return _current_view;
@@ -328,17 +327,14 @@ private:
             return it;
         }
         bool operator==(const shard_iterator& other) const noexcept {
-            return _current == other._current;
-        }
-        bool operator!=(const shard_iterator& other) const noexcept {
-            return !(*this == other);
+            return _pos == other._pos;
         }
     };
 public:
     boost::iterator_range<shard_iterator> shards() const {
         auto value = _cell.value();
-        auto begin = shard_iterator(value);
-        auto end = shard_iterator();
+        auto begin = shard_iterator(value, 0);
+        auto end = shard_iterator(value, value.size());
         return boost::make_iterator_range(begin, end);
     }
 
