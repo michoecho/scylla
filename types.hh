@@ -503,6 +503,7 @@ public:
         : _name(name), _value_length_if_fixed(std::move(value_length_if_fixed)), _kind(k) {}
     virtual ~abstract_type() {}
     bool less(bytes_view v1, bytes_view v2) const { return compare(v1, v2) < 0; }
+    bool less(managed_bytes_view v1, managed_bytes_view v2) const { return compare(v1, v2) < 0; }
     // returns a callable that can be called with two byte_views, and calls this->less() on them.
     serialized_compare as_less_comparator() const ;
     serialized_tri_compare as_tri_comparator() const ;
@@ -834,6 +835,9 @@ class serialized_compare {
 public:
     serialized_compare(data_type type) : _type(type) {}
     bool operator()(const bytes& v1, const bytes& v2) const {
+        return _type->less(v1, v2);
+    }
+    bool operator()(const managed_bytes& v1, const managed_bytes& v2) const {
         return _type->less(v1, v2);
     }
 };
