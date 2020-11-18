@@ -430,7 +430,7 @@ match_collection(const row& row, const schema& s, bytes col, const tombstone& t)
 }
 
 template <status Status>
-inline void match_collection_element(const std::pair<bytes, atomic_cell>& element, const bytes_opt& col, const bytes_opt& expected_serialized_value) {
+inline void match_collection_element(const std::pair<managed_bytes, atomic_cell>& element, const bytes_opt& col, const bytes_opt& expected_serialized_value) {
     if (col) {
         BOOST_REQUIRE(element.first == *col);
     }

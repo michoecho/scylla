@@ -26,6 +26,23 @@
 
 #include "test/lib/random_utils.hh"
 
+namespace cql3 {
+bool operator==(const raw_value_view& v1, const raw_value_view& v2) {
+    if (v1.is_value() && v2.is_value()) {
+        return to_bytes(v1) == to_bytes(v2);
+    } else if (v1.is_unset_value() && v2.is_unset_value()) {
+        return true;
+    } else if (v1.is_null() && v2.is_null()) {
+        return true;
+    } else {
+        return false;
+    }
+}
+bool operator!=(const raw_value_view& v1, const raw_value_view& v2) {
+    return !(v1 == v2);
+}
+}
+
 SEASTAR_THREAD_TEST_CASE(test_response_request_reader) {
     auto stream_id = tests::random::get_int<int16_t>();
     auto opcode = tests::random::get_int<uint8_t>(uint8_t(cql_transport::cql_binary_opcode::AUTH_SUCCESS));
@@ -99,7 +116,7 @@ SEASTAR_THREAD_TEST_CASE(test_response_request_reader) {
 
     BOOST_CHECK(req.read_value_view(version).is_null());
     BOOST_CHECK(req.read_value_view(version).is_unset_value());
-    BOOST_CHECK_EQUAL(linearized(*req.read_value_view(version)), value);
+    BOOST_CHECK_EQUAL(to_bytes(req.read_value_view(version)), value);
 
     std::vector<sstring_view> names;
     std::vector<cql3::raw_value_view> values;
