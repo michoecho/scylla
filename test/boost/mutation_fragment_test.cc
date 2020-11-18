@@ -212,10 +212,11 @@ composite cell_name(const schema& s, const clustering_key& ck, const column_defi
     if (s.is_dense()) {
         return composite::serialize_value(ck.components(s), s.is_compound());
     } else {
-        const bytes_view column_name = col.name();
+        const managed_bytes column_name = col.name();
+        const managed_bytes_view column_name_view = column_name;
         return composite::serialize_value(boost::range::join(
                 boost::make_iterator_range(ck.begin(s), ck.end(s)),
-                boost::make_iterator_range(&column_name, &column_name + 1)),
+                boost::make_iterator_range(&column_name_view, &column_name_view + 1)),
             s.is_compound());
     }
 }
