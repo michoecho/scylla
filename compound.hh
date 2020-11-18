@@ -143,12 +143,14 @@ public:
     private:
         managed_bytes_view _v;
         managed_bytes_view _current;
+        bool _done;
     private:
         void read_current() {
             size_type len;
             {
                 if (_v.empty()) {
-                    _v = bytes_view(nullptr, 0);
+                    _current = bytes_view(nullptr, 0);
+                    _done = true;
                     return;
                 }
                 len = read_simple<size_type>(_v);
@@ -161,10 +163,10 @@ public:
         }
     public:
         struct end_iterator_tag {};
-        iterator(const managed_bytes_view& v) : _v(v) {
+        iterator(const managed_bytes_view& v) : _v(v), _done(false) {
             read_current();
         }
-        iterator(end_iterator_tag, const managed_bytes_view& v) : _v() {}
+        iterator(end_iterator_tag, const managed_bytes_view& v) : _v(), _done(true) {}
         iterator& operator++() {
             read_current();
             return *this;
@@ -176,8 +178,8 @@ public:
         }
         const value_type& operator*() const { return _current; }
         const value_type* operator->() const { return &_current; }
-        bool operator!=(const iterator& i) const { return _v.size() != i._v.size(); }
-        bool operator==(const iterator& i) const { return _v.size() == i._v.size(); }
+        bool operator!=(const iterator& i) const { return !(*this == i); }
+        bool operator==(const iterator& i) const { return _v.size() == i._v.size() && _done == i._done; }
     };
     static iterator begin(const managed_bytes& v) {
         return iterator(v);
