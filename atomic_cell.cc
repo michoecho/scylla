@@ -131,7 +131,7 @@ bool atomic_cell_or_collection::equals(const abstract_type& type, const atomic_c
 
 size_t atomic_cell_or_collection::external_memory_usage(const abstract_type& t) const
 {
-    return _data.size();
+    return _data.external_memory_usage();
 }
 
 std::ostream&
