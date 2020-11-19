@@ -680,6 +680,9 @@ public:
         do_linearize_pure(ret.begin());
         return ret;
     }
+    bytes linearize() const {
+        return to_bytes();
+    }
     bool operator==(const managed_bytes_basic_view& x) const;
     bool operator!=(const managed_bytes_basic_view& x) const {
         return !operator==(x);
