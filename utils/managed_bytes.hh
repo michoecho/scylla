@@ -112,19 +112,27 @@ private:
 
 private:
     void move_to_next_fragment() {
-        if (!_next_fragment) {
-            return;
-        }
-        _current_begin = _next_fragment->data;
-        _current_end = _next_fragment->data + _next_fragment->frag_size;
-        _next_fragment = _next_fragment->next;
+        do {
+            if (!_next_fragment) {
+                _current_begin = nullptr;
+                _current_end = nullptr;
+                break;
+            }
+            _current_begin = _next_fragment->data;
+            _current_end = _next_fragment->data + _next_fragment->frag_size;
+            _next_fragment = _next_fragment->next;
+        } while (_current_begin == _current_end);
     }
 
     managed_bytes_iterator(pointer current_begin, pointer current_end, blob_storage* next) noexcept
         : _current_begin(current_begin)
         , _current_end(current_end)
         , _next_fragment(next)
-    { }
+    {
+        if (_current_begin == _current_end) {
+            move_to_next_fragment();
+        }
+    }
 
 public:
     managed_bytes_iterator() = default;
@@ -167,7 +175,7 @@ public:
     }
 
     bool operator==(const managed_bytes_iterator& o) const {
-        return _current_begin == o._current_begin && _current_end == o._current_end && _next_fragment == o._next_fragment;
+        return _current_begin == o._current_begin;
     }
 };
 
