@@ -850,8 +850,6 @@ bool managed_bytes_basic_view<is_mutable>::operator==(const managed_bytes_basic_
         it1.remove_prefix(n);
         it2.remove_prefix(n);
     }
-    assert(it1 == rv1.end());
-    assert(it2 == rv2.end());
     return true;
 }
 
