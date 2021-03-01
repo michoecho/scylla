@@ -1876,7 +1876,7 @@ data_value deserialize_aux(const tuple_type_impl& t, View v) {
 
 template<FragmentedView View>
 utils::multiprecision_int deserialize_value(const varint_type_impl&, View v) {
-    bool negative = v.current_fragment().front() < 0;
+    bool negative = (int8_t)(v.current_fragment().front()) < 0;
     utils::multiprecision_int num;
   while (v.size_bytes()) {
     for (uint8_t b : v.current_fragment()) {

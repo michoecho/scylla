@@ -134,12 +134,12 @@ private:
 
 template<>
 class response::placeholder<int32_t> {
-    int8_t* _pointer;
+    bytes::value_type* _pointer;
 public:
-    explicit placeholder(int8_t* ptr) : _pointer(ptr) { }
+    explicit placeholder(bytes::value_type* ptr) : _pointer(ptr) { }
     void write(int32_t n) {
         auto u = htonl(n);
-        auto* s = reinterpret_cast<const int8_t*>(&u);
+        auto* s = reinterpret_cast<const bytes::value_type*>(&u);
         std::copy_n(s, sizeof(u), _pointer);
     }
 };

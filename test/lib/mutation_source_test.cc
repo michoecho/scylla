@@ -1878,7 +1878,7 @@ public:
                         auto uuid = utils::UUID_gen::min_time_UUID(uuid_ts_dist(_gen)).serialize();
                         if (unique_cells.emplace(uuid).second) {
                             m.cells.emplace_back(
-                                bytes(reinterpret_cast<const int8_t*>(uuid.data()), uuid.size()),
+                                bytes(reinterpret_cast<const bytes::value_type*>(uuid.data()), uuid.size()),
                                 atomic_cell::make_live(*ctype->value_comparator(), gen_timestamp(timestamp_level::data), _blobs[value_blob_index_dist(_gen)],
                                     atomic_cell::collection_member::yes));
                         }

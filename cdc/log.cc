@@ -623,7 +623,7 @@ public:
         if (_rem != 0) {
             parse();
         } else {
-            _current = {};
+            _current = T();
         }
         return *this;
     }

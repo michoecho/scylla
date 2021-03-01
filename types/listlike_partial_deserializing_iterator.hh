@@ -80,7 +80,7 @@ private:
         if (_remain) {
             _cur = read_collection_value(*_in, _sf);
         } else {
-            _cur = {};
+            _cur = bytes_view();
         }
     }
 };

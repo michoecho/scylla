@@ -30,8 +30,17 @@
 #include "utils/mutable_view.hh"
 #include <xxhash.h>
 
-using bytes = basic_sstring<int8_t, uint32_t, 31, false>;
-using bytes_view = std::basic_string_view<int8_t>;
+using bytes = basic_sstring<char8_t, uint32_t, 31, false>;
+struct bytes_view : std::basic_string_view<char8_t> {
+    using base = std::basic_string_view<char8_t>;
+    using base::base;
+    bytes_view(const int8_t* data, size_t size) : base(reinterpret_cast<const char8_t*>(data), size) {};
+    bytes_view(const bytes& b) : base(b) {};
+    bytes_view(const base& b) : base(b) {};
+    bytes_view() = default;
+    bytes_view& operator=(const base& b) { (base&)(*this) = b; return *this; };
+    bytes_view& operator=(const bytes& b) { (base&)(*this) = b; return *this; };
+};
 using bytes_mutable_view = basic_mutable_view<bytes_view::value_type>;
 using bytes_opt = std::optional<bytes>;
 using sstring_view = std::string_view;
@@ -45,7 +54,7 @@ inline sstring_view to_sstring_view(bytes_view view) {
 }
 
 inline bytes_view to_bytes_view(sstring_view view) {
-    return {reinterpret_cast<const int8_t*>(view.data()), view.size()};
+    return {reinterpret_cast<const bytes_view::value_type*>(view.data()), view.size()};
 }
 
 struct fmt_hex {
@@ -108,6 +117,12 @@ struct hash<bytes_view> {
         bytes_view_hasher h;
         appending_hash<bytes_view>{}(h, v);
         return h.finalize();
+    }
+};
+template <>
+struct hash<bytes> {
+    size_t operator()(const bytes& v) const {
+        return hash<bytes_view>()(v);
     }
 };
 } // namespace std

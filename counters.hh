@@ -104,7 +104,7 @@ public:
         static constexpr size_t off = size_t(offset::value);
         static constexpr size_t size = size_t(offset::total_size) - off;
 
-        signed char tmp[size];
+        char8_t tmp[size];
         auto tmp_view = single_fragmented_mutable_view(bytes_mutable_view(std::data(tmp), std::size(tmp)));
 
         managed_bytes_mutable_view this_view = _base.substr(off, size);

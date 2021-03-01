@@ -1672,14 +1672,14 @@ void cql_server::response::serialize(const event::schema_change& event, uint8_t 
 
 void cql_server::response::write_byte(uint8_t b)
 {
-    auto s = reinterpret_cast<const int8_t*>(&b);
+    auto s = reinterpret_cast<const bytes::value_type*>(&b);
     _body.write(bytes_view(s, sizeof(b)));
 }
 
 void cql_server::response::write_int(int32_t n)
 {
     auto u = htonl(n);
-    auto *s = reinterpret_cast<const int8_t*>(&u);
+    auto *s = reinterpret_cast<const bytes::value_type*>(&u);
     _body.write(bytes_view(s, sizeof(u)));
 }
 
@@ -1697,7 +1697,7 @@ void cql_server::response::write_long(int64_t n)
 void cql_server::response::write_short(uint16_t n)
 {
     auto u = htons(n);
-    auto *s = reinterpret_cast<const int8_t*>(&u);
+    auto *s = reinterpret_cast<const bytes::value_type*>(&u);
     _body.write(bytes_view(s, sizeof(u)));
 }
 

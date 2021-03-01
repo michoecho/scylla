@@ -475,17 +475,17 @@ public:
 
     auto view() const {
       if constexpr (std::is_same_v<Stream, simple_input_stream>) {
-        return bytes_view(reinterpret_cast<const int8_t*>(_stream.begin()), _stream.size());
+        return bytes_view(reinterpret_cast<const bytes::value_type*>(_stream.begin()), _stream.size());
       } else {
         using iterator_type = typename Stream::iterator_type ;
         static_assert(FragmentRange<buffer_view<iterator_type>>);
         return seastar::with_serialized_stream(_stream, seastar::make_visitor(
             [&] (typename seastar::memory_input_stream<iterator_type >::simple stream) {
-                return buffer_view<iterator_type>(bytes_view(reinterpret_cast<const int8_t*>(stream.begin()),
+                return buffer_view<iterator_type>(bytes_view(reinterpret_cast<const bytes::value_type*>(stream.begin()),
                                                         stream.size()));
             },
             [&] (typename seastar::memory_input_stream<iterator_type >::fragmented stream) {
-                return buffer_view<iterator_type>(bytes_view(reinterpret_cast<const int8_t*>(stream.first_fragment_data()),
+                return buffer_view<iterator_type>(bytes_view(reinterpret_cast<const bytes::value_type*>(stream.first_fragment_data()),
                                                         stream.first_fragment_size()),
                                              stream.size(), stream.fragment_iterator());
             }

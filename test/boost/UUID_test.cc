@@ -180,7 +180,7 @@ BOOST_AUTO_TEST_CASE(test_timeuuid_submicro_is_monotonic) {
     int maxsubmicro = (1 << 17) - 1;
     int step = 1 + (random() % 169);
     auto prev = UUID_gen::get_time_UUID_bytes_from_micros_and_submicros(micros, 0);
-    auto prev_timeuuid = UUID_gen::get_UUID(prev.data());
+    auto prev_timeuuid = UUID_gen::get_UUID(reinterpret_cast<char8_t*>(prev.data()));
     // Check prev_timeuuid node identifier is set. It uses
     // a spoof MAC address, not the same as a standard UUID.
     BOOST_CHECK((prev_timeuuid.get_least_significant_bits() & PAD6) != 0);
@@ -198,7 +198,7 @@ BOOST_AUTO_TEST_CASE(test_timeuuid_submicro_is_monotonic) {
     for (int i = 1; i <= maxsubmicro; i += step) {
         auto uuid = UUID_gen::get_time_UUID_bytes_from_micros_and_submicros(
                 micros, i);
-        check_is_valid_timeuuid(UUID_gen::get_UUID(uuid.data()));
+        check_is_valid_timeuuid(UUID_gen::get_UUID(reinterpret_cast<char8_t*>(uuid.data())));
         // UUID submicro part grows monotonically
         BOOST_CHECK(utils::timeuuid_tri_compare({uuid.data(), 16}, {prev.data(), 16}) > 0);
         prev = uuid;

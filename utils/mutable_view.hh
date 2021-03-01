@@ -49,6 +49,11 @@ public:
         , _end(ptr + length)
     { }
 
+    basic_mutable_view(int8_t* ptr, size_t length)
+        : _begin(reinterpret_cast<CharT*>(ptr))
+        , _end(reinterpret_cast<CharT*>(ptr) + length)
+    { }
+
     operator std::basic_string_view<CharT>() const noexcept {
         return std::basic_string_view<CharT>(begin(), size());
     }

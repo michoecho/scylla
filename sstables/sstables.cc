@@ -300,7 +300,7 @@ future<> parse(const schema&, sstable_version_types, random_access_reader& in, u
     return in.read_exactly(uuid.serialized_size()).then([&uuid] (temporary_buffer<char> buf) {
         check_buf_size(buf, utils::UUID::serialized_size());
 
-        uuid = utils::UUID_gen::get_UUID(const_cast<int8_t*>(reinterpret_cast<const int8_t*>(buf.get())));
+        uuid = utils::UUID_gen::get_UUID(const_cast<bytes::value_type*>(reinterpret_cast<const bytes::value_type*>(buf.get())));
     });
 }
 

@@ -78,7 +78,7 @@ mutation make_new_large_mutation(schema_ptr s, partition_key key) {
         data.push_back(next_value);
     }
     next_value++;
-    bytes b(reinterpret_cast<int8_t*>(data.data()), data.size() * sizeof(int));
+    bytes b(reinterpret_cast<bytes::value_type*>(data.data()), data.size() * sizeof(int));
     m.set_clustered_cell(clustering_key::make_empty(), "v", data_value(std::move(b)), next_timestamp++);
     return m;
 }

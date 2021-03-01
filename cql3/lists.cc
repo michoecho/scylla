@@ -377,7 +377,7 @@ lists::do_append(shared_ptr<term> value,
                 auto uuid1 = utils::UUID_gen::get_time_UUID_bytes_from_micros_and_submicros(
                     params.timestamp(),
                     params._options.next_list_append_seq());
-                auto uuid = bytes(reinterpret_cast<const int8_t*>(uuid1.data()), uuid1.size());
+                auto uuid = bytes(reinterpret_cast<const bytes::value_type*>(uuid1.data()), uuid1.size());
                 // FIXME: can e be empty?
                 appended.cells.emplace_back(
                     std::move(uuid),
@@ -439,7 +439,7 @@ lists::prepender::execute(mutation& m, const clustering_key_prefix& prefix, cons
     for (auto&& v : lvalue->_elements) {
         try {
             auto uuid = utils::UUID_gen::get_time_UUID_bytes_from_micros_and_submicros(micros, clockseq++);
-            mut.cells.emplace_back(bytes(uuid.data(), uuid.size()), params.make_cell(*ltype->value_comparator(), *v, atomic_cell::collection_member::yes));
+            mut.cells.emplace_back(bytes(reinterpret_cast<const bytes::value_type*>(uuid.data()), uuid.size()), params.make_cell(*ltype->value_comparator(), *v, atomic_cell::collection_member::yes));
         } catch (utils::timeuuid_submicro_out_of_range) {
             throw exceptions::invalid_request_exception("Too many list values per single CQL statement or batch");
         }

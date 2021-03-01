@@ -53,7 +53,7 @@ template <class Vint, class BytesInspector>
 void check_bytes_and_roundtrip(typename Vint::value_type value, BytesInspector&& f) {
     static std::array<int8_t, 9> encoding_buffer({});
 
-    const auto size = Vint::serialize(value, encoding_buffer.begin());
+    const auto size = Vint::serialize(value, reinterpret_cast<bytes::value_type*>(encoding_buffer.begin()));
     const auto view = bytes_view(encoding_buffer.data(), size);
     f(view);
 

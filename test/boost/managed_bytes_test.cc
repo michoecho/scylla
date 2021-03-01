@@ -163,10 +163,10 @@ BOOST_AUTO_TEST_CASE(test_operator_bracket) {
             }
             auto b = tests::random::get_bytes(size);
             auto m = managed_bytes(b);
-            BOOST_CHECK_EQUAL(m[0], b[0]);
-            BOOST_CHECK_EQUAL(m[b.size() - 1], b[b.size() - 1]);
-            BOOST_CHECK_EQUAL(mbv(m)[0], b[0]);
-            BOOST_CHECK_EQUAL(mbv(m)[b.size() - 1], b[b.size() - 1]);
+            BOOST_CHECK_EQUAL((uint8_t)m[0], (uint8_t)b[0]);
+            BOOST_CHECK_EQUAL((uint8_t)m[b.size() - 1], (uint8_t)b[b.size() - 1]);
+            BOOST_CHECK_EQUAL((uint8_t)mbv(m)[0], (uint8_t)b[0]);
+            BOOST_CHECK_EQUAL((uint8_t)mbv(m)[b.size() - 1], (uint8_t)b[b.size() - 1]);
         }
     });
 }

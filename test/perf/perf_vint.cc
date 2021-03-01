@@ -57,7 +57,7 @@ PERF_TEST_F(vint, serialize) {
     std::array<int8_t, max_vint_length> output;
     auto dst = output.data();
     for (auto v : integers()) {
-        perf_tests::do_not_optimize(unsigned_vint::serialize(v, dst));
+        perf_tests::do_not_optimize(unsigned_vint::serialize(v, reinterpret_cast<bytes::value_type*>(dst)));
         perf_tests::do_not_optimize(dst);
     }
     return count;

@@ -127,22 +127,22 @@ void hash3_x64_128(InputIterator in, uint32_t length, uint64_t seed, std::array<
 
     switch (length & 15)
     {
-        case 15: k2 ^= ((uint64_t) tmp[14]) << 48;
-        case 14: k2 ^= ((uint64_t) tmp[13]) << 40;
-        case 13: k2 ^= ((uint64_t) tmp[12]) << 32;
-        case 12: k2 ^= ((uint64_t) tmp[11]) << 24;
-        case 11: k2 ^= ((uint64_t) tmp[10]) << 16;
-        case 10: k2 ^= ((uint64_t) tmp[9]) << 8;
-        case  9: k2 ^= ((uint64_t) tmp[8]) << 0;
+        case 15: k2 ^= ((uint64_t) (int8_t)tmp[14]) << 48;
+        case 14: k2 ^= ((uint64_t) (int8_t)tmp[13]) << 40;
+        case 13: k2 ^= ((uint64_t) (int8_t)tmp[12]) << 32;
+        case 12: k2 ^= ((uint64_t) (int8_t)tmp[11]) << 24;
+        case 11: k2 ^= ((uint64_t) (int8_t)tmp[10]) << 16;
+        case 10: k2 ^= ((uint64_t) (int8_t)tmp[9]) << 8;
+        case  9: k2 ^= ((uint64_t) (int8_t)tmp[8]) << 0;
             k2 *= c2; k2  = rotl64(k2,33); k2 *= c1; h2 ^= k2;
-        case  8: k1 ^= ((uint64_t) tmp[7]) << 56;
-        case  7: k1 ^= ((uint64_t) tmp[6]) << 48;
-        case  6: k1 ^= ((uint64_t) tmp[5]) << 40;
-        case  5: k1 ^= ((uint64_t) tmp[4]) << 32;
-        case  4: k1 ^= ((uint64_t) tmp[3]) << 24;
-        case  3: k1 ^= ((uint64_t) tmp[2]) << 16;
-        case  2: k1 ^= ((uint64_t) tmp[1]) << 8;
-        case  1: k1 ^= ((uint64_t) tmp[0]);
+        case  8: k1 ^= ((uint64_t) (int8_t)tmp[7]) << 56;
+        case  7: k1 ^= ((uint64_t) (int8_t)tmp[6]) << 48;
+        case  6: k1 ^= ((uint64_t) (int8_t)tmp[5]) << 40;
+        case  5: k1 ^= ((uint64_t) (int8_t)tmp[4]) << 32;
+        case  4: k1 ^= ((uint64_t) (int8_t)tmp[3]) << 24;
+        case  3: k1 ^= ((uint64_t) (int8_t)tmp[2]) << 16;
+        case  2: k1 ^= ((uint64_t) (int8_t)tmp[1]) << 8;
+        case  1: k1 ^= ((uint64_t) (int8_t)tmp[0]);
             k1 *= c1; k1  = rotl64(k1,31); k1 *= c2; h1 ^= k1;
     };
 

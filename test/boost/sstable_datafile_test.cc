@@ -761,7 +761,7 @@ static future<> test_digest_and_checksum(sstable_version_types version) {
                             return std::move(fut).then([f = std::move(f), bufptr = std::move(bufptr), checksum] (size_t size) mutable {
                                 auto buf = bufptr.get();
 
-                                bytes stored_digest(reinterpret_cast<const signed char*>(buf), size);
+                                bytes stored_digest(reinterpret_cast<const bytes::value_type*>(buf), size);
                                 bytes expected_digest = to_sstring<bytes>(checksum);
 
                                 BOOST_REQUIRE(size == expected_digest.size());
@@ -4529,7 +4529,7 @@ SEASTAR_TEST_CASE(sstable_set_incremental_selector) {
     auto key_and_token_pair = token_generation_for_current_shard(8);
     auto decorated_keys = boost::copy_range<std::vector<dht::decorated_key>>(
             key_and_token_pair | boost::adaptors::transformed([&s] (const std::pair<sstring, dht::token>& key_and_token) {
-                auto value = bytes(reinterpret_cast<const signed char*>(key_and_token.first.data()), key_and_token.first.size());
+                auto value = bytes(reinterpret_cast<const bytes::value_type*>(key_and_token.first.data()), key_and_token.first.size());
                 auto pk = sstables::key::from_bytes(value).to_partition_key(*s);
                 return dht::decorate_key(*s, std::move(pk));
             }));

@@ -56,13 +56,13 @@ uint32_t hash32(bytes_view data, uint32_t seed)
     for (uint32_t i = 0; i < len_4; i++)
     {
         uint32_t i_4 = i << 2;
-        uint32_t k = data[i_4 + 3];
+        uint32_t k = (int8_t)data[i_4 + 3];
         k = k << 8;
-        k = k | (data[i_4 + 2] & 0xff);
+        k = k | ((int8_t)data[i_4 + 2] & 0xff);
         k = k << 8;
-        k = k | (data[i_4 + 1] & 0xff);
+        k = k | ((int8_t)data[i_4 + 1] & 0xff);
         k = k << 8;
-        k = k | (data[i_4 + 0] & 0xff);
+        k = k | ((int8_t)data[i_4 + 0] & 0xff);
         k *= m;
         k ^= (uint32_t)k >> r;
         k *= m;
@@ -78,15 +78,15 @@ uint32_t hash32(bytes_view data, uint32_t seed)
     {
         if (left >= 3)
         {
-            h ^= (uint32_t) data[length - 3] << 16;
+            h ^= (uint32_t) (int8_t)data[length - 3] << 16;
         }
         if (left >= 2)
         {
-            h ^= (uint32_t) data[length - 2] << 8;
+            h ^= (uint32_t) (int8_t)data[length - 2] << 8;
         }
         if (left >= 1)
         {
-            h ^= (uint32_t) data[length - 1];
+            h ^= (uint32_t) (int8_t)data[length - 1];
         }
 
         h *= m;
@@ -133,19 +133,19 @@ uint64_t hash2_64(bytes_view key, uint64_t seed)
     case 0:
         break;
     case 7:
-        h64 ^= (uint64_t) key[length - rem + 6] << 48;
+        h64 ^= (uint64_t) (int8_t)key[length - rem + 6] << 48;
     case 6:
-        h64 ^= (uint64_t) key[length - rem + 5] << 40;
+        h64 ^= (uint64_t) (int8_t)key[length - rem + 5] << 40;
     case 5:
-        h64 ^= (uint64_t) key[length - rem + 4] << 32;
+        h64 ^= (uint64_t) (int8_t)key[length - rem + 4] << 32;
     case 4:
-        h64 ^= (uint64_t) key[length - rem + 3] << 24;
+        h64 ^= (uint64_t) (int8_t)key[length - rem + 3] << 24;
     case 3:
-        h64 ^= (uint64_t) key[length - rem + 2] << 16;
+        h64 ^= (uint64_t) (int8_t)key[length - rem + 2] << 16;
     case 2:
-        h64 ^= (uint64_t) key[length - rem + 1] << 8;
+        h64 ^= (uint64_t) (int8_t)key[length - rem + 1] << 8;
     case 1:
-        h64 ^= (uint64_t) key[length - rem];
+        h64 ^= (uint64_t) (int8_t)key[length - rem];
         h64 *= m64;
     }
 
@@ -209,22 +209,22 @@ void hash3_x64_128(bytes_view key, uint64_t seed, std::array<uint64_t,2> &result
 
     switch (length & 15)
     {
-    case 15: k2 ^= ((uint64_t) key[14]) << 48;
-    case 14: k2 ^= ((uint64_t) key[13]) << 40;
-    case 13: k2 ^= ((uint64_t) key[12]) << 32;
-    case 12: k2 ^= ((uint64_t) key[11]) << 24;
-    case 11: k2 ^= ((uint64_t) key[10]) << 16;
-    case 10: k2 ^= ((uint64_t) key[9]) << 8;
-    case  9: k2 ^= ((uint64_t) key[8]) << 0;
+    case 15: k2 ^= ((uint64_t) (int8_t)key[14]) << 48;
+    case 14: k2 ^= ((uint64_t) (int8_t)key[13]) << 40;
+    case 13: k2 ^= ((uint64_t) (int8_t)key[12]) << 32;
+    case 12: k2 ^= ((uint64_t) (int8_t)key[11]) << 24;
+    case 11: k2 ^= ((uint64_t) (int8_t)key[10]) << 16;
+    case 10: k2 ^= ((uint64_t) (int8_t)key[9]) << 8;
+    case  9: k2 ^= ((uint64_t) (int8_t)key[8]) << 0;
         k2 *= c2; k2  = rotl64(k2,33); k2 *= c1; h2 ^= k2;
-    case  8: k1 ^= ((uint64_t) key[7]) << 56;
-    case  7: k1 ^= ((uint64_t) key[6]) << 48;
-    case  6: k1 ^= ((uint64_t) key[5]) << 40;
-    case  5: k1 ^= ((uint64_t) key[4]) << 32;
-    case  4: k1 ^= ((uint64_t) key[3]) << 24;
-    case  3: k1 ^= ((uint64_t) key[2]) << 16;
-    case  2: k1 ^= ((uint64_t) key[1]) << 8;
-    case  1: k1 ^= ((uint64_t) key[0]);
+    case  8: k1 ^= ((uint64_t) (int8_t)key[7]) << 56;
+    case  7: k1 ^= ((uint64_t) (int8_t)key[6]) << 48;
+    case  6: k1 ^= ((uint64_t) (int8_t)key[5]) << 40;
+    case  5: k1 ^= ((uint64_t) (int8_t)key[4]) << 32;
+    case  4: k1 ^= ((uint64_t) (int8_t)key[3]) << 24;
+    case  3: k1 ^= ((uint64_t) (int8_t)key[2]) << 16;
+    case  2: k1 ^= ((uint64_t) (int8_t)key[1]) << 8;
+    case  1: k1 ^= ((uint64_t) (int8_t)key[0]);
         k1 *= c1; k1  = rotl64(k1,31); k1 *= c2; h1 ^= k1;
     };
 

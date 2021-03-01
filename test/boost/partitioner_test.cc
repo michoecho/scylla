@@ -61,6 +61,7 @@ SEASTAR_THREAD_TEST_CASE(test_decorated_key_is_compatible_with_origin) {
 
     dht::murmur3_partitioner partitioner;
     auto key = partition_key::from_deeply_exploded(*s, {143, 234});
+    std::cerr << "DUPA" << key << '\n';
     auto dk = partitioner.decorate_key(*s, key);
 
     // Expected value was taken from Origin

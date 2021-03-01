@@ -37,7 +37,7 @@ static bytes data_sample(const int8_t* buf, size_t buf_len, size_t sample_off, s
     auto begin = buf + sample_off;
     auto len = std::min(sample_len, buf_len - sample_off);
 
-    return bytes(begin, len);
+    return bytes(reinterpret_cast<const bytes::value_type*>(begin), len);
 }
 
 static sstring report_zeroed_4k_aligned_blocks(const temporary_buffer<int8_t>& buf) {

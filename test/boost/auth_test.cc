@@ -147,9 +147,9 @@ SEASTAR_TEST_CASE(test_password_authenticator_operations) {
 
             bytes b;
             int8_t i = 0;
-            b.append(&i, 1);
+            b.append(reinterpret_cast<const bytes::value_type*>(&i), 1);
             b.insert(b.end(), username.begin(), username.end());
-            b.append(&i, 1);
+            b.append(reinterpret_cast<const bytes::value_type*>(&i), 1);
             b.insert(b.end(), password.begin(), password.end());
 
             sasl->evaluate_response(b);

@@ -1768,7 +1768,7 @@ SEASTAR_TEST_CASE(test_collection_cell_diff) {
         auto uuid = utils::UUID_gen::get_time_UUID_bytes();
         collection_mutation_description mcol1;
         mcol1.cells.emplace_back(
-                bytes(reinterpret_cast<const int8_t*>(uuid.data()), uuid.size()),
+                bytes(reinterpret_cast<const bytes::value_type*>(uuid.data()), uuid.size()),
                 atomic_cell::make_live(*bytes_type, api::timestamp_type(1), to_bytes("element")));
         m1.set_clustered_cell(clustering_key::make_empty(), col, mcol1.serialize(*col.type));
 

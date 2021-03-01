@@ -44,7 +44,7 @@
 using namespace sstables;
 
 bytes as_bytes(const sstring& s) {
-    return { reinterpret_cast<const int8_t*>(s.data()), s.size() };
+    return { reinterpret_cast<const bytes::value_type*>(s.data()), s.size() };
 }
 
 future<> test_using_working_sst(schema_ptr s, sstring dir, int64_t gen) {

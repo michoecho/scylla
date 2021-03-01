@@ -1042,20 +1042,20 @@ struct hash<shared_ptr<const abstract_type>> : boost::hash<shared_ptr<abstract_t
 inline
 bytes
 to_bytes(const char* x) {
-    return bytes(reinterpret_cast<const int8_t*>(x), std::strlen(x));
+    return bytes(reinterpret_cast<const bytes::value_type*>(x), std::strlen(x));
 }
 
 // FIXME: make more explicit
 inline
 bytes
 to_bytes(const std::string& x) {
-    return bytes(reinterpret_cast<const int8_t*>(x.data()), x.size());
+    return bytes(reinterpret_cast<const bytes::value_type*>(x.data()), x.size());
 }
 
 inline
 bytes_view
 to_bytes_view(const std::string& x) {
-    return bytes_view(reinterpret_cast<const int8_t*>(x.data()), x.size());
+    return bytes_view(reinterpret_cast<const bytes::value_type*>(x.data()), x.size());
 }
 
 inline
@@ -1088,20 +1088,20 @@ as_bytes_view_opt(const bytes_opt& bv) {
 inline
 bytes
 to_bytes(const sstring& x) {
-    return bytes(reinterpret_cast<const int8_t*>(x.c_str()), x.size());
+    return bytes(reinterpret_cast<const bytes::value_type*>(x.c_str()), x.size());
 }
 
 // FIXME: make more explicit
 inline
 managed_bytes
 to_managed_bytes(const sstring& x) {
-    return managed_bytes(reinterpret_cast<const int8_t*>(x.c_str()), x.size());
+    return managed_bytes(reinterpret_cast<const bytes::value_type*>(x.c_str()), x.size());
 }
 
 inline
 bytes_view
 to_bytes_view(const sstring& x) {
-    return bytes_view(reinterpret_cast<const int8_t*>(x.c_str()), x.size());
+    return bytes_view(reinterpret_cast<const bytes::value_type*>(x.c_str()), x.size());
 }
 
 inline
@@ -1112,7 +1112,7 @@ to_bytes(const utils::UUID& uuid) {
         uint64_t lsb;
     } tmp = { net::hton(uint64_t(uuid.get_most_significant_bits())),
         net::hton(uint64_t(uuid.get_least_significant_bits())) };
-    return bytes(reinterpret_cast<int8_t*>(&tmp), 16);
+    return bytes(reinterpret_cast<bytes::value_type*>(&tmp), 16);
 }
 
 // This follows java.util.Comparator

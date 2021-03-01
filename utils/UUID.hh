@@ -146,9 +146,9 @@ inline int uint64_t_tri_compare(uint64_t a, uint64_t b) {
 }
 
 // Read 8 most significant bytes of timeuuid from serialized bytes
-inline uint64_t timeuuid_read_msb(const int8_t *b) {
+inline uint64_t timeuuid_read_msb(const char8_t *b) {
     // cast to unsigned to avoid sign-compliment during shift.
-    auto u64 = [](uint8_t i) -> uint64_t { return i; };
+    auto u64 = [](char8_t i) -> uint64_t { return i; };
     // Scylla and Cassandra use a standard UUID memory layout for MSB:
     // 4 bytes    2 bytes    2 bytes
     // time_low - time_mid - time_hi_and_version
@@ -161,8 +161,8 @@ inline uint64_t timeuuid_read_msb(const int8_t *b) {
            u64(b[2]) << 8  | u64(b[3]);
 }
 
-inline uint64_t uuid_read_lsb(const int8_t *b) {
-    auto u64 = [](uint8_t i) -> uint64_t { return i; };
+inline uint64_t uuid_read_lsb(const char8_t *b) {
+    auto u64 = [](char8_t i) -> uint64_t { return i; };
     return u64(b[8]) << 56 | u64(b[9]) << 48 |
            u64(b[10]) << 40 | u64(b[11]) << 32 |
            u64(b[12]) << 24 | u64(b[13]) << 16 |
