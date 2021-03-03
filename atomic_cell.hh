@@ -35,6 +35,7 @@
 #include "utils/fragmented_temporary_buffer.hh"
 
 #include "serializer.hh"
+#include "cql3/values.hh"
 
 class abstract_type;
 class collection_type_impl;
@@ -355,6 +356,8 @@ public:
                                  collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const fragmented_temporary_buffer::view& value,
                                  collection_member = collection_member::no);
+    static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const cql3::raw_value_view::view& value,
+                                 collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value,
                                  collection_member cm = collection_member::no) {
         return make_live(type, timestamp, bytes_view(value), cm);
@@ -367,6 +370,8 @@ public:
     static atomic_cell make_live(const abstract_type&, api::timestamp_type timestamp, ser::buffer_view<bytes_ostream::fragment_iterator> value,
         gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type&, api::timestamp_type timestamp, const fragmented_temporary_buffer::view& value,
+        gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
+    static atomic_cell make_live(const abstract_type&, api::timestamp_type timestamp, const cql3::raw_value_view::view& value,
         gc_clock::time_point expiry, gc_clock::duration ttl, collection_member = collection_member::no);
     static atomic_cell make_live(const abstract_type& type, api::timestamp_type timestamp, const bytes& value,
                                  gc_clock::time_point expiry, gc_clock::duration ttl, collection_member cm = collection_member::no)

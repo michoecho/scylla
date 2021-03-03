@@ -154,7 +154,7 @@ user_types::value::value(std::vector<bytes_view_opt> elements)
     : value(to_bytes_opt_vec(std::move(elements))) {
 }
 
-user_types::value user_types::value::from_serialized(const fragmented_temporary_buffer::view& v, const user_type_impl& type) {
+user_types::value user_types::value::from_serialized(const cql3::raw_value_view::view& v, const user_type_impl& type) {
     return with_linearized(v, [&] (bytes_view val) {
         auto elements = type.split(val);
         if (elements.size() > type.size()) {
@@ -288,7 +288,7 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
         m.set_cell(row_key, column, mut.serialize(type));
     } else {
         if (value) {
-            m.set_cell(row_key, column, make_cell(type, *value->get(params._options), params));
+            m.set_cell(row_key, column, make_cell(type, *value->get(params._options).to_view(), params));
         } else {
             m.set_cell(row_key, column, make_dead_cell(params));
         }

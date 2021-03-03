@@ -124,7 +124,7 @@ lists::literal::to_string() const {
 }
 
 lists::value
-lists::value::from_serialized(const fragmented_temporary_buffer::view& val, const list_type_impl& type, cql_serialization_format sf) {
+lists::value::from_serialized(const cql3::raw_value_view::view& val, const list_type_impl& type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but compose does the validation (so we're fine).
@@ -520,7 +520,7 @@ lists::discarder_by_index::execute(mutation& m, const clustering_key_prefix& pre
     assert(cvalue);
 
     auto&& existing_list_opt = params.get_prefetched_list(m.key(), prefix, column);
-    int32_t idx = read_simple_exactly<int32_t>(*cvalue->_bytes);
+    int32_t idx = read_simple_exactly<int32_t>(*cvalue->_bytes.to_view());
     if (!existing_list_opt) {
         throw exceptions::invalid_request_exception("Attempted to delete an element from a list which is null");
     }

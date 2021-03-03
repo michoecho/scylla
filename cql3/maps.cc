@@ -155,7 +155,7 @@ maps::literal::to_string() const {
 }
 
 maps::value
-maps::value::from_serialized(const fragmented_temporary_buffer::view& fragmented_value, const map_type_impl& type, cql_serialization_format sf) {
+maps::value::from_serialized(const cql3::raw_value_view::view& fragmented_value, const map_type_impl& type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but compose does the validation (so we're fine).
@@ -373,7 +373,7 @@ maps::discarder_by_key::execute(mutation& m, const clustering_key_prefix& prefix
         throw exceptions::invalid_request_exception("Invalid unset map key");
     }
     collection_mutation_description mut;
-    mut.cells.emplace_back(*key->get(params._options), params.make_dead_cell());
+    mut.cells.emplace_back(to_bytes(key->get(params._options)), params.make_dead_cell());
 
     m.set_cell(prefix, column, mut.serialize(*column.type));
 }

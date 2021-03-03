@@ -73,7 +73,7 @@ public:
         value(cql3::raw_value bytes_) : _bytes(std::move(bytes_)) {}
         virtual cql3::raw_value get(const query_options& options) override { return _bytes; }
         virtual cql3::raw_value_view bind_and_get(const query_options& options) override { return _bytes.to_view(); }
-        virtual sstring to_string() const override { return to_hex(*_bytes); }
+        virtual sstring to_string() const override { return to_hex(to_bytes(_bytes.to_view())); }
     };
 
     static thread_local const ::shared_ptr<value> UNSET_VALUE;

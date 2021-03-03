@@ -81,7 +81,7 @@ tuples::literal::prepare(database& db, const sstring& keyspace, const std::vecto
 }
 
 tuples::in_value
-tuples::in_value::from_serialized(const fragmented_temporary_buffer::view& value_view, const list_type_impl& type, const query_options& options) {
+tuples::in_value::from_serialized(const cql3::raw_value_view::view& value_view, const list_type_impl& type, const query_options& options) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but the deserialization does the validation (so we're fine).

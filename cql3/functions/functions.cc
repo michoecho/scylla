@@ -438,7 +438,10 @@ function_call::collect_marker_specification(variable_specifications& bound_names
 
 shared_ptr<terminal>
 function_call::bind(const query_options& options) {
-    return make_terminal(_fun, cql3::raw_value::make_value(bind_and_get(options)), options.get_cql_serialization_format());
+    managed_bytes b;
+    managed_bytes_mutable_view v(b);
+    write_fragmented(v, *bind_and_get(options));
+    return make_terminal(_fun, cql3::raw_value::make_value(std::move(b)), options.get_cql_serialization_format());
 }
 
 cql3::raw_value_view
@@ -489,9 +492,9 @@ shared_ptr<terminal>
 function_call::make_terminal(shared_ptr<function> fun, cql3::raw_value result, cql_serialization_format sf)  {
     static constexpr auto to_buffer = [] (const cql3::raw_value& v) {
         if (v) {
-            return fragmented_temporary_buffer::view{bytes_view{*v}};
+            return *v.to_view();
         }
-        return fragmented_temporary_buffer::view{};
+        return cql3::raw_value_view::view();
     };
 
     return visit(*fun->return_type(), make_visitor(

@@ -133,7 +133,7 @@ sets::literal::to_string() const {
 }
 
 sets::value
-sets::value::from_serialized(const fragmented_temporary_buffer::view& val, const set_type_impl& type, cql_serialization_format sf) {
+sets::value::from_serialized(const cql3::raw_value_view::view& val, const set_type_impl& type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
         // but compose does the validation (so we're fine).
@@ -339,7 +339,7 @@ void sets::element_discarder::execute(mutation& m, const clustering_key_prefix& 
         throw exceptions::invalid_request_exception("Invalid null set element");
     }
     collection_mutation_description mut;
-    mut.cells.emplace_back(*elt->get(params._options), params.make_dead_cell());
+    mut.cells.emplace_back(to_bytes(elt->get(params._options)), params.make_dead_cell());
     m.set_cell(row_key, column, mut.serialize(*column.type));
 }
 

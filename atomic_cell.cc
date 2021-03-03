@@ -36,6 +36,10 @@ atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_typ
     return atomic_cell_type::make_live(timestamp, fragment_range(value));
 }
 
+atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, const cql3::raw_value_view::view& value, atomic_cell::collection_member cm) {
+    return atomic_cell_type::make_live(timestamp, fragment_range(value));
+}
+
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, ser::buffer_view<bytes_ostream::fragment_iterator> value, atomic_cell::collection_member cm) {
     return atomic_cell_type::make_live(timestamp, value);
 }
@@ -51,6 +55,11 @@ atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_typ
 }
 
 atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, managed_bytes_view value,
+                             gc_clock::time_point expiry, gc_clock::duration ttl, atomic_cell::collection_member cm) {
+    return atomic_cell_type::make_live(timestamp, fragment_range(value), expiry, ttl);
+}
+
+atomic_cell atomic_cell::make_live(const abstract_type& type, api::timestamp_type timestamp, const cql3::raw_value_view::view& value,
                              gc_clock::time_point expiry, gc_clock::duration ttl, atomic_cell::collection_member cm) {
     return atomic_cell_type::make_live(timestamp, fragment_range(value), expiry, ttl);
 }

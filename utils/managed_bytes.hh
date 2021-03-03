@@ -466,6 +466,24 @@ public:
         , _next_fragments(other._next_fragments)
         , _size(other._size)
     {}
+
+    // Various fragmented view types generally differ only in how
+    // they remember and access the next fragment. If we extract that knowledge
+    // as an opaque piece of data, we can perform type erasure and handle multiple
+    // view types with one code, only calling back the dynamic type when we
+    // need to fetch the next fragment, which is rare.
+    struct next_fragments_opaque {
+        blob_storage* next_fragments;
+    };
+    next_fragments_opaque next_fragments() const {
+        return next_fragments_opaque{_next_fragments};
+    }
+    static fragment_type get_next_fragment(next_fragments_opaque& x) {
+        auto& next_fragments = x.next_fragments;
+        auto frag = fragment_type(next_fragments->data, next_fragments->frag_size);
+        next_fragments = next_fragments->next;
+        return frag;
+    }
 };
 static_assert(FragmentedView<managed_bytes_view>);
 static_assert(FragmentedMutableView<managed_bytes_mutable_view>);

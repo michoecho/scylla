@@ -194,7 +194,7 @@ struct fragment_range {
         View _view;
         value_type _current;
     public:
-        fragment_iterator() : _view(value_type()) {}
+        fragment_iterator() = default;
         fragment_iterator(const View& v) : _view(v) {
             _current = _view.current_fragment();
         }
@@ -251,6 +251,7 @@ public:
 private:
     fragment_type _view;
 public:
+    basic_single_fragmented_view() = default;
     explicit basic_single_fragmented_view(fragment_type bv) : _view(bv) {}
     size_t size_bytes() const { return _view.size(); }
     bool empty() const { return _view.empty(); }

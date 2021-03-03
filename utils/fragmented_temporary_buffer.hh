@@ -281,6 +281,23 @@ public:
     bool operator!=(const fragmented_temporary_buffer::view& other) const noexcept {
         return !(*this == other);
     }
+
+    // Various fragmented view types generally differ only in how
+    // they remember and access the next fragment. If we extract that knowledge
+    // as an opaque piece of data, we can perform type erasure and handle multiple
+    // view types with one code, only calling back the dynamic type when we
+    // need to fetch the next fragment, which is rare.
+    struct next_fragments_opaque {
+        vector_type::const_iterator current;
+    };
+    next_fragments_opaque next_fragments() const {
+        return next_fragments_opaque{_current};
+    }
+    static fragment_type get_next_fragment(next_fragments_opaque& x) {
+        auto& current = x.current;
+        ++current;
+        return fragment_type(reinterpret_cast<const bytes::value_type*>(current->get()), current->size());
+    }
 };
 static_assert(FragmentRange<fragmented_temporary_buffer::view>);
 static_assert(FragmentedView<fragmented_temporary_buffer::view>);
