@@ -485,6 +485,7 @@ public:
     void reclaim_all_free_segments();
     occupancy_stats region_occupancy();
     occupancy_stats occupancy();
+    histogram get_histogram();
     size_t non_lsa_used_space();
     // Set the minimum number of segments reclaimed during single reclamation cycle.
     void set_reclamation_step(size_t step_in_segments) { _reclamation_step = step_in_segments; }
@@ -532,6 +533,10 @@ occupancy_stats tracker::region_occupancy() {
 
 occupancy_stats tracker::occupancy() {
     return _impl->occupancy();
+}
+
+histogram tracker::get_histogram() {
+    return _impl->get_histogram();
 }
 
 size_t tracker::non_lsa_used_space() const {
@@ -817,6 +822,7 @@ public:
         size_t segments_compacted;
         uint64_t memory_allocated;
         uint64_t memory_compacted;
+        histogram alloc_size_histogram;
     };
 private:
     stats _stats{};
@@ -1029,6 +1035,7 @@ void segment_pool::on_segment_compaction(size_t used_size) {
 }
 
 void segment_pool::on_memory_allocation(size_t size) {
+    _stats.alloc_size_histogram.add_value(size);
     _stats.memory_allocated += size;
 }
 
@@ -1877,6 +1884,10 @@ occupancy_stats tracker::impl::occupancy() {
         occ += occupancy_stats(s, s);
     }
     return occ;
+}
+
+histogram tracker::impl::get_histogram() {
+    return shard_segment_pool.statistics().alloc_size_histogram;
 }
 
 size_t tracker::impl::non_lsa_used_space() {

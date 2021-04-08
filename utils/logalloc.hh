@@ -37,6 +37,26 @@
 #include "seastarx.hh"
 #include "db/timeout_clock.hh"
 
+class histogram {
+    constexpr static size_t _n_buckets = 128 * 1024 * 0.1 + 2;
+    std::vector<uint64_t> _buckets;
+public:
+    histogram() : _buckets(_n_buckets) {}
+    std::vector<uint64_t> to_vector() && {
+        return std::move(_buckets);
+    }
+    uint64_t add_value(uint64_t value) {
+        value = std::min(value, _n_buckets - 1);
+        return _buckets[value] += 1;
+    }
+    static histogram add(histogram&& a, const histogram& b) {
+        for (size_t i = 0; i < _n_buckets; ++i) {
+            a._buckets[i] += b._buckets[i];
+        }
+        return std::move(a);
+    }
+};
+
 namespace logalloc {
 
 struct occupancy_stats;
@@ -488,6 +508,9 @@ public:
 
     // Returns statistics for all segments allocated by LSA on this shard.
     occupancy_stats occupancy();
+
+    // Returns the histogram of all LSA allocations on this shard.
+    histogram get_histogram();
 
     // Returns amount of allocated memory not managed by LSA
     size_t non_lsa_used_space() const;

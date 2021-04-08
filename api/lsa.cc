@@ -41,6 +41,15 @@ void set_lsa(http_context& ctx, routes& r) {
             return json::json_return_type(json::json_void());
         });
     });
+
+    httpd::lsa_json::lsa_histogram.set(r, [&ctx](std::unique_ptr<request> req) {
+        alogger.info("Getting histogram");
+        return ctx.db.map_reduce0([](database& db) {
+            return logalloc::shard_tracker().get_histogram();
+        }, histogram(), histogram::add).then([] (histogram h) {
+            return json::json_return_type(std::move(h).to_vector());
+        });
+    });
 }
 
 }
