@@ -1544,3 +1544,62 @@ SEASTAR_THREAD_TEST_CASE(background_reclaim) {
 }
 
 #endif
+
+SEASTAR_THREAD_TEST_CASE(quadratic_eviction) {
+    prime_segment_pool(memory::stats().total_memory(), memory::min_free_memory()).get();
+
+    region evictable;
+    std::vector<managed_bytes> evictable_allocs;
+    std::vector<managed_bytes> std_allocs;
+
+    auto clean_up = defer([&] {
+        with_allocator(evictable.allocator(), [&] {
+            evictable_allocs.clear();
+        });
+    });
+
+    // Fill up LSA.
+    while (true) {
+        try {
+            with_allocator(evictable.allocator(), [&] {
+                evictable_allocs.push_back(managed_bytes(managed_bytes::initialized_later(), 512));
+            });
+        } catch (std::bad_alloc&) {
+            break;
+        }
+    }
+
+    // Make reclaim harder.
+    auto& rnd = seastar::testing::local_random_engine;
+    std::shuffle(evictable_allocs.begin(), evictable_allocs.end(), rnd);
+
+    // Fill up the seastar allocator.
+    while (true) {
+        try {
+            std_allocs.push_back(managed_bytes(managed_bytes::initialized_later(), 512));
+        } catch (std::bad_alloc&) {
+            break;
+        }
+    }
+
+    // Enable eviction.
+    evictable.make_evictable([&] () -> memory::reclaiming_result {
+       if (evictable_allocs.empty()) {
+           return memory::reclaiming_result::reclaimed_nothing;
+       }
+       with_allocator(evictable.allocator(), [&] {
+           evictable_allocs.pop_back();
+       });
+       return memory::reclaiming_result::reclaimed_something;
+    });
+
+    // Trigger reclaim.
+    // This will demand a reclaim of memory::min_free_memory() (20 MiB).
+    // First, 15% of LSA will be evicted to bring down the occupancy to 85%,
+    // so that segments become compactible. This is expected.
+    //
+    // But then instead of extracting the requested 20 MiB via compaction,
+    // and returning that to seastar, reclaim will proceed to evict gigabytes
+    // before finally satisfying the request.
+    managed_bytes(managed_bytes::initialized_later(), 1024 * 1024);
+}
