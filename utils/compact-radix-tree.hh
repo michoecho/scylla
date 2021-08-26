@@ -564,7 +564,9 @@ private:
 
         node_head_ptr& operator=(node_head* v) noexcept {
             _v = v;
-            if (_v != nullptr) {
+            // nil_root is shared between shards, so this nil_root check is necessary
+            // to avoid cache line bouncing caused by writing to _backref.
+            if (_v != nullptr && _v != &nil_root) {
                 _v->_backref = this;
             }
             return *this;
