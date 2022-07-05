@@ -79,7 +79,7 @@ private:
         // because it will not be linked in the LRU.
         ptr_type share() noexcept {
             if (_use_count++ == 0) {
-                unlink_from_lru();
+                parent->_lru.remove(*this);
             }
             return std::unique_ptr<cached_page, cached_page_del>(this);
         }
@@ -320,6 +320,7 @@ public:
     };
 
     void on_evicted(cached_page& p) {
+        _lru.remove(p);
         _metrics.cached_bytes -= p.size_in_allocator();
         _cached_bytes -= p.size_in_allocator();
         ++_metrics.page_evictions;

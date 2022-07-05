@@ -15,10 +15,13 @@ class evictable {
     friend class lru;
     using lru_link_type = boost::intrusive::list_member_hook<
         boost::intrusive::link_mode<boost::intrusive::auto_unlink>>;
+        //boost::intrusive::link_mode<boost::intrusive::safe_link>>;
     lru_link_type _lru_link;
 protected:
     // Prevent destruction via evictable pointer. LRU is not aware of allocation strategy.
-    ~evictable() = default;
+    ~evictable() {
+        assert(!_lru_link.is_linked());
+    }
 public:
     evictable() = default;
     evictable(evictable&& o) noexcept;
@@ -28,10 +31,6 @@ public:
 
     bool is_linked() const {
         return _lru_link.is_linked();
-    }
-
-    void unlink_from_lru() {
-        _lru_link.unlink();
     }
 
     void swap(evictable& o) noexcept {
@@ -56,7 +55,9 @@ public:
     }
 
     void remove(evictable& e) noexcept {
-        _list.erase(_list.iterator_to(e));
+        if (e.is_linked()) {
+            _list.erase(_list.iterator_to(e));
+        }
     }
 
     void add(evictable& e) noexcept {

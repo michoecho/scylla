@@ -338,6 +338,7 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
                 i = _rows.erase(i);
                 if (tracker) {
                     tracker->on_remove();
+                    tracker->_lru.remove(e);
                 }
                 del(&e);
             } else {
@@ -432,6 +433,7 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
                     p_i = p._rows.erase(p_i);
                     if (tracker) {
                         tracker->on_remove();
+                        tracker->_lru.remove(src_e);
                     }
                     del(&src_e);
                     insert = false;
@@ -455,6 +457,7 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
                 tracker->on_remove();
                 // Newer evictable versions store complete rows
                 i->replace_with(std::move(src_e));
+                tracker->_lru.remove(src_e);
             } else {
                 memory::on_alloc_point();
                 i->apply_monotonically(s, std::move(src_e));
@@ -2380,6 +2383,7 @@ stop_iteration mutation_partition::clear_gently(cache_tracker* tracker) noexcept
     while (i != end) {
         if (tracker) {
             tracker->on_remove();
+            tracker->_lru.remove(*i);
         }
         i = _rows.erase_and_dispose(i, del);
 

@@ -75,7 +75,9 @@ private:
     stats _stats{};
     seastar::metrics::metric_groups _metrics;
     logalloc::region _region;
+public:
     lru _lru;
+private:
     mutation_cleaner _garbage;
     mutation_cleaner _memtable_cleaner;
     mutation_application_stats& _app_stats;

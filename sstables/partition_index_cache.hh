@@ -111,7 +111,7 @@ public:
         explicit entry_ptr(lsa::weak_ptr<entry> ref)
             : _ref(std::move(ref))
         {
-            _ref->unlink_from_lru();
+            _ref->_parent->_lru.remove(*_ref);
         }
         ~entry_ptr() { *this = nullptr; }
         entry_ptr(entry_ptr&&) noexcept = default;
@@ -247,6 +247,7 @@ public:
     void on_evicted(entry& p) {
         _shard_stats.used_bytes -= p.size_in_allocator();
         ++_shard_stats.evictions;
+        _lru.remove(p);
     }
 
     static const stats& shard_stats() { return _shard_stats; }

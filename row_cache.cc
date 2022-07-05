@@ -164,7 +164,7 @@ void cache_tracker::clear() {
 void cache_tracker::touch(rows_entry& e) {
     // last dummy may not be linked if evicted, but
     // the unlink_from_lru() handles it
-    e.unlink_from_lru();
+    _lru.remove(e);
     _lru.add(e);
 }
 
@@ -1093,7 +1093,7 @@ void row_cache::unlink_from_lru(const dht::decorated_key& dk) {
         if (i != _partitions.end()) {
             for (partition_version& pv : i->partition().versions_from_oldest()) {
                 for (rows_entry& row : pv.partition().clustered_rows()) {
-                    row.unlink_from_lru();
+                    _tracker._lru.remove(row);
                 }
             }
         }
@@ -1228,11 +1228,12 @@ void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
         // so don't remove it, just unlink from the LRU.
         // That dummy is linked in the LRU, because there may be partitions
         // with no regular rows, and we need to track them.
-        unlink_from_lru();
+        tracker._lru.remove(*this);
     } else {
         // When evicting a dummy with both sides continuous we don't need to break continuity.
         //
         auto still_continuous = continuous() && dummy();
+        tracker._lru.remove(*this);
         mutation_partition::rows_type::key_grabber kg(it);
         kg.release(current_deleter<rows_entry>());
         if (!still_continuous) {
