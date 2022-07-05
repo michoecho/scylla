@@ -29,6 +29,8 @@ public:
 
     virtual void on_evicted() noexcept = 0;
 
+    virtual size_t size_bytes() const noexcept = 0;
+
     bool is_linked() const {
         return _lru_link.is_linked();
     }

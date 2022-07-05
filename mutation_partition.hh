@@ -209,6 +209,7 @@ public:
     bool equal(column_kind kind, const schema& this_schema, const row& other, const schema& other_schema) const;
 
     size_t external_memory_usage(const schema&, column_kind) const;
+    size_t external_memory_usage() const;
 
     cell_hash_opt cell_hash_for(column_id id) const;
 
@@ -913,6 +914,7 @@ class rows_entry final : public evictable {
         flags() : _before_ck(0), _after_ck(0), _continuous(true), _dummy(false), _last_dummy(false) { }
     } _flags{};
 public:
+    virtual size_t size_bytes() const noexcept override;
     struct last_dummy_tag {};
     explicit rows_entry(clustering_key&& key)
         : _key(std::move(key))
@@ -1014,6 +1016,7 @@ public:
     bool equal(const schema& s, const rows_entry& other, const schema& other_schema) const;
 
     size_t memory_usage(const schema&) const;
+    size_t memory_usage() const;
     void on_evicted(cache_tracker&) noexcept;
     void on_evicted() noexcept override;
 

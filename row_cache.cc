@@ -1220,6 +1220,10 @@ void cache_entry::on_evicted(cache_tracker& tracker) noexcept {
     it.erase(dht::raw_token_less_comparator{});
 }
 
+
+size_t rows_entry::size_bytes() const noexcept {
+    return memory_usage();
+}
 void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
     mutation_partition::rows_type::iterator it(this);
 

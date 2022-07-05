@@ -3335,3 +3335,11 @@ sstables::sstable*
 seastar::internal::lw_shared_ptr_accessors<sstables::sstable, void>::to_value(seastar::lw_shared_ptr_counter_base*);
 
 }
+
+size_t cached_file::cached_page::size_bytes() const noexcept {
+    return _lsa_buf.size();
+}
+
+size_t sstables::partition_index_cache::entry::size_bytes() const noexcept {
+    return size_in_allocator();
+}

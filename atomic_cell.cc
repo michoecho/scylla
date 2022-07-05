@@ -164,6 +164,11 @@ size_t atomic_cell_or_collection::external_memory_usage(const abstract_type& t) 
     return _data.external_memory_usage();
 }
 
+size_t atomic_cell_or_collection::external_memory_usage() const
+{
+    return _data.external_memory_usage();
+}
+
 std::ostream&
 operator<<(std::ostream& os, const atomic_cell_view& acv) {
     if (acv.is_live()) {

@@ -84,6 +84,7 @@ private:
             return std::unique_ptr<cached_page, cached_page_del>(this);
         }
     public:
+        virtual size_t size_bytes() const noexcept override;
         explicit cached_page(cached_file* parent, page_idx_type idx, temporary_buffer<char> buf)
             : parent(parent)
             , idx(idx)

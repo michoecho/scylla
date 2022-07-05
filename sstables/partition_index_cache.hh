@@ -39,6 +39,8 @@ private:
         std::variant<lw_shared_ptr<shared_promise<>>, partition_index_page> _page;
         size_t _size_in_allocator = 0;
     public:
+        virtual size_t size_bytes() const noexcept override;
+
         entry(partition_index_cache* parent, key_type key)
                 : _parent(parent)
                 , _key(key)

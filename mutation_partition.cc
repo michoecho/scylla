@@ -1335,6 +1335,12 @@ size_t row::external_memory_usage(const schema& s, column_kind kind) const {
     });
 }
 
+size_t row::external_memory_usage() const {
+    return _cells.memory_usage([&] (column_id id, const cell_and_hash& cah) noexcept {
+            return cah.cell.external_memory_usage();
+    });
+}
+
 size_t rows_entry::memory_usage(const schema& s) const {
     size_t size = 0;
     if (!dummy()) {
@@ -1342,6 +1348,16 @@ size_t rows_entry::memory_usage(const schema& s) const {
     }
     return size +
            row().cells().external_memory_usage(s, column_kind::regular_column) +
+           sizeof(rows_entry);
+}
+
+size_t rows_entry::memory_usage() const {
+    size_t size = 0;
+    if (!dummy()) {
+        size += key().external_memory_usage();
+    }
+    return size +
+           row().cells().external_memory_usage() +
            sizeof(rows_entry);
 }
 
