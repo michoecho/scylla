@@ -320,6 +320,7 @@ public:
     mvcc_partition(mvcc_partition&&) = default;
 
     ~mvcc_partition() {
+        evict();
         with_allocator(region().allocator(), [&] {
             _e = {};
         });
@@ -451,6 +452,7 @@ SEASTAR_TEST_CASE(test_apply_to_incomplete) {
             table.add_row(m, ck1, "v");
             e += m;
             assert_that(table.schema(), e.squashed()).is_equal_to(mutation_partition::make_incomplete(s));
+            e.evict();
         }
 
         testlog.info("Check that continuity is a union");
@@ -477,6 +479,7 @@ SEASTAR_TEST_CASE(test_apply_to_incomplete) {
             e2 += std::move(e);
             assert_that(table.schema(), ms.squashed(snap1)).is_equal_to(m1.partition());
             assert_that(table.schema(), e2.squashed()).is_equal_to((m2 + m3).partition());
+            e2.evict();
         }
     });
 }
@@ -537,6 +540,7 @@ SEASTAR_TEST_CASE(test_schema_upgrade_preserves_continuity) {
         expected += m3;
         expected.partition().set_static_row_continuous(false); // apply_to_incomplete()
         assert_entry_equal(e, expected);
+        e.evict();
     });
 }
 
@@ -629,6 +633,7 @@ SEASTAR_TEST_CASE(test_apply_to_incomplete_respects_continuity) {
                 assert_that(s, e.squashed())
                     .is_equal_to_compacted(expected, e_continuity.to_clustering_row_ranges())
                     .has_same_continuity(before);
+                e.evict();
             };
 
             test(false);
@@ -686,6 +691,7 @@ SEASTAR_TEST_CASE(test_snapshot_cursor_is_consistent_with_merging) {
                 expected.compact_for_compaction(*s, never_gc, m1.decorated_key(), gc_clock::now());
 
                 assert_that(s, actual).is_equal_to_compacted(expected);
+                e.evict();
             }
         }
     });
@@ -769,6 +775,7 @@ SEASTAR_TEST_CASE(test_continuity_merging_in_evictable) {
                 assert_that(s, actual2)
                     .has_same_continuity(expected)
                     .is_equal_to_compacted(expected);
+                e.evict(tracker.cleaner());
             }
         });
     });
@@ -940,6 +947,7 @@ SEASTAR_TEST_CASE(test_partition_snapshot_row_cursor) {
                 BOOST_REQUIRE(eq(cur.position(), table.make_ckey(5)));
                 BOOST_REQUIRE(cur.continuous());
             }
+            e.evict(tracker.cleaner());
         });
     });
 }
@@ -1238,6 +1246,7 @@ SEASTAR_TEST_CASE(test_cursor_tracks_continuity_in_reversed_mode) {
 
                 BOOST_REQUIRE(!cur.next());
             }
+            e.evict(tracker.cleaner());
         });
     });
 }
@@ -1293,6 +1302,7 @@ SEASTAR_TEST_CASE(test_ensure_entry_in_latest_in_reversed_mode) {
                     BOOST_REQUIRE(!res.inserted);
                 }
             }
+                e.evict(tracker.cleaner());
         });
     });
 }
@@ -1344,6 +1354,7 @@ SEASTAR_TEST_CASE(test_ensure_entry_in_latest_does_not_set_continuity_in_reverse
                 // the entry for ckey 2 in latest version should not be marked as continuous.
                 BOOST_REQUIRE(!cur.continuous());
             }
+                e.evict(tracker.cleaner());
         });
     });
 }
