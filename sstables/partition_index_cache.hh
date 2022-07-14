@@ -113,7 +113,7 @@ public:
         explicit entry_ptr(lsa::weak_ptr<entry> ref)
             : _ref(std::move(ref))
         {
-            _ref->_parent->_lru.remove(*_ref);
+            _ref->_parent->_cache_algorithm.remove(*_ref);
         }
         ~entry_ptr() { *this = nullptr; }
         entry_ptr(entry_ptr&&) noexcept = default;
@@ -121,7 +121,7 @@ public:
         entry_ptr& operator=(std::nullptr_t) noexcept {
             if (_ref) {
                 if (_ref.unique()) {
-                    _ref->_parent->_lru.add(*_ref);
+                    _ref->_parent->_cache_algorithm.add(*_ref);
                 }
                 _ref = nullptr;
             }
@@ -160,14 +160,14 @@ private:
     cache_type _cache;
     logalloc::region& _region;
     logalloc::allocating_section _as;
-    cache_algorithm& _lru;
+    cache_algorithm& _cache_algorithm;
 public:
 
     // Create a cache with a given LRU attached.
-    partition_index_cache(cache_algorithm& lru_, logalloc::region& r)
+    partition_index_cache(cache_algorithm& ca, logalloc::region& r)
             : _cache(key_less_comparator())
             , _region(r)
-            , _lru(lru_)
+            , _cache_algorithm(ca)
     { }
 
     ~partition_index_cache() {
@@ -249,7 +249,7 @@ public:
     void on_evicted(entry& p) {
         _shard_stats.used_bytes -= p.size_in_allocator();
         ++_shard_stats.evictions;
-        _lru.remove(p);
+        _cache_algorithm.remove(p);
     }
 
     static const stats& shard_stats() { return _shard_stats; }
