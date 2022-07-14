@@ -68,7 +68,7 @@ private:
                 if (--cp->_use_count == 0) {
                     cp->parent->_metrics.bytes_in_std -= cp->_buf.size();
                     cp->_buf = {};
-                    cp->parent->_lru.add(*cp);
+                    cp->parent->_cache_algorithm.add(*cp);
                 }
             }
         };
@@ -79,7 +79,7 @@ private:
         // because it will not be linked in the LRU.
         ptr_type share() noexcept {
             if (_use_count++ == 0) {
-                parent->_lru.remove(*this);
+                parent->_cache_algorithm.remove(*this);
             }
             return std::unique_ptr<cached_page, cached_page_del>(this);
         }
@@ -143,7 +143,7 @@ private:
     file _file;
     sstring _file_name; // for logging / tracing
     metrics& _metrics;
-    cache_algorithm& _lru;
+    cache_algorithm& _cache_algorithm;
     logalloc::region& _region;
     logalloc::allocating_section _as;
 
@@ -321,7 +321,7 @@ public:
     };
 
     void on_evicted(cached_page& p) {
-        _lru.remove(p);
+        _cache_algorithm.remove(p);
         _metrics.cached_bytes -= p.size_in_allocator();
         _cached_bytes -= p.size_in_allocator();
         ++_metrics.page_evictions;
@@ -351,11 +351,11 @@ public:
     /// \param m Metrics object which should be updated from operations on this object.
     ///          The metrics object can be shared by many cached_file instances, in which case it
     ///          will reflect the sum of operations on all cached_file instances.
-    cached_file(file f, cached_file::metrics& m, cache_algorithm& l, logalloc::region& reg, offset_type size, sstring file_name = {})
+    cached_file(file f, cached_file::metrics& m, cache_algorithm& ca, logalloc::region& reg, offset_type size, sstring file_name = {})
         : _file(std::move(f))
         , _file_name(std::move(file_name))
         , _metrics(m)
-        , _lru(l)
+        , _cache_algorithm(ca)
         , _region(reg)
         , _cache(page_idx_less_comparator())
         , _size(size)
