@@ -80,7 +80,7 @@ cache_tracker::cache_tracker(mutation_application_stats& app_stats, register_met
                 return memory::reclaiming_result::reclaimed_something;
             }
             current_tracker = this;
-            return _lru.evict();
+            return _cache_algorithm.evict();
            } catch (std::bad_alloc&) {
             // Bad luck, linearization during partition removal caused us to
             // fail.  Drop the entire cache so we can make forward progress.
@@ -154,7 +154,7 @@ void cache_tracker::clear() {
         _garbage.clear();
         _memtable_cleaner.clear();
         current_tracker = this;
-        _lru.evict_all();
+        _cache_algorithm.evict_all();
     });
     _stats.partition_removals += partitions_before;
     _stats.row_removals += rows_before;
@@ -164,8 +164,8 @@ void cache_tracker::clear() {
 void cache_tracker::touch(rows_entry& e) {
     // last dummy may not be linked if evicted, but
     // the unlink_from_lru() handles it
-    _lru.remove(e);
-    _lru.add(e);
+    _cache_algorithm.remove(e);
+    _cache_algorithm.add(e);
 }
 
 void cache_tracker::insert(cache_entry& entry) {
@@ -1093,7 +1093,7 @@ void row_cache::unlink_from_lru(const dht::decorated_key& dk) {
         if (i != _partitions.end()) {
             for (partition_version& pv : i->partition().versions_from_oldest()) {
                 for (rows_entry& row : pv.partition().clustered_rows()) {
-                    _tracker._lru.remove(row);
+                    _tracker._cache_algorithm.remove(row);
                 }
             }
         }
@@ -1232,12 +1232,12 @@ void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
         // so don't remove it, just unlink from the LRU.
         // That dummy is linked in the LRU, because there may be partitions
         // with no regular rows, and we need to track them.
-        tracker._lru.remove(*this);
+        tracker._cache_algorithm.remove(*this);
     } else {
         // When evicting a dummy with both sides continuous we don't need to break continuity.
         //
         auto still_continuous = continuous() && dummy();
-        tracker._lru.remove(*this);
+        tracker._cache_algorithm.remove(*this);
         mutation_partition::rows_type::key_grabber kg(it);
         kg.release(current_deleter<rows_entry>());
         if (!still_continuous) {

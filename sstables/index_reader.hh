@@ -329,7 +329,7 @@ std::unique_ptr<clustered_index_cursor> promoted_index::make_cursor(shared_sstab
                 ? sst->_cached_index_file
                 : seastar::make_shared<cached_file>(make_tracked_index_file(*sst, permit, trace_state, caching),
                                                     index_page_cache_metrics,
-                                                    sst->manager().get_cache_tracker().get_lru(),
+                                                    sst->manager().get_cache_tracker().get_cache_algorithm(),
                                                     sst->manager().get_cache_tracker().region(),
                                                     sst->_index_file_size);
         return std::make_unique<mc::bsearch_clustered_cursor>(*sst->get_schema(),
@@ -758,7 +758,7 @@ public:
         , _pc(pc)
         , _trace_state(std::move(trace_state))
         , _local_index_cache(caching ? nullptr
-            : std::make_unique<partition_index_cache>(_sstable->manager().get_cache_tracker().get_lru(),
+            : std::make_unique<partition_index_cache>(_sstable->manager().get_cache_tracker().get_cache_algorithm(),
                                                       _sstable->manager().get_cache_tracker().region()))
         , _index_cache(caching ? *_sstable->_index_cache : *_local_index_cache)
         , _region(_sstable->manager().get_cache_tracker().region())
