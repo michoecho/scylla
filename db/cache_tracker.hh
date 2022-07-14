@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "utils/lru.hh"
+#include "cache_algorithm.hh"
 #include "utils/logalloc.hh"
 #include "partition_version.hh"
 #include "mutation_cleaner.hh"

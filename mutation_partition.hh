@@ -28,7 +28,7 @@
 #include "range_tombstone_list.hh"
 #include "utils/intrusive_btree.hh"
 #include "utils/preempt.hh"
-#include "utils/lru.hh"
+#include "cache_algorithm.hh"
 #include "utils/managed_ref.hh"
 #include "utils/compact-radix-tree.hh"
 #include "utils/immutable-collection.hh"

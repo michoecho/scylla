@@ -17,7 +17,7 @@
 #include "utils/loading_shared_values.hh"
 #include "utils/chunked_vector.hh"
 #include "utils/bptree.hh"
-#include "utils/lru.hh"
+#include "cache_algorithm.hh"
 #include "utils/lsa/weak_ptr.hh"
 
 namespace sstables {

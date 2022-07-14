@@ -11,7 +11,7 @@
 #include "reader_permit.hh"
 #include "utils/div_ceil.hh"
 #include "utils/bptree.hh"
-#include "utils/lru.hh"
+#include "cache_algorithm.hh"
 #include "tracing/trace_state.hh"
 
 #include <seastar/core/file.hh>
