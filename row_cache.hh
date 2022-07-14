@@ -423,7 +423,7 @@ public:
 
     // Detaches current contents of given partition from LRU, so
     // that they are not evicted by memory reclaimer.
-    void unlink_from_lru(const dht::decorated_key&);
+    void unlink_from_cache_algorithm(const dht::decorated_key&);
 
     // Synchronizes cache with the underlying mutation source
     // by invalidating ranges which were modified. This will force

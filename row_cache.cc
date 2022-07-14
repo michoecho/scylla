@@ -163,7 +163,7 @@ void cache_tracker::clear() {
 
 void cache_tracker::touch(rows_entry& e) {
     // last dummy may not be linked if evicted, but
-    // the unlink_from_lru() handles it
+    // the remove() handles it
     _cache_algorithm.remove(e);
     _cache_algorithm.add(e);
 }
@@ -1087,7 +1087,7 @@ void row_cache::touch(const dht::decorated_key& dk) {
  });
 }
 
-void row_cache::unlink_from_lru(const dht::decorated_key& dk) {
+void row_cache::unlink_from_cache_algorithm(const dht::decorated_key& dk) {
     _read_section(_tracker.region(), [&] {
         auto i = _partitions.find(dk, dht::ring_position_comparator(*_schema));
         if (i != _partitions.end()) {

@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
                 // Ensure that entries matching memtable partitions are not evicted,
                 // we want to hit the merge path in row_cache::update()
                 for (auto&& key : keys) {
-                    cache.unlink_from_lru(key);
+                    cache.unlink_from_cache_algorithm(key);
                 }
                 while (true) {
                     auto evictions_before = tracker.get_stats().partition_evictions;
