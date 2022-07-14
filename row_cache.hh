@@ -418,10 +418,10 @@ public:
     // source hasn't changed.
     void refresh_snapshot();
 
-    // Moves given partition to the front of LRU if present in cache.
+    // Informs the cache algorithm about a read of the given partition (if present in cache).
     void touch(const dht::decorated_key&);
 
-    // Detaches current contents of given partition from LRU, so
+    // Detaches current contents of given partition from the cache algorithm, so
     // that they are not evicted by memory reclaimer.
     void unlink_from_cache_algorithm(const dht::decorated_key&);
 

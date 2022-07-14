@@ -25,7 +25,7 @@ namespace sstables {
 // Associative cache of summary index -> partition_index_page
 // Entries stay around as long as there is any live external reference (entry_ptr) to them.
 // Supports asynchronous insertion, ensures that only one entry will be loaded.
-// Entries without a live entry_ptr are linked in the LRU.
+// Entries without a live entry_ptr are linked in the cache algorithm.
 // The instance must be destroyed only after all live_ptr:s are gone.
 class partition_index_cache {
 public:
@@ -102,7 +102,7 @@ public:
     // The partition_index_page reference obtained by dereferencing this pointer
     // is invalidated when the owning LSA region invalidates references.
     class entry_ptr {
-        // *_ref is kept alive by the means of unlinking from LRU.
+        // *_ref is kept alive by the means of unlinking from the cache algorithm.
         lsa::weak_ptr<entry> _ref;
     private:
         friend class partition_index_cache;
@@ -163,7 +163,7 @@ private:
     cache_algorithm& _cache_algorithm;
 public:
 
-    // Create a cache with a given LRU attached.
+    // Create a cache attached to the given cache algorithm.
     partition_index_cache(cache_algorithm& ca, logalloc::region& r)
             : _cache(key_less_comparator())
             , _region(r)

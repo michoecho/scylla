@@ -124,7 +124,7 @@ class static_row;
 //
 // versions of evictable entries always have a dummy entry at position_in_partition::after_all_clustered_rows().
 // This is needed so that they can be always made fully discontinuous by eviction, and because
-// we need a way to link partitions with no rows into the LRU.
+// we need a way to link partitions with no rows into the cache algorithm.
 //
 // Snapshots of evictable entries always have a row entry at
 // position_in_partition::after_all_clustered_rows().
@@ -354,7 +354,7 @@ public:
     // to the latest version.
     stop_iteration slide_to_oldest() noexcept;
 
-    // Brings the snapshot to the front of the LRU.
+    // Informs the cache algorithm about a read of the snapshot.
     void touch() noexcept;
 
     // Must be called after snapshot's original region is merged into a different region

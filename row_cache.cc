@@ -1229,8 +1229,8 @@ void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
 
     if (is_last_dummy()) {
         // Every evictable partition entry must have a dummy entry at the end,
-        // so don't remove it, just unlink from the LRU.
-        // That dummy is linked in the LRU, because there may be partitions
+        // so don't remove it, just unlink from the cache algorithm.
+        // That dummy is linked in the cache algorithm, because there may be partitions
         // with no regular rows, and we need to track them.
         tracker._cache_algorithm.remove(*this);
     } else {

@@ -25,7 +25,7 @@ using namespace seastar;
 /// \brief A read-through cache of a file.
 ///
 /// Caches contents with page granularity (4 KiB).
-/// Cached pages are evicted by the LRU or manually using the invalidate_*() method family, or when the object is destroyed.
+/// Cached pages are evicted by the cache algorithm or manually using the invalidate_*() method family, or when the object is destroyed.
 ///
 /// Concurrent reading is allowed.
 ///
@@ -76,7 +76,7 @@ private:
         using ptr_type = std::unique_ptr<cached_page, cached_page_del>;
 
         // As long as any ptr_type is alive, this cached_page will not be destroyed
-        // because it will not be linked in the LRU.
+        // because it will not be linked in the cache algorithm.
         ptr_type share() noexcept {
             if (_use_count++ == 0) {
                 parent->_cache_algorithm.remove(*this);
