@@ -24,7 +24,7 @@
 
 using namespace seastar;
 
-static lru cf_lru;
+static cache_algorithm cf_lru;
 
 static sstring read_to_string(cached_file::stream& s, size_t limit = std::numeric_limits<size_t>::max()) {
     sstring b;

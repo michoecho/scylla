@@ -160,11 +160,11 @@ private:
     cache_type _cache;
     logalloc::region& _region;
     logalloc::allocating_section _as;
-    lru& _lru;
+    cache_algorithm& _lru;
 public:
 
     // Create a cache with a given LRU attached.
-    partition_index_cache(lru& lru_, logalloc::region& r)
+    partition_index_cache(cache_algorithm& lru_, logalloc::region& r)
             : _cache(key_less_comparator())
             , _region(r)
             , _lru(lru_)

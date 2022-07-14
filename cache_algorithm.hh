@@ -12,7 +12,7 @@
 #include <seastar/core/memory.hh>
 
 class evictable {
-    friend class lru;
+    friend class cache_algorithm;
     using lru_link_type = boost::intrusive::list_member_hook<
         boost::intrusive::link_mode<boost::intrusive::auto_unlink>>;
         //boost::intrusive::link_mode<boost::intrusive::safe_link>>;
@@ -40,7 +40,7 @@ public:
     }
 };
 
-class lru {
+class cache_algorithm {
 private:
     friend class evictable;
     using lru_type = boost::intrusive::list<evictable,
@@ -50,7 +50,7 @@ private:
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
-    ~lru() {
+    ~cache_algorithm() {
         _list.clear_and_dispose([] (evictable* e) {
             e->on_evicted();
         });
@@ -94,6 +94,6 @@ evictable::evictable(evictable&& o) noexcept {
     if (o._lru_link.is_linked()) {
         auto prev = o._lru_link.prev_;
         o._lru_link.unlink();
-        lru::lru_type::node_algorithms::link_after(prev, _lru_link.this_ptr());
+        cache_algorithm::lru_type::node_algorithms::link_after(prev, _lru_link.this_ptr());
     }
 }

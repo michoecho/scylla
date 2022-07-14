@@ -143,7 +143,7 @@ private:
     file _file;
     sstring _file_name; // for logging / tracing
     metrics& _metrics;
-    lru& _lru;
+    cache_algorithm& _lru;
     logalloc::region& _region;
     logalloc::allocating_section _as;
 
@@ -351,7 +351,7 @@ public:
     /// \param m Metrics object which should be updated from operations on this object.
     ///          The metrics object can be shared by many cached_file instances, in which case it
     ///          will reflect the sum of operations on all cached_file instances.
-    cached_file(file f, cached_file::metrics& m, lru& l, logalloc::region& reg, offset_type size, sstring file_name = {})
+    cached_file(file f, cached_file::metrics& m, cache_algorithm& l, logalloc::region& reg, offset_type size, sstring file_name = {})
         : _file(std::move(f))
         , _file_name(std::move(file_name))
         , _metrics(m)

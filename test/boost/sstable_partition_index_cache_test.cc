@@ -61,7 +61,7 @@ static void has_page0(partition_index_cache::entry_ptr ptr) {
 };
 
 SEASTAR_THREAD_TEST_CASE(test_caching) {
-    ::lru lru;
+    ::cache_algorithm lru;
     simple_schema s;
     logalloc::region r;
     partition_index_cache cache(lru, r);
@@ -150,7 +150,7 @@ static future<> ignore_result(future<T>&& f) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_exception_while_loading) {
-    ::lru lru;
+    ::cache_algorithm lru;
     simple_schema s;
     logalloc::region r;
     partition_index_cache cache(lru, r);
@@ -180,7 +180,7 @@ SEASTAR_THREAD_TEST_CASE(test_exception_while_loading) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_auto_clear) {
-    ::lru lru;
+    ::cache_algorithm lru;
     simple_schema s;
     logalloc::region r;
 
@@ -207,7 +207,7 @@ SEASTAR_THREAD_TEST_CASE(test_auto_clear) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_destroy) {
-    ::lru lru;
+    ::cache_algorithm lru;
     simple_schema s;
     logalloc::region r;
 
@@ -233,7 +233,7 @@ SEASTAR_THREAD_TEST_CASE(test_destroy) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_evict_gently) {
-    ::lru lru;
+    ::cache_algorithm lru;
     simple_schema s;
     logalloc::region r;
 

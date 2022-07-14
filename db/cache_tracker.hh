@@ -76,7 +76,7 @@ private:
     seastar::metrics::metric_groups _metrics;
     logalloc::region _region;
 public:
-    lru _lru;
+    cache_algorithm _lru;
 private:
     mutation_cleaner _garbage;
     mutation_cleaner _memtable_cleaner;
@@ -121,7 +121,7 @@ public:
     uint64_t partitions() const noexcept { return _stats.partitions; }
     const stats& get_stats() const noexcept { return _stats; }
     void set_compaction_scheduling_group(seastar::scheduling_group);
-    lru& get_lru() { return _lru; }
+    cache_algorithm& get_lru() { return _lru; }
 };
 
 inline
