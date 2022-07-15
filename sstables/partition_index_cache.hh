@@ -221,6 +221,7 @@ public:
                 try {
                     return share(cp);
                 } catch (...) {
+                    _cache_algorithm.remove(cp);
                     _cache.erase(key);
                     throw;
                 }
@@ -242,6 +243,7 @@ public:
                 e.promise()->set_exception(std::current_exception());
                 ptr = {};
                 with_allocator(_region.allocator(), [&] {
+                    _cache_algorithm.remove(e);
                     _cache.erase(key);
                 });
                 throw;
