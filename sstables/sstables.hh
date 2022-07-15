@@ -356,6 +356,8 @@ public:
         return filename(component_type::Data);
     }
 
+    uint64_t get_hash() const;
+
     sstring toc_filename() const {
         return filename(component_type::TOC);
     }

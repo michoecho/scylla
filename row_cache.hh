@@ -85,11 +85,15 @@ public:
         _flags._dummy_entry = true;
     }
 
+    void initialize_cache_id() noexcept;
+
     cache_entry(schema_ptr s, const dht::decorated_key& key, const mutation_partition& p)
         : _schema(std::move(s))
         , _key(key)
         , _pe(partition_entry::make_evictable(*_schema, mutation_partition(*_schema, p)))
-    { }
+    {
+        initialize_cache_id();
+    }
 
     cache_entry(schema_ptr s, dht::decorated_key&& key, mutation_partition&& p)
         : cache_entry(evictable_tag(), s, std::move(key),
@@ -102,7 +106,9 @@ public:
         : _schema(std::move(s))
         , _key(std::move(key))
         , _pe(std::move(pe))
-    { }
+    {
+        initialize_cache_id();
+    }
 
     cache_entry(cache_entry&&) noexcept;
     ~cache_entry();

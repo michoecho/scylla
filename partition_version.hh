@@ -135,6 +135,7 @@ class partition_version_ref;
 class partition_version : public anchorless_list_base_hook<partition_version> {
     partition_version_ref* _backref = nullptr;
     mutation_partition _partition;
+    uint64_t _cache_id = 0;
 
     friend class partition_version_ref;
     friend class partition_entry;
@@ -143,6 +144,16 @@ public:
     static partition_version& container_of(mutation_partition& mp) {
         return *boost::intrusive::get_parent_from_member(&mp, &partition_version::_partition);
     }
+    static const partition_version& container_of(const mutation_partition& mp) {
+        return *boost::intrusive::get_parent_from_member(&mp, &partition_version::_partition);
+    }
+
+    void set_cache_id(uint64_t id) noexcept {
+        _cache_id = id;
+    }
+    uint64_t get_cache_id() const noexcept {
+        return _cache_id;
+    }
 
     using is_evictable = bool_class<class evictable_tag>;
 
@@ -150,6 +161,8 @@ public:
         : _partition(std::move(s)) { }
     explicit partition_version(mutation_partition mp) noexcept
         : _partition(std::move(mp)) { }
+    explicit partition_version(mutation_partition mp, uint64_t cache_id) noexcept
+        : _partition(std::move(mp)), _cache_id(cache_id) { }
     partition_version(partition_version&& pv) noexcept;
     partition_version& operator=(partition_version&& pv) noexcept;
     ~partition_version();

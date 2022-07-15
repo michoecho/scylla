@@ -81,6 +81,7 @@
 
 #include "release.hh"
 #include "utils/build_id.hh"
+#include "xx_hasher.hh"
 
 thread_local disk_error_signal_type sstable_read_error;
 thread_local disk_error_signal_type sstable_write_error;
@@ -3202,8 +3203,7 @@ sstable::sstable(schema_ptr schema,
     , _generation(generation)
     , _version(v)
     , _format(f)
-    , _index_cache(std::make_unique<partition_index_cache>(
-            manager.get_cache_tracker().get_cache_algorithm(), manager.get_cache_tracker().region()))
+    , _index_cache(std::make_unique<partition_index_cache>(manager.get_cache_tracker().get_cache_algorithm(), get_hash(), manager.get_cache_tracker().region()))
     , _now(now)
     , _read_error_handler(error_handler_gen(sstable_read_error))
     , _write_error_handler(error_handler_gen(sstable_write_error))
@@ -3340,6 +3340,27 @@ size_t cached_file::cached_page::size_bytes() const noexcept {
     return _lsa_buf.size();
 }
 
+evictable::hash_type cached_file::cached_page::cache_hash() const noexcept {
+    xx_hasher hasher;
+    ::feed_hash(hasher, parent->_file_name);
+    ::feed_hash(hasher, idx);
+    return (hasher.finalize_uint64() & 0x0fff'ffff'ffff'ffffull) | 0x2000'0000'0000'0000ull;
+}
+
 size_t sstables::partition_index_cache::entry::size_bytes() const noexcept {
     return size_in_allocator();
 }
+
+evictable::hash_type sstables::partition_index_cache::entry::cache_hash() const noexcept {
+    xx_hasher hasher;
+    ::feed_hash(hasher, _parent->_cache_id);
+    ::feed_hash(hasher, _key);
+    return (hasher.finalize_uint64() & 0x0fff'ffff'ffff'ffffull) | 0x3000'0000'0000'0000ull;
+}
+
+uint64_t sstables::sstable::get_hash() const {
+    xx_hasher hasher;
+    ::feed_hash(hasher, filename(component_type::Index));
+    return (hasher.finalize_uint64());
+}
+

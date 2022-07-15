@@ -85,6 +85,7 @@ private:
         }
     public:
         virtual size_t size_bytes() const noexcept override;
+        virtual evictable::hash_type cache_hash() const noexcept override;
         explicit cached_page(cached_file* parent, page_idx_type idx, temporary_buffer<char> buf)
             : parent(parent)
             , idx(idx)

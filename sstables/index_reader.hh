@@ -759,6 +759,7 @@ public:
         , _trace_state(std::move(trace_state))
         , _local_index_cache(caching ? nullptr
             : std::make_unique<partition_index_cache>(_sstable->manager().get_cache_tracker().get_cache_algorithm(),
+                                                      _sstable->get_hash(),
                                                       _sstable->manager().get_cache_tracker().region()))
         , _index_cache(caching ? *_sstable->_index_cache : *_local_index_cache)
         , _region(_sstable->manager().get_cache_tracker().region())

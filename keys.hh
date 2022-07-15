@@ -884,8 +884,12 @@ struct appending_hash<partition_key> {
 template<>
 struct appending_hash<clustering_key_prefix_view> {
     template<typename Hasher>
-    void operator()(Hasher& h, const clustering_key_prefix_view& ck, const schema& s) const {
-        for (managed_bytes_view v : ck.components(s)) {
+    void operator()(Hasher& h, const clustering_key_prefix_view& ck, const schema&) const {
+        return operator()(h, ck);
+    }
+    template<typename Hasher>
+    void operator()(Hasher& h, const clustering_key_prefix& ck) const {
+        for (managed_bytes_view v : ck.components()) {
             ::feed_hash(h, v);
         }
     }
@@ -895,6 +899,10 @@ template<>
 struct appending_hash<clustering_key_prefix> {
     template<typename Hasher>
     void operator()(Hasher& h, const clustering_key_prefix& ck, const schema& s) const {
-        appending_hash<clustering_key_prefix_view>()(h, ck.view(), s);
+        return operator()(h, ck);
+    }
+    template<typename Hasher>
+    void operator()(Hasher& h, const clustering_key_prefix& ck) const {
+        appending_hash<clustering_key_prefix_view>()(h, ck.view());
     }
 };

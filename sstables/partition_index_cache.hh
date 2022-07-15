@@ -40,6 +40,7 @@ private:
         size_t _size_in_allocator = 0;
     public:
         virtual size_t size_bytes() const noexcept override;
+        virtual evictable::hash_type cache_hash() const noexcept override;
 
         entry(partition_index_cache* parent, key_type key)
                 : _parent(parent)
@@ -161,13 +162,15 @@ private:
     logalloc::region& _region;
     logalloc::allocating_section _as;
     cache_algorithm& _cache_algorithm;
+    uint64_t _cache_id;
 public:
 
     // Create a cache attached to the given cache algorithm.
-    partition_index_cache(cache_algorithm& ca, logalloc::region& r)
+    partition_index_cache(cache_algorithm& ca, uint64_t cache_id, logalloc::region& r)
             : _cache(key_less_comparator())
             , _region(r)
             , _cache_algorithm(ca)
+            , _cache_id(cache_id)
     { }
 
     ~partition_index_cache() {

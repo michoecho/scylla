@@ -24,6 +24,8 @@
 #include "readers/nonforwardable.hh"
 #include "cache_flat_mutation_reader.hh"
 #include "clustering_key_filter.hh"
+#include "hashing.hh"
+#include "xx_hasher.hh"
 
 namespace cache {
 
@@ -1220,10 +1222,29 @@ void cache_entry::on_evicted(cache_tracker& tracker) noexcept {
     it.erase(dht::raw_token_less_comparator{});
 }
 
+void cache_entry::initialize_cache_id() noexcept {
+    xx_hasher hasher;
+    ::feed_hash(hasher, _schema->ks_name());
+    ::feed_hash(hasher, _schema->cf_name());
+    ::feed_hash(hasher, dht::token::to_int64(_key.token()));
+    _pe._version->set_cache_id(hasher.finalize_uint64());
+}
 
 size_t rows_entry::size_bytes() const noexcept {
     return memory_usage();
 }
+
+evictable::hash_type rows_entry::cache_hash() const noexcept {
+    mutation_partition::rows_type::const_iterator it(this);
+    const mutation_partition::rows_type* rows = it.get_tree();
+    const partition_version& pv = partition_version::container_of(mutation_partition::container_of(*rows));
+    xx_hasher hasher;
+    ::feed_hash(hasher, pv.get_cache_id());
+    ::feed_hash(hasher, _key);
+    ::feed_hash(hasher, ((uint64_t)_flags._dummy) << 2 | ((uint64_t)_flags._before_ck) << 1 | ((uint64_t)_flags._after_ck) << 0);
+    return (hasher.finalize_uint64() & 0x0fff'ffff'ffff'ffffull) | (_flags._dummy ? 0x0000'0000'0000'0000ull : 0x1000'0000'0000'0000ull);
+}
+
 void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
     mutation_partition::rows_type::iterator it(this);
 

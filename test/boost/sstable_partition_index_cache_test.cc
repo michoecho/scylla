@@ -64,7 +64,7 @@ SEASTAR_THREAD_TEST_CASE(test_caching) {
     ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
-    partition_index_cache cache(cache_algo, r);
+    partition_index_cache cache(cache_algo, 0, r);
 
     auto page0_loader = [&] (partition_index_cache::key_type k) {
         return yield().then([&] {
@@ -153,7 +153,7 @@ SEASTAR_THREAD_TEST_CASE(test_exception_while_loading) {
     ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
-    partition_index_cache cache(cache_algo, r);
+    partition_index_cache cache(cache_algo, 0, r);
 
     auto clear_cache_algo = defer([&] {
         with_allocator(r.allocator(), [&] {
@@ -187,7 +187,7 @@ SEASTAR_THREAD_TEST_CASE(test_auto_clear) {
     partition_index_cache::stats old_stats;
 
     {
-        partition_index_cache cache(cache_algo, r);
+        partition_index_cache cache(cache_algo, 0, r);
 
         auto page0_loader = [&] (partition_index_cache::key_type k) {
             return make_page0(r, s);
@@ -200,7 +200,7 @@ SEASTAR_THREAD_TEST_CASE(test_auto_clear) {
         cache.get_or_load(2, page0_loader).get();
     }
 
-    partition_index_cache cache2(cache_algo, r); // to get stats
+    partition_index_cache cache2(cache_algo, 0, r); // to get stats
     BOOST_REQUIRE_EQUAL(cache2.shard_stats().evictions, old_stats.evictions + 3);
     BOOST_REQUIRE_EQUAL(cache2.shard_stats().used_bytes, old_stats.used_bytes);
     BOOST_REQUIRE_EQUAL(cache2.shard_stats().populations, old_stats.populations + 3);
@@ -213,7 +213,7 @@ SEASTAR_THREAD_TEST_CASE(test_destroy) {
 
     partition_index_cache::stats old_stats;
 
-    partition_index_cache cache(cache_algo, r);
+    partition_index_cache cache(cache_algo, 0, r);
 
     auto page0_loader = [&] (partition_index_cache::key_type k) {
         return make_page0(r, s);
@@ -239,7 +239,7 @@ SEASTAR_THREAD_TEST_CASE(test_evict_gently) {
 
     partition_index_cache::stats old_stats;
 
-    partition_index_cache cache(cache_algo, r);
+    partition_index_cache cache(cache_algo, 0, r);
 
     auto page0_loader = [&] (partition_index_cache::key_type k) {
         return make_page0(r, s);

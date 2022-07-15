@@ -23,6 +23,7 @@ protected:
         assert(!_lru_link.is_linked());
     }
 public:
+    using hash_type = uint64_t;
     evictable() = default;
     evictable(evictable&& o) noexcept;
     evictable& operator=(evictable&&) noexcept = default;
@@ -30,6 +31,7 @@ public:
     virtual void on_evicted() noexcept = 0;
 
     virtual size_t size_bytes() const noexcept = 0;
+    virtual hash_type cache_hash() const noexcept = 0;
 
     bool is_linked() const {
         return _lru_link.is_linked();

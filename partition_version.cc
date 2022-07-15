@@ -325,9 +325,10 @@ partition_version& partition_entry::add_version(const schema& s, cache_tracker* 
     // it can be tracked in the cache algorithm. It is also needed to allow old versions
     // to stay around (with tombstones and static rows) after fully evicted.
     // Such versions must be fully discontinuous, and thus have a dummy at the end.
+    auto cache_id = _version->get_cache_id();
     auto new_version = tracker
-                       ? current_allocator().construct<partition_version>(mutation_partition::make_incomplete(s))
-                       : current_allocator().construct<partition_version>(mutation_partition(s.shared_from_this()));
+                       ? current_allocator().construct<partition_version>(mutation_partition::make_incomplete(s), cache_id)
+                       : current_allocator().construct<partition_version>(mutation_partition(s.shared_from_this()), cache_id);
     new_version->partition().set_static_row_continuous(_version->partition().static_row_continuous());
     new_version->insert_before(*_version);
     set_version(new_version);

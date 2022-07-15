@@ -824,6 +824,22 @@ public:
                 return nullptr;
             }
         }
+
+        /*
+         * Returns pointer on the owning tree if the element is the
+         * last one left in it.
+         */
+        tree_ptr get_tree() noexcept {
+            node_base_ptr nb = revalidate();
+            if (nb->is_inline()) {
+                return tree::from_inline(nb);
+            }
+            node_ptr n = node::from_base(nb);
+            while (!n->is_root()) {
+                n = n->_parent.n;
+            }
+            return n->_parent.t;
+        }
     };
 
     using iterator_base_const = iterator_base<true>;

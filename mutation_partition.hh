@@ -915,6 +915,7 @@ class rows_entry final : public evictable {
     } _flags{};
 public:
     virtual size_t size_bytes() const noexcept override;
+    virtual evictable::hash_type cache_hash() const noexcept override;
     struct last_dummy_tag {};
     explicit rows_entry(clustering_key&& key)
         : _key(std::move(key))
@@ -1190,6 +1191,7 @@ public:
     mutation_partition(mutation_partition&&, const schema&, query::clustering_key_filter_ranges);
     ~mutation_partition();
     static mutation_partition& container_of(rows_type&);
+    static const mutation_partition& container_of(const rows_type&);
     mutation_partition& operator=(mutation_partition&& x) noexcept;
     bool equal(const schema&, const mutation_partition&) const;
     bool equal(const schema& this_schema, const mutation_partition& p, const schema& p_schema) const;
@@ -1447,5 +1449,10 @@ private:
 
 inline
 mutation_partition& mutation_partition::container_of(rows_type& rows) {
+    return *boost::intrusive::get_parent_from_member(&rows, &mutation_partition::_rows);
+}
+
+inline
+const mutation_partition& mutation_partition::container_of(const rows_type& rows) {
     return *boost::intrusive::get_parent_from_member(&rows, &mutation_partition::_rows);
 }
