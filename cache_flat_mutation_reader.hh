@@ -627,7 +627,6 @@ inline
 void cache_flat_mutation_reader::start_reading_from_underlying() {
     clogger.trace("csm {}: start_reading_from_underlying(), range=[{}, {})", fmt::ptr(this), _lower_bound, _next_row_in_range ? _next_row.position() : _upper_bound);
     _state = state::move_to_underlying;
-    _next_row.touch();
 }
 
 inline

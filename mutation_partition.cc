@@ -335,11 +335,11 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
 
             if (all_dead && e.row().empty() && inside_continuous_range) {
                 ++app_stats.rows_dropped_by_tombstones;
-                i = _rows.erase(i);
                 if (tracker) {
                     tracker->on_remove();
                     tracker->_cache_algorithm.remove(e);
                 }
+                i = _rows.erase(i);
                 del(&e);
             } else {
                 i = next_i;
@@ -430,11 +430,11 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
                 src_e.set_continuous(true);
 
                 if (src_e.dummy()) {
-                    p_i = p._rows.erase(p_i);
                     if (tracker) {
                         tracker->on_remove();
                         tracker->_cache_algorithm.remove(src_e);
                     }
+                    p_i = p._rows.erase(p_i);
                     del(&src_e);
                     insert = false;
                 }

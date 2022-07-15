@@ -22,6 +22,11 @@ protected:
     ~evictable();
 public:
     using hash_type = uint64_t;
+    enum class status : uint8_t {
+        NEW, COLD, DETACHED, HOT
+    };
+    status _status = status::NEW;
+    uint64_t _size_when_added = 0;
     evictable() = default;
     evictable(evictable&& o) noexcept;
     evictable& operator=(evictable&&) noexcept = default;
@@ -36,6 +41,8 @@ public:
     }
 
     void swap(evictable& o) noexcept {
+        std::swap(_status, o._status);
+        std::swap(_size_when_added, o._size_when_added);
         _lru_link.swap_nodes(o._lru_link);
     }
 };
@@ -46,7 +53,12 @@ private:
     using lru_type = boost::intrusive::list<evictable,
         boost::intrusive::member_hook<evictable, evictable::lru_link_type, &evictable::_lru_link>,
         boost::intrusive::constant_time_size<false>>; // we need this to have bi::auto_unlink on hooks.
-    lru_type _list;
+    lru_type _hot;
+    size_t _hot_total = 0;
+    lru_type _cold;
+    size_t _cold_total = 0;
+    static constexpr float MAX_HOT_FRACTION = 0.8;
+    void rebalance() noexcept;
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
@@ -72,4 +84,6 @@ evictable::evictable(evictable&& o) noexcept {
         o._lru_link.unlink();
         cache_algorithm::lru_type::node_algorithms::link_after(prev, _lru_link.this_ptr());
     }
+    _status = o._status;
+    _size_when_added = o._size_when_added;
 }
