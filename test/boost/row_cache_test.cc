@@ -1788,6 +1788,7 @@ static void evict_one_row(cache_tracker& tracker) {
     }
 }
 
+#if 0
 SEASTAR_TEST_CASE(test_lru) {
     return seastar::async([] {
         auto s = make_schema();
@@ -1844,6 +1845,7 @@ SEASTAR_TEST_CASE(test_lru) {
                 .produces_end_of_stream();
     });
 }
+#endif
 
 SEASTAR_TEST_CASE(test_update_invalidating) {
     return seastar::async([] {

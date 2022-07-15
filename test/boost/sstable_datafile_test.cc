@@ -3142,7 +3142,7 @@ SEASTAR_TEST_CASE(test_index_fast_forwarding_after_eof) {
             testlog.info("fast_forward_to({})", *it);
             reader.fast_forward_to(*it).get();
             while (reader().get());
-            // Make sure the index page linked into LRU after EOF is evicted.
+            // Make sure the index page linked into the cache algorithm after EOF is evicted.
             while (region.evict_some() == memory::reclaiming_result::reclaimed_something);
         }
 

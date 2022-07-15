@@ -61,10 +61,10 @@ static void has_page0(partition_index_cache::entry_ptr ptr) {
 };
 
 SEASTAR_THREAD_TEST_CASE(test_caching) {
-    ::cache_algorithm lru;
+    ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
-    partition_index_cache cache(lru, r);
+    partition_index_cache cache(cache_algo, r);
 
     auto page0_loader = [&] (partition_index_cache::key_type k) {
         return yield().then([&] {
@@ -83,7 +83,7 @@ SEASTAR_THREAD_TEST_CASE(test_caching) {
 
     r.full_compaction();
     with_allocator(r.allocator(), [&] {
-        lru.evict_all();
+        cache_algo.evict_all();
     });
 
     partition_index_cache::entry_ptr ptr0 = f0.get0();
@@ -91,7 +91,7 @@ SEASTAR_THREAD_TEST_CASE(test_caching) {
 
     r.full_compaction();
     with_allocator(r.allocator(), [&] {
-        lru.evict_all();
+        cache_algo.evict_all();
     });
 
     BOOST_REQUIRE_EQUAL(cache.shard_stats().populations, old_stats.populations + 1);
@@ -113,7 +113,7 @@ SEASTAR_THREAD_TEST_CASE(test_caching) {
         BOOST_REQUIRE(!ptr1);
 
         with_allocator(r.allocator(), [&] {
-            lru.evict_all();
+            cache_algo.evict_all();
         });
         // ptr3 prevents page 0 evictions
         BOOST_REQUIRE_EQUAL(cache.shard_stats().evictions, old_stats.evictions);
@@ -122,7 +122,7 @@ SEASTAR_THREAD_TEST_CASE(test_caching) {
 
         ptr3 = nullptr;
         with_allocator(r.allocator(), [&] {
-            lru.evict_all();
+            cache_algo.evict_all();
         });
 
         BOOST_REQUIRE_EQUAL(cache.shard_stats().evictions, old_stats.evictions + 1);
@@ -150,14 +150,14 @@ static future<> ignore_result(future<T>&& f) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_exception_while_loading) {
-    ::cache_algorithm lru;
+    ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
-    partition_index_cache cache(lru, r);
+    partition_index_cache cache(cache_algo, r);
 
-    auto clear_lru = defer([&] {
+    auto clear_cache_algo = defer([&] {
         with_allocator(r.allocator(), [&] {
-            lru.evict_all();
+            cache_algo.evict_all();
         });
     });
 
@@ -180,14 +180,14 @@ SEASTAR_THREAD_TEST_CASE(test_exception_while_loading) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_auto_clear) {
-    ::cache_algorithm lru;
+    ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
 
     partition_index_cache::stats old_stats;
 
     {
-        partition_index_cache cache(lru, r);
+        partition_index_cache cache(cache_algo, r);
 
         auto page0_loader = [&] (partition_index_cache::key_type k) {
             return make_page0(r, s);
@@ -200,20 +200,20 @@ SEASTAR_THREAD_TEST_CASE(test_auto_clear) {
         cache.get_or_load(2, page0_loader).get();
     }
 
-    partition_index_cache cache2(lru, r); // to get stats
+    partition_index_cache cache2(cache_algo, r); // to get stats
     BOOST_REQUIRE_EQUAL(cache2.shard_stats().evictions, old_stats.evictions + 3);
     BOOST_REQUIRE_EQUAL(cache2.shard_stats().used_bytes, old_stats.used_bytes);
     BOOST_REQUIRE_EQUAL(cache2.shard_stats().populations, old_stats.populations + 3);
 }
 
 SEASTAR_THREAD_TEST_CASE(test_destroy) {
-    ::cache_algorithm lru;
+    ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
 
     partition_index_cache::stats old_stats;
 
-    partition_index_cache cache(lru, r);
+    partition_index_cache cache(cache_algo, r);
 
     auto page0_loader = [&] (partition_index_cache::key_type k) {
         return make_page0(r, s);
@@ -233,13 +233,13 @@ SEASTAR_THREAD_TEST_CASE(test_destroy) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_evict_gently) {
-    ::cache_algorithm lru;
+    ::cache_algorithm cache_algo;
     simple_schema s;
     logalloc::region r;
 
     partition_index_cache::stats old_stats;
 
-    partition_index_cache cache(lru, r);
+    partition_index_cache cache(cache_algo, r);
 
     auto page0_loader = [&] (partition_index_cache::key_type k) {
         return make_page0(r, s);
