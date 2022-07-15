@@ -19,9 +19,7 @@ class evictable {
     lru_link_type _lru_link;
 protected:
     // Prevent destruction via evictable pointer. LRU is not aware of allocation strategy.
-    ~evictable() {
-        assert(!_lru_link.is_linked());
-    }
+    ~evictable();
 public:
     using hash_type = uint64_t;
     evictable() = default;
@@ -52,37 +50,13 @@ private:
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
-    ~cache_algorithm() {
-        _list.clear_and_dispose([] (evictable* e) {
-            e->on_evicted();
-        });
-    }
-
-    void remove(evictable& e) noexcept {
-        if (e.is_linked()) {
-            _list.erase(_list.iterator_to(e));
-        }
-    }
-
-    void add(evictable& e) noexcept {
-        _list.push_back(e);
-    }
-
-    void touch(evictable& e) noexcept {
-        remove(e);
-        add(e);
-    }
+    ~cache_algorithm();
+    void remove(evictable& e) noexcept;
+    void add(evictable& e) noexcept;
+    void touch(evictable& e) noexcept;
 
     // Evicts a single element from the LRU
-    reclaiming_result evict() noexcept {
-        if (_list.empty()) {
-            return reclaiming_result::reclaimed_nothing;
-        }
-        evictable& e = _list.front();
-        _list.pop_front();
-        e.on_evicted();
-        return reclaiming_result::reclaimed_something;
-    }
+    reclaiming_result evict() noexcept;
 
     // Evicts all elements.
     // May stall the reactor, use only in tests.
