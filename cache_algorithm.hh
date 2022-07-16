@@ -23,7 +23,7 @@ protected:
 public:
     using hash_type = uint64_t;
     enum class status : uint8_t {
-        NEW, COLD, DETACHED, HOT
+        NEW, COLD, DETACHED, HOT, GARBAGE
     };
     status _status = status::NEW;
     uint64_t _size_when_added = 0;
@@ -48,15 +48,17 @@ public:
 };
 
 class cache_algorithm {
-private:
     friend class evictable;
+public:
     using lru_type = boost::intrusive::list<evictable,
         boost::intrusive::member_hook<evictable, evictable::lru_link_type, &evictable::_lru_link>,
         boost::intrusive::constant_time_size<false>>; // we need this to have bi::auto_unlink on hooks.
+private:
     lru_type _hot;
     size_t _hot_total = 0;
     lru_type _cold;
     size_t _cold_total = 0;
+    lru_type _garbage;
     static constexpr float MAX_HOT_FRACTION = 0.8;
     void rebalance() noexcept;
 public:
@@ -66,6 +68,8 @@ public:
     void remove(evictable& e) noexcept;
     void add(evictable& e) noexcept;
     void touch(evictable& e) noexcept;
+    void remove_garbage(evictable& e) noexcept;
+    void splice_garbage(lru_type& garbage) noexcept;
 
     // Evicts a single element from the LRU
     reclaiming_result evict() noexcept;

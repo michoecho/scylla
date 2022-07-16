@@ -53,13 +53,18 @@ partition_version& partition_version::operator=(partition_version&& pv) noexcept
 
 partition_version::~partition_version()
 {
+    assert(_garbage.empty());
     if (_backref) {
         _backref->_version = nullptr;
     }
 }
 
 stop_iteration partition_version::clear_gently(cache_tracker* tracker) noexcept {
-    return _partition.clear_gently(tracker);
+    auto result = _partition.clear_gently(tracker);
+    if (tracker && !next() && prev() && result == stop_iteration::yes) {
+        tracker->get_cache_algorithm().splice_garbage(prev()->_garbage);
+    }
+    return result;
 }
 
 size_t partition_version::size_in_allocator(const schema& s, allocation_strategy& allocator) const {

@@ -164,10 +164,7 @@ void cache_tracker::clear() {
 }
 
 void cache_tracker::touch(rows_entry& e) {
-    // last dummy may not be linked if evicted, but
-    // the remove() handles it
-    _cache_algorithm.remove(e);
-    _cache_algorithm.add(e);
+    _cache_algorithm.touch(e);
 }
 
 void cache_tracker::insert(cache_entry& entry) {
@@ -1247,8 +1244,14 @@ evictable::hash_type rows_entry::cache_hash() const noexcept {
 
 void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
     mutation_partition::rows_type::iterator it(this);
+    mutation_partition::rows_type* rows = it.get_tree();
+    partition_version& pv = partition_version::container_of(mutation_partition::container_of(*rows));
 
-    if (is_last_dummy()) {
+    if (pv.next()) {
+        tracker._cache_algorithm.remove_garbage(*this);
+        pv.push_garbage(*this);
+        return;
+    } else if (is_last_dummy()) {
         // Every evictable partition entry must have a dummy entry at the end,
         // so don't remove it, just unlink from the cache algorithm.
         // That dummy is linked in the cache algorithm, because there may be partitions
@@ -1267,7 +1270,7 @@ void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
         tracker.on_row_eviction();
     }
 
-    mutation_partition::rows_type* rows = it.tree_if_singular();
+    rows = it.tree_if_singular();
     if (rows != nullptr) {
         assert(it->is_last_dummy());
         partition_version& pv = partition_version::container_of(mutation_partition::container_of(*rows));

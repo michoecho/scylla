@@ -534,12 +534,6 @@ public:
         if (is_in_latest_version()) {
             auto latest_i = get_iterator_in_latest_version();
             rows_entry& latest = *latest_i;
-            if (_snp.at_latest_version()) {
-              if (!latest_i->is_last_dummy()) {
-                // Last dummy got its bump in fill_buffer()
-                _snp.tracker()->touch(latest);
-              }
-            }
             return {latest, false};
         } else {
             // Copy row from older version because rows in evictable versions must
@@ -616,15 +610,7 @@ public:
     // Informs the cache algorithm about a read of the entry pointed to by the cursor.
     // Cursor must be valid and pointing at a row.
     void touch() {
-        // Rows in newer versions can overlap (overwrite) rows in older versions.
-        // If a newer version was evicted before an older one, such overwrite could be lost.
-        // We prevent that by making sure that older versions are evicted before newer ones.
-        // To achieve that, we don't touch (in the LRU) contents of non-newest versions.
-        // This causes all content of an older version to always stay after all content in
-        // a newer version in the LRU list, and hence to be evicted later.
-        if (_snp.at_latest_version() && is_in_latest_version()) {
-            _snp.tracker()->touch(*get_iterator_in_latest_version());
-        }
+        _snp.tracker()->touch(*_current_row[0].it);
     }
 
     // Position of the cursor in the cursor schema domain.

@@ -136,6 +136,7 @@ class partition_version : public anchorless_list_base_hook<partition_version> {
     partition_version_ref* _backref = nullptr;
     mutation_partition _partition;
     uint64_t _cache_id = 0;
+    cache_algorithm::lru_type _garbage;
 
     friend class partition_version_ref;
     friend class partition_entry;
@@ -153,6 +154,9 @@ public:
     }
     uint64_t get_cache_id() const noexcept {
         return _cache_id;
+    }
+    void push_garbage(rows_entry& e) noexcept {
+        _garbage.push_back(e);
     }
 
     using is_evictable = bool_class<class evictable_tag>;
