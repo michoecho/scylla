@@ -314,7 +314,7 @@ modes = {
         'cxx_ld_flags': '-Wl,--gc-sections',
         'stack-usage-threshold': 1024*13,
         'optimization-level': '3',
-        'per_src_extra_cxxflags': {},
+        'per_src_extra_cxxflags': {'partition_version.cc': '-O0', 'mutation_partition.cc': '-O0'},
         'cmake_build_type': 'RelWithDebInfo',
         'can_have_debug_info': True,
         'default': True,
