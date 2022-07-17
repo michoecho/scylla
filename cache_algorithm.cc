@@ -23,20 +23,20 @@ cache_algorithm::~cache_algorithm() {
 __attribute__ ((optnone))
 void cache_algorithm::remove_garbage(evictable& e) noexcept {
     remove(e);
-    calogger.debug("Marking as garbage {:#018x}", e.cache_hash());
+    //calogger.debug("Marking as garbage {:#018x}", e.cache_hash());
     e._status = evictable::status::GARBAGE;
 }
 
 __attribute__ ((optnone))
 void cache_algorithm::remove(evictable& e) noexcept {
     if (e._status == evictable::status::GARBAGE) {
-        calogger.debug("Unlinking garbage {:#018x}", e.cache_hash());
+        //calogger.debug("Unlinking garbage {:#018x}", e.cache_hash());
         assert(e.is_linked());
         e._lru_link.unlink();
         e._status = evictable::status::DETACHED;
         return;
     }
-    calogger.debug("Removing {:#018x}", e.cache_hash());
+    //calogger.debug("Removing {:#018x}", e.cache_hash());
     switch (e._status) {
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
@@ -55,7 +55,7 @@ void cache_algorithm::remove(evictable& e) noexcept {
 
 __attribute__ ((optnone))
 void cache_algorithm::add(evictable& e) noexcept {
-    calogger.debug("Adding {:#018x}", e.cache_hash());
+    //calogger.debug("Adding {:#018x}", e.cache_hash());
     e._size_when_added = e.size_bytes();
     if (e.is_linked()) {
         // For _garbage in partition_version.
@@ -86,10 +86,10 @@ void cache_algorithm::add(evictable& e) noexcept {
 __attribute__ ((optnone))
 void cache_algorithm::touch(evictable& e) noexcept {
     if (e._status == evictable::status::GARBAGE) {
-        calogger.debug("Touching garbage {:#018x}", e.cache_hash());
+        //calogger.debug("Touching garbage {:#018x}", e.cache_hash());
         return;
     }
-    calogger.debug("Touching {:#018x}", e.cache_hash());
+    //calogger.debug("Touching {:#018x}", e.cache_hash());
     if (e.is_linked()) {
         remove(e);
     }
@@ -113,18 +113,18 @@ __attribute__ ((optnone))
 cache_algorithm::reclaiming_result cache_algorithm::evict() noexcept {
     if (!_garbage.empty()) {
         evictable& e = _garbage.front();
-        calogger.debug("Evicting garbage {:#018x}", e.cache_hash());
+        //calogger.debug("Evicting garbage {:#018x}", e.cache_hash());
         e.on_evicted();
         return reclaiming_result::reclaimed_something;
     } else if (!_cold.empty()) {
         evictable& e = _cold.front();
-        calogger.debug("Evicting {:#018x}", e.cache_hash());
+        //calogger.debug("Evicting {:#018x}", e.cache_hash());
         e.on_evicted();
         rebalance();
         return reclaiming_result::reclaimed_something;
     } else if (!_hot.empty()) {
         evictable& e = _hot.front();
-        calogger.debug("Evicting {:#018x}", e.cache_hash());
+        //calogger.debug("Evicting {:#018x}", e.cache_hash());
         e.on_evicted();
         return reclaiming_result::reclaimed_something;
     } else {
