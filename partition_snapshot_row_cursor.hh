@@ -608,16 +608,10 @@ public:
     }
 
     // Informs the cache algorithm about a read of the entry pointed to by the cursor.
-    // Cursor must be valid and pointing at a row.
+    // Cursor must be valid.
     void touch() {
-        // Rows in newer versions can overlap (overwrite) rows in older versions.
-        // If a newer version was evicted before an older one, such overwrite could be lost.
-        // We prevent that by making sure that older versions are evicted before newer ones.
-        // To achieve that, we don't touch (in the LRU) contents of non-newest versions.
-        // This causes all content of an older version to always stay after all content in
-        // a newer version in the LRU list, and hence to be evicted later.
-        if (_snp.at_latest_version() && is_in_latest_version()) {
-            _snp.tracker()->touch(*get_iterator_in_latest_version());
+        if (at_a_row()) {
+            _snp.tracker()->touch(*_current_row[0].it);
         }
     }
 
