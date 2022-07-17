@@ -411,6 +411,8 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
     while (p_i != p._rows.end()) {
       try {
         rows_entry& src_e = *p_i;
+        extern logging::logger calogger;
+        calogger.debug("Processing {:#018x}", src_e.cache_hash());
 
         bool miss = true;
         if (i != _rows.end()) {
@@ -442,7 +444,16 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
             if (insert) {
                 app_stats.has_any_tombstones |= bool(p_i->row().deleted_at());
                 rows_type::key_grabber pi_kg(p_i);
-                _rows.insert_before(i, std::move(pi_kg));
+                auto x = _rows.insert_before(i, std::move(pi_kg));
+                if (tracker && x->is_garbage()) {
+                    partition_version& pv = partition_version::container_of(*this);
+                    partition_version& src_pv = partition_version::container_of(p);
+                    src_pv._garbage.erase(src_pv._garbage.iterator_to(*x));
+                    pv.push_garbage(*x);
+                    if (!pv.next()) { 
+                        tracker->get_cache_algorithm().splice_garbage(pv._garbage);
+                    }
+                }
             }
         } else {
             auto continuous = i->continuous() || src_e.continuous();
@@ -456,6 +467,9 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
             if (tracker) {
                 tracker->on_remove();
                 // Newer evictable versions store complete rows
+                if (src_e.is_garbage()) {
+                    i->swap(src_e);
+                }
                 i->replace_with(std::move(src_e));
                 tracker->_cache_algorithm.remove(src_e);
             } else {

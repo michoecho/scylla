@@ -36,6 +36,10 @@ public:
     virtual size_t size_bytes() const noexcept = 0;
     virtual hash_type cache_hash() const noexcept = 0;
 
+    bool is_garbage() const {
+        return _status == status::GARBAGE;
+    }
+
     bool is_linked() const {
         return _lru_link.is_linked();
     }

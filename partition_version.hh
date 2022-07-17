@@ -136,8 +136,9 @@ class partition_version : public anchorless_list_base_hook<partition_version> {
     partition_version_ref* _backref = nullptr;
     mutation_partition _partition;
     uint64_t _cache_id = 0;
+public:
     cache_algorithm::lru_type _garbage;
-
+private:
     friend class partition_version_ref;
     friend class partition_entry;
     friend class partition_snapshot;

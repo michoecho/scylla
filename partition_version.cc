@@ -35,6 +35,8 @@ partition_version::partition_version(partition_version&& pv) noexcept
     : anchorless_list_base_hook(std::move(pv))
     , _backref(pv._backref)
     , _partition(std::move(pv._partition))
+    , _cache_id(pv._cache_id)
+    , _garbage(std::move(pv._garbage))
 {
     if (_backref) {
         _backref->_version = this;
@@ -53,6 +55,7 @@ partition_version& partition_version::operator=(partition_version&& pv) noexcept
 
 partition_version::~partition_version()
 {
+    //assert(_partition.clustered_rows().empty());
     assert(_garbage.empty());
     if (_backref) {
         _backref->_version = nullptr;

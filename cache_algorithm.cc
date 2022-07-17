@@ -33,6 +33,7 @@ void cache_algorithm::remove(evictable& e) noexcept {
         calogger.debug("Unlinking garbage {:#018x}", e.cache_hash());
         assert(e.is_linked());
         e._lru_link.unlink();
+        e._status = evictable::status::DETACHED;
         return;
     }
     calogger.debug("Removing {:#018x}", e.cache_hash());
