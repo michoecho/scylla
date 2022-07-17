@@ -20,51 +20,42 @@ cache_algorithm::~cache_algorithm() {
     _cold.clear_and_dispose([] (evictable* e) { e->on_evicted(); });
 }
 
-__attribute__ ((optnone))
 void cache_algorithm::remove_garbage(evictable& e) noexcept {
     remove(e);
     //calogger.debug("Marking as garbage {:#018x}", e.cache_hash());
     e._status = evictable::status::GARBAGE;
 }
 
-__attribute__ ((optnone))
 void cache_algorithm::remove(evictable& e) noexcept {
-    if (e._status == evictable::status::GARBAGE) {
-        //calogger.debug("Unlinking garbage {:#018x}", e.cache_hash());
-        assert(e.is_linked());
-        e._lru_link.unlink();
-        e._status = evictable::status::DETACHED;
-        return;
-    }
     //calogger.debug("Removing {:#018x}", e.cache_hash());
     switch (e._status) {
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
         _cold_total -= e._size_when_added;
-        e._status = evictable::status::DETACHED;
         break;
     case evictable::status::HOT:
         _hot.erase(_hot.iterator_to(e));
         _hot_total -= e._size_when_added;
-        e._status = evictable::status::DETACHED;
         break;
-    default:
+    case evictable::status::GARBAGE:
+        assert(e.is_linked());
+        e._lru_link.unlink();
+        break;
+    case evictable::status::NEW:
+    case evictable::status::DETACHED:
         break;
     }
+    e._status = evictable::status::DETACHED;
 }
 
-__attribute__ ((optnone))
 void cache_algorithm::add(evictable& e) noexcept {
     //calogger.debug("Adding {:#018x}", e.cache_hash());
     e._size_when_added = e.size_bytes();
-    if (e.is_linked()) {
-        // For _garbage in partition_version.
-        e._lru_link.unlink();
-    }
     switch (e._status) {
     case evictable::status::COLD:
     case evictable::status::HOT:
-        assert("add preconditions not fulfilled" && false);
+    case evictable::status::GARBAGE:
+        assert("Attempting to add an already added element to the cache algorithm" && false);
         break;
     case evictable::status::DETACHED:
         _hot.push_back(e);
@@ -77,13 +68,9 @@ void cache_algorithm::add(evictable& e) noexcept {
         _cold_total += e._size_when_added;
         e._status = evictable::status::COLD;
         break;
-    case evictable::status::GARBAGE:
-        assert("attempted to add GARBAGE to the cache algorithm" && false);
-        break;
     }
 }
 
-__attribute__ ((optnone))
 void cache_algorithm::touch(evictable& e) noexcept {
     if (e._status == evictable::status::GARBAGE) {
         //calogger.debug("Touching garbage {:#018x}", e.cache_hash());
@@ -96,7 +83,6 @@ void cache_algorithm::touch(evictable& e) noexcept {
     add(e);
 }
 
-__attribute__ ((optnone))
 void cache_algorithm::rebalance() noexcept {
     while (_hot_total > MAX_HOT_FRACTION * (_hot_total + _cold_total)) {
         evictable& e = _hot.front();
@@ -109,7 +95,6 @@ void cache_algorithm::rebalance() noexcept {
 }
 
 // Evicts a single element from the LRU
-__attribute__ ((optnone))
 cache_algorithm::reclaiming_result cache_algorithm::evict() noexcept {
     if (!_garbage.empty()) {
         evictable& e = _garbage.front();
