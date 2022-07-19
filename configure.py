@@ -508,6 +508,7 @@ scylla_tests = set([
     'test/boost/rate_limiter_test',
     'test/boost/per_partition_rate_limit_test',
     'test/boost/expr_test',
+    'test/boost/count_min_sketch_test',
     'test/manual/ec2_snitch_test',
     'test/manual/enormous_table_scan_test',
     'test/manual/gce_snitch_test',
@@ -1207,6 +1208,7 @@ pure_boost_tests = set([
     'test/boost/bptree_test',
     'test/boost/utf8_test',
     'test/manual/streaming_histogram_test',
+    'test/boost/count_min_sketch_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
