@@ -10,12 +10,12 @@
 
 #include <boost/intrusive/list.hpp>
 #include <seastar/core/memory.hh>
+#include "utils/count_min_sketch.hh"
 
 class evictable {
     friend class cache_algorithm;
     using lru_link_type = boost::intrusive::list_member_hook<
         boost::intrusive::link_mode<boost::intrusive::auto_unlink>>;
-        //boost::intrusive::link_mode<boost::intrusive::safe_link>>;
     lru_link_type _lru_link;
 protected:
     // Prevent destruction via evictable pointer. LRU is not aware of allocation strategy.
@@ -23,9 +23,9 @@ protected:
 public:
     using hash_type = uint64_t;
     enum class status : uint8_t {
-        NEW, COLD, DETACHED, HOT, GARBAGE
+        WINDOW, COLD, HOT, GARBAGE
     };
-    status _status = status::NEW;
+    status _status = status::COLD;
     uint64_t _size_when_added = 0;
     evictable() = default;
     evictable(evictable&& o) noexcept;
@@ -59,15 +59,21 @@ public:
         boost::intrusive::constant_time_size<false>>; // we need this to have bi::auto_unlink on hooks.
 private:
     lru_type _hot;
-    size_t _hot_total = 0;
     lru_type _cold;
-    size_t _cold_total = 0;
+    lru_type _window;
     lru_type _garbage;
+    utils::count_min_sketch _sketch;
+
+    size_t _hot_total = 0;
+    size_t _cold_total = 0;
+    size_t _window_total = 0;
     static constexpr float MAX_HOT_FRACTION = 0.8;
+    static constexpr float MIN_WINDOW_FRACTION = 0.1;
     void rebalance() noexcept;
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
+    cache_algorithm();
     ~cache_algorithm();
     void remove(evictable& e) noexcept;
     void add(evictable& e) noexcept;

@@ -27,8 +27,15 @@ void cache_algorithm::remove_garbage(evictable& e) noexcept {
 }
 
 void cache_algorithm::remove(evictable& e) noexcept {
+    if (!e.is_linked()) {
+        return;
+    }
     //calogger.debug("Removing {:#018x}", e.cache_hash());
     switch (e._status) {
+    case evictable::status::WINDOW:
+        _window.erase(_cold.iterator_to(e));
+        _window_total -= e._size_when_added;
+        break;
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
         _cold_total -= e._size_when_added;
@@ -38,32 +45,26 @@ void cache_algorithm::remove(evictable& e) noexcept {
         _hot_total -= e._size_when_added;
         break;
     case evictable::status::GARBAGE:
-        assert(e.is_linked());
         e._lru_link.unlink();
         break;
-    case evictable::status::NEW:
-    case evictable::status::DETACHED:
-        break;
     }
-    e._status = evictable::status::DETACHED;
 }
 
 void cache_algorithm::add(evictable& e) noexcept {
     //calogger.debug("Adding {:#018x}", e.cache_hash());
+    assert(!e.is_linked());
     e._size_when_added = e.size_bytes();
     switch (e._status) {
     case evictable::status::COLD:
     case evictable::status::HOT:
-    case evictable::status::GARBAGE:
-        assert("Attempting to add an already added element to the cache algorithm" && false);
-        break;
-    case evictable::status::DETACHED:
         _hot.push_back(e);
         _hot_total += e._size_when_added;
         e._status = evictable::status::HOT;
         rebalance();
         break;
-    case evictable::status::NEW:
+    case evictable::status::WINDOW:
+        break;
+    case evictable::status::GARBAGE:
         _cold.push_back(e);
         _cold_total += e._size_when_added;
         e._status = evictable::status::COLD;
@@ -72,15 +73,33 @@ void cache_algorithm::add(evictable& e) noexcept {
 }
 
 void cache_algorithm::touch(evictable& e) noexcept {
-    if (e._status == evictable::status::GARBAGE) {
-        //calogger.debug("Touching garbage {:#018x}", e.cache_hash());
+    //calogger.debug("Touching {:#018x}", e.cache_hash());
+    if (!e.is_linked()) {
+        add(e);
         return;
     }
-    //calogger.debug("Touching {:#018x}", e.cache_hash());
-    if (e.is_linked()) {
-        remove(e);
+    switch (e._status) {
+    case evictable::status::HOT:
+        _hot.erase(_hot.iterator_to(e));
+        _hot.push_back(e);
+        break;
+    case evictable::status::COLD:
+        _cold.erase(_cold.iterator_to(e));
+        _cold_total -= e._size_when_added;
+        _hot.push_back(e);
+        _hot_total += e._size_when_added;
+        e._status = evictable::status::HOT;
+        break;
+    case evictable::status::WINDOW:
+        break;
+    case evictable::status::GARBAGE:
+        e._lru_link.unlink();
+        e._size_when_added = e.size_bytes();
+        _cold.push_back(e);
+        _cold_total += e._size_when_added;
+        e._status = evictable::status::COLD;
+        break;
     }
-    add(e);
 }
 
 void cache_algorithm::rebalance() noexcept {
@@ -120,3 +139,7 @@ cache_algorithm::reclaiming_result cache_algorithm::evict() noexcept {
 void cache_algorithm::splice_garbage(lru_type& garbage) noexcept {
     _garbage.splice(_garbage.end(), garbage);
 }
+
+cache_algorithm::cache_algorithm()
+    : _sketch(1000000)
+{}
