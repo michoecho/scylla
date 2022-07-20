@@ -50,8 +50,10 @@ wtinylfu_slru::wtinylfu_slru(size_t expected_entries)
     : _sketch(expected_entries) {}
 
 wtinylfu_slru::~wtinylfu_slru() {
-    _hot.clear_and_dispose([] (evictable* e) { e->on_evicted(); });
-    _cold.clear_and_dispose([] (evictable* e) { e->on_evicted(); });
+    assert(_window.empty());
+    assert(_cold.empty());
+    assert(_hot.empty());
+    assert(_garbage.empty());
 }
 
 void wtinylfu_slru::remove_garbage(evictable& e) noexcept {
