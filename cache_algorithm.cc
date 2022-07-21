@@ -175,6 +175,34 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
         //calogger.debug("Evicting garbage {:#018x}", e.cache_hash());
         e.on_evicted();
         return reclaiming_result::reclaimed_something;
+    } else if (!_window.empty()) {
+        evictable& window_candidate = _window.front();
+        size_t window_candidate_size = window_candidate._size_when_added;
+        size_t window_candidate_freq = _sketch.estimate(window_candidate.cache_hash()); 
+        size_t main_candidates_size = 0;
+        size_t main_candidates_freq = 0;
+
+        auto iter = _cold.begin();
+        while (main_candidates_size < window_candidate_size && iter != _cold.end()) {
+            main_candidates_size += iter->size_bytes();
+            main_candidates_freq += _sketch.estimate(iter->cache_hash());
+        }
+
+        if (window_candidate_freq >= main_candidates_freq) {
+            while (main_candidates_size > 0) {
+                main_candidates_size -= _cold.front()._size_when_added;
+                _cold.front().on_evicted();
+            }
+            _window.pop_front();
+            _window_total -= window_candidate_size;
+            _cold.push_back(window_candidate);
+            _cold_total += window_candidate_size;
+            window_candidate._status = evictable::status::COLD;
+        } else {
+            window_candidate.on_evicted();
+        }
+
+        return reclaiming_result::reclaimed_something;
     } else if (!_cold.empty()) {
         evictable& e = _cold.front();
         //calogger.debug("Evicting {:#018x}", e.cache_hash());
