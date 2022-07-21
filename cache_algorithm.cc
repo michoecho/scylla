@@ -30,7 +30,11 @@ private:
     size_t _window_total = 0;
     static constexpr float MAX_HOT_FRACTION = 0.8;
     static constexpr float MIN_WINDOW_FRACTION = 0.1;
+    size_t _uses = 0;
+    size_t _halve_period = 100000;
+    size_t _items = 0;
     void rebalance() noexcept;
+    void increment_sketch(evictable::hash_type key) noexcept;
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
@@ -47,13 +51,24 @@ public:
 };
 
 wtinylfu_slru::wtinylfu_slru(size_t expected_entries)
-    : _sketch(expected_entries) {}
+    : _sketch(expected_entries)
+{}
 
 wtinylfu_slru::~wtinylfu_slru() {
     assert(_window.empty());
     assert(_cold.empty());
     assert(_hot.empty());
     assert(_garbage.empty());
+}
+
+void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
+    _sketch.increment(key);
+    _uses += 1;
+    if (_uses >= _halve_period) {
+        _sketch.halve();
+        _uses = 0;
+        _halve_period = 10 * _items;
+    }
 }
 
 void wtinylfu_slru::remove_garbage(evictable& e) noexcept {
@@ -84,6 +99,7 @@ void wtinylfu_slru::remove(evictable& e) noexcept {
         e._lru_link.unlink();
         break;
     }
+    --_items;
 }
 
 void wtinylfu_slru::add(evictable& e) noexcept {
@@ -106,6 +122,8 @@ void wtinylfu_slru::add(evictable& e) noexcept {
         e._status = evictable::status::COLD;
         break;
     }
+    ++_items;
+    increment_sketch(e.cache_hash());
 }
 
 void wtinylfu_slru::touch(evictable& e) noexcept {
@@ -136,6 +154,7 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
         e._status = evictable::status::COLD;
         break;
     }
+    increment_sketch(e.cache_hash());
 }
 
 void wtinylfu_slru::rebalance() noexcept {
