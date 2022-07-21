@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#pragma clang optimize off
+
 #include "cache_algorithm.hh"
 #include "log.hh"
 #include "utils/count_min_sketch.hh"
@@ -28,13 +30,27 @@ private:
     size_t _hot_total = 0;
     size_t _cold_total = 0;
     size_t _window_total = 0;
-    static constexpr float MAX_HOT_FRACTION = 0.8;
-    static constexpr float MIN_WINDOW_FRACTION = 0.1;
-    size_t _uses = 0;
-    size_t _halve_period = 100000;
+
+    size_t _low_watermark = -1;
+#if 0
+    size_t _next_watermark = -1;
+#endif
+
+    float _main_fraction = 0;
+
+    size_t _time = 0;
     size_t _items = 0;
-    void rebalance() noexcept;
+    size_t _next_halve = 100000;
+#if 0
+    static constexpr float MAX_MAIN_FRACTION = 0.9;
+    static constexpr float COLD_FRACTION = 0.2 * 0.8;
+
+    size_t _next_watermark_update = 77777;
+#endif
     void increment_sketch(evictable::hash_type key) noexcept;
+    void evict_from_main() noexcept;
+    void evict_from_window() noexcept;
+    void evict_from_garbage() noexcept;
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
@@ -43,7 +59,6 @@ public:
     void remove(evictable& e) noexcept;
     void add(evictable& e) noexcept;
     void touch(evictable& e) noexcept;
-    void remove_garbage(evictable& e) noexcept;
     void splice_garbage(cache_algorithm::lru_type& garbage) noexcept;
 
     // Evicts a single element from the LRU
@@ -63,75 +78,58 @@ wtinylfu_slru::~wtinylfu_slru() {
 
 void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
     _sketch.increment(key);
-    _uses += 1;
-    if (_uses >= _halve_period) {
+    _time += 1;
+    if (_time >= _next_halve) {
         _sketch.halve();
-        _uses = 0;
-        _halve_period = 10 * _items;
+        _next_halve = _time + 10 * _items;
     }
-}
-
-void wtinylfu_slru::remove_garbage(evictable& e) noexcept {
-    remove(e);
-    //calogger.debug("Marking as garbage {:#018x}", e.cache_hash());
-    e._status = evictable::status::GARBAGE;
 }
 
 void wtinylfu_slru::remove(evictable& e) noexcept {
-    if (!e.is_linked()) {
-        return;
-    }
-    //calogger.debug("Removing {:#018x}", e.cache_hash());
     switch (e._status) {
     case evictable::status::WINDOW:
-        _window.erase(_cold.iterator_to(e));
+        _window.erase(_window.iterator_to(e));
         _window_total -= e._size_when_added;
+        --_items;
         break;
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
         _cold_total -= e._size_when_added;
+        --_items;
+#if 0
+        incrementally_rebalance_window();
+        incrementally_rebalance_main();
+#endif
         break;
     case evictable::status::HOT:
         _hot.erase(_hot.iterator_to(e));
         _hot_total -= e._size_when_added;
+        --_items;
+#if 0
+        incrementally_rebalance_window();
+#endif
         break;
     case evictable::status::GARBAGE:
-        e._lru_link.unlink();
+        if (e._lru_link.is_linked()) {
+            e._lru_link.unlink();
+        }
         break;
     }
-    --_items;
+    e._status = evictable::status::GARBAGE;
 }
 
 void wtinylfu_slru::add(evictable& e) noexcept {
-    //calogger.debug("Adding {:#018x}", e.cache_hash());
-    assert(!e.is_linked());
+    assert(!e._lru_link.is_linked());
+    assert(e._status == evictable::status::GARBAGE);
     e._size_when_added = e.size_bytes();
-    switch (e._status) {
-    case evictable::status::COLD:
-    case evictable::status::HOT:
-        _hot.push_back(e);
-        _hot_total += e._size_when_added;
-        e._status = evictable::status::HOT;
-        rebalance();
-        break;
-    case evictable::status::WINDOW:
-        break;
-    case evictable::status::GARBAGE:
-        _cold.push_back(e);
-        _cold_total += e._size_when_added;
-        e._status = evictable::status::COLD;
-        break;
-    }
+    _window.push_back(e);
+    e._status = evictable::status::WINDOW;
+    _window_total += e._size_when_added;
     ++_items;
     increment_sketch(e.cache_hash());
 }
 
 void wtinylfu_slru::touch(evictable& e) noexcept {
-    //calogger.debug("Touching {:#018x}", e.cache_hash());
-    if (!e.is_linked()) {
-        add(e);
-        return;
-    }
     switch (e._status) {
     case evictable::status::HOT:
         _hot.erase(_hot.iterator_to(e));
@@ -139,84 +137,160 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
         break;
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
+        _cold.push_back(e);
+#if 0
         _cold_total -= e._size_when_added;
         _hot.push_back(e);
         _hot_total += e._size_when_added;
         e._status = evictable::status::HOT;
+        incrementally_rebalance_main();
+#endif
         break;
     case evictable::status::WINDOW:
+        _window.erase(_window.iterator_to(e));
+        _window.push_back(e);
         break;
     case evictable::status::GARBAGE:
-        e._lru_link.unlink();
+        if (e._lru_link.is_linked()) {
+            e._lru_link.unlink();
+        }
         e._size_when_added = e.size_bytes();
-        _cold.push_back(e);
-        _cold_total += e._size_when_added;
-        e._status = evictable::status::COLD;
+        _window.push_back(e);
+        _window_total += e._size_when_added;
+        e._status = evictable::status::WINDOW;
+        ++_items;
         break;
     }
     increment_sketch(e.cache_hash());
 }
 
-void wtinylfu_slru::rebalance() noexcept {
-    while (_hot_total > MAX_HOT_FRACTION * (_hot_total + _cold_total)) {
-        evictable& e = _hot.front();
-        _hot.pop_front();
-        _hot_total -= e._size_when_added;
-        _cold.push_back(e);
-        _cold_total += e._size_when_added;
-        e._status = evictable::status::COLD;
+#if 0
+[[gnu::noinline]]
+void wtinylfu_slru::incrementally_rebalance_main() noexcept {
+    for (int i = 0; i < 2; ++i) {
+        if (!_hot.empty() && _cold_total <= COLD_FRACTION * _low_watermark) {
+            evictable& e = _hot.front();
+            _hot.pop_front();
+            _hot_total -= e._size_when_added;
+            _cold.push_back(e);
+            _cold_total += e._size_when_added;
+            e._status = evictable::status::COLD;
+        }
     }
 }
 
-// Evicts a single element from the LRU
-cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
-    if (!_garbage.empty()) {
-        evictable& e = _garbage.front();
-        //calogger.debug("Evicting garbage {:#018x}", e.cache_hash());
-        e.on_evicted();
-        return reclaiming_result::reclaimed_something;
-    } else if (!_window.empty()) {
-        evictable& window_candidate = _window.front();
-        size_t window_candidate_size = window_candidate._size_when_added;
-        size_t window_candidate_freq = _sketch.estimate(window_candidate.cache_hash()); 
-        size_t main_candidates_size = 0;
-        size_t main_candidates_freq = 0;
-
-        auto iter = _cold.begin();
-        while (main_candidates_size < window_candidate_size && iter != _cold.end()) {
-            main_candidates_size += iter->size_bytes();
-            main_candidates_freq += _sketch.estimate(iter->cache_hash());
-        }
-
-        if (window_candidate_freq >= main_candidates_freq) {
-            while (main_candidates_size > 0) {
-                main_candidates_size -= _cold.front()._size_when_added;
-                _cold.front().on_evicted();
-            }
+[[gnu::noinline]]
+void wtinylfu_slru::incrementally_rebalance_window() noexcept {
+    for (int i = 0; i < 2; ++i) {
+        if (!_window.empty() && (_window.front()._size_when_added + _cold_total + _hot_total <= _main_fraction * _low_watermark)) {
+            evictable& candidate = _window.front();
             _window.pop_front();
-            _window_total -= window_candidate_size;
-            _cold.push_back(window_candidate);
-            _cold_total += window_candidate_size;
+            _window_total -= candidate._size_when_added;
+            _cold.push_front(candidate); // sic! They haven't earned they keep yet.
+            _cold_total += candidate._size_when_added;
             window_candidate._status = evictable::status::COLD;
-        } else {
-            window_candidate.on_evicted();
         }
+    }
+}
+#endif
 
-        return reclaiming_result::reclaimed_something;
-    } else if (!_cold.empty()) {
+void wtinylfu_slru::evict_from_main() noexcept {
+    if (!_cold.empty()) {
         evictable& e = _cold.front();
-        //calogger.debug("Evicting {:#018x}", e.cache_hash());
+        _cold.pop_front();
+        _cold_total -= e._size_when_added;
+        e._status = evictable::status::GARBAGE;
         e.on_evicted();
-        rebalance();
-        return reclaiming_result::reclaimed_something;
-    } else if (!_hot.empty()) {
-        evictable& e = _hot.front();
-        //calogger.debug("Evicting {:#018x}", e.cache_hash());
-        e.on_evicted();
-        return reclaiming_result::reclaimed_something;
     } else {
+        assert(!_hot.empty());
+        evictable& e = _hot.front();
+        _hot.pop_front();
+        _hot_total -= e._size_when_added;
+        e._status = evictable::status::GARBAGE;
+        e.on_evicted();
+    }
+}
+
+void wtinylfu_slru::evict_from_garbage() noexcept {
+    evictable& e = _garbage.front();
+    _garbage.pop_front();
+    e.on_evicted();
+}
+
+void wtinylfu_slru::evict_from_window() noexcept {
+    if (_cold.empty()) {
+        // Apparently the background balancer isn't doing its job fast enough.
+        std::swap(_cold, _hot);
+        std::swap(_cold_total, _hot_total);
+    }
+
+    evictable& candidate = _window.front();
+    _window.pop_front();
+    _window_total -= candidate._size_when_added;
+    size_t candidate_size = candidate._size_when_added;
+    size_t candidate_freq = _sketch.estimate(candidate.cache_hash()); 
+    size_t victim_size = 0;
+    size_t victim_freq = 0;
+
+    for (auto it = _cold.begin(); it != _cold.end() && (victim_size < candidate_size); ++it) {
+        victim_size += it->size_bytes();
+        victim_freq += _sketch.estimate(it->cache_hash());
+        if (victim_freq > candidate_freq) {
+            candidate._status = evictable::status::GARBAGE;
+            candidate.on_evicted();
+            return;
+        }
+    }
+
+    while (victim_size > 0) {
+        evictable& victim = _cold.front();
+        _cold.pop_front();
+        _cold_total -= victim._size_when_added;
+        victim_size -= victim._size_when_added;
+        victim._status = evictable::status::GARBAGE;
+        victim.on_evicted();
+    }
+    _cold.push_back(candidate);
+    _cold_total += candidate_size;
+    candidate._status = evictable::status::COLD;
+}
+
+#if 0
+void update_watermarks() {
+    size_t current_total = _cold_total + _window_total + _hot_total;
+    _next_watermark = std::min(_next_watermark, current_total);
+    _low_watermark = std::min(_low_watermark, _next_watermark);
+    if (_time >= _next_watermark_update) [[unlikely]] {
+        _low_watermark = _next_watermark;
+        _next_watermark = 0;
+        _next_watermark_update = _time + 10 * _items;
+    }
+}
+#endif
+
+cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
+#if 0
+    update_watermarks();
+#endif
+
+    if (!_garbage.empty()) [[unlikely]] {
+        evict_from_garbage();
+        return reclaiming_result::reclaimed_something;
+    }
+
+    size_t current_total = _cold_total + _window_total + _hot_total;
+    if (current_total == 0) {
         return reclaiming_result::reclaimed_nothing;
     }
+
+    if (_window.empty() || _cold_total + _hot_total > _main_fraction * _low_watermark) {
+        // Can happen after a bump in memory pressure (which shrunk _low_watermark).
+        evict_from_main();
+        return reclaiming_result::reclaimed_something;
+    }
+
+    evict_from_window();
+    return reclaiming_result::reclaimed_something;
 }
 
 void wtinylfu_slru::splice_garbage(cache_algorithm::lru_type& garbage) noexcept {

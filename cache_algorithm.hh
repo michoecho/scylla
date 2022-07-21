@@ -18,9 +18,9 @@ class evictable {
         boost::intrusive::link_mode<boost::intrusive::auto_unlink>>;
     lru_link_type _lru_link;
     enum class status : uint8_t {
-        WINDOW, COLD, HOT, GARBAGE
+        GARBAGE, WINDOW, COLD, HOT
     };
-    status _status = status::COLD;
+    status _status = status::GARBAGE;
     uint64_t _size_when_added = 0;
 protected:
     // Prevent destruction via evictable pointer. LRU is not aware of allocation strategy.
@@ -31,16 +31,23 @@ public:
     evictable(evictable&& o) noexcept;
     evictable& operator=(evictable&&) noexcept = default;
 
+    // Called from evict().
+    // When on_evicted() is called, the evictable is already detached from the algorithm.
+    // The implementation should destroy the item immediately if possible,
+    // since the purpose of eviction is to reclaim memory.
+    // But if destruction is impossible (because the item is currently in use)
+    // the implementation can stash a reference to the item, and later destroy it
+    // or re-add it to the algorithm.
+    // The item can be re-added with add() or touch().
+    // If the item is linked into a list, the touch() call will automatically unlink it.
+    // During on_evicted, the implementation is forbidden from calling back
+    // into the algorithm. (So any re-adding has to occur later, outside of this call.)
     virtual void on_evicted() noexcept = 0;
     virtual size_t size_bytes() const noexcept = 0;
     virtual hash_type cache_hash() const noexcept = 0;
 
     bool is_garbage() const {
         return _status == status::GARBAGE;
-    }
-
-    bool is_linked() const {
-        return _lru_link.is_linked();
     }
 
     void swap(evictable& o) noexcept {
@@ -65,7 +72,6 @@ public:
     void remove(evictable& e) noexcept;
     void add(evictable& e) noexcept;
     void touch(evictable& e) noexcept;
-    void remove_garbage(evictable& e) noexcept;
     void splice_garbage(lru_type& garbage) noexcept;
     reclaiming_result evict() noexcept;
     void evict_all() noexcept;
@@ -76,7 +82,6 @@ public:
     virtual void remove(evictable& e) noexcept = 0;
     virtual void add(evictable& e) noexcept = 0;
     virtual void touch(evictable& e) noexcept = 0;
-    virtual void remove_garbage(evictable& e) noexcept = 0;
     virtual void splice_garbage(cache_algorithm::lru_type& garbage) noexcept = 0;
     virtual cache_algorithm::reclaiming_result evict() noexcept = 0;
 };
@@ -84,7 +89,6 @@ public:
 inline void cache_algorithm::remove(evictable& e) noexcept { _impl->remove(e); }
 inline void cache_algorithm::add(evictable& e) noexcept { _impl->add(e); }
 inline void cache_algorithm::touch(evictable& e) noexcept { _impl->touch(e); } 
-inline void cache_algorithm::remove_garbage(evictable& e) noexcept { _impl->remove_garbage(e); }
 inline void cache_algorithm::splice_garbage(lru_type& garbage) noexcept { _impl->splice_garbage(garbage); }
 inline cache_algorithm::reclaiming_result cache_algorithm::evict() noexcept { return _impl->evict(); };
 

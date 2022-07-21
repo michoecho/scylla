@@ -68,7 +68,7 @@ private:
                 if (--cp->_use_count == 0) {
                     cp->parent->_metrics.bytes_in_std -= cp->_buf.size();
                     cp->_buf = {};
-                    cp->parent->_cache_algorithm.add(*cp);
+                    cp->parent->_cache_algorithm.touch(*cp);
                 }
             }
         };
@@ -78,9 +78,7 @@ private:
         // As long as any ptr_type is alive, this cached_page will not be destroyed
         // because it will not be linked in the cache algorithm.
         ptr_type share() noexcept {
-            if (_use_count++ == 0) {
-                parent->_cache_algorithm.remove(*this);
-            }
+            ++_use_count;
             return std::unique_ptr<cached_page, cached_page_del>(this);
         }
     public:
@@ -322,7 +320,6 @@ public:
     };
 
     void on_evicted(cached_page& p) {
-        _cache_algorithm.remove(p);
         _metrics.cached_bytes -= p.size_in_allocator();
         _cached_bytes -= p.size_in_allocator();
         ++_metrics.page_evictions;
@@ -333,8 +330,9 @@ public:
         size_t count = 0;
         auto disposer = [] (auto* p) noexcept {};
         while (start != end) {
-            if (start->is_linked()) {
+            if (start->_use_count == 0) {
                 ++count;
+                _cache_algorithm.remove(*start);
                 on_evicted(*start);
                 start = start.erase_and_dispose(disposer, page_idx_less_comparator());
             } else {
@@ -451,7 +449,8 @@ public:
     future<> evict_gently() {
         auto i = _cache.begin();
         while (i != _cache.end()) {
-            if (i->is_linked()) {
+            if (i->_use_count == 0) {
+                _cache_algorithm.remove(*i);
                 on_evicted(*i);
                 i = i.erase(page_idx_less_comparator());
             } else {
@@ -468,11 +467,13 @@ public:
 
 inline
 void cached_file::cached_page::on_evicted() noexcept {
-    parent->on_evicted(*this);
-    with_allocator(standard_allocator(), [this] {
-        cached_file::cache_type::iterator it(this);
-        it.erase(page_idx_less_comparator());
-    });
+    if (_use_count == 0) {
+        parent->on_evicted(*this);
+        with_allocator(standard_allocator(), [this] {
+            cached_file::cache_type::iterator it(this);
+            it.erase(page_idx_less_comparator());
+        });
+    }
 }
 
 class cached_file_impl : public file_impl {

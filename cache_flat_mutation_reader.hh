@@ -736,6 +736,7 @@ void cache_flat_mutation_reader::maybe_drop_last_entry() noexcept {
             && _snp->at_oldest_version()) {
 
         with_allocator(_snp->region().allocator(), [&] {
+            _read_context.cache()._tracker.get_cache_algorithm().remove(*_last_row);
             _last_row->on_evicted(_read_context.cache()._tracker);
         });
         _last_row = nullptr;

@@ -1248,20 +1248,12 @@ void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
     partition_version& pv = partition_version::container_of(mutation_partition::container_of(*rows));
 
     if (pv.next()) {
-        tracker._cache_algorithm.remove_garbage(*this);
         pv.push_garbage(*this);
         return;
-    } else if (is_last_dummy()) {
-        // Every evictable partition entry must have a dummy entry at the end,
-        // so don't remove it, just unlink from the cache algorithm.
-        // That dummy is linked in the cache algorithm, because there may be partitions
-        // with no regular rows, and we need to track them.
-        tracker._cache_algorithm.remove(*this);
-    } else {
+    } else if (!is_last_dummy()) {
         // When evicting a dummy with both sides continuous we don't need to break continuity.
         //
         auto still_continuous = continuous() && dummy();
-        tracker._cache_algorithm.remove(*this);
         mutation_partition::rows_type::key_grabber kg(it);
         kg.release(current_deleter<rows_entry>());
         if (!still_continuous) {

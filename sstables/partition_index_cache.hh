@@ -103,7 +103,6 @@ public:
     // The partition_index_page reference obtained by dereferencing this pointer
     // is invalidated when the owning LSA region invalidates references.
     class entry_ptr {
-        // *_ref is kept alive by the means of unlinking from the cache algorithm.
         lsa::weak_ptr<entry> _ref;
     private:
         friend class partition_index_cache;
@@ -113,16 +112,14 @@ public:
         entry_ptr() = default;
         explicit entry_ptr(lsa::weak_ptr<entry> ref)
             : _ref(std::move(ref))
-        {
-            _ref->_parent->_cache_algorithm.remove(*_ref);
-        }
+        {}
         ~entry_ptr() { *this = nullptr; }
         entry_ptr(entry_ptr&&) noexcept = default;
         entry_ptr(const entry_ptr&) noexcept = default;
         entry_ptr& operator=(std::nullptr_t) noexcept {
             if (_ref) {
                 if (_ref.unique()) {
-                    _ref->_parent->_cache_algorithm.add(*_ref);
+                    _ref->_parent->_cache_algorithm.touch(*_ref);
                 }
                 _ref = nullptr;
             }
@@ -176,6 +173,7 @@ public:
     ~partition_index_cache() {
         with_allocator(_region.allocator(), [&] {
             _cache.clear_and_dispose([this] (entry* e) noexcept {
+                _cache_algorithm.remove(*e);
                 on_evicted(*e);
             });
         });
@@ -254,7 +252,6 @@ public:
     void on_evicted(entry& p) {
         _shard_stats.used_bytes -= p.size_in_allocator();
         ++_shard_stats.evictions;
-        _cache_algorithm.remove(p);
     }
 
     static const stats& shard_stats() { return _shard_stats; }
@@ -267,6 +264,7 @@ public:
                 if (i->is_referenced()) {
                     ++i;
                 } else {
+                    _cache_algorithm.remove(*i);
                     on_evicted(*i);
                     i = i.erase(key_less_comparator());
                 }
@@ -282,9 +280,11 @@ public:
 
 inline
 void partition_index_cache::entry::on_evicted() noexcept {
-    _parent->on_evicted(*this);
-    cache_type::iterator it(this);
-    it.erase(key_less_comparator());
+    if (!is_referenced()) {
+        _parent->on_evicted(*this);
+        cache_type::iterator it(this);
+        it.erase(key_less_comparator());
+    }
 }
 
 }
