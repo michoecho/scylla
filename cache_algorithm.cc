@@ -34,7 +34,7 @@ private:
     size_t _low_watermark = -1;
     size_t _next_watermark = -1;
 
-    float _main_fraction = 0.0;
+    float _main_fraction = 0.95;
 
     uint64_t _time = 0;
     uint64_t _items = 0;
@@ -237,24 +237,25 @@ void wtinylfu_slru::evict_from_window() noexcept {
             candidate._status = evictable::status::GARBAGE;
             candidate.on_evicted();
             --_items;
+            incrementally_rebalance_window();
             return;
         }
     }
 
-    size_t evicted_size = 0;
-    while (evicted_size < victim_size) {
+    _cold.push_back(candidate);
+    _cold_total += candidate_size;
+    candidate._status = evictable::status::COLD;
+
+    size_t target_size = _cold_total - victim_size;
+    while (_cold_total > target_size) {
         evictable& victim = _cold.front();
         _cold.pop_front();
         _cold_total -= victim._size;
-        evicted_size += victim._size;
         victim._status = evictable::status::GARBAGE;
         victim.on_evicted();
         --_items;
     }
-    _cold.push_back(candidate);
-    _cold_total += candidate_size;
-    candidate._status = evictable::status::COLD;
-    incrementally_rebalance_window();
+
     incrementally_rebalance_window();
 }
 
