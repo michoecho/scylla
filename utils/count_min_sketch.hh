@@ -19,9 +19,15 @@ class count_min_sketch {
 private:
     // Random large odd integers.
     constexpr static uint64_t ROWS = 4;
+#if 0
     constexpr static uint64_t BITS_PER_COUNTER = 4;
     constexpr static uint64_t HALVING_MASK = 0x7777'7777'7777'7777ull;
     constexpr static uint64_t COUNTER_MASK = 0xfull;
+#else
+    constexpr static uint64_t BITS_PER_COUNTER = 8;
+    constexpr static uint64_t HALVING_MASK = 0x7f7f'7f7f'7f7f'7f7full;
+    constexpr static uint64_t COUNTER_MASK = 0xffull;
+#endif
     constexpr static uint64_t COUNTERS_PER_WORD = 64 / BITS_PER_COUNTER;
     constexpr static uint64_t COUNTERS_PER_ENTRY = 4;
     constexpr static uint64_t SEEDS[ROWS] = {0xc3a5c85c97cb3127ull, 0xb492b66fbe98f273ull, 0x9ae16a3b2f90404full, 0xcbf29ce484222325ull};

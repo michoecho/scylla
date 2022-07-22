@@ -34,7 +34,7 @@ private:
     size_t _low_watermark = -1;
     size_t _next_watermark = -1;
 
-    float _main_fraction = 0.95;
+    float _main_fraction = 0.98;
 
     uint64_t _time = 0;
     uint64_t _items = 0;
@@ -81,6 +81,9 @@ void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
     if (_time >= _next_halve) {
         _sketch.halve();
         _next_halve = _time + 10 * _items;
+    }
+    if (_time % 77777 == 0) {
+        calogger.info("key {:#018x} {}", key, _sketch.estimate(key));
     }
 }
 
