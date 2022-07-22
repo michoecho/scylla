@@ -20,8 +20,9 @@ class evictable {
     enum class status : uint8_t {
         GARBAGE, WINDOW, COLD, HOT
     };
+    uint64_t _hash = 0;
+    uint32_t _size = 0;
     status _status = status::GARBAGE;
-    uint64_t _size_when_added = 0;
 protected:
     // Prevent destruction via evictable pointer. LRU is not aware of allocation strategy.
     ~evictable();
@@ -52,7 +53,8 @@ public:
 
     void swap(evictable& o) noexcept {
         std::swap(_status, o._status);
-        std::swap(_size_when_added, o._size_when_added);
+        std::swap(_size, o._size);
+        std::swap(_hash, o._hash);
         _lru_link.swap_nodes(o._lru_link);
     }
 };
@@ -99,6 +101,7 @@ evictable::evictable(evictable&& o) noexcept {
         o._lru_link.unlink();
         cache_algorithm::lru_type::node_algorithms::link_after(prev, _lru_link.this_ptr());
     }
+    _hash = o._hash;
     _status = o._status;
-    _size_when_added = o._size_when_added;
+    _size = o._size;
 }

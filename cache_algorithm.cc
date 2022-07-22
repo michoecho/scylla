@@ -6,8 +6,6 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#pragma clang optimize off
-
 #include "cache_algorithm.hh"
 #include "log.hh"
 #include "utils/count_min_sketch.hh"
@@ -89,12 +87,12 @@ void wtinylfu_slru::remove(evictable& e) noexcept {
     switch (e._status) {
     case evictable::status::WINDOW:
         _window.erase(_window.iterator_to(e));
-        _window_total -= e._size_when_added;
+        _window_total -= e._size;
         --_items;
         break;
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
-        _cold_total -= e._size_when_added;
+        _cold_total -= e._size;
         --_items;
 #if 0
         incrementally_rebalance_window();
@@ -103,7 +101,7 @@ void wtinylfu_slru::remove(evictable& e) noexcept {
         break;
     case evictable::status::HOT:
         _hot.erase(_hot.iterator_to(e));
-        _hot_total -= e._size_when_added;
+        _hot_total -= e._size;
         --_items;
 #if 0
         incrementally_rebalance_window();
@@ -121,12 +119,15 @@ void wtinylfu_slru::remove(evictable& e) noexcept {
 void wtinylfu_slru::add(evictable& e) noexcept {
     assert(!e._lru_link.is_linked());
     assert(e._status == evictable::status::GARBAGE);
-    e._size_when_added = e.size_bytes();
+    uint64_t size = e.size_bytes();
+    e._size = size;
+    assert(e._size == size); // Assert that size fits in uint32_t
+    e._hash = e.cache_hash();
     _window.push_back(e);
     e._status = evictable::status::WINDOW;
-    _window_total += e._size_when_added;
+    _window_total += e._size;
     ++_items;
-    increment_sketch(e.cache_hash());
+    increment_sketch(e._hash);
 }
 
 void wtinylfu_slru::touch(evictable& e) noexcept {
@@ -139,9 +140,9 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
         _cold.erase(_cold.iterator_to(e));
         _cold.push_back(e);
 #if 0
-        _cold_total -= e._size_when_added;
+        _cold_total -= e._size;
         _hot.push_back(e);
-        _hot_total += e._size_when_added;
+        _hot_total += e._size;
         e._status = evictable::status::HOT;
         incrementally_rebalance_main();
 #endif
@@ -154,14 +155,10 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
         if (e._lru_link.is_linked()) {
             e._lru_link.unlink();
         }
-        e._size_when_added = e.size_bytes();
-        _window.push_back(e);
-        _window_total += e._size_when_added;
-        e._status = evictable::status::WINDOW;
-        ++_items;
-        break;
+        add(e);
+        return;
     }
-    increment_sketch(e.cache_hash());
+    increment_sketch(e._hash);
 }
 
 #if 0
@@ -171,9 +168,9 @@ void wtinylfu_slru::incrementally_rebalance_main() noexcept {
         if (!_hot.empty() && _cold_total <= COLD_FRACTION * _low_watermark) {
             evictable& e = _hot.front();
             _hot.pop_front();
-            _hot_total -= e._size_when_added;
+            _hot_total -= e._size;
             _cold.push_back(e);
-            _cold_total += e._size_when_added;
+            _cold_total += e._size;
             e._status = evictable::status::COLD;
         }
     }
@@ -182,12 +179,12 @@ void wtinylfu_slru::incrementally_rebalance_main() noexcept {
 [[gnu::noinline]]
 void wtinylfu_slru::incrementally_rebalance_window() noexcept {
     for (int i = 0; i < 2; ++i) {
-        if (!_window.empty() && (_window.front()._size_when_added + _cold_total + _hot_total <= _main_fraction * _low_watermark)) {
+        if (!_window.empty() && (_window.front()._size + _cold_total + _hot_total <= _main_fraction * _low_watermark)) {
             evictable& candidate = _window.front();
             _window.pop_front();
-            _window_total -= candidate._size_when_added;
+            _window_total -= candidate._size;
             _cold.push_front(candidate); // sic! They haven't earned they keep yet.
-            _cold_total += candidate._size_when_added;
+            _cold_total += candidate._size;
             window_candidate._status = evictable::status::COLD;
         }
     }
@@ -198,14 +195,14 @@ void wtinylfu_slru::evict_from_main() noexcept {
     if (!_cold.empty()) {
         evictable& e = _cold.front();
         _cold.pop_front();
-        _cold_total -= e._size_when_added;
+        _cold_total -= e._size;
         e._status = evictable::status::GARBAGE;
         e.on_evicted();
     } else {
         assert(!_hot.empty());
         evictable& e = _hot.front();
         _hot.pop_front();
-        _hot_total -= e._size_when_added;
+        _hot_total -= e._size;
         e._status = evictable::status::GARBAGE;
         e.on_evicted();
     }
@@ -218,7 +215,7 @@ void wtinylfu_slru::evict_from_garbage() noexcept {
 }
 
 void wtinylfu_slru::evict_from_window() noexcept {
-    if (_cold.empty()) {
+    if (_cold.empty()) [[unlikely]] {
         // Apparently the background balancer isn't doing its job fast enough.
         std::swap(_cold, _hot);
         std::swap(_cold_total, _hot_total);
@@ -226,15 +223,15 @@ void wtinylfu_slru::evict_from_window() noexcept {
 
     evictable& candidate = _window.front();
     _window.pop_front();
-    _window_total -= candidate._size_when_added;
-    size_t candidate_size = candidate._size_when_added;
-    size_t candidate_freq = _sketch.estimate(candidate.cache_hash()); 
+    _window_total -= candidate._size;
+    size_t candidate_size = candidate._size;
+    size_t candidate_freq = _sketch.estimate(candidate._hash); 
     size_t victim_size = 0;
     size_t victim_freq = 0;
 
     for (auto it = _cold.begin(); it != _cold.end() && (victim_size < candidate_size); ++it) {
         victim_size += it->size_bytes();
-        victim_freq += _sketch.estimate(it->cache_hash());
+        victim_freq += _sketch.estimate(it->_hash);
         if (victim_freq > candidate_freq) {
             candidate._status = evictable::status::GARBAGE;
             candidate.on_evicted();
@@ -245,8 +242,8 @@ void wtinylfu_slru::evict_from_window() noexcept {
     while (victim_size > 0) {
         evictable& victim = _cold.front();
         _cold.pop_front();
-        _cold_total -= victim._size_when_added;
-        victim_size -= victim._size_when_added;
+        _cold_total -= victim._size;
+        victim_size -= victim._size;
         victim._status = evictable::status::GARBAGE;
         victim.on_evicted();
     }
