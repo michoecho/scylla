@@ -12,6 +12,7 @@
 #include "log.hh"
 #include "utils/count_min_sketch.hh"
 #include <memory>
+#include <random>
 
 logging::logger calogger("cache_algorithm");
 
@@ -26,6 +27,9 @@ private:
     cache_algorithm::lru_type _window;
     cache_algorithm::lru_type _garbage;
     utils::count_min_sketch _sketch;
+    std::mt19937 _rng{0};
+
+    uint64_t _stats[16] = {0};
 
     size_t _hot_total = 0;
     size_t _cold_total = 0;
@@ -34,7 +38,7 @@ private:
     size_t _low_watermark = -1;
     size_t _next_watermark = -1;
 
-    float _main_fraction = 0.98;
+    float _main_fraction = 0.80;
 
     uint64_t _time = 0;
     uint64_t _items = 0;
@@ -76,14 +80,16 @@ wtinylfu_slru::~wtinylfu_slru() {
 }
 
 void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
-    _sketch.increment(key);
+    if ((key >> 60) <= 1) {
+        _sketch.increment(key);
+    }
     _time += 1;
     if (_time >= _next_halve) {
         _sketch.halve();
         _next_halve = _time + 10 * _items;
     }
     if (_time % 77777 == 0) {
-        calogger.info("key {:#018x} {}", key, _sketch.estimate(key));
+        //calogger.info("key {:#018x} {}", key, _sketch.estimate(key));
     }
 }
 
@@ -93,13 +99,15 @@ void wtinylfu_slru::remove(evictable& e) noexcept {
         _window.erase(_window.iterator_to(e));
         _window_total -= e._size;
         --_items;
+        --_stats[(e._hash >> 60)];
         break;
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
         _cold_total -= e._size;
         --_items;
-        incrementally_rebalance_window();
+        --_stats[(e._hash >> 60)];
 #if 0
+        incrementally_rebalance_window();
         incrementally_rebalance_main();
 #endif
         break;
@@ -107,7 +115,10 @@ void wtinylfu_slru::remove(evictable& e) noexcept {
         _hot.erase(_hot.iterator_to(e));
         _hot_total -= e._size;
         --_items;
+        --_stats[(e._hash >> 60)];
+#if 0
         incrementally_rebalance_window();
+#endif
         break;
     case evictable::status::GARBAGE:
         if (e._lru_link.is_linked()) {
@@ -129,6 +140,7 @@ void wtinylfu_slru::add(evictable& e) noexcept {
     e._status = evictable::status::WINDOW;
     _window_total += e._size;
     ++_items;
+    ++_stats[(e._hash >> 60)];
     increment_sketch(e._hash);
 }
 
@@ -181,14 +193,21 @@ void wtinylfu_slru::incrementally_rebalance_main() noexcept {
 
 [[gnu::noinline]]
 void wtinylfu_slru::incrementally_rebalance_window() noexcept {
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         if (!_window.empty() && (_window.front()._size + _cold_total + _hot_total <= _main_fraction * _low_watermark)) {
             evictable& candidate = _window.front();
             _window.pop_front();
             _window_total -= candidate._size;
-            _cold.push_front(candidate); // sic! They haven't earned they keep yet.
-            _cold_total += candidate._size;
-            candidate._status = evictable::status::COLD;
+            if ((candidate._hash >> 60) >= 2) {
+                _garbage.push_front(candidate);
+                candidate._status = evictable::status::GARBAGE;
+                --_stats[(candidate._hash >> 60)];
+                --_items;
+            } else {
+                _cold.push_front(candidate); // sic! They haven't earned they keep yet.
+                _cold_total += candidate._size;
+                candidate._status = evictable::status::COLD;
+            }
         }
     }
 }
@@ -199,6 +218,7 @@ void wtinylfu_slru::evict_from_main() noexcept {
         _cold.pop_front();
         _cold_total -= e._size;
         e._status = evictable::status::GARBAGE;
+        --_stats[(e._hash >> 60)];
         e.on_evicted();
         --_items;
     } else {
@@ -207,6 +227,7 @@ void wtinylfu_slru::evict_from_main() noexcept {
         _hot.pop_front();
         _hot_total -= e._size;
         e._status = evictable::status::GARBAGE;
+        --_stats[(e._hash >> 60)];
         e.on_evicted();
         --_items;
     }
@@ -228,6 +249,23 @@ void wtinylfu_slru::evict_from_window() noexcept {
     evictable& candidate = _window.front();
     _window.pop_front();
     _window_total -= candidate._size;
+
+    if ((candidate._hash >> 60) >= 2) {
+        candidate._status = evictable::status::GARBAGE;
+        --_stats[(candidate._hash >> 60)];
+        candidate.on_evicted();
+        --_items;
+        return;
+    }
+
+    bool deserves_freebie = candidate._size + _cold_total + _hot_total <= _main_fraction * _low_watermark;
+    if (deserves_freebie && std::uniform_int_distribution<int>(0, 1)(_rng) == 0) {
+        _cold.push_back(candidate);
+        _cold_total += candidate._size;
+        candidate._status = evictable::status::COLD;
+        return;
+    }
+
     size_t candidate_size = candidate._size;
     size_t candidate_freq = _sketch.estimate(candidate._hash); 
     size_t victim_size = 0;
@@ -238,9 +276,9 @@ void wtinylfu_slru::evict_from_window() noexcept {
         victim_freq += _sketch.estimate(it->_hash);
         if (victim_freq > candidate_freq) {
             candidate._status = evictable::status::GARBAGE;
+            --_stats[(candidate._hash >> 60)];
             candidate.on_evicted();
             --_items;
-            incrementally_rebalance_window();
             return;
         }
     }
@@ -255,11 +293,10 @@ void wtinylfu_slru::evict_from_window() noexcept {
         _cold.pop_front();
         _cold_total -= victim._size;
         victim._status = evictable::status::GARBAGE;
+        --_stats[(victim._hash >> 60)];
         victim.on_evicted();
         --_items;
     }
-
-    incrementally_rebalance_window();
 }
 
 void wtinylfu_slru::update_watermarks() noexcept {
@@ -271,6 +308,7 @@ void wtinylfu_slru::update_watermarks() noexcept {
         _next_watermark = -1;
         _next_watermark_update = _time + 0.1 * _items;
         calogger.info("watermark update: {} {} {} {} {}", _low_watermark, _window_total, _hot_total, _cold_total, _items);
+        calogger.info("stats: {} {} {} {}", _stats[0], _stats[1], _stats[2], _stats[3]);
     }
 }
 
