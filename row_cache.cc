@@ -1263,7 +1263,7 @@ void rows_entry::on_evicted(cache_tracker& tracker) noexcept {
     }
 
     rows = it.tree_if_singular();
-    if (rows != nullptr) {
+    if (rows != nullptr && it->is_garbage()) {
         assert(it->is_last_dummy());
         partition_version& pv = partition_version::container_of(mutation_partition::container_of(*rows));
         if (pv.is_referenced_from_entry()) {
