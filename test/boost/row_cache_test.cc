@@ -3720,34 +3720,35 @@ SEASTAR_TEST_CASE(test_static_row_is_kept_alive_by_reads_with_no_clustering_rang
         cache_tracker tracker;
         row_cache cache(s, snapshot_source_from_snapshot(mt->as_data_source()), tracker);
 
-        auto keys = table.make_pkeys(3);
+        auto keys = table.make_pkeys(1000);
 
-        mutation m1(s, keys[0]);
-        table.add_static_row(m1, "v1");
-
-        mutation m2(s, keys[1]);
-        table.add_static_row(m2, "v2");
-
-        mutation m3(s, keys[2]);
-        table.add_static_row(m3, "v3");
-
-        cache.populate(m1);
-        cache.populate(m2);
-        cache.populate(m3);
-
-        {
-            auto slice = partition_slice_builder(*s)
-                .with_ranges({})
-                .build();
-            assert_that(cache.make_reader(s, semaphore.make_permit(), dht::partition_range::make_singular(keys[0]), slice))
-                .produces(m1);
+        std::vector<mutation> mutations;
+        for (int i = 0; i < 1000; ++i) {
+            mutations.push_back(mutation(s, keys[i]));
+            table.add_static_row(mutations.back(), fmt::format("v{}", i));
+            cache.populate(mutations.back());
         }
 
-        evict_one_partition(tracker); // should evict keys[1], not keys[0]
+        // Warm up a subset of keys (multiplies of 4).
+        for (int repeat = 0; repeat < 5; ++repeat) {
+            for (int i = 0; i < 1000; i += 4) {
+                auto slice = partition_slice_builder(*s)
+                    .with_ranges({})
+                    .build();
+                assert_that(cache.make_reader(s, semaphore.make_permit(), dht::partition_range::make_singular(keys[i]), slice))
+                    .produces(mutations[i]);
+            }
+        }
 
-        verify_does_not_have(cache, keys[1]);
-        verify_has(cache, keys[0]);
-        verify_has(cache, keys[2]);
+        // Should evict some of the cold partitions, but none of the hot ones.
+        // We assume here that each call evicts less than 75 partitions on average.
+        for (int i = 0; i < 10; ++i) {
+            evict_one_partition(tracker);
+        }
+
+        for (int i = 0; i < 1000; i += 4) {
+            verify_has(cache, keys[i]);
+        }
     });
 }
 
