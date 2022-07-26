@@ -235,7 +235,8 @@ int main(int argc, char** argv) {
                 try {
                     auto reader = cache.make_reader(s, semaphore.make_permit(), range);
                     auto close_reader = deferred_close(reader);
-                    assert(!reader().get0());
+                    // The below assert assumes that the large mutation is evicted last. But without LRU this need not be the case.
+                    // assert(!reader().get0());
                     auto evicted_from_cache = logalloc::segment_size + large_cell_size;
                     // GCC's -fallocation-dce can remove dead calls to new and malloc, so
                     // assign the result to a global variable to disable it.
