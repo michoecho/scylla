@@ -81,6 +81,7 @@ public:
 
 class cache_algorithm_impl {
 public:
+    virtual ~cache_algorithm_impl() noexcept = default;
     virtual void remove(evictable& e) noexcept = 0;
     virtual void add(evictable& e) noexcept = 0;
     virtual void touch(evictable& e) noexcept = 0;

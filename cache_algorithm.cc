@@ -58,21 +58,21 @@ public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
     wtinylfu_slru(size_t expected_entries);
-    ~wtinylfu_slru();
-    void remove(evictable& e) noexcept;
-    void add(evictable& e) noexcept;
-    void touch(evictable& e) noexcept;
-    void splice_garbage(cache_algorithm::lru_type& garbage) noexcept;
+    ~wtinylfu_slru() noexcept;
+    void remove(evictable& e) noexcept override;
+    void add(evictable& e) noexcept override;
+    void touch(evictable& e) noexcept override;
+    void splice_garbage(cache_algorithm::lru_type& garbage) noexcept override;
 
     // Evicts a single element from the LRU
-    reclaiming_result evict() noexcept;
+    reclaiming_result evict() noexcept override;
 };
 
 wtinylfu_slru::wtinylfu_slru(size_t expected_entries)
     : _sketch(expected_entries)
 {}
 
-wtinylfu_slru::~wtinylfu_slru() {
+wtinylfu_slru::~wtinylfu_slru() noexcept {
     assert(_window.empty());
     assert(_cold.empty());
     assert(_hot.empty());
