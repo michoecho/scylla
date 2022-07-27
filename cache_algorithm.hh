@@ -104,5 +104,6 @@ evictable::evictable(evictable&& o) noexcept {
     }
     _hash = o._hash;
     _status = o._status;
+    o._status = evictable::status::GARBAGE;
     _size = o._size;
 }

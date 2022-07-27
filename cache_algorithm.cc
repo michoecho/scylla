@@ -6,7 +6,9 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#if 0
 #pragma clang optimize off
+#endif
 
 #include "cache_algorithm.hh"
 #include "log.hh"
@@ -22,6 +24,7 @@ void cache_algorithm::evict_all() noexcept {
 
 evictable::~evictable() {
     assert(!_lru_link.is_linked());
+    assert(_status == evictable::status::GARBAGE);
 }
 
 class wtinylfu_slru : public cache_algorithm_impl {
@@ -42,7 +45,7 @@ private:
     size_t _low_watermark = -1;
     size_t _next_watermark = -1;
 
-    float _main_fraction = 0.80;
+    float _main_fraction = 0.90;
 
     uint64_t _time = 0;
     uint64_t _items = 0;
@@ -55,6 +58,12 @@ private:
     void evict_worst() noexcept;
     void update_watermarks() noexcept;
     void evict_item(evictable& e) noexcept;
+    evictable& pop_cold() noexcept;
+    evictable& pop_hot() noexcept;
+    evictable& pop_window() noexcept;
+    void push_cold(evictable& e) noexcept;
+    void push_hot(evictable& e) noexcept;
+    void push_window(evictable& e) noexcept;
 public:
     using reclaiming_result = seastar::memory::reclaiming_result;
 
@@ -130,9 +139,7 @@ void wtinylfu_slru::add(evictable& e) noexcept {
     e._size = size;
     assert(e._size == size); // Assert that size fits in uint32_t
     e._hash = e.cache_hash();
-    _window.push_back(e);
-    e._status = evictable::status::WINDOW;
-    _window_total += e._size;
+    push_window(e);
     ++_items;
     ++_stats[(e._hash >> 60)];
     increment_sketch(e._hash);
@@ -147,9 +154,7 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
     case evictable::status::COLD:
         _cold.erase(_cold.iterator_to(e));
         _cold_total -= e._size;
-        _hot.push_back(e);
-        _hot_total += e._size;
-        e._status = evictable::status::HOT;
+        push_hot(e);
         break;
     case evictable::status::WINDOW:
         _window.erase(_window.iterator_to(e));
@@ -172,6 +177,45 @@ void wtinylfu_slru::evict_item(evictable &e) noexcept {
     --_items;
 }
 
+evictable& wtinylfu_slru::pop_cold() noexcept {
+    evictable& e= _cold.front();
+    _cold.pop_front();
+    _cold_total -= e._size;
+    return e;
+}
+
+evictable& wtinylfu_slru::pop_hot() noexcept {
+    evictable& e = _hot.front();
+    _hot.pop_front();
+    _hot_total -= e._size;
+    return e;
+}
+
+evictable& wtinylfu_slru::pop_window() noexcept {
+    evictable& e = _window.front();
+    _window.pop_front();
+    _window_total -= e._size;
+    return e;
+}
+
+void wtinylfu_slru::push_cold(evictable& e) noexcept {
+    _cold_total += e._size;
+    _cold.push_back(e);
+    e._status = evictable::status::COLD;
+}
+
+void wtinylfu_slru::push_hot(evictable& e) noexcept {
+    _hot_total += e._size;
+    _hot.push_back(e);
+    e._status = evictable::status::HOT;
+}
+
+void wtinylfu_slru::push_window(evictable& e) noexcept {
+    _window_total += e._size;
+    _window.push_back(e);
+    e._status = evictable::status::WINDOW;
+}
+
 void wtinylfu_slru::update_watermarks() noexcept {
     size_t current_total = _cold_total + _window_total + _hot_total;
     _next_watermark = std::min(_next_watermark, current_total);
@@ -179,7 +223,7 @@ void wtinylfu_slru::update_watermarks() noexcept {
     if (_time >= _next_watermark_update) [[unlikely]] {
         _low_watermark = _next_watermark;
         _next_watermark = -1;
-        _next_watermark_update = _time + 0.1 * _items;
+        _next_watermark_update = _time + 10 * _items;
         calogger.info("watermark update: {} {} {} {} {}", _low_watermark, _window_total, _hot_total, _cold_total, _items);
         calogger.info("stats: {} {} {} {}", _stats[0], _stats[1], _stats[2], _stats[3]);
     }
@@ -200,83 +244,59 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
         return reclaiming_result::reclaimed_something;
     }
 
-#if 0
-    if (_window_total) {
-        evictable& candidate = _window.front();
-        _window.pop_front();
-        _window_total -= candidate._size;
-        evict_item(candidate);
-        return reclaiming_result::reclaimed_something;
-    } else {
-        return reclaiming_result::reclaimed_nothing;
-    }
-#endif
-
     if (_hot_total && _hot_total > _low_watermark * (_main_fraction - COLD_FRACTION)) {
         for (int i = 0; i < BATCH_SIZE; ++i) {
             if (_hot_total && _hot_total > _low_watermark * (_main_fraction - COLD_FRACTION)) {
-                evictable& candidate = _hot.front();
-                _hot.pop_front();
-                _hot_total -= candidate._size;
-                _cold.push_back(candidate);
-                _cold_total += candidate._size;
-                candidate._status = evictable::status::COLD;
+                evictable& candidate = pop_hot();
+                push_cold(candidate);
             }
         }
     }
-#if 1
     if (_cold_total + _hot_total < _main_fraction * _low_watermark) {
+        // Theoretically may not converge to the goal
+        // (if window perfectly interleaves BATCH_SIZE index items and 1 non-index item),
+        // but we ignore that for now.
         for (int i = 0; i < BATCH_SIZE; ++i) {
-            if (_window_total && _cold_total + _hot_total + _window.front()._size <= _main_fraction * _low_watermark) {
-                evictable& candidate = _window.front();
-                _window.pop_front();
-                _window_total -= candidate._size;
-                _cold.push_back(candidate);
-                _cold_total += candidate._size;
-                candidate._status = evictable::status::COLD;
+            if (_window_total) {
+                if ((_window.front()._hash >> 60) >= 2) {
+                    evictable& candidate = pop_window();
+                    evict_item(candidate);
+                } else if (_cold_total + _hot_total + _window.front()._size <= _main_fraction * _low_watermark) {
+                    evictable& candidate = pop_window();
+                    push_cold(candidate);
+                } else {
+                    break;
+                }
             }
         }
     } else if (_cold_total + _hot_total > _main_fraction * _low_watermark) {
         for (int i = 0; i < BATCH_SIZE; ++i) {
             if (_cold_total && _cold_total + _hot_total > _main_fraction) {
-                evictable& candidate = _cold.front();
-                _cold.pop_front();
-                _cold_total -= candidate._size;
+                evictable& candidate = pop_cold();
                 evict_item(candidate);
             }
         }
         return reclaiming_result::reclaimed_something;
     }
-#endif
-#if 1
     if (!_window_total) [[unlikely]] {
         if (_cold_total) {
-            evictable& candidate = _cold.front();
-            _cold.pop_front();
-            _cold_total -= candidate._size;
+            evictable& candidate = pop_cold();
             evict_item(candidate);
             return reclaiming_result::reclaimed_something;
         } else if (_hot_total) {
-            evictable& candidate = _hot.front();
-            _hot.pop_front();
-            _hot_total -= candidate._size;
+            evictable& candidate = pop_hot();
             evict_item(candidate);
             return reclaiming_result::reclaimed_something;
         } else {
             return reclaiming_result::reclaimed_nothing;
         }
-        __builtin_unreachable();
     }
-#endif
-
     for (int i = 0; i < BATCH_SIZE; ++i) {{
         if (!_window_total) {
             return reclaiming_result::reclaimed_nothing;
             break;
         }
-        evictable& candidate = _window.front();
-        _window.pop_front();
-        _window_total -= candidate._size;
+        evictable& candidate = pop_window();
 
         if ((candidate._hash >> 60) >= 2) {
             evict_item(candidate);
@@ -297,15 +317,11 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
             }
         }
 
-        _cold.push_back(candidate);
-        _cold_total += candidate_size;
-        candidate._status = evictable::status::COLD;
+        push_cold(candidate);
 
         size_t target_size = _cold_total - victim_size;
         while (_cold_total > target_size) {
-            evictable& victim = _cold.front();
-            _cold.pop_front();
-            _cold_total -= victim._size;
+            evictable& victim = pop_cold();
             evict_item(victim);
         }
     }cnt:;}
