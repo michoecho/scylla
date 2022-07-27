@@ -52,7 +52,11 @@ private:
     uint64_t _next_halve = 100000;
     uint64_t _next_watermark_update = 77777;
 
-    static constexpr float COLD_FRACTION = 0.10;
+    uint64_t _touches = 0;
+    uint64_t _adds = 0;
+    uint64_t _cold_removals = 0;
+
+    static constexpr float COLD_FRACTION = 0.99;
 
     void increment_sketch(evictable::hash_type key) noexcept;
     void evict_worst() noexcept;
@@ -90,7 +94,8 @@ wtinylfu_slru::~wtinylfu_slru() noexcept {
 }
 
 bool is_cached_type(evictable::hash_type key) {
-    return (key >> 60) == 1;
+    //jreturn true;
+    return (key >> 60) % 2 == 1;
 }
 
 void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
@@ -100,7 +105,7 @@ void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
     _time += 1;
     if (_time >= _next_halve) {
         _sketch.halve();
-        _next_halve = _time + 10 * _items;
+        _next_halve = _time + 100 * _items;
     }
     if (_time % 77777 == 0) {
         //calogger.info("key {:#018x} {}", key, _sketch.estimate(key));
@@ -147,6 +152,9 @@ void wtinylfu_slru::add(evictable& e) noexcept {
     ++_items;
     ++_stats[(e._hash >> 60)];
     increment_sketch(e._hash);
+    if (e._hash >> 60 == 1) {
+        _adds += 1;
+    }
 }
 
 void wtinylfu_slru::touch(evictable& e) noexcept {
@@ -156,9 +164,9 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
         _hot.push_back(e);
         break;
     case evictable::status::COLD:
-        _cold.erase(_cold.iterator_to(e));
-        _cold_total -= e._size;
-        push_hot(e);
+        //_cold.erase(_cold.iterator_to(e));
+        //_cold_total -= e._size;
+        //push_hot(e);
         break;
     case evictable::status::WINDOW:
         _window.erase(_window.iterator_to(e));
@@ -172,13 +180,16 @@ void wtinylfu_slru::touch(evictable& e) noexcept {
         return;
     }
     increment_sketch(e._hash);
+    if (e._hash >> 60 == 1) {
+        _touches += 1;
+    }
 }
 
 void wtinylfu_slru::evict_item(evictable &e) noexcept {
     e._status = evictable::status::GARBAGE;
     --_stats[(e._hash >> 60)];
     e.on_evicted();
-    --_items;
+   --_items;
 }
 
 evictable& wtinylfu_slru::pop_cold() noexcept {
@@ -230,6 +241,10 @@ void wtinylfu_slru::update_watermarks() noexcept {
         _next_watermark_update = _time + 10 * _items;
         calogger.info("watermark update: {} {} {} {} {}", _low_watermark, _window_total, _hot_total, _cold_total, _items);
         calogger.info("stats: {} {} {} {}", _stats[0], _stats[1], _stats[2], _stats[3]);
+        calogger.info("hit stats: {} {} {} {}", _adds, _touches, ((float)_touches / (_touches + _adds)), _cold_removals);
+        _adds = 0;
+        _touches = 0;
+        _cold_removals = 0;
     }
 }
 
@@ -308,14 +323,19 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
         }
 
         size_t candidate_size = candidate._size;
-        size_t candidate_freq = _sketch.estimate(candidate._hash); 
+        float candidate_freq = (float)_sketch.estimate(candidate._hash) / candidate._size; 
         size_t victim_size = 0;
-        size_t victim_freq = 0;
+        float victim_freq = 0;
 
         for (auto it = _cold.begin(); it != _cold.end() && (victim_size < candidate_size); ++it) {
             victim_size += it->_size;
-            victim_freq += _sketch.estimate(it->_hash);
+            auto x = (float)_sketch.estimate(it->_hash) / it->_size;
+            victim_freq += (float)_sketch.estimate(it->_hash) / it->_size;
+            if (_time > 1000000) {
+                //calogger.info("duel {:#018x} {} {:#018x} {}", candidate._hash, candidate_freq, it->_hash, x);
+            }
             if (victim_freq > candidate_freq) {
+                push_cold(pop_cold());
                 evict_item(candidate);
                 goto cnt;
             }
@@ -325,6 +345,7 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
 
         size_t target_size = _cold_total - victim_size;
         while (_cold_total > target_size) {
+            _cold_removals += 1;
             evictable& victim = pop_cold();
             evict_item(victim);
         }

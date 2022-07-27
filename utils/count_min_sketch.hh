@@ -19,7 +19,7 @@ class count_min_sketch {
 private:
     // Random large odd integers.
     constexpr static uint64_t ROWS = 4;
-#if 1
+#if 0
     constexpr static uint64_t BITS_PER_COUNTER = 4;
     constexpr static uint64_t HALVING_MASK = 0x7777'7777'7777'7777ull;
     constexpr static uint64_t COUNTER_MASK = 0xfull;
