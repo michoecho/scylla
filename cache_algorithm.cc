@@ -52,7 +52,7 @@ private:
     uint64_t _next_halve = 100000;
     uint64_t _next_watermark_update = 77777;
 
-    static constexpr float COLD_FRACTION = 0.2 * 0.8;
+    static constexpr float COLD_FRACTION = 0.10;
 
     void increment_sketch(evictable::hash_type key) noexcept;
     void evict_worst() noexcept;
@@ -90,7 +90,7 @@ wtinylfu_slru::~wtinylfu_slru() noexcept {
 }
 
 bool is_cached_type(evictable::hash_type key) {
-    return (key >> 60) <= 1;
+    return (key >> 60) == 1;
 }
 
 void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
@@ -315,7 +315,7 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
         for (auto it = _cold.begin(); it != _cold.end() && (victim_size < candidate_size); ++it) {
             victim_size += it->_size;
             victim_freq += _sketch.estimate(it->_hash);
-            if (victim_freq > candidate_freq || true) {
+            if (victim_freq > candidate_freq) {
                 evict_item(candidate);
                 goto cnt;
             }
