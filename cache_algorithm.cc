@@ -45,7 +45,7 @@ private:
     size_t _low_watermark = -1;
     size_t _next_watermark = -1;
 
-    float _main_fraction = 0.90;
+    float _main_fraction = 0.99;
 
     uint64_t _time = 0;
     uint64_t _items = 0;
@@ -89,8 +89,12 @@ wtinylfu_slru::~wtinylfu_slru() noexcept {
     assert(_garbage.empty());
 }
 
+bool is_cached_type(evictable::hash_type key) {
+    return (key >> 60) <= 1;
+}
+
 void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
-    if ((key >> 60) <= 1) {
+    if (is_cached_type(key)) {
         _sketch.increment(key);
     }
     _time += 1;
@@ -258,7 +262,7 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
         // but we ignore that for now.
         for (int i = 0; i < BATCH_SIZE; ++i) {
             if (_window_total) {
-                if ((_window.front()._hash >> 60) >= 2) {
+                if (!is_cached_type(_window.front()._hash)) {
                     evictable& candidate = pop_window();
                     evict_item(candidate);
                 } else if (_cold_total + _hot_total + _window.front()._size <= _main_fraction * _low_watermark) {
@@ -298,7 +302,7 @@ cache_algorithm::reclaiming_result wtinylfu_slru::evict() noexcept {
         }
         evictable& candidate = pop_window();
 
-        if ((candidate._hash >> 60) >= 2) {
+        if (!is_cached_type(candidate._hash)) {
             evict_item(candidate);
             goto cnt;
         }
