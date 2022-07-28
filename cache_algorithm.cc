@@ -15,6 +15,7 @@
 #include "utils/count_min_sketch.hh"
 #include <memory>
 #include <random>
+#include "utils/bptree.hh"
 
 logging::logger calogger("cache_algorithm");
 
@@ -27,14 +28,81 @@ evictable::~evictable() {
     assert(_status == evictable::status::GARBAGE);
 }
 
+struct uint64_compare {
+    bool operator()(const uint64_t& a, const uint64_t& b) const noexcept { return a < b; }
+    int64_t simplify_key(uint64_t k) const noexcept {
+        return k;
+    }
+};
+
+struct ghost_entry : public evictable {
+    void on_evicted() noexcept override {};
+    size_t size_bytes() const noexcept override { abort(); };
+    hash_type cache_hash() const noexcept override { abort(); };
+};
+
+using custom_tree = bplus::tree<uint64_t, ghost_entry, uint64_compare, 16, bplus::key_search::linear>;
+
+class hacky_allocation_strategy : public allocation_strategy {
+public:
+    utils::chunked_vector<void*> _data_pool;
+    size_t _data_taken = 0;
+    utils::chunked_vector<void*> _node_pool;
+    size_t _node_taken = 0;
+    hacky_allocation_strategy() {
+        for (int i = 0; i < 10000; ++i) {
+            _node_pool.push_back(::malloc(sizeof(custom_tree::node)));
+        }
+        for (int i = 0; i < 100000; ++i) {
+            _data_pool.push_back(::malloc(sizeof(custom_tree::data)));
+        }
+    }
+    virtual void* alloc(migrate_fn, size_t size, size_t alignment) override {
+        if (size == sizeof(custom_tree::data)) {
+            if (_data_taken == _data_pool.size()) {
+                throw std::bad_alloc();
+            }
+            return _data_pool[_data_taken++];
+        } else if (size == sizeof(custom_tree::node)) {
+            if (_node_taken == _node_pool.size()) {
+                throw std::bad_alloc();
+            }
+            return _node_pool[_node_taken++];
+        } else {
+            abort();
+        }
+    }
+
+    virtual void free(void* obj) override {
+        abort();
+    }
+
+    virtual void free(void* obj, size_t size) override {
+        if (size == sizeof(custom_tree::data)) {
+            _data_pool[--_data_taken] = obj;
+        } else if (size == sizeof(custom_tree::node)) {
+            _node_pool[--_node_taken] = obj;
+        } else {
+            abort();
+        }
+    }
+
+    virtual size_t object_memory_size_in_allocator(const void* obj) const noexcept override {
+        return ::malloc_usable_size(const_cast<void *>(obj));
+    }
+};
+
 class wtinylfu_slru : public cache_algorithm_impl {
 private:
+    hacky_allocation_strategy _as; 
     cache_algorithm::lru_type _hot;
     cache_algorithm::lru_type _cold;
     cache_algorithm::lru_type _window;
     cache_algorithm::lru_type _garbage;
     utils::count_min_sketch _sketch;
     std::mt19937 _rng{0};
+
+    custom_tree _ghost_entries;
 
     uint64_t _stats[16] = {0};
 
@@ -84,7 +152,9 @@ public:
 
 wtinylfu_slru::wtinylfu_slru(size_t expected_entries)
     : _sketch(expected_entries)
-{}
+    , _ghost_entries(uint64_compare{})
+{
+}
 
 wtinylfu_slru::~wtinylfu_slru() noexcept {
     assert(_window.empty());
@@ -189,6 +259,11 @@ void wtinylfu_slru::evict_item(evictable &e) noexcept {
     e._status = evictable::status::GARBAGE;
     --_stats[(e._hash >> 60)];
     e.on_evicted();
+    with_allocator(_as, [&] {
+        for (int i = 0; i < 100000; ++i) {
+            _ghost_entries.emplace(e._hash);
+        }
+    });
    --_items;
 }
 
