@@ -113,7 +113,7 @@ private:
     size_t _low_watermark = -1;
     size_t _next_watermark = -1;
 
-    float _main_fraction = 0.99;
+    float _main_fraction = 0.90;
 
     uint64_t _time = 0;
     uint64_t _items = 0;
@@ -165,7 +165,7 @@ wtinylfu_slru::~wtinylfu_slru() noexcept {
 
 bool is_cached_type(evictable::hash_type key) {
     //jreturn true;
-    return (key >> 60) % 2 == 1;
+    return (key >> 60) == 2;
 }
 
 void wtinylfu_slru::increment_sketch(evictable::hash_type key) noexcept {
@@ -259,11 +259,13 @@ void wtinylfu_slru::evict_item(evictable &e) noexcept {
     e._status = evictable::status::GARBAGE;
     --_stats[(e._hash >> 60)];
     e.on_evicted();
+#if 0
     with_allocator(_as, [&] {
         for (int i = 0; i < 100000; ++i) {
             _ghost_entries.emplace(e._hash);
         }
     });
+#endif
    --_items;
 }
 
