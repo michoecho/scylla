@@ -193,6 +193,7 @@ std::vector<Res> time_parallel_ex(Func func, unsigned concurrency_per_core, int 
     std::vector<Res> results;
     for (int i = 0; i < iterations; ++i) {
         auto start = clk::now();
+        lowres_clock::update();
         auto end_at = lowres_clock::now() + std::chrono::seconds(1);
         distributed<executor<Func>> exec;
         Res result;

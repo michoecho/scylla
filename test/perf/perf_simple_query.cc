@@ -28,6 +28,26 @@
 #include "db/extensions.hh"
 #include "db/tags/extension.hh"
 #include "gms/gossiper.hh"
+#include <filesystem>
+
+std::filesystem::path ctl_fifo, ack_fifo;
+
+static void make_perf_control_fifos() {
+    pid_t pid = getpid();
+    auto tmpdir = std::filesystem::temp_directory_path();
+    ctl_fifo = tmpdir / fmt::format("{}_ctl.fifo", pid);
+    ack_fifo = tmpdir / fmt::format("{}_ack.fifo", pid);
+    std::filesystem::remove(ctl_fifo);
+    std::filesystem::remove(ack_fifo);
+    if (mkfifo(ctl_fifo.c_str(), 0777)) {
+        perror(fmt::format("mkfifo({}, 0777)", ctl_fifo).c_str());
+        std::exit(1);
+    }
+    if (mkfifo(ack_fifo.c_str(), 0777)) {
+        perror(fmt::format("mkfifo({}, 0777)", ack_fifo).c_str());
+        std::exit(1);
+    }
+}
 
 static const sstring table_name = "cf";
 
@@ -74,7 +94,50 @@ struct test_config {
     bool stop_on_error;
     sstring timeout;
     bool bypass_cache;
+    bool perf_control;
 };
+
+template <typename Func>
+static
+std::vector<perf_result> wrap_time_parallel(const test_config& cfg, Func func, unsigned concurrency_per_core, int iterations = 5, unsigned operations_per_shard = 0, bool stop_on_error = true) {
+
+    static int perf_ctl_fd = -1, perf_ack_fd = -1;
+    if (cfg.perf_control) {
+        if (perf_ctl_fd < 0) {
+            fmt::print("Waiting for perf to start. Run perf stat/record with --pid={} --control=fifo:{},{}\n", getpid(), ctl_fifo.string(), ack_fifo.string());
+            perf_ctl_fd = open(ctl_fifo.c_str(), O_WRONLY);
+            if (perf_ctl_fd < 0) {
+                perror(fmt::format("open({}, O_WRONLY)", ctl_fifo).c_str());
+                std::exit(1);
+            }
+            perf_ack_fd = open(ack_fifo.c_str(), O_RDONLY);
+            if (perf_ack_fd < 0) {
+                perror(fmt::format("open({}, O_RDONLY)", ack_fifo).c_str());
+                std::exit(1);
+            }
+            fmt::print("Connected to perf.\n");
+        }
+        // Enable perf.
+        char enable_cmd[] = "enable\n";
+        write(perf_ctl_fd, enable_cmd, sizeof(enable_cmd));
+        char buf[5];
+        read(perf_ack_fd, buf, 5);
+    }
+
+    auto ret = time_parallel(std::forward<Func>(func), concurrency_per_core, iterations, operations_per_shard, stop_on_error);
+
+    if (cfg.perf_control) {
+        // Disable perf.
+        fmt::print("Waiting for perf to finish.", ctl_fifo.string(), ack_fifo.string());
+        char disable_cmd[] = "disable\n";
+        write(perf_ctl_fd, disable_cmd, sizeof(disable_cmd));
+        char buf[5];
+        read(perf_ack_fd, buf, 5);
+    }
+
+    return ret;
+}
+
 
 std::ostream& operator<<(std::ostream& os, const test_config::run_mode& m) {
     switch (m) {
@@ -137,7 +200,7 @@ static std::vector<perf_result> test_read(cql_test_env& env, test_config& cfg) {
         query += " using timeout " + cfg.timeout;
     }
     auto id = env.prepare(query).get0();
-    return time_parallel([&env, &cfg, id] {
+    return wrap_time_parallel(cfg, [&env, &cfg, id] {
             bytes key = make_random_key(cfg);
             return env.execute_prepared(id, {{cql3::raw_value::make_value(std::move(key))}}).discard_result();
         }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard, cfg.stop_on_error);
@@ -156,7 +219,7 @@ static std::vector<perf_result> test_write(cql_test_env& env, test_config& cfg) 
             "\"C4\" = 0x222fcbe31ffa1e689540e1499b87fa3f9c781065fccd10e4772b4c7039c2efd0fb27 "
             "WHERE \"KEY\" = ?", usings);
     auto id = env.prepare(query).get0();
-    return time_parallel([&env, &cfg, id] {
+    return wrap_time_parallel(cfg, [&env, &cfg, id] {
             bytes key = make_random_key(cfg);
             return env.execute_prepared(id, {{cql3::raw_value::make_value(std::move(key))}}).discard_result();
         }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard, cfg.stop_on_error);
@@ -170,7 +233,7 @@ static std::vector<perf_result> test_delete(cql_test_env& env, test_config& cfg)
     }
     sstring query = format("DELETE \"C0\", \"C1\", \"C2\", \"C3\", \"C4\" FROM cf {}WHERE \"KEY\" = ?", usings);
     auto id = env.prepare(query).get0();
-    return time_parallel([&env, &cfg, id] {
+    return wrap_time_parallel(cfg, [&env, &cfg, id] {
             bytes key = make_random_key(cfg);
             return env.execute_prepared(id, {{cql3::raw_value::make_value(std::move(key))}}).discard_result();
         }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard, cfg.stop_on_error);
@@ -189,7 +252,7 @@ static std::vector<perf_result> test_counter_update(cql_test_env& env, test_conf
             "\"C4\" = \"C4\" + 5 "
             "WHERE \"KEY\" = ?", usings);
     auto id = env.prepare(query).get0();
-    return time_parallel([&env, &cfg, id] {
+    return wrap_time_parallel(cfg, [&env, &cfg, id] {
             bytes key = make_random_key(cfg);
             return env.execute_prepared(id, {{cql3::raw_value::make_value(std::move(key))}}).discard_result();
         }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard, cfg.stop_on_error);
@@ -296,7 +359,7 @@ static std::vector<perf_result> test_alternator_read(service::client_state& stat
                 "ReturnConsumedCapacity": "TOTAL"
             }
         )";
-    return time_parallel([&] {
+    return wrap_time_parallel(cfg, [&] {
         auto key = std::to_string(make_random_seq(cfg));
         // Chunked content is used to minimize string copying, and thus extra allocations
         rjson::chunked_content content;
@@ -309,7 +372,7 @@ static std::vector<perf_result> test_alternator_read(service::client_state& stat
 }
 
 static std::vector<perf_result> test_alternator_write(service::client_state& state, alternator::executor& executor, test_config& cfg) {
-    return time_parallel([&] {
+    return wrap_time_parallel(cfg, [&] {
         std::string prefix = R"(
             {
                 "TableName": "alternator_table",
@@ -354,7 +417,7 @@ static std::vector<perf_result> test_alternator_write(service::client_state& sta
 static std::vector<perf_result> test_alternator_delete(service::client_state& state, noncopyable_function<void()> flush_memtables,
         alternator::executor& executor, test_config& cfg) {
     create_alternator_partitions(state, std::move(flush_memtables), executor, cfg);
-    return time_parallel([&] {
+    return wrap_time_parallel(cfg, [&] {
         std::string json = R"(
             {
                 "TableName": "alternator_table",
@@ -500,6 +563,7 @@ void write_json_result(std::string result_file, const test_config& cfg, perf_res
 }
 
 int main(int argc, char** argv) {
+    make_perf_control_fifos();
     namespace bpo = boost::program_options;
     app_template app;
     app.add_options()
@@ -519,6 +583,7 @@ int main(int argc, char** argv) {
         ("stop-on-error", bpo::value<bool>()->default_value(true), "stop after encountering the first error")
         ("timeout", bpo::value<std::string>()->default_value(""), "use timeout")
         ("bypass-cache", "use bypass cache when querying")
+        ("perf-control", bpo::value<bool>(), "create control fifos for perf --control")
         ;
 
     set_abort_on_internal_error(true);
@@ -565,6 +630,7 @@ int main(int argc, char** argv) {
             cfg.stop_on_error = app.configuration()["stop-on-error"].as<bool>();
             cfg.timeout = app.configuration()["timeout"].as<std::string>();
             cfg.bypass_cache = app.configuration().contains("bypass-cache");
+            cfg.perf_control = app.configuration().contains("perf-control");
             auto results = cfg.frontend == test_config::frontend_type::cql
                     ? do_cql_test(env, cfg)
                     : do_alternator_test(app.configuration()["alternator"].as<std::string>(),
