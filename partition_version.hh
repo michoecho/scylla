@@ -150,7 +150,9 @@ public:
     explicit partition_version(mutation_partition mp, schema_ptr s) noexcept
         : _partition(std::move(mp))
         , _schema(std::move(s))
-    { }
+    {
+        assert(_schema);
+    }
     partition_version(partition_version&& pv) noexcept;
     partition_version& operator=(partition_version&& pv) noexcept;
     ~partition_version();
@@ -519,6 +521,9 @@ public:
     // Snapshots will be unlinked and evicted independently by reclaimer.
     // This entry is invalid after this and can only be destroyed.
     void evict(mutation_cleaner&) noexcept;
+
+    const schema_ptr& get_schema() const noexcept { return _version->_schema; }
+    schema_ptr& get_schema() noexcept { return _version->_schema; }
 
     partition_version_ref& version() {
         return _version;

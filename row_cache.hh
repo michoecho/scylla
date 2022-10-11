@@ -50,7 +50,6 @@ class lsa_manager;
 //
 // TODO: Make memtables use this format too.
 class cache_entry {
-    schema_ptr _schema;
     dht::decorated_key _key;
     partition_entry _pe;
     // True when we know that there is nothing between this entry and the previous one in cache
@@ -85,24 +84,21 @@ public:
     }
 
     cache_entry(schema_ptr s, const dht::decorated_key& key)
-        : _schema(std::move(s))
-        , _key(key)
-        , _pe(partition_entry::make_evictable(_schema))
+        : _key(key)
+        , _pe(partition_entry::make_evictable(std::move(s)))
     { }
 
     cache_entry(schema_ptr s, const dht::decorated_key& key, const mutation_partition& p)
-        : _schema(std::move(s))
-        , _key(key)
-        , _pe(partition_entry::make_evictable(_schema, p))
+        : _key(key)
+        , _pe(partition_entry::make_evictable(std::move(s), p))
     { }
 
     cache_entry(schema_ptr s, const dht::decorated_key& key, mutation_partition&& p)
-        : _schema(std::move(s))
-        , _key(key)
-        , _pe(partition_entry::make_evictable(_schema, std::move(p)))
+        : _key(key)
+        , _pe(partition_entry::make_evictable(std::move(s), std::move(p)))
     { }
 
-    cache_entry(cache_entry&&) noexcept;
+    cache_entry(cache_entry&&) noexcept = default;
     ~cache_entry();
 
     static cache_entry& container_of(partition_entry& pe) {
@@ -128,8 +124,8 @@ public:
 
     const partition_entry& partition() const noexcept { return _pe; }
     partition_entry& partition() { return _pe; }
-    const schema_ptr& schema() const noexcept { return _schema; }
-    schema_ptr& schema() noexcept { return _schema; }
+    const schema_ptr& schema() const noexcept { return _pe.get_schema(); }
+    schema_ptr& schema() noexcept { return _pe.get_schema(); }
     flat_mutation_reader_v2 read(row_cache&, cache::read_context&);
     flat_mutation_reader_v2 read(row_cache&, std::unique_ptr<cache::read_context>);
     flat_mutation_reader_v2 read(row_cache&, cache::read_context&, utils::phased_barrier::phase_type);

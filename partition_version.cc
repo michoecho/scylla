@@ -35,6 +35,7 @@ partition_version::partition_version(partition_version&& pv) noexcept
     : anchorless_list_base_hook(std::move(pv))
     , _backref(pv._backref)
     , _partition(std::move(pv._partition))
+    , _schema(std::move(pv._schema))
 {
     if (_backref) {
         _backref->_version = this;
