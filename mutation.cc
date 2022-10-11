@@ -13,19 +13,19 @@
 mutation::data::data(dht::decorated_key&& key, schema_ptr&& schema)
     : _schema(std::move(schema))
     , _dk(std::move(key))
-    , _p(_schema)
+    , _p(*_schema)
 { }
 
 mutation::data::data(partition_key&& key_, schema_ptr&& schema)
     : _schema(std::move(schema))
     , _dk(dht::decorate_key(*_schema, std::move(key_)))
-    , _p(_schema)
+    , _p(*_schema)
 { }
 
 mutation::data::data(schema_ptr&& schema, dht::decorated_key&& key, const mutation_partition& mp)
-    : _schema(schema)
+    : _schema(std::move(schema))
     , _dk(std::move(key))
-    , _p(*schema, mp)
+    , _p(*_schema, mp)
 { }
 
 mutation::data::data(schema_ptr&& schema, dht::decorated_key&& key, mutation_partition&& mp)

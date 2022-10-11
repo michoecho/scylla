@@ -146,8 +146,6 @@ public:
 
     using is_evictable = bool_class<class evictable_tag>;
 
-    explicit partition_version(schema_ptr s) noexcept
-        : _partition(std::move(s)) { }
     explicit partition_version(mutation_partition mp) noexcept
         : _partition(std::move(mp)) { }
     partition_version(partition_version&& pv) noexcept;

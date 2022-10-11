@@ -85,7 +85,7 @@ void check_tombstone_slice(const schema& s, const utils::chunked_vector<range_to
 // The cursor must be pointing at a row and valid.
 // The cursor will not be pointing at a row after this.
 static mutation_partition read_partition_from(const schema& schema, partition_snapshot_row_cursor& cur) {
-    mutation_partition p(schema.shared_from_this());
+    mutation_partition p(schema);
     do {
         p.clustered_row(schema, cur.position(), is_dummy(cur.dummy()), is_continuous(cur.continuous()))
             .apply(schema, cur.row().as_deletable_row());
@@ -107,7 +107,7 @@ SEASTAR_TEST_CASE(test_range_tombstone_slicing) {
             auto rt2 = table.make_range_tombstone(table.make_ckey_range(4, 7));
             auto rt3 = table.make_range_tombstone(table.make_ckey_range(6, 9));
 
-            mutation_partition m1(s);
+            mutation_partition m1(*s);
             m1.apply_delete(*s, rt1);
             m1.apply_delete(*s, rt2);
             m1.apply_delete(*s, rt3);
@@ -138,7 +138,7 @@ SEASTAR_TEST_CASE(test_range_tombstone_slicing) {
             auto rt4 = table.make_range_tombstone(table.make_ckey_range(1, 2));
             auto rt5 = table.make_range_tombstone(table.make_ckey_range(5, 8));
 
-            mutation_partition m2(s);
+            mutation_partition m2(*s);
             m2.apply_delete(*s, rt4);
             m2.apply_delete(*s, rt5);
 
@@ -183,9 +183,9 @@ SEASTAR_THREAD_TEST_CASE(test_range_tombstone_reverse_slicing) {
         auto s = gen.schema();
         auto rev_s = s->make_reversed();
 
-        mutation_partition m1(s);
-        mutation_partition m2(s); // m2 and m3 will have effectively m1 split among each other randomly
-        mutation_partition m3(s);
+        mutation_partition m1(*s);
+        mutation_partition m2(*s); // m2 and m3 will have effectively m1 split among each other randomly
+        mutation_partition m3(*s);
         range_tombstone_list rts(*s);
         range_tombstone_list rev_rts(*rev_s);
         for (int i = 0; i < 12; ++i) {
@@ -475,7 +475,7 @@ SEASTAR_TEST_CASE(test_apply_to_incomplete) {
             assert_that(table.schema(), e.squashed()).is_equal_to((m2 + m3).partition());
 
             // Check that snapshot data is not stolen when its entry is applied
-            auto e2 = ms.make_evictable(mutation_partition(table.schema()));
+            auto e2 = ms.make_evictable(mutation_partition(*table.schema()));
             e2 += std::move(e);
             assert_that(table.schema(), ms.squashed(snap1)).is_equal_to(m1.partition());
             assert_that(table.schema(), e2.squashed()).is_equal_to((m2 + m3).partition());
@@ -554,7 +554,7 @@ SEASTAR_TEST_CASE(test_eviction_with_active_reader) {
             auto ck1 = table.make_ckey(1);
             auto ck2 = table.make_ckey(2);
 
-            auto e = ms.make_evictable(mutation_partition(table.schema()));
+            auto e = ms.make_evictable(mutation_partition(*table.schema()));
 
             mutation m1(table.schema(), pk);
             m1.partition().clustered_row(s, ck2);
@@ -789,7 +789,7 @@ SEASTAR_TEST_CASE(test_partition_snapshot_row_cursor) {
             simple_schema table;
             auto&& s = *table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(table.schema()));
+            auto e = partition_entry::make_evictable(s, mutation_partition(*table.schema()));
             auto snap1 = e.read(r, tracker.cleaner(), table.schema(), &tracker);
 
             {
@@ -960,7 +960,7 @@ SEASTAR_TEST_CASE(test_partition_snapshot_row_cursor_reversed) {
             simple_schema table;
             auto&& s = *table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(table.schema()));
+            auto e = partition_entry::make_evictable(s, mutation_partition(*table.schema()));
             auto snap1 = e.read(r, tracker.cleaner(), table.schema(), &tracker);
 
             int ck_0 = 10;
@@ -1151,7 +1151,7 @@ SEASTAR_TEST_CASE(test_cursor_tracks_continuity_in_reversed_mode) {
             simple_schema table;
             auto&& s = *table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(table.schema()));
+            auto e = partition_entry::make_evictable(s, mutation_partition(*table.schema()));
             auto snap1 = e.read(r, tracker.cleaner(), table.schema(), &tracker);
 
             {
@@ -1259,7 +1259,7 @@ SEASTAR_TEST_CASE(test_ensure_entry_in_latest_in_reversed_mode) {
             simple_schema table;
             auto&& s = *table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(table.schema()));
+            auto e = partition_entry::make_evictable(s, mutation_partition(*table.schema()));
             auto snap1 = e.read(r, tracker.cleaner(), table.schema(), &tracker);
 
             {
@@ -1315,7 +1315,7 @@ SEASTAR_TEST_CASE(test_ensure_entry_in_latest_does_not_set_continuity_in_reverse
             simple_schema table;
             auto&& s = *table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(table.schema()));
+            auto e = partition_entry::make_evictable(s, mutation_partition(*table.schema()));
             auto snap1 = e.read(r, tracker.cleaner(), table.schema(), &tracker);
 
             {
