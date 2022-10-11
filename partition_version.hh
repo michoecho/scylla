@@ -135,6 +135,7 @@ class partition_version_ref;
 class partition_version : public anchorless_list_base_hook<partition_version> {
     partition_version_ref* _backref = nullptr;
     mutation_partition _partition;
+    schema_ptr _schema;
 
     friend class partition_version_ref;
     friend class partition_entry;
@@ -146,8 +147,10 @@ public:
 
     using is_evictable = bool_class<class evictable_tag>;
 
-    explicit partition_version(mutation_partition mp) noexcept
-        : _partition(std::move(mp)) { }
+    explicit partition_version(mutation_partition mp, schema_ptr s) noexcept
+        : _partition(std::move(mp))
+        , _schema(std::move(s))
+    { }
     partition_version(partition_version&& pv) noexcept;
     partition_version& operator=(partition_version&& pv) noexcept;
     ~partition_version();
@@ -478,7 +481,7 @@ public:
     // Constructs a non-evictable entry holding empty partition
     partition_entry() = default;
     // Constructs a non-evictable entry
-    explicit partition_entry(mutation_partition mp);
+    explicit partition_entry(mutation_partition mp, schema_ptr s);
     // Returns a reference to partition_entry containing given pv,
     // assuming pv.is_referenced_from_entry().
     static partition_entry& container_of(partition_version& pv) {
@@ -486,14 +489,14 @@ public:
     }
     // Constructs an evictable entry
     // Strong exception guarantees for the state of mp.
-    partition_entry(evictable_tag, const schema& s, mutation_partition&& mp);
+    partition_entry(evictable_tag, schema_ptr s, mutation_partition&& mp);
     ~partition_entry();
     // Frees elements of this entry in batches.
     // Active snapshots are detached, data referenced by them is not cleared.
     // Returns stop_iteration::yes iff there are no more elements to free.
     stop_iteration clear_gently(cache_tracker*) noexcept;
-    static partition_entry make_evictable(const schema& s, mutation_partition&& mp);
-    static partition_entry make_evictable(const schema& s, const mutation_partition& mp);
+    static partition_entry make_evictable(schema_ptr s, mutation_partition&& mp);
+    static partition_entry make_evictable(schema_ptr s, const mutation_partition& mp);
 
     partition_entry(partition_entry&& pe) noexcept
         : _snapshot(pe._snapshot), _version(std::move(pe._version))
@@ -588,12 +591,12 @@ public:
 
     // If this entry is evictable, cache_tracker must be provided.
     // Must not be called when is_locked().
-    partition_version& add_version(const schema& s, cache_tracker*);
+    partition_version& add_version(schema_ptr, cache_tracker*);
 
     // Returns a reference to existing version with an active snapshot of given phase
     // or creates a new version and returns a reference to it.
     // Doesn't affect value or continuity of the partition.
-    partition_version& open_version(const schema& s, cache_tracker* t, partition_snapshot::phase_type phase = partition_snapshot::max_phase) {
+    partition_version& open_version(const schema_ptr& s, cache_tracker* t, partition_snapshot::phase_type phase = partition_snapshot::max_phase) {
         if (_snapshot) {
             if (_snapshot->_phase == phase) {
                 return *_version;
@@ -612,7 +615,7 @@ public:
         return *_version;
     }
 
-    mutation_partition squashed(schema_ptr from, schema_ptr to);
+    mutation_partition squashed(const schema& from, const schema& to);
     mutation_partition squashed(const schema&);
     tombstone partition_tombstone() const;
 

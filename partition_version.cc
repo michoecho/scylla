@@ -240,25 +240,26 @@ unsigned partition_snapshot::version_count()
     return count;
 }
 
-partition_entry::partition_entry(mutation_partition mp)
+partition_entry::partition_entry(mutation_partition mp, schema_ptr s)
 {
-    auto new_version = current_allocator().construct<partition_version>(std::move(mp));
+    auto new_version = current_allocator().construct<partition_version>(std::move(mp), std::move(s));
     _version = partition_version_ref(*new_version);
 }
 
-partition_entry::partition_entry(partition_entry::evictable_tag, const schema& s, mutation_partition&& mp)
+partition_entry::partition_entry(partition_entry::evictable_tag, schema_ptr s, mutation_partition&& mp)
     : partition_entry([&] {
-        mp.ensure_last_dummy(s);
-        return std::move(mp);
+        mp.ensure_last_dummy(*s);
+        return partition_entry(std::move(mp), std::move(s));
     }())
 { }
 
-partition_entry partition_entry::make_evictable(const schema& s, mutation_partition&& mp) {
-    return {evictable_tag(), s, std::move(mp)};
+partition_entry partition_entry::make_evictable(schema_ptr s, mutation_partition&& mp) {
+    return {evictable_tag(), std::move(s), std::move(mp)};
 }
 
-partition_entry partition_entry::make_evictable(const schema& s, const mutation_partition& mp) {
-    return make_evictable(s, mutation_partition(s, mp));
+partition_entry partition_entry::make_evictable(schema_ptr s, const mutation_partition& mp) {
+    const schema& ss = *s;
+    return make_evictable(std::move(s), mutation_partition(ss, mp));
 }
 
 partition_entry::~partition_entry() {
@@ -320,14 +321,15 @@ void partition_entry::set_version(partition_version* new_version)
     _version = partition_version_ref(*new_version);
 }
 
-partition_version& partition_entry::add_version(const schema& s, cache_tracker* tracker) {
+partition_version& partition_entry::add_version(schema_ptr s, cache_tracker* tracker) {
     // Every evictable version must have a dummy entry at the end so that
     // it can be tracked in the LRU. It is also needed to allow old versions
     // to stay around (with tombstones and static rows) after fully evicted.
     // Such versions must be fully discontinuous, and thus have a dummy at the end.
+    const auto& ss = *s;
     auto new_version = tracker
-                       ? current_allocator().construct<partition_version>(mutation_partition::make_incomplete(s))
-                       : current_allocator().construct<partition_version>(mutation_partition(s));
+                       ? current_allocator().construct<partition_version>(mutation_partition::make_incomplete(ss), std::move(s))
+                       : current_allocator().construct<partition_version>(mutation_partition(ss), std::move(s));
     new_version->partition().set_static_row_continuous(_version->partition().static_row_continuous());
     new_version->insert_before(*_version);
     set_version(new_version);
@@ -349,7 +351,7 @@ void partition_entry::apply(logalloc::region& r, mutation_cleaner& cleaner, cons
     if (s.version() != mp_schema.version()) {
         mp.upgrade(mp_schema, s);
     }
-    auto new_version = current_allocator().construct<partition_version>(std::move(mp));
+    auto new_version = current_allocator().construct<partition_version>(std::move(mp), s.shared_from_this());
     partition_snapshot_ptr snp; // Should die after new_version is inserted
     if (!_snapshot) {
         try {
@@ -493,28 +495,29 @@ utils::coroutine partition_entry::apply_to_incomplete(const schema& s,
     });
 }
 
-mutation_partition partition_entry::squashed(schema_ptr from, schema_ptr to)
+mutation_partition partition_entry::squashed(const schema& from, const schema& to)
 {
-    mutation_partition mp(*to);
+    mutation_partition mp(to);
     mp.set_static_row_continuous(_version->partition().static_row_continuous());
     for (auto&& v : _version->all_elements()) {
-        auto older = mutation_partition(*from, v.partition());
-        if (from->version() != to->version()) {
-            older.upgrade(*from, *to);
+        auto older = mutation_partition(from, v.partition());
+        if (from.version() != to.version()) {
+            older.upgrade(from, to);
         }
-        merge_versions(*to, mp, std::move(older), no_cache_tracker);
+        merge_versions(to, mp, std::move(older), no_cache_tracker);
     }
     return mp;
 }
 
 mutation_partition partition_entry::squashed(const schema& s)
 {
-    return squashed(s.shared_from_this(), s.shared_from_this());
+    return squashed(s, s);
 }
 
 void partition_entry::upgrade(schema_ptr from, schema_ptr to, mutation_cleaner& cleaner, cache_tracker* tracker)
 {
-    auto new_version = current_allocator().construct<partition_version>(squashed(from, to));
+    const schema& to_ref = *to;
+    auto new_version = current_allocator().construct<partition_version>(squashed(*from, to_ref), std::move(to));
     auto old_version = &*_version;
     set_version(new_version);
     if (tracker) {
@@ -539,7 +542,7 @@ partition_snapshot_ptr partition_entry::read(logalloc::region& r,
             return snp;
         } else { // phase > _snapshot->_phase
             with_allocator(r.allocator(), [&] {
-                add_version(*entry_schema, tracker);
+                add_version(entry_schema, tracker);
             });
         }
     }

@@ -52,9 +52,9 @@ public:
     friend class memtable;
 
     memtable_entry(schema_ptr s, dht::decorated_key key, mutation_partition p)
-        : _schema(std::move(s))
+        : _schema(s)
         , _key(std::move(key))
-        , _pe(std::move(p))
+        , _pe(std::move(p), std::move(s))
     { }
 
     memtable_entry(memtable_entry&& o) noexcept;

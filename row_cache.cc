@@ -849,7 +849,7 @@ cache_entry& row_cache::find_or_create_incomplete(const partition_start& ps, row
     }, [&] (auto i) { // visit
         _tracker.on_miss_already_populated();
         cache_entry& e = *i;
-        e.partition().open_version(*e.schema(), &_tracker, phase).partition().apply(ps.partition_tombstone());
+        e.partition().open_version(e.schema(), &_tracker, phase).partition().apply(ps.partition_tombstone());
         upgrade_entry(e);
     });
 }
@@ -1043,7 +1043,7 @@ future<> row_cache::update(external_updater eu, replica::memtable& m) {
             // Partition is absent in underlying. First, insert a neutral partition entry.
             partitions_type::iterator entry = _partitions.emplace_before(cache_i, mem_e.key().token().raw(), hint,
                 cache_entry::evictable_tag(), _schema, dht::decorated_key(mem_e.key()),
-                partition_entry::make_evictable(*_schema, mutation_partition(*_schema)));
+                partition_entry::make_evictable(_schema, mutation_partition(*_schema)));
             entry->set_continuous(cache_i->continuous());
             _tracker.insert(*entry);
             mem_e.upgrade_schema(_schema, _tracker.memtable_cleaner());
