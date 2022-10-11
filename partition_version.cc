@@ -253,6 +253,11 @@ partition_entry::partition_entry(partition_entry::evictable_tag, schema_ptr s, m
     }())
 { }
 
+partition_entry partition_entry::make_evictable(schema_ptr s) {
+    const schema& ss = *s;
+    return make_evictable(std::move(s), mutation_partition(ss));
+}
+
 partition_entry partition_entry::make_evictable(schema_ptr s, mutation_partition&& mp) {
     return {evictable_tag(), std::move(s), std::move(mp)};
 }

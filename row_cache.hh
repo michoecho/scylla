@@ -77,7 +77,6 @@ public:
     void set_train(bool v) noexcept { _flags._train = v; }
 
     struct dummy_entry_tag{};
-    struct evictable_tag{};
 
     cache_entry(dummy_entry_tag)
         : _key{dht::token(), partition_key::make_empty()}
@@ -85,22 +84,22 @@ public:
         _flags._dummy_entry = true;
     }
 
+    cache_entry(schema_ptr s, const dht::decorated_key& key)
+        : _schema(std::move(s))
+        , _key(key)
+        , _pe(partition_entry::make_evictable(_schema))
+    { }
+
     cache_entry(schema_ptr s, const dht::decorated_key& key, const mutation_partition& p)
         : _schema(std::move(s))
         , _key(key)
-        , _pe(partition_entry::make_evictable(_schema, mutation_partition(*_schema, p)))
+        , _pe(partition_entry::make_evictable(_schema, p))
     { }
 
-    cache_entry(schema_ptr s, dht::decorated_key&& key, mutation_partition&& p)
-        : cache_entry(evictable_tag(), s, std::move(key), partition_entry::make_evictable(s, std::move(p)))
-    { }
-
-    // It is assumed that pe is fully continuous
-    // pe must be evictable.
-    cache_entry(evictable_tag, schema_ptr s, dht::decorated_key&& key, partition_entry&& pe) noexcept
+    cache_entry(schema_ptr s, const dht::decorated_key& key, mutation_partition&& p)
         : _schema(std::move(s))
-        , _key(std::move(key))
-        , _pe(std::move(pe))
+        , _key(key)
+        , _pe(partition_entry::make_evictable(_schema, std::move(p)))
     { }
 
     cache_entry(cache_entry&&) noexcept;

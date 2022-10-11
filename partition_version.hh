@@ -495,6 +495,7 @@ public:
     // Active snapshots are detached, data referenced by them is not cleared.
     // Returns stop_iteration::yes iff there are no more elements to free.
     stop_iteration clear_gently(cache_tracker*) noexcept;
+    static partition_entry make_evictable(schema_ptr s);
     static partition_entry make_evictable(schema_ptr s, mutation_partition&& mp);
     static partition_entry make_evictable(schema_ptr s, const mutation_partition& mp);
 

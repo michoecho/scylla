@@ -788,7 +788,7 @@ SEASTAR_TEST_CASE(test_partition_snapshot_row_cursor) {
             simple_schema table;
             schema_ptr s = table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(*s));
+            auto e = partition_entry::make_evictable(s);
             auto snap1 = e.read(r, tracker.cleaner(), s, &tracker);
 
             {
@@ -959,7 +959,7 @@ SEASTAR_TEST_CASE(test_partition_snapshot_row_cursor_reversed) {
             simple_schema table;
             schema_ptr s = table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(*s));
+            auto e = partition_entry::make_evictable(s);
             auto snap1 = e.read(r, tracker.cleaner(), s, &tracker);
 
             int ck_0 = 10;
@@ -1150,7 +1150,7 @@ SEASTAR_TEST_CASE(test_cursor_tracks_continuity_in_reversed_mode) {
             simple_schema table;
             schema_ptr s = table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(*s));
+            auto e = partition_entry::make_evictable(s);
             auto snap1 = e.read(r, tracker.cleaner(), s, &tracker);
 
             {
@@ -1258,7 +1258,7 @@ SEASTAR_TEST_CASE(test_ensure_entry_in_latest_in_reversed_mode) {
             simple_schema table;
             schema_ptr s = table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(*s));
+            auto e = partition_entry::make_evictable(s);
             auto snap1 = e.read(r, tracker.cleaner(), s, &tracker);
 
             {
@@ -1314,7 +1314,7 @@ SEASTAR_TEST_CASE(test_ensure_entry_in_latest_does_not_set_continuity_in_reverse
             simple_schema table;
             schema_ptr s = table.schema();
 
-            auto e = partition_entry::make_evictable(s, mutation_partition(*s));
+            auto e = partition_entry::make_evictable(s);
             auto snap1 = e.read(r, tracker.cleaner(), s, &tracker);
 
             {
