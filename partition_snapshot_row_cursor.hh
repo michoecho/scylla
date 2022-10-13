@@ -106,6 +106,7 @@ class partition_snapshot_row_cursor final {
         mutation_partition::rows_type::iterator it;
         utils::immutable_collection<mutation_partition::rows_type> rows;
         int version_no;
+        const schema* schema;
         bool unique_owner = false;
         is_continuous continuous = is_continuous::no; // Range continuity in the direction of lower keys (in cursor schema domain).
     };
@@ -244,7 +245,7 @@ class partition_snapshot_row_cursor final {
                     cont = pos->continuous();
                 }
                 if (pos) [[likely]] {
-                    _heap.emplace_back(position_in_version{pos, std::move(rows), version_no, unique_owner, cont});
+                    _heap.emplace_back(position_in_version{pos, std::move(rows), version_no, v.get_schema().get(), unique_owner, cont});
                 }
             }
             ++version_no;
@@ -400,7 +401,7 @@ public:
                 }
             } else if (match) {
                 _current_row.insert(_current_row.begin(), position_in_version{
-                    it, std::move(rows), 0, _unique_owner, cont});
+                    it, std::move(rows), 0, _snp.version()->get_schema().get(), _unique_owner, cont});
                 if (heap_i != _heap.end()) {
                     _heap.erase(heap_i);
                     boost::range::make_heap(_heap, heap_less);
@@ -412,7 +413,7 @@ public:
                     boost::range::make_heap(_heap, heap_less);
                 } else {
                     _heap.push_back(position_in_version{
-                        it, std::move(rows), 0, _unique_owner, cont});
+                        it, std::move(rows), 0, _snp.version()->get_schema().get(), _unique_owner, cont});
                     boost::range::push_heap(_heap, heap_less);
                 }
             }
@@ -547,8 +548,13 @@ public:
                             current_allocator().construct<rows_entry>(*_snp.schema(), _position,
                                                                       is_dummy(!_position.is_clustering_row()), is_continuous::no));
                 } else {
-                    return alloc_strategy_unique_ptr<rows_entry>(
-                            current_allocator().construct<rows_entry>(*_snp.schema(), *_current_row[0].it));
+                    if (_snp.schema().get() == _current_row[0].schema) [[likely]] {
+                        return alloc_strategy_unique_ptr<rows_entry>(
+                                current_allocator().construct<rows_entry>(*_snp.schema(), *_current_row[0].it));
+                    } else {
+                        return alloc_strategy_unique_ptr<rows_entry>(
+                                current_allocator().construct<rows_entry>(*_current_row[0].schema, *_snp.schema(), *_current_row[0].it));
+                    }
                 }
             }();
             rows_entry& re = *e;

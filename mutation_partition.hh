@@ -946,6 +946,7 @@ public:
         , _row(s, e._row)
         , _flags(e._flags)
     { }
+    rows_entry(const schema& from, const schema& to, const rows_entry& e);
     // Valid only if !dummy()
     clustering_key& key() {
         return _key;
@@ -1283,11 +1284,11 @@ public:
     //
     // If is_preemptible::yes is passed, apply_resume must also be passed,
     // same instance each time until stop_iteration::yes is returned.
-    stop_iteration apply_monotonically(const schema& s, mutation_partition&& p, cache_tracker*,
+    stop_iteration apply_monotonically(const schema& s, const schema& p_s, mutation_partition&& p, cache_tracker*,
             mutation_application_stats& app_stats, is_preemptible, apply_resume&);
     stop_iteration apply_monotonically(const schema& s, mutation_partition&& p, const schema& p_schema,
             mutation_application_stats& app_stats, is_preemptible, apply_resume&);
-    stop_iteration apply_monotonically(const schema& s, mutation_partition&& p, cache_tracker* tracker,
+    stop_iteration apply_monotonically(const schema& s, const schema& p_s, mutation_partition&& p, cache_tracker* tracker,
             mutation_application_stats& app_stats);
     stop_iteration apply_monotonically(const schema& s, mutation_partition&& p, const schema& p_schema,
             mutation_application_stats& app_stats);

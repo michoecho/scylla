@@ -166,7 +166,7 @@ partition_snapshot::~partition_snapshot() {
 
 void merge_versions(const schema& s, mutation_partition& newer, mutation_partition&& older, cache_tracker* tracker) {
     mutation_application_stats app_stats;
-    older.apply_monotonically(s, std::move(newer), tracker, app_stats);
+    older.apply_monotonically(s, s, std::move(newer), tracker, app_stats);
     newer = std::move(older);
 }
 
@@ -194,7 +194,7 @@ stop_iteration partition_snapshot::merge_partition_versions(mutation_application
             if (!_version_merging_state || version_no != _version_merging_state->first) {
                 _version_merging_state = std::make_pair(version_no, apply_resume());
             }
-            const auto do_stop_iteration = current->partition().apply_monotonically(*schema(),
+            const auto do_stop_iteration = current->partition().apply_monotonically(*schema(), *prev->get_schema(),
                 std::move(prev->partition()), _tracker, local_app_stats, is_preemptible::yes, _version_merging_state->second);
             app_stats.row_hits += local_app_stats.row_hits;
             if (do_stop_iteration == stop_iteration::no) {
@@ -354,15 +354,12 @@ void partition_entry::apply(logalloc::region& r, mutation_cleaner& cleaner, cons
         mutation_application_stats& app_stats) {
     // A note about app_stats: it may happen that mp has rows that overwrite other rows
     // in older partition_version. Those overwrites will be counted when their versions get merged.
-    if (s.version() != mp_schema.version()) {
-        mp.upgrade(mp_schema, s);
-    }
     auto new_version = current_allocator().construct<partition_version>(std::move(mp), s.shared_from_this());
     partition_snapshot_ptr snp; // Should die after new_version is inserted
     if (!_snapshot) {
         try {
             apply_resume res;
-            if (_version->partition().apply_monotonically(s,
+            if (_version->partition().apply_monotonically(s, mp_schema,
                       std::move(new_version->partition()),
                       no_cache_tracker,
                       app_stats,
@@ -520,16 +517,16 @@ mutation_partition partition_entry::squashed(const schema& s)
     return squashed(s, s);
 }
 
-void partition_entry::upgrade(schema_ptr from, schema_ptr to, mutation_cleaner& cleaner, cache_tracker* tracker)
+void partition_entry::upgrade(logalloc::region& r, schema_ptr to, mutation_cleaner& cleaner, cache_tracker* tracker)
 {
-    const schema& to_ref = *to;
-    auto new_version = current_allocator().construct<partition_version>(squashed(*from, to_ref), std::move(to));
-    auto old_version = &*_version;
-    set_version(new_version);
-    if (tracker) {
-        tracker->insert(*new_version);
+    assert(to->version() != get_schema()->version());
+    partition_version* old = &*_version;
+    auto phase = partition_snapshot::max_phase;
+    if (_snapshot) {
+        phase = _snapshot->_phase;
     }
-    remove_or_mark_as_unique_owner(old_version, &cleaner);
+    partition_snapshot_ptr snp = read(r, cleaner, to, tracker, phase);
+    add_version(std::move(to), tracker);
 }
 
 partition_snapshot_ptr partition_entry::read(logalloc::region& r,

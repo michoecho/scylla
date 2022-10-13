@@ -294,7 +294,7 @@ mutation_partition::apply(const schema& s, const mutation_fragment& mf) {
     mf.visit(applier);
 }
 
-stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation_partition&& p, cache_tracker* tracker,
+stop_iteration mutation_partition::apply_monotonically(const schema& s, const schema &p_s, mutation_partition&& p, cache_tracker* tracker,
         mutation_application_stats& app_stats, is_preemptible preemptible, apply_resume& res) {
 #ifdef SEASTAR_DEBUG
     assert(s.version() == _schema_version);
@@ -486,18 +486,18 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation
 stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation_partition&& p, const schema& p_schema,
         mutation_application_stats& app_stats, is_preemptible preemptible, apply_resume& res) {
     if (s.version() == p_schema.version()) {
-        return apply_monotonically(s, std::move(p), no_cache_tracker, app_stats, preemptible, res);
+        return apply_monotonically(s, s, std::move(p), no_cache_tracker, app_stats, preemptible, res);
     } else {
         mutation_partition p2(s, p);
         p2.upgrade(p_schema, s);
-        return apply_monotonically(s, std::move(p2), no_cache_tracker, app_stats, is_preemptible::no, res); // FIXME: make preemptible
+        return apply_monotonically(s, s, std::move(p2), no_cache_tracker, app_stats, is_preemptible::no, res); // FIXME: make preemptible
     }
 }
 
-stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation_partition&& p, cache_tracker *tracker,
+stop_iteration mutation_partition::apply_monotonically(const schema& s, const schema& p_s, mutation_partition&& p, cache_tracker *tracker,
                                                        mutation_application_stats& app_stats) {
     apply_resume res;
-    return apply_monotonically(s, std::move(p), tracker, app_stats, is_preemptible::no, res);
+    return apply_monotonically(s, p_s, std::move(p), tracker, app_stats, is_preemptible::no, res);
 }
 
 stop_iteration mutation_partition::apply_monotonically(const schema& s, mutation_partition&& p, const schema& p_schema,
@@ -523,7 +523,7 @@ void mutation_partition::apply_weak(const schema& s, const mutation_partition& p
 }
 
 void mutation_partition::apply_weak(const schema& s, mutation_partition&& p, mutation_application_stats& app_stats) {
-    apply_monotonically(s, std::move(p), no_cache_tracker, app_stats);
+    apply_monotonically(s, s, std::move(p), no_cache_tracker, app_stats);
 }
 
 tombstone
@@ -1201,6 +1201,21 @@ rows_entry::equal(const schema& s, const rows_entry& other, const schema& other_
     position_in_partition::equal_compare eq(s);
     return eq(position(), other.position())
            && row().equal(column_kind::regular_column, s, other.row(), other_schema);
+}
+
+rows_entry::rows_entry(const schema& from, const schema& to, const rows_entry& e)
+    : _key(e._key)
+    , _row(row_tombstone(e._row.deleted_at()), row_marker(e._row.marker()), ::row())
+    , _flags(e._flags)
+{
+    auto kind = column_kind::regular_column;
+    e.row().cells().for_each_cell([&] (column_id id, const atomic_cell_or_collection& cell) {
+        const column_definition& col = from.column_at(kind, id);
+        const column_definition* new_col = to.get_column_definition(col.name());
+        if (new_col) {
+            converting_mutation_partition_applier::append_cell(this->row().cells(), kind, *new_col, col, cell);
+        }
+    });
 }
 
 bool mutation_partition::equal(const schema& s, const mutation_partition& p) const {

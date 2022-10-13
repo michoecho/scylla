@@ -1033,7 +1033,7 @@ future<> row_cache::update(external_updater eu, replica::memtable& m) {
             upgrade_entry(entry);
             assert(entry.schema() == _schema);
             _tracker.on_partition_merge();
-            mem_e.upgrade_schema(_schema, _tracker.memtable_cleaner());
+            mem_e.upgrade_schema(_tracker.region(), _schema, _tracker.memtable_cleaner());
             return entry.partition().apply_to_incomplete(*_schema, std::move(mem_e.partition()), _tracker.memtable_cleaner(),
                 alloc, _tracker.region(), _tracker, _underlying_phase, acc);
         } else if (cache_i->continuous()
@@ -1044,7 +1044,7 @@ future<> row_cache::update(external_updater eu, replica::memtable& m) {
                 _schema, mem_e.key());
             entry->set_continuous(cache_i->continuous());
             _tracker.insert(*entry);
-            mem_e.upgrade_schema(_schema, _tracker.memtable_cleaner());
+            mem_e.upgrade_schema(_tracker.region(), _schema, _tracker.memtable_cleaner());
             return entry->partition().apply_to_incomplete(*_schema, std::move(mem_e.partition()), _tracker.memtable_cleaner(),
                 alloc, _tracker.region(), _tracker, _underlying_phase, acc);
         } else {
@@ -1310,8 +1310,8 @@ void row_cache::upgrade_entry(cache_entry& e) {
     if (e.schema() != _schema && !e.partition().is_locked()) {
         auto& r = _tracker.region();
         assert(!r.reclaiming_enabled());
-        with_allocator(r.allocator(), [this, &e] {
-            e.partition().upgrade(e.schema(), _schema, _tracker.cleaner(), &_tracker);
+        with_allocator(r.allocator(), [this, &e, &r] {
+            e.partition().upgrade(r, _schema, _tracker.cleaner(), &_tracker);
         });
     }
 }

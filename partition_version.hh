@@ -169,6 +169,9 @@ public:
     partition_version_ref& back_reference() { return *_backref; }
 
     size_t size_in_allocator(const schema& s, allocation_strategy& allocator) const;
+
+    const schema_ptr& get_schema() const noexcept { return _schema; }
+    schema_ptr& get_schema() noexcept { return _schema; }
 };
 
 using partition_version_range = anchorless_list_base_hook<partition_version>::range;
@@ -522,8 +525,8 @@ public:
     // This entry is invalid after this and can only be destroyed.
     void evict(mutation_cleaner&) noexcept;
 
-    const schema_ptr& get_schema() const noexcept { return _version->_schema; }
-    schema_ptr& get_schema() noexcept { return _version->_schema; }
+    const schema_ptr& get_schema() const noexcept { return _version->get_schema(); }
+    schema_ptr& get_schema() noexcept { return _version->get_schema(); }
 
     partition_version_ref& version() {
         return _version;
@@ -627,7 +630,7 @@ public:
 
     // needs to be called with reclaiming disabled
     // Must not be called when is_locked().
-    void upgrade(schema_ptr from, schema_ptr to, mutation_cleaner&, cache_tracker*);
+    void upgrade(logalloc::region&, schema_ptr to, mutation_cleaner&, cache_tracker*);
 
     // Snapshots with different values of phase will point to different partition_version objects.
     // When is_locked(), read() can only be called with a phase which is <= the phase of the current snapshot.

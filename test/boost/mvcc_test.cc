@@ -343,7 +343,7 @@ public:
         logalloc::allocating_section as;
         with_allocator(region().allocator(), [&] {
             as(region(), [&] {
-                _e.upgrade(_s, new_schema, _container.cleaner(), _container.tracker());
+                _e.upgrade(region(), new_schema, _container.cleaner(), _container.tracker());
                 _s = new_schema;
             });
         });
@@ -369,7 +369,7 @@ void mvcc_partition::apply_to_evictable(partition_entry&& src, schema_ptr src_sc
         mutation_cleaner src_cleaner(region(), no_cache_tracker, app_stats_for_tests);
         auto c = as(region(), [&] {
             if (_s != src_schema) {
-                src.upgrade(src_schema, _s, src_cleaner, no_cache_tracker);
+                src.upgrade(region(), _s, src_cleaner, no_cache_tracker);
             }
             return _e.apply_to_incomplete(*schema(), std::move(src), src_cleaner, as, region(),
                 *_container.tracker(), _container.next_phase(), _container.accounter());
