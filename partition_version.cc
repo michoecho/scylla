@@ -177,38 +177,35 @@ stop_iteration partition_snapshot::merge_partition_versions(mutation_application
         // This is good for performance because in case we were at the latest version
         // we leave it for incoming writes and they don't have to create a new one.
         partition_version* current = &*v;
-        version_number_type version_no = 0;
         while (current->next() && !current->next()->is_referenced()) {
             current = current->next();
-            ++version_no;
             _version = partition_version_ref(*current);
+            _version_merging_state = apply_resume{};
         }
         while (auto prev = current->prev()) {
             region().allocator().invalidate_references();
             // Here we count writes that overwrote rows from a previous version. Total number of writes does not change.
             mutation_application_stats local_app_stats;
-            // Versions within a snapshot are only removed by this routine so if version
-            // number did not change then we're looking at the same version object.
-            // If the version number changed, it means we now work with a different "current"
-            // due to different conditions of is_referenced() within the version chain.
-            if (!_version_merging_state || version_no != _version_merging_state->first) {
-                _version_merging_state = std::make_pair(version_no, apply_resume());
+
+            partition_version* merged_from = prev;
+            partition_version* merged_into = current;
+            if (prev->get_schema()->version() != current->get_schema()->version()) {
+                std::swap(merged_from, merged_into);
             }
-            const auto do_stop_iteration = current->partition().apply_monotonically(*schema(), *prev->get_schema(),
-                std::move(prev->partition()), _tracker, local_app_stats, is_preemptible::yes, _version_merging_state->second);
+            stop_iteration do_stop_iteration = prev->partition().apply_monotonically(*prev->get_schema(), *schema(), 
+                    std::move(current->partition()), _tracker, local_app_stats, is_preemptible::yes, _version_merging_state);
             app_stats.row_hits += local_app_stats.row_hits;
             if (do_stop_iteration == stop_iteration::no) {
                 return stop_iteration::no;
             }
-            _version_merging_state.reset();
+            _version_merging_state = apply_resume{};
             if (prev->is_referenced()) {
                 _version.release();
-                prev->back_reference() = partition_version_ref(*current, prev->back_reference().is_unique_owner());
-                current_allocator().destroy(prev);
+                prev->back_reference() = partition_version_ref(*merged_into, prev->back_reference().is_unique_owner());
+                current_allocator().destroy(merged_from);
                 return stop_iteration::yes;
             }
-            current_allocator().destroy(prev);
-            --version_no;
+            current_allocator().destroy(merged_from);
         }
     }
     return stop_iteration::yes;
