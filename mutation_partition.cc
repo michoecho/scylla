@@ -300,8 +300,13 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, const sc
     assert(s.version() == _schema_version);
     assert(p._schema_version == _schema_version);
 #endif
+    bool same_schema = s.version() == p_s.version();
     _tombstone.apply(p._tombstone);
-    _static_row.apply_monotonically(s, column_kind::static_column, std::move(p._static_row));
+    if (same_schema) [[likely]] {
+        _static_row.apply_monotonically(s, column_kind::static_column, std::move(p._static_row));
+    } else {
+        _static_row.apply(p_s, s, column_kind::static_column, std::move(p._static_row));
+    }
     _static_row_continuous |= p._static_row_continuous;
 
     rows_entry::tri_compare cmp(s);
@@ -435,8 +440,15 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, const sc
                 }
             }
             if (insert) {
-                rows_type::key_grabber pi_kg(p_i);
-                _rows.insert_before(i, std::move(pi_kg));
+                if (same_schema) [[likely]] {
+                    rows_type::key_grabber pi_kg(p_i);
+                    _rows.insert_before(i, std::move(pi_kg));
+                } else {
+                    auto new_e = alloc_strategy_unique_ptr<rows_entry>(
+                        current_allocator().construct<rows_entry>(p_s, s, *p_i));
+                    _rows.insert_before(i, std::move(new_e));
+                    p_i = p._rows.erase(p_i);
+                }
             }
         } else {
             auto continuous = i->continuous() || src_e.continuous();
@@ -453,7 +465,11 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, const sc
                 tracker->remove(src_e);
             } else {
                 memory::on_alloc_point();
-                i->apply_monotonically(s, std::move(src_e));
+                if (same_schema) [[likely]] {
+                    i->apply_monotonically(s, std::move(src_e));
+                } else {
+                    i->apply_monotonically(p_s, s, std::move(src_e));
+                }
             }
             ++app_stats.row_hits;
             p_i = p._rows.erase_and_dispose(p_i, del);
@@ -1191,6 +1207,12 @@ void deletable_row::apply_monotonically(const schema& s, deletable_row&& src) {
     _deleted_at.apply(src._deleted_at, _marker);
 }
 
+void deletable_row::apply_monotonically(const schema& from, const schema& to, deletable_row&& src) {
+    _cells.apply(from, to, column_kind::regular_column, std::move(src._cells));
+    _marker.apply(src._marker);
+    _deleted_at.apply(src._deleted_at, _marker);
+}
+
 bool
 rows_entry::equal(const schema& s, const rows_entry& other) const {
     return equal(s, other, s);
@@ -1205,18 +1227,9 @@ rows_entry::equal(const schema& s, const rows_entry& other, const schema& other_
 
 rows_entry::rows_entry(const schema& from, const schema& to, const rows_entry& e)
     : _key(e._key)
-    , _row(row_tombstone(e._row.deleted_at()), row_marker(e._row.marker()), ::row())
+    , _row(row_tombstone(e._row.deleted_at()), row_marker(e._row.marker()), ::row(from, to, column_kind::regular_column, e.row().cells()))
     , _flags(e._flags)
-{
-    auto kind = column_kind::regular_column;
-    e.row().cells().for_each_cell([&] (column_id id, const atomic_cell_or_collection& cell) {
-        const column_definition& col = from.column_at(kind, id);
-        const column_definition* new_col = to.get_column_definition(col.name());
-        if (new_col) {
-            converting_mutation_partition_applier::append_cell(this->row().cells(), kind, *new_col, col, cell);
-        }
-    });
-}
+{}
 
 bool mutation_partition::equal(const schema& s, const mutation_partition& p) const {
     return equal(s, p, s);
@@ -1591,6 +1604,16 @@ row::row(const schema& s, column_kind kind, const row& o) : _size(o._size)
     _cells.clone_from(o._cells, clone_cell_and_hash);
 }
 
+row::row(const schema& from, const schema& to, column_kind kind, const row& o) {
+    o.for_each_cell([&] (column_id id, const atomic_cell_or_collection& cell) {
+        const column_definition& col = from.column_at(kind, id);
+        const column_definition* new_col = to.get_column_definition(col.name());
+        if (new_col) {
+            converting_mutation_partition_applier::append_cell(*this, kind, *new_col, col, cell);
+        }
+    });
+}
+
 row::~row() {
 }
 
@@ -1661,6 +1684,19 @@ void row::apply(const schema& s, column_kind kind, const row& other) {
     }
     other.for_each_cell([&] (column_id id, const cell_and_hash& c_a_h) {
         apply(s.column_at(kind, id), c_a_h.cell, c_a_h.hash);
+    });
+}
+
+void row::apply(const schema& from, const schema& to, column_kind kind, const row& other) {
+    if (other.empty()) {
+        return;
+    }
+    other.for_each_cell([&] (column_id id, const cell_and_hash& c_a_h) {
+        const column_definition& col = from.column_at(kind, id);
+        const column_definition* new_col = to.get_column_definition(col.name());
+        if (new_col) {
+            converting_mutation_partition_applier::append_cell(*this, kind, *new_col, col, c_a_h.cell);
+        }
     });
 }
 

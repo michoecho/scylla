@@ -112,15 +112,30 @@ inline Result squashed(const partition_version_ref& v, Map&& map, Reduce&& reduc
 }
 
 ::static_row partition_snapshot::static_row(bool digest_requested) const {
-    return ::static_row(::squashed<row>(version(),
-                         [&] (const mutation_partition& mp) -> const row& {
-                            if (digest_requested) {
-                                mp.static_row().prepare_hash(*_schema, column_kind::static_column);
-                            }
-                            return mp.static_row().get();
-                         },
-                         [this] (const row& r) { return row(*_schema, column_kind::static_column, r); },
-                         [this] (row& a, const row& b) { a.apply(*_schema, column_kind::static_column, b); }));
+    const partition_version* this_v = &*version();
+    partition_version* it = this_v->last();
+    if (digest_requested) {
+        it->partition().static_row().prepare_hash(*_schema, column_kind::static_column);
+    }
+    row r = std::invoke([&] {
+        if (it->get_schema()->version() == this_v->get_schema()->version()) [[likely]] {
+            return row(*this_v->get_schema(), column_kind::static_column, it->partition().static_row().get());
+        } else {
+            return row(*it->get_schema(), *this_v->get_schema(), column_kind::static_column, it->partition().static_row().get());
+        }
+    });
+    while (it != this_v) {
+        it = it->prev();
+        if (digest_requested) {
+            it->partition().static_row().prepare_hash(*_schema, column_kind::static_column);
+        }
+        if (it->get_schema()->version() == this_v->get_schema()->version()) [[likely]] {
+            r.apply(*this_v->get_schema(), column_kind::static_column, this_v->partition().static_row().get());
+        } else {
+            r.apply(*it->get_schema(), *this_v->get_schema(), column_kind::static_column, it->partition().static_row().get());
+        }
+    }
+    return ::static_row(std::move(r));
 }
 
 bool partition_snapshot::static_row_continuous() const {
@@ -133,14 +148,14 @@ tombstone partition_snapshot::partition_tombstone() const {
                                [] (tombstone& a, tombstone b) { a.apply(b); });
 }
 
-mutation_partition partition_snapshot::squashed() const {
-    return ::squashed<mutation_partition>(version(),
-                               [] (const mutation_partition& mp) -> const mutation_partition& { return mp; },
-                               [this] (const mutation_partition& mp) { return mutation_partition(*_schema, mp); },
-                               [this] (mutation_partition& a, const mutation_partition& b) {
-                                   mutation_application_stats app_stats;
-                                   a.apply(*_schema, b, *_schema, app_stats);
-                               });
+::mutation_partition partition_snapshot::squashed() const {
+    const partition_version* this_v = &*version();
+    mutation_partition mp(*this_v->get_schema());
+    for (auto it = this_v->last(); it != this_v; it = it->prev()) {
+       mutation_application_stats app_stats;
+       mp.apply(*this_v->get_schema(), it->partition(), *it->get_schema(), app_stats);
+    }
+    return mp;
 }
 
 tombstone partition_entry::partition_tombstone() const {

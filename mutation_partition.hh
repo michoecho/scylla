@@ -97,6 +97,7 @@ public:
     row();
     ~row();
     row(const schema&, column_kind, const row&);
+    row(const schema& from, const schema& to, column_kind, const row&);
     row(row&& other) noexcept;
     row& operator=(row&& other) noexcept;
     size_t size() const { return _size; }
@@ -178,6 +179,7 @@ public:
 
     // Weak exception guarantees
     void apply(const schema&, column_kind, const row& src);
+    void apply(const schema& from, const schema& to, column_kind, const row& src);
     // Weak exception guarantees
     void apply(const schema&, column_kind, row&& src);
     // Monotonic exception guarantees
@@ -386,6 +388,14 @@ public:
             return;
         }
         maybe_create().apply(s, kind, src.get_existing());
+    }
+
+    // Weak exception guarantees
+    void apply(const schema& from, const schema& to, column_kind kind, const lazy_row& src) {
+        if (src.empty()) {
+            return;
+        }
+        maybe_create().apply(from, to, kind, src.get_existing());
     }
 
     // Weak exception guarantees
@@ -857,6 +867,7 @@ public:
     void apply(const schema& s, deletable_row&& src);
     void apply_monotonically(const schema& s, const deletable_row& src);
     void apply_monotonically(const schema& s, deletable_row&& src);
+    void apply_monotonically(const schema& from, const schema& to, deletable_row&& src);
 public:
     row_tombstone deleted_at() const { return _deleted_at; }
     api::timestamp_type created_at() const { return _marker.timestamp(); }
@@ -979,6 +990,9 @@ public:
     }
     void apply_monotonically(const schema& s, rows_entry&& e) {
         _row.apply(s, std::move(e._row));
+    }
+    void apply_monotonically(const schema& from, const schema& to, rows_entry&& e) {
+        _row.apply_monotonically(from, to, std::move(e._row));
     }
     bool empty() const {
         return _row.empty();
