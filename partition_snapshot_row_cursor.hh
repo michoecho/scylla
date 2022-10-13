@@ -476,9 +476,19 @@ public:
     clustering_row row() const {
         // Note: if the precondition ("cursor is valid and pointing at a row") is fulfilled
         // then _current_row is not empty, so the below is valid.
-        clustering_row cr(key(), deletable_row(_schema, _current_row[0].it->row()));
+        clustering_row cr = std::invoke([&] {
+            if (_current_row[0].schema->version() == _schema.version()) [[likely]] {
+                return clustering_row(key(), deletable_row(_schema, _current_row[0].it->row()));
+            } else {
+                return clustering_row(key(), deletable_row(*_current_row[0].schema, _schema, _current_row[0].it->row()));
+            }
+        });
         for (size_t i = 1; i < _current_row.size(); ++i) {
-            cr.apply(_schema, _current_row[i].it->row());
+            if (_current_row[i].schema->version() == _schema.version()) [[likely]] {
+                cr.apply(_schema, _current_row[i].it->row());
+            } else {
+                cr.apply(*_current_row[i].schema, _schema, _current_row[i].it->row());
+            }
         }
         return cr;
     }
@@ -492,22 +502,17 @@ public:
     // Monotonic exception guarantees.
     template <typename Consumer>
     requires std::is_invocable_v<Consumer, deletable_row>
-    void consume_row(Consumer&& consumer) {
+    void consume_row(const schema& to, Consumer&& consumer) {
         for (position_in_version& v : _current_row) {
-            if (v.unique_owner) {
-                consumer(std::move(v.it->row()));
+            if (v.schema->version() == _schema.version()) [[likely]] {
+                if (v.unique_owner) {
+                    consumer(std::move(v.it->row()));
+                } else {
+                    consumer(deletable_row(_schema, v.it->row()));
+                }
             } else {
-                consumer(deletable_row(_schema, v.it->row()));
+                consumer(deletable_row(*v.schema, _schema, v.it->row()));
             }
-        }
-    }
-
-    // Can be called only when cursor is valid and pointing at a row.
-    template <typename Consumer>
-    requires std::is_invocable_v<Consumer, const deletable_row&>
-    void consume_row(Consumer&& consumer) const {
-        for (const position_in_version& v : _current_row) {
-            consumer(v.it->row());
         }
     }
 
@@ -516,7 +521,7 @@ public:
     size_t memory_usage() const {
         size_t result = 0;
         for (const position_in_version& v : _current_row) {
-            result += v.it->memory_usage(_schema);
+            result += v.it->memory_usage(*v.schema);
         }
         return result;
     }
@@ -542,7 +547,7 @@ public:
         } else {
             // Copy row from older version because rows in evictable versions must
             // hold values which are independently complete to be consistent on eviction.
-            auto e = [&] {
+            auto e = std::invoke([&] {
                 if (!at_a_row()) {
                     return alloc_strategy_unique_ptr<rows_entry>(
                             current_allocator().construct<rows_entry>(*_snp.schema(), _position,
@@ -556,7 +561,7 @@ public:
                                 current_allocator().construct<rows_entry>(*_current_row[0].schema, *_snp.schema(), *_current_row[0].it));
                     }
                 }
-            }();
+            });
             rows_entry& re = *e;
             if (_reversed) { // latest_i is not reliably a successor
                 // FIXME: set continuity when possible. Not that important since cache sets it anyway when populating.

@@ -696,7 +696,7 @@ public:
 };
 
 partition_snapshot_ptr memtable_entry::snapshot(memtable& mtbl) {
-    return _pe.read(mtbl.region(), mtbl.cleaner(), _schema, no_cache_tracker);
+    return _pe.read(mtbl.region(), mtbl.cleaner(), no_cache_tracker);
 }
 
 flat_mutation_reader_v2_opt
@@ -821,8 +821,7 @@ mutation_source memtable::as_data_source() {
 }
 
 memtable_entry::memtable_entry(memtable_entry&& o) noexcept
-    : _schema(std::move(o._schema))
-    , _key(std::move(o._key))
+    : _key(std::move(o._key))
     , _pe(std::move(o._pe))
     , _flags(o._flags)
 { }
@@ -840,14 +839,11 @@ bool memtable::is_flushed() const noexcept {
 }
 
 void memtable_entry::upgrade_schema(logalloc::region& r, const schema_ptr& s, mutation_cleaner& cleaner) {
-    if (_schema != s) {
-        partition().upgrade(r, s, cleaner, no_cache_tracker);
-        _schema = s;
-    }
+    partition().upgrade(r, s, cleaner, no_cache_tracker);
 }
 
 void memtable::upgrade_entry(memtable_entry& e) {
-    if (e._schema != _schema) {
+    if (e.schema() != _schema) {
         assert(!reclaiming_enabled());
         with_allocator(allocator(), [this, &e] {
             e.upgrade_schema(region(), _schema, cleaner());
@@ -869,7 +865,7 @@ std::ostream& operator<<(std::ostream& out, memtable& mt) {
 }
 
 std::ostream& operator<<(std::ostream& out, const memtable_entry& mt) {
-    return out << "{" << mt.key() << ": " << partition_entry::printer(*mt.schema(), mt.partition()) << "}";
+    return out << "{" << mt.key() << ": " << partition_entry::printer(mt.partition()) << "}";
 }
 
 }

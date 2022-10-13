@@ -90,6 +90,9 @@ public:
     void apply(const schema& s, const deletable_row& r) {
         _row.apply(s, r);
     }
+    void apply(const schema& from, const schema& to, const deletable_row& r) {
+        _row.apply_monotonically(from, to, r);
+    }
 
     position_in_partition_view position() const;
 

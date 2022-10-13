@@ -1213,6 +1213,12 @@ void deletable_row::apply_monotonically(const schema& from, const schema& to, de
     _deleted_at.apply(src._deleted_at, _marker);
 }
 
+void deletable_row::apply_monotonically(const schema& from, const schema& to, const deletable_row& src) {
+    _cells.apply(from, to, column_kind::regular_column, src._cells);
+    _marker.apply(src._marker);
+    _deleted_at.apply(src._deleted_at, _marker);
+}
+
 bool
 rows_entry::equal(const schema& s, const rows_entry& other) const {
     return equal(s, other, s);

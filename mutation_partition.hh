@@ -831,6 +831,11 @@ public:
         , _marker(other._marker)
         , _cells(s, column_kind::regular_column, other._cells)
     { }
+    deletable_row(const schema& from, const schema& to, const deletable_row& other)
+        : _deleted_at(other._deleted_at)
+        , _marker(other._marker)
+        , _cells(from, to, column_kind::regular_column, other._cells)
+    {}
     deletable_row(row_tombstone&& tomb, row_marker&& marker, row&& cells)
         : _deleted_at(std::move(tomb)), _marker(std::move(marker)), _cells(std::move(cells))
     {}
@@ -868,6 +873,7 @@ public:
     void apply_monotonically(const schema& s, const deletable_row& src);
     void apply_monotonically(const schema& s, deletable_row&& src);
     void apply_monotonically(const schema& from, const schema& to, deletable_row&& src);
+    void apply_monotonically(const schema& from, const schema& to, const deletable_row& src);
 public:
     row_tombstone deleted_at() const { return _deleted_at; }
     api::timestamp_type created_at() const { return _marker.timestamp(); }

@@ -63,9 +63,9 @@ stop_iteration partition_version::clear_gently(cache_tracker* tracker) noexcept 
     return _partition.clear_gently(tracker);
 }
 
-size_t partition_version::size_in_allocator(const schema& s, allocation_strategy& allocator) const {
+size_t partition_version::size_in_allocator(allocation_strategy& allocator) const {
     return allocator.object_memory_size_in_allocator(this) +
-           partition().external_memory_usage(s);
+           partition().external_memory_usage(*_schema);
 }
 
 namespace {
@@ -115,7 +115,7 @@ inline Result squashed(const partition_version_ref& v, Map&& map, Reduce&& reduc
     const partition_version* this_v = &*version();
     partition_version* it = this_v->last();
     if (digest_requested) {
-        it->partition().static_row().prepare_hash(*_schema, column_kind::static_column);
+        it->partition().static_row().prepare_hash(*it->get_schema(), column_kind::static_column);
     }
     row r = std::invoke([&] {
         if (it->get_schema()->version() == this_v->get_schema()->version()) [[likely]] {
@@ -127,7 +127,7 @@ inline Result squashed(const partition_version_ref& v, Map&& map, Reduce&& reduc
     while (it != this_v) {
         it = it->prev();
         if (digest_requested) {
-            it->partition().static_row().prepare_hash(*_schema, column_kind::static_column);
+            it->partition().static_row().prepare_hash(*it->get_schema(), column_kind::static_column);
         }
         if (it->get_schema()->version() == this_v->get_schema()->version()) [[likely]] {
             r.apply(*this_v->get_schema(), column_kind::static_column, this_v->partition().static_row().get());
@@ -381,7 +381,7 @@ void partition_entry::apply(logalloc::region& r, mutation_cleaner& cleaner, cons
                 return;
             } else {
                 // Apply was preempted. Let the cleaner finish the job when snapshot dies
-                snp = read(r, cleaner, s.shared_from_this(), no_cache_tracker);
+                snp = read(r, cleaner, no_cache_tracker);
                 // FIXME: Store res in the snapshot as an optimization to resume from where we left off.
             }
         } catch (...) {
@@ -419,14 +419,14 @@ utils::coroutine partition_entry::apply_to_incomplete(const schema& s,
     // So we cannot allow erasing when preemptible.
     bool can_move = !preemptible && !pe._snapshot;
 
-    auto src_snp = pe.read(reg, pe_cleaner, s.shared_from_this(), no_cache_tracker);
+    auto src_snp = pe.read(reg, pe_cleaner, no_cache_tracker);
     partition_snapshot_ptr prev_snp;
     if (preemptible) {
         // Reads must see prev_snp until whole update completes so that writes
         // are not partially visible.
-        prev_snp = read(reg, tracker.cleaner(), s.shared_from_this(), &tracker, phase - 1);
+        prev_snp = read(reg, tracker.cleaner(), &tracker, phase - 1);
     }
-    auto dst_snp = read(reg, tracker.cleaner(), s.shared_from_this(), &tracker, phase);
+    auto dst_snp = read(reg, tracker.cleaner(), &tracker, phase);
     dst_snp->lock();
 
     // Once we start updating the partition, we must keep all snapshots until the update completes,
@@ -491,7 +491,7 @@ utils::coroutine partition_entry::apply_to_incomplete(const schema& s,
                             tracker.on_row_merged_from_memtable();
                         }
                         rows_entry& e = ropt->row;
-                        src_cur.consume_row([&](deletable_row&& row) {
+                        src_cur.consume_row(s, [&](deletable_row&& row) {
                             e.row().apply_monotonically(s, std::move(row));
                         });
                     } else {
@@ -537,12 +537,12 @@ void partition_entry::upgrade(logalloc::region& r, schema_ptr to, mutation_clean
     if (_snapshot) {
         phase = _snapshot->_phase;
     }
-    partition_snapshot_ptr snp = read(r, cleaner, to, tracker, phase);
+    partition_snapshot_ptr snp = read(r, cleaner, tracker, phase);
     add_version(std::move(to), tracker);
 }
 
 partition_snapshot_ptr partition_entry::read(logalloc::region& r,
-    mutation_cleaner& cleaner, schema_ptr entry_schema, cache_tracker* tracker, partition_snapshot::phase_type phase)
+    mutation_cleaner& cleaner, cache_tracker* tracker, partition_snapshot::phase_type phase)
 {
     if (_snapshot) {
         if (_snapshot->_phase == phase) {
@@ -557,12 +557,12 @@ partition_snapshot_ptr partition_entry::read(logalloc::region& r,
             return snp;
         } else { // phase > _snapshot->_phase
             with_allocator(r.allocator(), [&] {
-                add_version(entry_schema, tracker);
+                add_version(get_schema(), tracker);
             });
         }
     }
 
-    auto snp = make_lw_shared<partition_snapshot>(entry_schema, r, cleaner, this, tracker, phase);
+    auto snp = make_lw_shared<partition_snapshot>(r, cleaner, this, tracker, phase);
     _snapshot = snp.get();
     return partition_snapshot_ptr(std::move(snp));
 }
@@ -582,6 +582,7 @@ partition_snapshot::range_tombstones(position_in_partition_view start, position_
                                      std::function<stop_iteration(range_tombstone)> callback,
                                      bool reverse)
 {
+    const ::schema& s = *schema();
     partition_version* v = &*version();
 
     if (reverse) [[unlikely]] {
@@ -603,7 +604,7 @@ partition_snapshot::range_tombstones(position_in_partition_view start, position_
     };
 
     if (!v->next()) { // Optimization for single-version snapshots
-        auto range = v->partition().row_tombstones().slice(*_schema, start, end);
+        auto range = v->partition().row_tombstones().slice(s, start, end);
         while (!range.empty()) {
             if (callback(pop_stream(range)) == stop_iteration::yes) {
                 return stop_iteration::no;
@@ -613,7 +614,7 @@ partition_snapshot::range_tombstones(position_in_partition_view start, position_
     }
 
     std::vector<range_tombstone_list::iterator_range> streams; // contains only non-empty ranges
-    position_in_partition::less_compare less(*_schema);
+    position_in_partition::less_compare less(s);
 
     // Sorts ranges by first range_tombstone's starting position
     // in descending order (because the heap is a max-heap).
@@ -627,7 +628,7 @@ partition_snapshot::range_tombstones(position_in_partition_view start, position_
     };
 
     while (v) {
-        auto&& range = v->partition().row_tombstones().slice(*_schema, start, end);
+        auto&& range = v->partition().row_tombstones().slice(s, start, end);
         if (!range.empty()) {
             streams.emplace_back(std::move(range));
         }
@@ -685,7 +686,7 @@ std::ostream& operator<<(std::ostream& out, const partition_entry::printer& p) {
             if (v->is_referenced()) {
                 out << "(*) ";
             }
-            out << mutation_partition::printer(p._schema, v->partition());
+            out << mutation_partition::printer(*v->get_schema(), v->partition());
             v = v->next();
             first = false;
         }

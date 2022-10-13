@@ -1280,7 +1280,7 @@ flat_mutation_reader_v2 cache_entry::read(row_cache& rc, std::unique_ptr<read_co
 // Assumes reader is in the corresponding partition
 flat_mutation_reader_v2 cache_entry::do_read(row_cache& rc, read_context& reader) {
     const schema_ptr& s = schema();
-    auto snp = _pe.read(rc._tracker.region(), rc._tracker.cleaner(), s, &rc._tracker, reader.phase());
+    auto snp = _pe.read(rc._tracker.region(), rc._tracker.cleaner(), &rc._tracker, reader.phase());
     auto ckr = query::clustering_key_filter_ranges::get_native_ranges(*s, reader.native_slice(), _key.key());
     schema_ptr entry_schema = to_query_domain(reader.slice(), s);
     auto r = make_cache_flat_mutation_reader(entry_schema, _key, std::move(ckr), rc, reader, std::move(snp));
@@ -1291,7 +1291,7 @@ flat_mutation_reader_v2 cache_entry::do_read(row_cache& rc, read_context& reader
 
 flat_mutation_reader_v2 cache_entry::do_read(row_cache& rc, std::unique_ptr<read_context> unique_ctx) {
     const schema_ptr& s = schema();
-    auto snp = _pe.read(rc._tracker.region(), rc._tracker.cleaner(), s, &rc._tracker, unique_ctx->phase());
+    auto snp = _pe.read(rc._tracker.region(), rc._tracker.cleaner(), &rc._tracker, unique_ctx->phase());
     auto ckr = query::clustering_key_filter_ranges::get_native_ranges(*s, unique_ctx->native_slice(), _key.key());
     schema_ptr reader_schema = unique_ctx->schema();
     schema_ptr entry_schema = to_query_domain(unique_ctx->slice(), s);
@@ -1355,6 +1355,6 @@ std::ostream& operator<<(std::ostream& out, cache_entry& e) {
     return out << "{cache_entry: " << e.position()
                << ", cont=" << e.continuous()
                << ", dummy=" << e.is_dummy_entry()
-               << ", " << partition_entry::printer(*e.schema(), e.partition())
+               << ", " << partition_entry::printer(e.partition())
                << "}";
 }
