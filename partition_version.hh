@@ -622,7 +622,6 @@ public:
         return *_version;
     }
 
-    mutation_partition squashed(const schema& from, const schema& to);
     mutation_partition squashed(const schema&);
     tombstone partition_tombstone() const;
 

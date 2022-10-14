@@ -113,7 +113,9 @@ private:
     schema_ptr _schema;
     logalloc::allocating_section _read_section;
     logalloc::allocating_section _allocating_section;
+public:
     partitions_type partitions;
+private:
     size_t nr_partitions = 0;
     db::replay_position _replay_position;
     db::rp_set _rp_set;

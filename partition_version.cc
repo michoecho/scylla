@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#pragma clang optimize off
+
 #include <boost/range/algorithm/heap_algorithm.hpp>
 
 #include "partition_version.hh"
@@ -130,7 +132,7 @@ inline Result squashed(const partition_version_ref& v, Map&& map, Reduce&& reduc
             it->partition().static_row().prepare_hash(*it->get_schema(), column_kind::static_column);
         }
         if (it->get_schema()->version() == this_v->get_schema()->version()) [[likely]] {
-            r.apply(*this_v->get_schema(), column_kind::static_column, this_v->partition().static_row().get());
+            r.apply(*this_v->get_schema(), column_kind::static_column, it->partition().static_row().get());
         } else {
             r.apply(*it->get_schema(), *this_v->get_schema(), column_kind::static_column, it->partition().static_row().get());
         }
@@ -151,9 +153,12 @@ tombstone partition_snapshot::partition_tombstone() const {
 ::mutation_partition partition_snapshot::squashed() const {
     const partition_version* this_v = &*version();
     mutation_partition mp(*this_v->get_schema());
-    for (auto it = this_v->last(); it != this_v; it = it->prev()) {
+    for (auto it = this_v->last();; it = it->prev()) {
        mutation_application_stats app_stats;
        mp.apply(*this_v->get_schema(), it->partition(), *it->get_schema(), app_stats);
+       if (it == this_v) {
+           break;
+       }
     }
     return mp;
 }
@@ -207,19 +212,22 @@ stop_iteration partition_snapshot::merge_partition_versions(mutation_application
             if (prev->get_schema()->version() != current->get_schema()->version()) {
                 std::swap(merged_from, merged_into);
             }
-            stop_iteration do_stop_iteration = prev->partition().apply_monotonically(*prev->get_schema(), *schema(), 
-                    std::move(current->partition()), _tracker, local_app_stats, is_preemptible::yes, _version_merging_state);
+            stop_iteration do_stop_iteration = merged_into->partition().apply_monotonically(*merged_into->get_schema(), *merged_from->get_schema(), 
+                    std::move(merged_from->partition()), _tracker, local_app_stats, is_preemptible::yes, _version_merging_state);
             app_stats.row_hits += local_app_stats.row_hits;
             if (do_stop_iteration == stop_iteration::no) {
                 return stop_iteration::no;
             }
             _version_merging_state = apply_resume{};
             if (prev->is_referenced()) {
-                _version.release();
-                prev->back_reference() = partition_version_ref(*merged_into, prev->back_reference().is_unique_owner());
+                auto& prev_ref = prev->back_reference();
+                bool prev_is_unique_owner = prev_ref.is_unique_owner();
+                merged_into->back_reference().release();
+                prev_ref = partition_version_ref(*merged_into, prev_is_unique_owner);
                 current_allocator().destroy(merged_from);
                 return stop_iteration::yes;
             }
+            _version = partition_version_ref(*merged_into);
             current_allocator().destroy(merged_from);
         }
     }
@@ -510,23 +518,18 @@ utils::coroutine partition_entry::apply_to_incomplete(const schema& s,
     });
 }
 
-mutation_partition partition_entry::squashed(const schema& from, const schema& to)
+mutation_partition partition_entry::squashed(const schema& to)
 {
     mutation_partition mp(to);
     mp.set_static_row_continuous(_version->partition().static_row_continuous());
     for (auto&& v : _version->all_elements()) {
-        auto older = mutation_partition(from, v.partition());
-        if (from.version() != to.version()) {
-            older.upgrade(from, to);
+        auto older = mutation_partition(*v.get_schema(), v.partition());
+        if (v.get_schema()->version() != to.version()) {
+            older.upgrade(*v.get_schema(), to);
         }
         merge_versions(to, mp, std::move(older), no_cache_tracker);
     }
     return mp;
-}
-
-mutation_partition partition_entry::squashed(const schema& s)
-{
-    return squashed(s, s);
 }
 
 void partition_entry::upgrade(logalloc::region& r, schema_ptr to, mutation_cleaner& cleaner, cache_tracker* tracker)

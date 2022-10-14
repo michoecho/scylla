@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#pragma clang optimize off
+
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/range/algorithm/copy.hpp>
 #include <boost/range/algorithm_ext/push_back.hpp>
@@ -712,6 +714,10 @@ SEASTAR_TEST_CASE(test_snapshot_cursor_is_consistent_with_merging_for_nonevictab
             m1.partition().make_fully_continuous();
             m2.partition().make_fully_continuous();
             m3.partition().make_fully_continuous();
+
+            std::cout << mutation_partition::printer(*s, m1.partition()) << std::endl;
+            std::cout << mutation_partition::printer(*s, m2.partition()) << std::endl;
+            std::cout << mutation_partition::printer(*s, m3.partition()) << std::endl;
 
             {
                 mutation_application_stats app_stats;

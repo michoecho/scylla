@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#pragma clang optimize off
+
 #include <seastar/core/coroutine.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 
@@ -446,8 +448,9 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, const sc
                 } else {
                     auto new_e = alloc_strategy_unique_ptr<rows_entry>(
                         current_allocator().construct<rows_entry>(p_s, s, *p_i));
-                    _rows.insert_before(i, std::move(new_e));
-                    p_i = p._rows.erase(p_i);
+                    auto it = _rows.insert_before(i, std::move(new_e));
+                    it->swap(*p_i);
+                    p_i = p._rows.erase_and_dispose(p_i, del);
                 }
             }
         } else {

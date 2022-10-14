@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#pragma clang optimize off
+
 #include "row_cache.hh"
 #include <seastar/core/memory.hh>
 #include <seastar/core/do_with.hh>
