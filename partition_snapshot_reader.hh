@@ -23,6 +23,7 @@ class partition_snapshot_flat_reader : public flat_mutation_reader_v2::impl, pub
           mutation_partition::rows_type::const_iterator>;
     struct rows_position {
         rows_iter_type _position, _end;
+        const schema* _s;
     };
 
     static rows_iter_type make_iterator(mutation_partition::rows_type::const_iterator it) {
@@ -137,7 +138,7 @@ class partition_snapshot_flat_reader : public flat_mutation_reader_v2::impl, pub
                 auto cr_end = upper_bound(v.partition(), *_snapshot_schema, ck_range_snapshot);
 
                 if (cr != cr_end) {
-                    _clustering_rows.emplace_back(rows_position { cr, cr_end });
+                    _clustering_rows.emplace_back(rows_position { cr, cr_end, v.get_schema().get() });
                 }
 
                 range_tombstone_list::iterator_range rt_slice = [&] () {
@@ -160,18 +161,20 @@ class partition_snapshot_flat_reader : public flat_mutation_reader_v2::impl, pub
             boost::range::make_heap(_clustering_rows, _heap_cmp);
             boost::range::make_heap(_range_tombstones, _heap_cmp);
         }
+
         // Valid if has_more_rows()
-        const rows_entry& pop_clustering_row() {
+        std::pair<const rows_entry&, const schema*> pop_clustering_row() {
             boost::range::pop_heap(_clustering_rows, _heap_cmp);
             auto& current = _clustering_rows.back();
             const rows_entry& e = *current._position;
+            const schema* s = current._s;
             current._position = std::next(current._position);
             if (current._position == current._end) {
                 _clustering_rows.pop_back();
             } else {
                 boost::range::push_heap(_clustering_rows, _heap_cmp);
             }
-            return e;
+            return {e, s};
         }
 
         range_tombstone pop_range_tombstone() {
@@ -265,22 +268,37 @@ class partition_snapshot_flat_reader : public flat_mutation_reader_v2::impl, pub
 
                 position_in_partition::equal_compare rows_eq(_query_schema);
                 while (has_more_rows()) {
-                    const rows_entry& e = pop_clustering_row();
+                    const auto entry_and_schema = pop_clustering_row();
+                    const rows_entry &e = entry_and_schema.first;
+                    const schema* s = entry_and_schema.second;
                     if (e.dummy()) {
                         continue;
                     }
                     if (_digest_requested) {
                         e.row().cells().prepare_hash(_query_schema, column_kind::regular_column);
                     }
-                    auto result = mutation_fragment(mutation_fragment::clustering_row_tag_t(), _query_schema, _permit, _query_schema, e);
+                    rows_entry re = std::invoke([&] {
+                        if (_query_schema.version() == s->version()) [[likely]] {
+                            return rows_entry(_query_schema, e);
+                        } else {
+                            return rows_entry(*s, _query_schema, e);
+                        }
+                    });
+                    auto result = mutation_fragment(mutation_fragment::clustering_row_tag_t(), _query_schema, _permit, _query_schema, std::move(re));
                     // TODO: Ideally this should be position() or position().reversed(), depending on Reversing.
                     while (has_more_rows() && rows_eq(peek_row().position(), result.as_clustering_row().position())) {
-                        const rows_entry& e = pop_clustering_row();
+                        const auto entry_and_schema = pop_clustering_row();
+                        const rows_entry &e = entry_and_schema.first;
+                        const schema* s = entry_and_schema.second;
                         if (_digest_requested) {
-                            e.row().cells().prepare_hash(_query_schema, column_kind::regular_column);
+                            e.row().cells().prepare_hash(*s, column_kind::regular_column);
                         }
                         result.mutate_as_clustering_row(_query_schema, [&] (clustering_row& cr) mutable {
-                            cr.apply(_query_schema, e);
+                            if (_query_schema.version() == s->version()) [[likely]] {
+                                cr.apply(_query_schema, e);
+                            } else {
+                                cr.apply(*s, _query_schema, e.row());
+                            }
                         });
                     }
                     return result;

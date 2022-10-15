@@ -1026,13 +1026,13 @@ SEASTAR_TEST_CASE(test_apply_monotonically_is_monotonic) {
                             expected_cont, target.partition().get_continuity(s), second.partition().get_continuity(s),
                             actual, c1, c2));
                     }
-                    m.partition().apply_monotonically(*m.schema(), std::move(m2), no_cache_tracker, app_stats);
+                    m.partition().apply_monotonically(*m.schema(), *m.schema(), std::move(m2), no_cache_tracker, app_stats);
                     assert_that(m).is_equal_to(expected);
 
                     m = target;
                     m2 = mutation_partition(*m.schema(), second.partition());
                 });
-                m.partition().apply_monotonically(*m.schema(), std::move(m2), no_cache_tracker, app_stats);
+                m.partition().apply_monotonically(*m.schema(), *m.schema(), std::move(m2), no_cache_tracker, app_stats);
                 d.cancel();
             });
             assert_that(m).is_equal_to(expected).has_same_continuity(expected);

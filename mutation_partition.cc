@@ -463,9 +463,13 @@ stop_iteration mutation_partition::apply_monotonically(const schema& s, const sc
             // violating exception guarantees.
             src_e.set_continuous(false);
             if (tracker) {
-                // Newer evictable versions store complete rows
-                i->replace_with(std::move(src_e));
-                tracker->remove(src_e);
+                if (same_schema) [[likely]] {
+                    // Newer evictable versions store complete rows
+                    i->replace_with(std::move(src_e));
+                    tracker->remove(src_e);
+                } else {
+                    tracker->remove(src_e);
+                }
             } else {
                 memory::on_alloc_point();
                 if (same_schema) [[likely]] {
