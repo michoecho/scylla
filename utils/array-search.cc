@@ -17,7 +17,7 @@
 
 namespace utils {
 
-arch_target("default") int array_search_gt_impl(int64_t val, const int64_t* array, const int capacity, const int size) {
+int array_search_gt_impl_default(int64_t val, const int64_t* array, const int capacity, const int size) {
     int i;
 
     for (i = 0; i < size; i++) {
@@ -64,7 +64,8 @@ arch_target("default") unsigned array_search_x32_eq_impl(uint8_t val, const uint
  * both do make things up to 50% slower.
  */
 
-arch_target("avx2") int array_search_gt_impl(int64_t val, const int64_t* array, const int capacity, const int size) {
+arch_target("avx2")
+int array_search_gt_impl_avx2(int64_t val, const int64_t* array, const int capacity, const int size) {
     int cnt = 0;
 
     // 0. Load key into 256-bit ymm
@@ -98,6 +99,19 @@ arch_target("avx2") int array_search_gt_impl(int64_t val, const int64_t* array, 
      *   </grumble>
      */
     return size - cnt;
+}
+
+arch_target("avx512f")
+int array_search_16_gt_impl_avx512f(int64_t val, const int64_t* array, const int capacity, const int size) {
+    auto a = _mm512_set1_epi64(val);
+    auto b1 = _mm512_loadu_si512((__m512i*)array);
+    auto b2 = _mm512_loadu_si512((__m512i*)array + 1);
+    auto c1 = _mm512_cmp_epi64_mask(a, b1, _MM_CMPINT_GT);
+    auto c2 = _mm512_cmp_epi64_mask(a, b2, _MM_CMPINT_GT);
+    auto d = _mm512_kunpackb(c1, c2);
+    auto e = _cvtmask16_u32(d);
+    auto f = __builtin_popcount(e);
+    return size - f;
 }
 
 /*
@@ -138,9 +152,40 @@ arch_target("avx2") unsigned array_search_x32_eq_impl(uint8_t val, const uint8_t
 
 #endif
 
-int array_search_gt(int64_t val, const int64_t* array, const int capacity, const int size) {
-    return array_search_gt_impl(val, array, capacity, size);
+extern "C" decltype(&array_search_gt) array_search_gt_impl_resolver() {
+#ifdef __x86_64__
+    __builtin_cpu_init();
+    if (__builtin_cpu_supports("avx2")) {
+        return array_search_gt_impl_avx2;
+    }
+#endif
+    return array_search_gt_impl_default;
 }
+
+[[gnu::ifunc("array_search_gt_impl_resolver")]]
+decltype(array_search_gt) array_search_gt;
+
+extern "C" decltype(&array_search_16_gt) array_search_16_gt_impl_resolver() {
+#ifdef __x86_64__
+    __builtin_cpu_init();
+    if (__builtin_cpu_supports("avx512f")
+            // Disable AVX-512 for CPUs affected by licence-based downclocking
+            && !__builtin_cpu_is("skylake-avx512")
+            && !__builtin_cpu_is("cascadelake")
+            && !__builtin_cpu_is("cooperlake")
+            && !__builtin_cpu_is("cannonlake")
+    ) {
+        return array_search_16_gt_impl_avx512f;
+    }
+    if (__builtin_cpu_supports("avx2")) {
+        return array_search_gt_impl_avx2;
+    }
+#endif
+    return array_search_gt_impl_default;
+}
+
+[[gnu::ifunc("array_search_16_gt_impl_resolver")]]
+decltype(array_search_16_gt) array_search_16_gt;
 
 unsigned array_search_16_eq(uint8_t val, const uint8_t* arr) {
     return array_search_16_eq_impl(val, arr);
