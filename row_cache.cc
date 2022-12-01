@@ -57,6 +57,10 @@ cache_tracker::cache_tracker(register_metrics with_metrics)
 
 static thread_local cache_tracker* current_tracker;
 
+namespace sstables {
+    size_t space_used_by_index();
+}
+
 cache_tracker::cache_tracker(mutation_application_stats& app_stats, register_metrics with_metrics)
     : _garbage(_region, this, app_stats)
     , _memtable_cleaner(_region, nullptr, app_stats)
@@ -77,7 +81,12 @@ cache_tracker::cache_tracker(mutation_application_stats& app_stats, register_met
                 return memory::reclaiming_result::reclaimed_something;
             }
             current_tracker = this;
-            return _lru.evict();
+
+            size_t cache_space = _region.occupancy().total_space();
+            size_t index_space = sstables::space_used_by_index();
+            bool should_evict_index = index_space > cache_space * 0.2;
+
+            return _lru.evict(should_evict_index);
         });
     });
 }
