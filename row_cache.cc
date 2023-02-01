@@ -25,6 +25,12 @@
 #include "cache_flat_mutation_reader.hh"
 #include "clustering_key_filter.hh"
 
+asdfasdffffffffffffffffffffffffffffffff
+basdfasdffffffffffffffffffffffffffffffff
+casdfasdffffffffffffffffffffffffffffffff
+dasdfasdffffffffffffffffffffffffffffffff
+easdfasdffffffffffffffffffffffffffffffff
+fasdfasdffffffffffffffffffffffffffffffff
 namespace cache {
 
 logging::logger clogger("cache");
