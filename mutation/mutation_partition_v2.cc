@@ -210,6 +210,12 @@ stop_iteration mutation_partition_v2::apply_monotonically(const schema& s, mutat
     // The sentinel never has a clustering key position, so it carries no row information.
     alloc_strategy_unique_ptr<rows_entry> p_sentinel;
     alloc_strategy_unique_ptr<rows_entry> this_sentinel;
+
+    // FIXME?: If a std::bad_alloc is thrown in apply_monotonically(), the subsequent sentinel
+    // insertion (which allocates memory) is also likely to fail. If sentinel insertion fails,
+    // the node will crash with std::terminate().
+    // Are we really fine with crashing the node on a std::bad_alloc (even if evictable memory is
+    // available!) in apply_monotonically()?
     auto insert_sentinel_back = defer([&] {
         if (this_sentinel) {
             assert(p_i != p._rows.end());
@@ -219,6 +225,7 @@ stop_iteration mutation_partition_v2::apply_monotonically(const schema& s, mutat
             if (insert_result.second) {
                 mplog.trace("{}: inserting sentinel at {}", fmt::ptr(this), i2->position());
                 if (tracker) {
+                    // FIXME?: Are we sure that std::prev(i2) exists?
                     tracker->insert(*std::prev(i2), *i2);
                 }
             } else {
@@ -237,6 +244,41 @@ stop_iteration mutation_partition_v2::apply_monotonically(const schema& s, mutat
             } else {
                 mplog.trace("{}: inserting sentinel at {}", fmt::ptr(&p), p_sentinel->position());
                 if (tracker) {
+                    // FIXME?: What if p_i is the last dummy and it's already evicted?
+                    // We will then attempt to insert the node into LRU before a node which isn't in LRU>
+                    // Hypothesis: either the program will crash, or the entry will leak from the LRU
+                    // and the partition will never be evicted.
+                    //
+                    // FIXME?: Doesn't the sentinel insertion violate "older versions are evicted first" and
+                    // lose writes?
+                    //
+                    // Let "eo" := eviction order. The higher "eo", the later the entry will be evicted.
+                    // Consider the following scenario:
+                    //
+                    // 1. Initial state:
+                    // v2: -- {pos=after(-1), eo=2} == {pos=after(0), rt=t2, eo=1} == {pos=after(1), rt=t1, eo=0} --
+                    // v1: -----------------------------------------------------------------------------------------
+                    //
+                    // 2. A v2+v1 merge starts and is preempted after moving two entries.
+                    // v2: --------------------------- ??????????????????????????? == {pos=after(1), rt=t1, eo=0} --
+                    // v1: -- {pos=after(-1), eo=2} == {pos=after(0), rt=t2, eo=1} ---------------------------------
+                    //
+                    // 3. A sentinel is inserted in v2 to preserve the continuity.
+                    // It's inserted just before the upper end in the eviction order.
+                    // This is where the eviction order invariant is broken.
+                    // v2: --------------------------- {pos=after(0), eo=0}        == {pos=after(1), rt=t1, eo=1} --
+                    // v1: -- {pos=after(-1), eo=3} == {pos=after(0), rt=t2, eo=2} ---------------------------------
+                    //
+                    // 4. A new (-1, 0] @ t3 range tombstone is merged from memtable:
+                    // v2: -- {pos=after(-1), eo=4} == {pos=after(0), rt=t3, eo=0} == {pos=after(1), rt=t1, eo=1} --
+                    // v1: -- {pos=after(-1), eo=3} == {pos=after(0), rt=t2, eo=2} ---------------------------------
+                    //
+                    // 5. Two entries are evicted. The t3 range tombstone write is lost.
+                    // v2: -- {pos=after(-1), eo=2} ----------------------------------------------------------------
+                    // v1: -- {pos=after(-1), eo=1} == {pos=after(0), rt=t2, eo=0} ---------------------------------
+                    //
+                    // Using a similar method, a violation of "no singular tombstones" could be constructed to
+                    // cause a potential crash.
                     tracker->insert(*p_i, *p_sentinel);
                 }
                 p._rows.insert_before_hint(p_i, std::move(p_sentinel), cmp);
