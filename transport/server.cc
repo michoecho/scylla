@@ -659,6 +659,8 @@ future<> cql_server::connection::process_request() {
             return make_ready_future<>();
         }
 
+        auto st = switch_task(1, fresh_task_id++);
+
         auto& f = *maybe_frame;
 
         const bool allow_shedding = _client_state.get_workload_type() == service::client_state::workload_type::interactive;

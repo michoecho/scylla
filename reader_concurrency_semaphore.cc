@@ -124,6 +124,7 @@ public:
         promise<> pr;
         std::optional<shared_future<>> fut;
         reader_concurrency_semaphore::read_func func;
+        task_id task_id;
         // Self reference to keep the permit alive while queued for execution.
         // Must be cleared on all code-paths, otherwise it will keep the permit alive in perpetuity.
         reader_permit_opt permit_keepalive;
@@ -894,6 +895,7 @@ future<> reader_concurrency_semaphore::execution_loop() noexcept {
             tracing::trace(permit.trace_state(), "[reader concurrency semaphore] executing read");
 
             try {
+                auto st = switch_task(10, e.task_id);
                 e.func(reader_permit(permit.shared_from_this())).forward_to(std::move(e.pr));
             } catch (...) {
                 e.pr.set_exception(std::current_exception());
@@ -1287,6 +1289,7 @@ future<> reader_concurrency_semaphore::do_wait_admission(reader_permit::impl& pe
 
     const auto [admit, why] = can_admit_read(permit);
     ++(_stats.*stats_table[static_cast<int>(why)]);
+    task_event(3, static_cast<uint64_t>(why));
     tracing::trace(permit.trace_state(), "[reader concurrency semaphore] {}", result_as_string[static_cast<int>(why)]);
     if (admit != can_admit::yes || !_wait_list.empty()) {
         auto fut = enqueue_waiter(permit, wait_on::admission);

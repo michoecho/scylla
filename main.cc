@@ -1732,6 +1732,9 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             });
 
             startlog.info("Scylla version {} initialization completed.", scylla_version());
+            g_tracer.start();
+            auto stop_tracer = defer([&] () noexcept { g_tracer.stop().wait(); } );
+            startlog.info("TRACING.");
             stop_signal.wait().get();
             startlog.info("Signal received; shutting down");
 	    // At this point, all objects destructors and all shutdown hooks registered with defer() are executed
