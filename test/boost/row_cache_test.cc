@@ -3350,6 +3350,9 @@ SEASTAR_TEST_CASE(test_tombstone_merging_of_overlapping_tombstones_in_many_versi
 }
 
 SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
+    setup_preempt_fd();
+    std::string filepath = fmt::format("{}.{}.preempt", getpid(), this_shard_id());
+    fmt::print("{}\n", filepath);
     return seastar::async([] {
         random_mutation_generator gen(random_mutation_generator::generate_counters::no);
         gen.set_key_cardinality(16);
@@ -3472,6 +3475,7 @@ SEASTAR_TEST_CASE(test_concurrent_reads_and_eviction) {
 
         assert_that(cache.make_reader(s, semaphore.make_permit()))
             .produces(versions.back());
+        desetup_preempt_fd();
     });
 }
 
