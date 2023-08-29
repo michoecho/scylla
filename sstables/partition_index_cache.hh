@@ -46,7 +46,7 @@ private:
         { }
 
         void set_page(partition_index_page&& page) noexcept {
-            with_allocator(_parent->_region.allocator(), [&] {
+            with_allocator(_parent->_zone.allocator(), [&] {
                 _size_in_allocator = sizeof(entry) + page.external_memory_usage();
             });
             _page = std::move(page);
@@ -158,20 +158,20 @@ public:
 private:
     using cache_type = bplus::tree<key_type, entry, key_less_comparator, 8, bplus::key_search::linear>;
     cache_type _cache;
-    logalloc::region& _region;
+    logalloc::zone& _zone;
     logalloc::allocating_section _as;
     lru& _lru;
 public:
 
     // Create a cache with a given LRU attached.
-    partition_index_cache(lru& lru_, logalloc::region& r)
+    partition_index_cache(lru& lru_, logalloc::zone& z)
             : _cache(key_less_comparator())
-            , _region(r)
+            , _zone(z)
             , _lru(lru_)
     { }
 
     ~partition_index_cache() {
-        with_allocator(_region.allocator(), [&] {
+        with_allocator(_zone.allocator(), [&] {
             _cache.clear_and_dispose([this] (entry* e) noexcept {
                 _lru.remove(*e);
                 on_evicted(*e);
@@ -211,8 +211,8 @@ public:
         ++_shard_stats.misses;
         ++_shard_stats.blocks;
 
-        entry_ptr ptr = _as(_region, [&] {
-            return with_allocator(_region.allocator(), [&] {
+        entry_ptr ptr = _as(_zone.region(), [&] {
+            return with_allocator(_zone.allocator(), [&] {
                 auto it_and_flag = _cache.emplace(key, this, key);
                 entry &cp = *it_and_flag.first;
                 assert(it_and_flag.second);
@@ -239,7 +239,7 @@ public:
             } catch (...) {
                 e.promise()->set_exception(std::current_exception());
                 ptr = {};
-                with_allocator(_region.allocator(), [&] {
+                with_allocator(_zone.allocator(), [&] {
                     _cache.erase(key);
                 });
                 throw;
@@ -258,7 +258,7 @@ public:
     future<> evict_gently() {
         auto i = _cache.begin();
         while (i != _cache.end()) {
-            with_allocator(_region.allocator(), [&] {
+            with_allocator(_zone.allocator(), [&] {
                 if (i->is_referenced()) {
                     ++i;
                 } else {
@@ -278,9 +278,11 @@ public:
 
 inline
 void partition_index_cache::entry::on_evicted() noexcept {
-    _parent->on_evicted(*this);
-    cache_type::iterator it(this);
-    it.erase(key_less_comparator());
+    with_allocator(_parent->_zone.allocator(), [&] {
+        _parent->on_evicted(*this);
+        cache_type::iterator it(this);
+        it.erase(key_less_comparator());
+    });
 }
 
 }

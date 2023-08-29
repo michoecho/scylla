@@ -166,6 +166,7 @@ public:
 tracker& shard_tracker() noexcept;
 
 class segment_descriptor;
+class zone;
 
 /// A unique pointer to a chunk of memory allocated inside an LSA region.
 ///
@@ -189,6 +190,7 @@ class lsa_buffer {
     segment_descriptor* _desc; // Valid only when engaged
     char* _buf = nullptr;      // Valid only when engaged
     size_t _size = 0;
+    zone* _zone = nullptr;     // Valid only when engaged. Can be null even if engaged.
 public:
     using char_type = char;
 
@@ -357,10 +359,14 @@ public:
         return *_impl;
     }
 
+    void* alloc(allocation_strategy::migrate_fn migrator, size_t size, size_t alignment, zone* z);
+    void free(void* obj, zone* z) noexcept;
+    void free(void* obj, size_t size, zone* z) noexcept;
+
     // Allocates a buffer of a given size.
     // The buffer's pointer will be aligned to 4KB.
     // Note: it is wasteful to allocate buffers of sizes which are not a multiple of the alignment.
-    lsa_buffer alloc_buf(size_t buffer_size);
+    lsa_buffer alloc_buf(size_t buffer_size, zone* z = nullptr);
 
     // Merges another region into this region. The other region is left empty.
     // Doesn't invalidate references to allocated objects.
@@ -406,6 +412,72 @@ public:
 
     friend class allocating_section;
 };
+
+// Implements `allocation_strategy` for `zone`.
+class zone_allocator : public allocation_strategy {
+    zone& _z;
+public:
+    zone_allocator(zone& z);
+    void* alloc(migrate_fn fn, size_t size, size_t alignment) override;
+    void free(void* obj, size_t size) override;
+    void free(void* obj) override;
+    size_t object_memory_size_in_allocator(const void* obj) const noexcept override;
+    uint64_t invalidate_counter() const noexcept override;
+};
+
+// A sub-allocator for a region.
+// Delegates all work to the region, but additionally does some accounting of its own.
+class zone {
+    friend region_impl;
+    size_t _allocated_bytes = 0;
+    size_t _freed_bytes = 0;
+    size_t _allocs = 0;
+    size_t _frees = 0;
+    region& _r;
+    zone_allocator _a;
+public:
+    // Watch out for the initialization order.
+    // The constructor of zone_allocator accesses _r.
+    zone(region& r)
+        : _r(r)
+        , _a(*this)
+    {}
+    region& region() {
+        return _r;
+    }
+    allocation_strategy& allocator() {
+        return _a;
+    }
+    lsa_buffer alloc_buf(size_t buffer_size) {
+        return _r.alloc_buf(buffer_size, this);
+    }
+    size_t used_bytes() const noexcept {
+        return _allocated_bytes - _freed_bytes;
+    }
+    size_t allocated_bytes() const noexcept { return _allocated_bytes; }
+    size_t freed_bytes() const noexcept { return _freed_bytes; }
+    size_t allocs() const noexcept { return _allocs; }
+    size_t frees() const noexcept { return _frees; }
+};
+
+inline zone_allocator::zone_allocator(zone& z) : _z(z) {
+    _preferred_max_contiguous_allocation = _z.region().allocator().preferred_max_contiguous_allocation();
+}
+inline void* zone_allocator::alloc(migrate_fn fn, size_t size, size_t alignment) {
+    return _z.region().alloc(std::move(fn), size, alignment, &_z);
+}
+inline void zone_allocator::free(void* obj, size_t size) {
+    _z.region().free(obj, size, &_z);
+}
+inline void zone_allocator::free(void* obj) {
+    _z.region().free(obj, &_z);
+}
+inline size_t zone_allocator::object_memory_size_in_allocator(const void* obj) const noexcept {
+    return _z.region().allocator().object_memory_size_in_allocator(obj);
+}
+inline uint64_t zone_allocator::invalidate_counter() const noexcept {
+    return _z.region().allocator().invalidate_counter() + allocation_strategy::invalidate_counter();
+}
 
 // Forces references into the region to remain valid as long as this guard is
 // live by disabling compaction and eviction.

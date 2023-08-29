@@ -80,6 +80,7 @@ private:
     stats _stats{};
     seastar::metrics::metric_groups _metrics;
     logalloc::region _region;
+    logalloc::zone _index_zone;
     lru _lru;
     mutation_cleaner _garbage;
     mutation_cleaner _memtable_cleaner;
@@ -126,6 +127,8 @@ public:
     allocation_strategy& allocator() noexcept;
     logalloc::region& region() noexcept;
     const logalloc::region& region() const noexcept;
+    logalloc::zone& index_zone() noexcept { return _index_zone; }
+    const logalloc::zone& index_zone() const noexcept { return _index_zone; }
     mutation_cleaner& cleaner() noexcept { return _garbage; }
     mutation_cleaner& memtable_cleaner() noexcept { return _memtable_cleaner; }
     uint64_t partitions() const noexcept { return _stats.partitions; }

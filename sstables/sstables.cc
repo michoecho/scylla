@@ -1339,7 +1339,7 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
     _cached_index_file = seastar::make_shared<cached_file>(_index_file,
                                                             index_page_cache_metrics,
                                                             _manager.get_cache_tracker().get_lru(),
-                                                            _manager.get_cache_tracker().region(),
+                                                            _manager.get_cache_tracker().index_zone(),
                                                             _index_file_size);
     _index_file = make_cached_seastar_file(*_cached_index_file);
 
@@ -2962,7 +2962,7 @@ sstable::sstable(schema_ptr schema,
     , _version(v)
     , _format(f)
     , _index_cache(std::make_unique<partition_index_cache>(
-            manager.get_cache_tracker().get_lru(), manager.get_cache_tracker().region()))
+            manager.get_cache_tracker().get_lru(), manager.get_cache_tracker().index_zone()))
     , _now(now)
     , _read_error_handler(error_handler_gen(sstable_read_error))
     , _write_error_handler(error_handler_gen(sstable_write_error))

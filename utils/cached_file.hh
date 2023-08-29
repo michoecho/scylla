@@ -92,7 +92,7 @@ private:
             , idx(idx)
             , _buf(std::move(buf))
         {
-            _lsa_buf = parent->_region.alloc_buf(_buf.size());
+            _lsa_buf = parent->_zone.alloc_buf(_buf.size());
             parent->_metrics.bytes_in_std += _buf.size();
             std::copy(_buf.begin(), _buf.end(), _lsa_buf.get());
         }
@@ -146,7 +146,7 @@ private:
     sstring _file_name; // for logging / tracing
     metrics& _metrics;
     lru& _lru;
-    logalloc::region& _region;
+    logalloc::zone& _zone;
     logalloc::allocating_section _as;
 
     using cache_type = bplus::tree<page_idx_type, cached_page, page_idx_less_comparator, 12, bplus::key_search::linear>;
@@ -180,7 +180,7 @@ private:
                     auto this_size = std::min(page_size, buf.size());
                     // _cache.emplace() needs to run under allocating section even though it lives in the std space
                     // because bplus::tree operations are not reentrant, so we need to prevent memory reclamation.
-                    auto it_and_flag = _as(_region, [&] {
+                    auto it_and_flag = _as(_zone.region(), [&] {
                         auto this_buf = buf.share();
                         this_buf.trim(this_size);
                         return _cache.emplace(idx, this, idx, std::move(this_buf));
@@ -353,12 +353,12 @@ public:
     /// \param m Metrics object which should be updated from operations on this object.
     ///          The metrics object can be shared by many cached_file instances, in which case it
     ///          will reflect the sum of operations on all cached_file instances.
-    cached_file(file f, cached_file::metrics& m, lru& l, logalloc::region& reg, offset_type size, sstring file_name = {})
+    cached_file(file f, cached_file::metrics& m, lru& l, logalloc::zone& zone, offset_type size, sstring file_name = {})
         : _file(std::move(f))
         , _file_name(std::move(file_name))
         , _metrics(m)
         , _lru(l)
-        , _region(reg)
+        , _zone(zone)
         , _cache(page_idx_less_comparator())
         , _size(size)
     {
@@ -444,7 +444,7 @@ public:
     }
 
     logalloc::region& region() {
-        return _region;
+        return _zone.region();
     }
 
     // Evicts all unused pages.

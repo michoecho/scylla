@@ -102,7 +102,8 @@ SEASTAR_THREAD_TEST_CASE(test_file_wrapper) {
     cached_file::metrics metrics;
     test_file tf = make_test_file(page_size * 3);
     logalloc::region region;
-    cached_file cf(tf.f, metrics, cf_lru, region, page_size * 3);
+    logalloc::zone zone(region);
+    cached_file cf(tf.f, metrics, cf_lru, zone, page_size * 3);
     seastar::file f = make_cached_seastar_file(cf);
 
     BOOST_REQUIRE_EQUAL(tf.contents.substr(0, 1),
@@ -126,7 +127,8 @@ SEASTAR_THREAD_TEST_CASE(test_no_crash_on_dtor_after_oom) {
     cached_file::metrics metrics;
     test_file tf = make_test_file(page_size * 32); // 128k.
     logalloc::region region;
-    cached_file cf(tf.f, metrics, cf_lru, region, page_size * 32);
+    logalloc::zone zone(region);
+    cached_file cf(tf.f, metrics, cf_lru, zone, page_size * 32);
     seastar::file f = make_cached_seastar_file(cf);
 
     utils::get_local_injector().enable("cached_file_get_first_page", true /* oneshot */);
@@ -144,7 +146,8 @@ SEASTAR_THREAD_TEST_CASE(test_concurrent_population) {
     cached_file::metrics metrics;
     test_file tf = make_test_file(page_size * 3);
     logalloc::region region;
-    cached_file cf(tf.f, metrics, cf_lru, region, page_size * 3);
+    logalloc::zone zone(region);
+    cached_file cf(tf.f, metrics, cf_lru, zone, page_size * 3);
     seastar::file f = make_cached_seastar_file(cf);
 
     seastar::when_all(
@@ -169,7 +172,8 @@ SEASTAR_THREAD_TEST_CASE(test_reading_from_small_file) {
     {
         cached_file::metrics metrics;
         logalloc::region region;
-        cached_file cf(tf.f, metrics, cf_lru, region, tf.contents.size());
+        logalloc::zone zone(region);
+        cached_file cf(tf.f, metrics, cf_lru, zone, tf.contents.size());
 
         {
             BOOST_REQUIRE_EQUAL(tf.contents, read_to_string(cf, 0));
@@ -212,7 +216,8 @@ SEASTAR_THREAD_TEST_CASE(test_eviction_via_lru) {
     {
         cached_file::metrics metrics;
         logalloc::region region;
-        cached_file cf(tf.f, metrics, cf_lru, region, tf.contents.size());
+        logalloc::zone zone(region);
+        cached_file cf(tf.f, metrics, cf_lru, zone, tf.contents.size());
 
         {
             BOOST_REQUIRE_EQUAL(tf.contents, read_to_string(cf, 0));
@@ -324,9 +329,10 @@ SEASTAR_THREAD_TEST_CASE(test_stress_eviction) {
 
     cached_file::metrics metrics;
     logalloc::region region;
+    logalloc::zone zone(region);
 
     auto f = file(make_shared<garbage_file_impl>());
-    cached_file cf(f, metrics, cf_lru, region, file_size);
+    cached_file cf(f, metrics, cf_lru, zone, file_size);
 
     region.make_evictable([&] {
         testlog.trace("Evicting");
@@ -369,7 +375,8 @@ SEASTAR_THREAD_TEST_CASE(test_invalidation) {
 
     cached_file::metrics metrics;
     logalloc::region region;
-    cached_file cf(tf.f, metrics, cf_lru, region, page_size * 2);
+    logalloc::zone zone(region);
+    cached_file cf(tf.f, metrics, cf_lru, zone, page_size * 2);
 
     // Reads one page, half of the first page and half of the second page.
     auto read = [&] {

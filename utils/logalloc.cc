@@ -1680,7 +1680,7 @@ private:
         }
     };
 
-    void* alloc_small(const object_descriptor& desc, segment::size_type size, size_t alignment) {
+    void* alloc_small(const object_descriptor& desc, segment::size_type size, size_t alignment, zone* z) {
         if (!_active) {
             _active = new_segment();
             _active_offset = 0;
@@ -1691,7 +1691,7 @@ private:
         size_t obj_offset = align_up_for_asan(align_up(_active_offset + desc_encoded_size, alignment));
         if (obj_offset + size > segment::size) {
             close_and_open();
-            return alloc_small(desc, size, alignment);
+            return alloc_small(desc, size, alignment, z);
         }
 
         auto old_active_offset = _active_offset;
@@ -1704,6 +1704,13 @@ private:
         // Align the end of the value so that the next descriptor is aligned
         _active_offset = align_up_for_asan(_active_offset);
         segment_pool().descriptor(_active).record_alloc(_active_offset - old_active_offset);
+        if (z) {
+            // We can't account alignment padding in the zone because the padding may
+            // change during migration, and there is no way to adjust the counters
+            // in the zone when that happens.
+            z->_allocated_bytes += size;
+            z->_allocs += 1;
+        }
         return pos;
     }
 
@@ -1780,7 +1787,7 @@ private:
         return seg;
     }
 
-    lsa_buffer alloc_buf(size_t buf_size) {
+    lsa_buffer alloc_buf(size_t buf_size, zone* z) {
         // Note: Can be re-entered from allocation sites below due to memory reclamation which
         // invokes segment compaction.
         static_assert(segment::size % buf_align == 0);
@@ -1799,12 +1806,16 @@ private:
         lsa_buffer ptr;
         ptr._buf = _buf_active->at<char>(_buf_active_offset);
         ptr._size = buf_size;
+        ptr._zone = z;
         unpoison(ptr._buf, buf_size);
 
         segment_descriptor& desc = segment_pool().descriptor(_buf_active);
         ptr._desc = &desc;
         desc._buf_pointers.emplace_back(entangled::make_paired_with(ptr._link));
         auto alloc_size = align_up(buf_size, buf_align);
+        if (z) {
+            z->_allocated_bytes += alloc_size;
+        }
         desc.record_alloc(alloc_size);
         _buf_active_offset += alloc_size;
 
@@ -1820,6 +1831,9 @@ private:
         }
 
         auto alloc_size = align_up(buf._size, buf_align);
+        if (buf._zone) {
+            buf._zone->_freed_bytes += alloc_size;
+        }
         desc.record_free(alloc_size);
         poison(buf._buf, buf._size);
 
@@ -1862,7 +1876,7 @@ private:
                 if (e) {
                     lsa_buffer* old_ptr = e.get(&lsa_buffer::_link);
                     assert(&desc == old_ptr->_desc);
-                    lsa_buffer dst = alloc_buf(old_ptr->_size);
+                    lsa_buffer dst = alloc_buf(old_ptr->_size, static_cast<zone*>(nullptr));
                     memcpy(dst._buf, old_ptr->_buf, dst._size);
                     old_ptr->_link = std::move(dst._link);
                     old_ptr->_buf = dst._buf;
@@ -1871,7 +1885,7 @@ private:
             }
         } else {
             for_each_live(seg, [this](const object_descriptor *desc, void *obj, size_t size) {
-                auto dst = alloc_small(*desc, size, desc->alignment());
+                auto dst = alloc_small(*desc, size, desc->alignment(), static_cast<zone*>(nullptr));
                 _sanitizer.on_migrate(obj, size, dst);
                 desc->migrator()->migrate(obj, dst, size);
             });
@@ -2038,7 +2052,7 @@ public:
         return is_compactible();
     }
 
-    virtual void* alloc(allocation_strategy::migrate_fn migrator, size_t size, size_t alignment) override {
+    void* alloc(allocation_strategy::migrate_fn migrator, size_t size, size_t alignment, zone* z) {
         compaction_lock _(*this);
         memory::on_alloc_point();
         auto& pool = segment_pool();
@@ -2055,17 +2069,24 @@ public:
                  _evictable_space += allocated_size;
                 _listener->increase_usage(_region, allocated_size);
             }
+            if (z) {
+                z->_allocated_bytes += allocated_size;
+            }
             pool.add_non_lsa_memory_in_use(allocated_size);
             return ptr;
         } else {
-            auto ptr = alloc_small(object_descriptor(migrator), (segment::size_type) size, alignment);
+            auto ptr = alloc_small(object_descriptor(migrator), (segment::size_type) size, alignment, z);
             _sanitizer.on_allocation(ptr, size);
             return ptr;
         }
     }
 
+    virtual void* alloc(allocation_strategy::migrate_fn migrator, size_t size, size_t alignment) override {
+        return alloc(std::move(migrator), size, alignment, static_cast<zone*>(nullptr));
+    }
+
 private:
-    void on_non_lsa_free(void* obj) noexcept {
+    void on_non_lsa_free(void* obj, zone* z) noexcept {
         auto allocated_size = malloc_usable_size(obj);
         auto cookie = (non_lsa_object_cookie*)((char*)obj + allocated_size) - 1;
         assert(cookie->value == non_lsa_object_cookie().value);
@@ -2074,30 +2095,36 @@ private:
             _evictable_space -= allocated_size;
             _listener->decrease_usage(_region, allocated_size);
         }
+        if (z) {
+            z->_freed_bytes += allocated_size;
+        }
         segment_pool().subtract_non_lsa_memory_in_use(allocated_size);
     }
 public:
-    virtual void free(void* obj) noexcept override {
+    void free(void* obj, zone* z) noexcept {
         compaction_lock _(*this);
         segment* seg = segment_pool().containing_segment(obj);
         if (!seg) {
-            on_non_lsa_free(obj);
+            on_non_lsa_free(obj, z);
             standard_allocator().free(obj);
             return;
         }
 
         auto pos = reinterpret_cast<const char*>(obj);
         auto desc = object_descriptor::decode_backwards(pos);
-        free(obj, desc.live_size(obj));
+        free(obj, desc.live_size(obj), z);
+    }
+    virtual void free(void* obj) noexcept override {
+        return free(obj, static_cast<zone*>(nullptr));
     }
 
-    virtual void free(void* obj, size_t size) noexcept override {
+    void free(void* obj, size_t size, zone* z) noexcept {
         compaction_lock _(*this);
         auto& pool = segment_pool();
         segment* seg = pool.containing_segment(obj);
 
         if (!seg) {
-            on_non_lsa_free(obj);
+            on_non_lsa_free(obj, z);
             standard_allocator().free(obj, size);
             return;
         }
@@ -2120,6 +2147,13 @@ public:
         }
 
         seg_desc.record_free(dead_size);
+        if (z) {
+            // We can't account alignment padding in the zone because the padding may
+            // change during migration, and there is no way to adjust the counters
+            // in the zone when that happens.
+            z->_freed_bytes += size;
+            z->_frees += 1;
+        }
         pool.on_memory_deallocation(dead_size);
 
         if (seg != _active) {
@@ -2131,6 +2165,9 @@ public:
                 _closed_occupancy += seg_desc.occupancy();
             }
         }
+    }
+    virtual void free(void* obj, size_t size) noexcept override {
+        return free(obj, size, static_cast<zone*>(nullptr));
     }
 
     virtual size_t object_memory_size_in_allocator(const void* obj) const noexcept override {
@@ -2374,8 +2411,8 @@ occupancy_stats region::occupancy() const noexcept {
     return get_impl().occupancy();
 }
 
-lsa_buffer region::alloc_buf(size_t buffer_size) {
-    return get_impl().alloc_buf(buffer_size);
+lsa_buffer region::alloc_buf(size_t buffer_size, zone* z) {
+    return get_impl().alloc_buf(buffer_size, z);
 }
 
 void region::merge(region& other) noexcept {
@@ -2419,6 +2456,16 @@ const eviction_fn& region::evictor() const noexcept {
 
 uint64_t region::id() const noexcept {
     return get_impl().id();
+}
+
+void* region::alloc(allocation_strategy::migrate_fn migrator, size_t size, size_t alignment, zone* z) {
+    return get_impl().alloc(std::move(migrator), size, alignment, z);
+}
+void region::free(void* obj, zone* z) noexcept {
+    get_impl().free(obj, z);
+}
+void region::free(void* obj, size_t size, zone* z) noexcept {
+    get_impl().free(obj, size, z);
 }
 
 std::ostream& operator<<(std::ostream& out, const occupancy_stats& stats) {

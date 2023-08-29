@@ -176,7 +176,7 @@ public:
     // are invalidated, e.g. due to internal events like compaction or eviction.
     // When the value returned by this method doesn't change, references obtained
     // between invocations remain valid.
-    uint64_t invalidate_counter() const noexcept {
+    virtual uint64_t invalidate_counter() const noexcept {
         return _invalidate_counter;
     }
 

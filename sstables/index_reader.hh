@@ -52,24 +52,24 @@ concept PartitionIndexConsumer = requires(C c, parsed_partition_index_entry e) {
 class index_consumer {
     schema_ptr _s;
     logalloc::allocating_section _alloc_section;
-    logalloc::region& _region;
+    logalloc::zone& _zone;
 public:
     index_list indexes;
 
-    index_consumer(logalloc::region& r, schema_ptr s)
+    index_consumer(logalloc::zone& z, schema_ptr s)
         : _s(std::move(s))
-        , _region(r)
+        , _zone(z)
     { }
 
     ~index_consumer() {
-        with_allocator(_region.allocator(), [&] {
+        with_allocator(_zone.allocator(), [&] {
             indexes._entries.clear_and_release();
         });
     }
 
     void consume_entry(parsed_partition_index_entry&& e) {
-        _alloc_section(_region, [&] {
-            with_allocator(_region.allocator(), [&] {
+        _alloc_section(_zone.region(), [&] {
+            with_allocator(_zone.allocator(), [&] {
                 managed_ref<promoted_index> pi;
                 if (e.promoted_index) {
                     pi = make_managed<promoted_index>(*_s,
@@ -86,8 +86,8 @@ public:
 
     void prepare(uint64_t size) {
         _alloc_section = logalloc::allocating_section();
-        _alloc_section(_region, [&] {
-            with_allocator(_region.allocator(), [&] {
+        _alloc_section(_zone.region(), [&] {
+            with_allocator(_zone.allocator(), [&] {
                 indexes._entries.reserve(size);
             });
         });
@@ -339,7 +339,7 @@ std::unique_ptr<clustered_index_cursor> promoted_index::make_cursor(shared_sstab
                 : seastar::make_shared<cached_file>(make_tracked_index_file(*sst, permit, trace_state, caching),
                                                     index_page_cache_metrics,
                                                     sst->manager().get_cache_tracker().get_lru(),
-                                                    sst->manager().get_cache_tracker().region(),
+                                                    sst->manager().get_cache_tracker().index_zone(),
                                                     sst->_index_file_size);
         return std::make_unique<mc::bsearch_clustered_cursor>(*sst->get_schema(),
             _promoted_index_start, _promoted_index_size,
@@ -440,7 +440,7 @@ class index_reader {
     std::unique_ptr<partition_index_cache> _local_index_cache; // Used when caching is disabled
     partition_index_cache& _index_cache;
     logalloc::allocating_section _alloc_section;
-    logalloc::region& _region;
+    logalloc::zone& _zone;
     use_caching _use_caching;
     bool _single_page_read;
 
@@ -458,7 +458,7 @@ class index_reader {
 
     future<> advance_context(index_bound& bound, uint64_t begin, uint64_t end, int quantity) {
         if (!bound.context) {
-            bound.consumer = std::make_unique<index_consumer>(_region, _sstable->get_schema());
+            bound.consumer = std::make_unique<index_consumer>(_zone, _sstable->get_schema());
             bound.context = make_context(begin, end, *bound.consumer);
             bound.consumer->prepare(quantity);
             return make_ready_future<>();
@@ -557,7 +557,7 @@ private:
 
             if (sstlog.is_enabled(seastar::log_level::trace)) {
                 sstlog.trace("index {} bound {}: page:", fmt::ptr(this), fmt::ptr(&bound));
-                logalloc::reclaim_lock rl(_region);
+                logalloc::reclaim_lock rl(_zone.region());
                 for (auto&& e : bound.current_list->_entries) {
                     auto dk = dht::decorate_key(*_sstable->_schema,
                         e->get_key().to_partition_key(*_sstable->_schema));
@@ -680,7 +680,7 @@ private:
 
         return advance_to_page(bound, summary_idx).then([this, &bound, pos, summary_idx] {
             sstlog.trace("index {}: old page index = {}", fmt::ptr(this), bound.current_index_idx);
-            auto i = _alloc_section(_region, [&] {
+            auto i = _alloc_section(_zone.region(), [&] {
                 auto& entries = bound.current_list->_entries;
                 return std::lower_bound(std::begin(entries) + bound.current_index_idx, std::end(entries), pos,
                     index_comparator(*_sstable->_schema));
@@ -779,9 +779,9 @@ public:
         , _trace_state(std::move(trace_state))
         , _local_index_cache(caching ? nullptr
             : std::make_unique<partition_index_cache>(_sstable->manager().get_cache_tracker().get_lru(),
-                                                      _sstable->manager().get_cache_tracker().region()))
+                                                      _sstable->manager().get_cache_tracker().index_zone()))
         , _index_cache(caching ? *_sstable->_index_cache : *_local_index_cache)
-        , _region(_sstable->manager().get_cache_tracker().region())
+        , _zone(_sstable->manager().get_cache_tracker().index_zone())
         , _use_caching(caching)
         , _single_page_read(single_partition_read) // all entries for a given partition are within a single page
     {
@@ -824,7 +824,7 @@ public:
     // For sstable versions >= mc the returned cursor (if not nullptr) will be of type `bsearch_clustered_cursor`.
     clustered_index_cursor* current_clustered_cursor(index_bound& bound) {
         if (!bound.clustered_cursor) {
-            _alloc_section(_region, [&] {
+            _alloc_section(_zone.region(), [&] {
                 index_entry& e = current_partition_entry(bound);
                 promoted_index* pi = e.get_promoted_index().get();
                 if (pi) {
@@ -853,7 +853,7 @@ public:
     // Returns the key for current partition.
     // Can be called only when partition_data_ready().
     partition_key get_partition_key() {
-        return _alloc_section(_region, [this] {
+        return _alloc_section(_zone.region(), [this] {
             index_entry& e = current_partition_entry(_lower_bound);
             return e.get_key().to_partition_key(*_sstable->_schema);
         });
@@ -938,7 +938,7 @@ public:
             }
             return read_partition_data().then([this, key, pos] {
                 index_comparator cmp(*_sstable->_schema);
-                bool found = _alloc_section(_region, [&] {
+                bool found = _alloc_section(_zone.region(), [&] {
                     return cmp(key, current_partition_entry(_lower_bound)) == 0;
                 });
                 if (!found || !pos) {

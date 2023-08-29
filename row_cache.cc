@@ -64,19 +64,9 @@ cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fractio
 
 static thread_local cache_tracker* current_tracker;
 
-// To implement memory partitioning between index cache and data cache,
-// we need at least a way to check how much memory is used by the index cache.
-// Currently we are relying on metrics for that.
-//
-// FIXME: relying on thread-local metrics for the algorithm is unclean.
-// It would be better to pass some accessor to these metrics as a parameter
-// to the tracker.
-namespace sstables {
-    size_t space_used_by_index_cache();
-}
-
 cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fraction, mutation_application_stats& app_stats, register_metrics with_metrics)
-    : _garbage(_region, this, app_stats)
+    : _index_zone(_region)
+    , _garbage(_region, this, app_stats)
     , _memtable_cleaner(_region, nullptr, app_stats)
     , _app_stats(app_stats)
     , _index_cache_fraction(std::move(index_cache_fraction))
@@ -121,7 +111,7 @@ cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fractio
             //
             // Perhaps this logic should be encapsulated somewhere else, maybe in `class lru` itself.
             size_t total_cache_space = _region.occupancy().total_space();
-            size_t index_cache_space = sstables::space_used_by_index_cache();
+            size_t index_cache_space = _index_zone.used_bytes();
             bool should_evict_index = index_cache_space > total_cache_space * _index_cache_fraction.get();
 
             return _lru.evict(should_evict_index);
