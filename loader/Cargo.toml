@@ -1,0 +1,20 @@
+[package]
+name = "scylla-spam"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "*"
+tokio = { version = "1", features = ["full"] }
+scylla = "*"
+rand = "*"
+clap = { version = "*", features = ["derive"]}
+rayon = "*"
+futures = "0.3.30"
+
+[profile.release]
+panic = "abort"
+[profile.dev]
+panic = "abort"
