@@ -27,9 +27,8 @@ from cassandra.cluster import Cluster as CassandraCluster  # type: ignore # pyli
 from cassandra.auth import AuthProvider
 import aiohttp
 import asyncio
-
 import universalasync
-
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -642,3 +641,6 @@ class ManagerClient:
                 return None
             case returncode:
                 return int(returncode)
+
+    async def server_get_pid(self, server_id: ServerNum) -> int:
+        return await self.client.get_json(f"/cluster/server/{server_id}/pid")
