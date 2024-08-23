@@ -1,0 +1,9 @@
+.clang-format
+.cache
+.gdb_history
+.obsidian
+.vscode
+Testing
+build
+obsidian
+compile_commands.json
