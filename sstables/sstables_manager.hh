@@ -24,6 +24,7 @@
 #include "locator/host_id.hh"
 #include "reader_concurrency_semaphore.hh"
 #include "utils/s3/creds.hh"
+#include "sstables_registry.hh"
 #include <boost/intrusive/list.hpp>
 #include "sstable_compressor_factory.hh"
 #include "sstables/sstables_manager_subscription.hh"
