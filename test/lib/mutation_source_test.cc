@@ -1080,6 +1080,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
     auto pr = dht::partition_range::make_singular(pk);
 
     {
+        testlog.info("Case 1");
         auto slice = partition_slice_builder(*s)
             .with_range(query::clustering_range::make_singular(make_ck(0)))
             .build();
@@ -1088,6 +1089,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
     }
 
     {
+        testlog.info("Case 2");
         auto slice = partition_slice_builder(*s)
             .build();
         auto rd = assert_that(ds.make_reader_v2(s, semaphore.make_permit(), pr, slice, nullptr, streamed_mutation::forwarding::yes));
@@ -1099,6 +1101,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
     }
 
     {
+        testlog.info("Case 3");
         auto slice = partition_slice_builder(*s)
             .build();
         auto rd = assert_that(ds.make_reader_v2(s, semaphore.make_permit(), pr, slice, nullptr, streamed_mutation::forwarding::yes));
@@ -1110,6 +1113,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
           .produces_end_of_stream();
     }
     {
+        testlog.info("Case 4");
         auto slice = partition_slice_builder(*s)
             .with_range(query::clustering_range::make_singular(make_ck(1)))
             .build();
@@ -1118,6 +1122,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
             .produces_end_of_stream();
     }
     {
+        testlog.info("Case 5");
         auto slice = partition_slice_builder(*s)
             .with_range(query::clustering_range::make_singular(make_ck(2)))
             .build();
@@ -1127,6 +1132,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
     }
 
     {
+        testlog.info("Case 6");
         auto slice = partition_slice_builder(*s)
             .with_range(query::clustering_range::make_singular(make_ck(1, 2)))
             .build();
@@ -1136,6 +1142,7 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
     }
 
     {
+        testlog.info("Case 7");
         auto slice = partition_slice_builder(*s)
             .with_range(query::clustering_range::make_singular(make_ck(3)))
             .build();
@@ -1146,11 +1153,13 @@ static void test_clustering_slices(tests::reader_concurrency_semaphore_wrapper& 
 
     // Test out-of-range partition keys
     {
+        testlog.info("Case 8");
         auto pr = dht::partition_range::make_singular(keys[0]);
         assert_that(ds.make_reader_v2(s, semaphore.make_permit(), pr, s->full_slice()))
             .produces_eos_or_empty_mutation();
     }
     {
+        testlog.info("Case 9");
         auto pr = dht::partition_range::make_singular(keys[2]);
         assert_that(ds.make_reader_v2(s, semaphore.make_permit(), pr, s->full_slice()))
             .produces_eos_or_empty_mutation();
@@ -1389,6 +1398,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
     auto ms = populate(s.schema(), mutations, gc_clock::now());
     auto pr = dht::partition_range::make_singular(pkey);
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit()))
             .next_partition() // Does nothing before first partition
             .produces_partition_start(pkey)
@@ -1403,6 +1413,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
             .produces_partition_end()
             .produces_end_of_stream();
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr,
                                   s.schema()->full_slice(),
                                   nullptr,
@@ -1426,6 +1437,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
             .produces_range_tombstone_change(range_tombstone_change(position_in_partition::after_key(*s.schema(), s.make_ckey(5)), {}))
             .produces_end_of_stream();
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr,
                                   s.schema()->full_slice(),
                                   nullptr,
@@ -1440,6 +1452,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
             .produces_range_tombstone_change(range_tombstone_change(position_in_partition_view::before_key(s.make_ckey(2)), {}))
             .produces_end_of_stream();
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr,
                                   s.schema()->full_slice(),
                                   nullptr,
@@ -1462,6 +1475,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
             .produces_end_of_stream();
 
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr,
                                   s.schema()->full_slice(),
                                   nullptr,
@@ -1478,6 +1492,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
             .produces_range_tombstone_change({position_in_partition_view::before_key(s.make_ckey(6)), {}})
             .produces_end_of_stream();
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr,
                                   s.schema()->full_slice(),
                                   nullptr,
@@ -1493,6 +1508,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
             .produces_range_tombstone_change({position_in_partition_view::before_key(s.make_ckey(7)), {}})
             .produces_end_of_stream();
 
+    testlog.info("Line {}", __LINE__);
     assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr,
                                   s.schema()->full_slice(),
                                   nullptr,
@@ -1541,6 +1557,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
         auto slice = partition_slice_builder(*s.schema())
                 .with_range(s.make_ckey_range(16, 18))
                 .build();
+    testlog.info("Line {}", __LINE__);
         assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr, slice))
                 .produces_partition_start(pkey)
                 .produces_range_tombstone_change({position_in_partition_view::before_key(s.make_ckey(17)), t3})
@@ -1554,6 +1571,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
                 .with_range(s.make_ckey_range(0, 3))
                 .with_range(s.make_ckey_range(8, 11))
                 .build();
+    testlog.info("Line {}", __LINE__);
         assert_that(ms.make_reader_v2(s.schema(), semaphore.make_permit(), pr, slice))
                 .produces_partition_start(pkey)
                 .produces_row_with_key(s.make_ckey(0))
@@ -1564,6 +1582,7 @@ void test_range_tombstones_v2(tests::reader_concurrency_semaphore_wrapper& semap
                 .produces_partition_end()
                 .produces_end_of_stream();
     }
+    testlog.info("Line {}", __LINE__);
 }
 
 void test_reader_conversions(tests::reader_concurrency_semaphore_wrapper& semaphore, populate_fn_ex populate) {

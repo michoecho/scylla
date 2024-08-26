@@ -35,7 +35,6 @@
 
 #include "utils/assert.hh"
 #include "utils/error_injection.hh"
-#include "utils/to_string.hh"
 #include "data_dictionary/storage_options.hh"
 #include "dht/sharder.hh"
 #include "writer.hh"
@@ -84,6 +83,8 @@
 
 #include "release.hh"
 #include "utils/build_id.hh"
+
+#include "trie.hh"
 
 thread_local disk_error_signal_type sstable_read_error;
 thread_local disk_error_signal_type sstable_write_error;
@@ -857,6 +858,8 @@ void sstable::generate_toc() {
     _recognized_components.insert(component_type::Statistics);
     _recognized_components.insert(component_type::Digest);
     _recognized_components.insert(component_type::Index);
+    _recognized_components.insert(component_type::TrieIndex);
+    _recognized_components.insert(component_type::Rows);
     _recognized_components.insert(component_type::Summary);
     _recognized_components.insert(component_type::Data);
     if (_schema->bloom_filter_fp_chance() != 1.0) {
@@ -1328,15 +1331,31 @@ future<file> sstable::open_file(component_type type, open_flags flags, file_open
     return new_sstable_component_file(_read_error_handler, type, flags, opts);
 }
 
+future<> sstable::init_trie_reader() {
+    sstlog.debug("init_trie_reader()");
+    sstlog.debug("init_trie_reader(): stat");
+    auto st = co_await _partition_index_file.stat();
+    sstlog.debug("init_trie_reader(): stat result: {}", st.st_size);
+    sstlog.debug("init_trie_reader(): read");
+    if (st.st_size > 0) {
+        auto p = co_await _partition_index_file.dma_read_exactly<char>(st.st_size - 8, 8);
+        _trie_root_offset = read_le<uint64_t>(p.get());
+        sstlog.debug("init_trie_reader: Trie root offset == {} for sstable {}", _trie_root_offset, this->index_filename());
+    }
+}
+
 future<> sstable::open_or_create_data(open_flags oflags, file_open_options options) noexcept {
-    return when_all_succeed(
+    co_await when_all_succeed(
         open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }),
-        open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); })
-    ).discard_result();
+        open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
+        open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _partition_index_file = std::move(f); }),
+        open_file(component_type::Rows, oflags, options).then([this] (file f) { _row_index_file = std::move(f); })
+    );
 }
 
 future<> sstable::open_data(sstable_open_config cfg) noexcept {
     co_await open_or_create_data(open_flags::ro);
+    co_await init_trie_reader();
     co_await update_info_for_opened_data(cfg);
     SCYLLA_ASSERT(!_shards.empty());
     auto* sm = _components->scylla_metadata->data.get<scylla_metadata_type::Sharding, sharding_metadata>();
@@ -1372,6 +1391,16 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
     auto size = co_await _index_file.size();
     _index_file_size = size;
     SCYLLA_ASSERT(!_cached_index_file);
+    _partition_index_file_cached = seastar::make_shared<cached_file>(_partition_index_file,
+                                                            _manager.get_cache_tracker().get_partition_index_file_cached_stats(),
+                                                            _manager.get_cache_tracker().get_lru(),
+                                                            _manager.get_cache_tracker().region(),
+                                                            co_await _partition_index_file.size());
+    _row_index_file_cached = seastar::make_shared<cached_file>(_row_index_file,
+                                                            _manager.get_cache_tracker().get_row_index_file_cached_stats(),
+                                                            _manager.get_cache_tracker().get_lru(),
+                                                            _manager.get_cache_tracker().region(),
+                                                            co_await _row_index_file.size());
     _cached_index_file = seastar::make_shared<cached_file>(_index_file,
                                                             _manager.get_cache_tracker().get_index_cached_file_stats(),
                                                             _manager.get_cache_tracker().get_lru(),
@@ -1437,6 +1466,7 @@ void sstable::write_filter() {
 }
 
 void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
+    return;
     if (!has_component(component_type::Filter)) {
         return;
     }
@@ -1585,25 +1615,26 @@ future<> sstable::load(const dht::sharder& sharder, sstable_open_config cfg) noe
 
 future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
     static_assert(std::is_nothrow_move_constructible_v<sstables::foreign_sstable_open_info>);
-    return read_toc().then([this, info = std::move(info)] () mutable {
-        _components = std::move(info.components);
-        _data_file = make_checked_file(_read_error_handler, info.data.to_file());
-        _index_file = make_checked_file(_read_error_handler, info.index.to_file());
-        _shards = std::move(info.owners);
-        _metadata_size_on_disk = info.metadata_size_on_disk;
-        validate_min_max_metadata();
-        validate_max_local_deletion_time();
-        validate_partitioner();
-        return update_info_for_opened_data().then([this]() {
-            _total_reclaimable_memory.reset();
-            _manager.increment_total_reclaimable_memory_and_maybe_reclaim(this);
-        });
-    });
+    co_await read_toc();
+    _components = std::move(info.components);
+    _data_file = make_checked_file(_read_error_handler, info.data.to_file());
+    _index_file = make_checked_file(_read_error_handler, info.index.to_file());
+    _partition_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
+    _row_index_file = make_checked_file(_read_error_handler, info.row_index.to_file());
+    co_await init_trie_reader();
+    _shards = std::move(info.owners);
+    _metadata_size_on_disk = info.metadata_size_on_disk;
+    validate_min_max_metadata();
+    validate_max_local_deletion_time();
+    validate_partitioner();
+    co_await update_info_for_opened_data();
+    _total_reclaimable_memory.reset();
+    _manager.increment_total_reclaimable_memory_and_maybe_reclaim(this);
 }
 
 future<foreign_sstable_open_info> sstable::get_open_info() & {
     return _components.copy().then([this] (auto c) mutable {
-        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(),
+        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(), _partition_index_file.dup(), _row_index_file.dup(),
             _generation, _version, _format, data_size(), _metadata_size_on_disk};
     });
 }
@@ -2266,10 +2297,11 @@ sstable::make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& mon) {
+        read_monitor& mon,
+        index_reader* ir) {
     const auto reversed = slice.is_reversed();
     if (_version >= version_types::mc && (!reversed || range.is_singular())) {
-        return mx::make_reader(shared_from_this(), std::move(query_schema), std::move(permit), range, slice, std::move(trace_state), fwd, fwd_mr, mon);
+        return mx::make_reader(shared_from_this(), std::move(query_schema), std::move(permit), range, slice, std::move(trace_state), fwd, fwd_mr, mon, ir);
     }
 
     // Multi-partition reversed queries are not yet supported natively in the mx reader.
@@ -2280,7 +2312,7 @@ sstable::make_reader(
     if (_version >= version_types::mc) {
         // The only mx case falling through here is reversed multi-partition reader
         auto rd = make_reversing_reader(mx::make_reader(shared_from_this(), query_schema->make_reversed(), std::move(permit),
-                range, reverse_slice(*query_schema, slice), std::move(trace_state), streamed_mutation::forwarding::no, fwd_mr, mon),
+                range, reverse_slice(*query_schema, slice), std::move(trace_state), streamed_mutation::forwarding::no, fwd_mr, mon, ir),
             max_result_size);
         if (fwd) {
             rd = make_forwardable(std::move(rd));
@@ -2958,7 +2990,7 @@ future<bool> sstable::has_partition_key(const utils::hashed_key& hk, const dht::
             reader_concurrency_semaphore::register_metrics::no);
     std::unique_ptr<sstables::index_reader> lh_index_ptr = nullptr;
     try {
-        lh_index_ptr = std::make_unique<sstables::index_reader>(s, sem.make_tracking_only_permit(_schema, s->get_filename(), db::no_timeout, {}));
+        lh_index_ptr = make_index_reader(s, sem.make_tracking_only_permit(_schema, s->get_filename(), db::no_timeout, {}));
         present = co_await lh_index_ptr->advance_lower_and_check_if_present(dk);
     } catch (...) {
         ex = std::current_exception();
@@ -3163,6 +3195,9 @@ sstable::sstable(schema_ptr schema,
     , _manager(manager)
 {
     manager.add(this);
+}
+
+sstable::~sstable() {
 }
 
 file sstable::uncached_index_file() {

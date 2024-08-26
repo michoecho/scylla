@@ -13,6 +13,9 @@
 #include "sstables/progress_monitor.hh"
 
 namespace sstables {
+
+class index_reader;
+
 namespace mx {
 
 // Precondition: if the slice is reversed, the schema must be reversed as well
@@ -27,7 +30,8 @@ mutation_reader make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& monitor);
+        read_monitor& monitor,
+        index_reader*);
 
 // Same as above but the slice is moved and stored inside the reader.
 mutation_reader make_reader(
@@ -39,7 +43,8 @@ mutation_reader make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& monitor);
+        read_monitor& monitor,
+        index_reader*);
 
 // A reader which doesn't use the index at all. It reads everything from the
 // sstable and it doesn't support skipping.

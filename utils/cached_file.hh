@@ -24,6 +24,8 @@
 
 using namespace seastar;
 
+extern seastar::logger cached_file_logger;
+
 /// \brief A read-through cache of a file.
 ///
 /// Caches contents with page granularity (4 KiB).
@@ -36,7 +38,7 @@ using namespace seastar;
 class cached_file {
 public:
     // Must be aligned to _file.disk_read_dma_alignment(). 4K is always safe.
-    static constexpr size_t page_size = 4096;
+    static constexpr size_t page_size = 4096*4;
 
     // The content of the underlying file (_file) is divided into pages
     // of equal size (page_size). This type is used to identify pages.
@@ -101,6 +103,10 @@ private:
             SCYLLA_ASSERT(!_use_count);
         }
 
+        size_t pos() const {
+            return idx * page_size;
+        }
+
         void on_evicted() noexcept override;
 
         temporary_buffer<char> get_buf() {
@@ -120,6 +126,13 @@ private:
         // The buffer is invalidated when the page is evicted or when the owning LSA region invalidates references.
         temporary_buffer<char> get_buf_weak() {
             return temporary_buffer<char>(_lsa_buf.get(), _lsa_buf.size(), deleter());
+        }
+
+        // Returns a buffer which reflects contents of this page.
+        // The buffer will not prevent eviction.
+        // The buffer is invalidated when the page is evicted or when the owning LSA region invalidates references.
+        std::span<const std::byte> get_view() const {
+            return std::as_bytes(std::span<const char>(_lsa_buf.get(), _lsa_buf.size()));
         }
 
         size_t size_in_allocator() {
@@ -197,6 +210,7 @@ private:
                 return first_page;
             });
     }
+
     future<temporary_buffer<char>> get_page(page_idx_type idx,
                                             page_count_type count,
                                             tracing::trace_state_ptr trace_state) {
@@ -218,6 +232,18 @@ public:
                 , _size(size)
                 , _units(std::move(units))
         {}
+        page_view(const page_view& other) {
+            *this = other;
+        }
+        page_view(page_view&&) = default;
+        page_view& operator=(page_view&& other) = default;
+        page_view& operator=(const page_view& other) {
+            _page = other._page->share();
+            _offset = other._offset;
+            _size = other._size;
+            _units = other._units ? other._units->permit().consume_memory(page_size) : decltype(_units)();
+            return *this;
+        }
 
         // The returned buffer is valid only until the LSA region associated with cached_file invalidates references.
         temporary_buffer<char> get_buf() {
@@ -227,8 +253,29 @@ public:
             return buf;
         }
 
+        std::span<const std::byte> get_view() const {
+            return _page->get_view().subspan(_offset);
+        }
+
         operator bool() const { return bool(_page); }
     };
+
+    using ptr_type = cached_page::ptr_type;
+
+    future<ptr_type> get_page_view(size_t global_pos, tracing::trace_state_ptr trace_state) {
+        return get_page_ptr(global_pos / page_size, 1, trace_state);
+    }
+    cached_page::ptr_type try_get_page_ptr(page_idx_type idx,
+            tracing::trace_state_ptr trace_state) {
+        auto i = _cache.lower_bound(idx);
+        if (i != _cache.end() && i->idx == idx) {
+            ++_metrics.page_hits;
+            tracing::trace(trace_state, "page cache hit: file={}, page={}", _file_name, idx);
+            cached_page& cp = *i;
+            return cp.share();
+        }
+        return nullptr;
+    }
 
     // Generator of subsequent pages of data reflecting the contents of the file.
     // Single-user.
@@ -499,6 +546,7 @@ public:
     virtual std::unique_ptr<seastar::file_handle_impl> dup() override { return get_file_impl(_cf.get_file())->dup(); }
 
     virtual future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t size, io_intent* intent) override {
+        cached_file_logger.trace("cached_file_impl::dma_read_bulk: offset={} size={} total={}", offset, size, _cf.size());
         return do_with(_cf.read(offset, std::nullopt, _trace_state, size), size, temporary_buffer<uint8_t>(),
                 [this, size] (cached_file::stream& s, size_t& size_left, temporary_buffer<uint8_t>& result) {
             if (size_left == 0) {

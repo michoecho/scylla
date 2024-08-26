@@ -20,6 +20,8 @@
 
 enum class allow_prefixes { no, yes };
 
+void memcmp_comparable_form_inner(bytes_view, std::vector<std::byte>& out, const data_type&);
+
 template<allow_prefixes AllowPrefixes = allow_prefixes::no>
 class compound_type final {
 private:
@@ -296,6 +298,19 @@ public:
         }
         // FIXME: call equal() on each component
         return compare(v1, v2) == 0;
+    }
+    bool has_memcmp_comparable_form() {
+        return _types.size() == 1 && (_types.front() == bytes_type || _types.front() == utf8_type || _types.front() == long_type || _types.front() == ascii_type);
+    }
+    void memcmp_comparable_form(managed_bytes_view v, std::vector<std::byte>& out) {
+        out.reserve(v.size_bytes() * 2);
+        auto t = _types.begin();
+        for (const managed_bytes_view comp : components(v)) {
+            out.push_back(std::byte(0x40));
+            auto lin = linearized(comp);
+            memcmp_comparable_form_inner(lin, out, *t++);
+            out.push_back(std::byte(0x0));
+        }
     }
 };
 

@@ -38,8 +38,8 @@ inline bytes_view to_bytes_view(sstring_view view) {
 }
 
 struct fmt_hex {
-    const bytes_view& v;
-    fmt_hex(const bytes_view& v) noexcept : v(v) {}
+    bytes_view v;
+    fmt_hex(bytes_view v) noexcept : v(v) {}
 };
 
 bytes from_hex(sstring_view s);

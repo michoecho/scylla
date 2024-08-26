@@ -12,7 +12,6 @@
 #include "version.hh"
 #include "shared_sstable.hh"
 #include "open_info.hh"
-#include "sstables_registry.hh"
 #include <seastar/core/file.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/future.hh>
@@ -66,6 +65,7 @@ extern thread_local utils::updateable_value<bool> global_cache_index_pages;
 namespace mc {
 class writer;
 }
+
 
 namespace fs = std::filesystem;
 
@@ -206,6 +206,7 @@ public:
     sstable& operator=(const sstable&) = delete;
     sstable(const sstable&) = delete;
     sstable(sstable&&) = delete;
+    ~sstable();
 
     // disk_read_range describes a byte ranges covering part of an sstable
     // row that we need to read from disk. Usually this is the whole byte
@@ -279,7 +280,8 @@ public:
             tracing::trace_state_ptr trace_state = {},
             streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no,
             mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes,
-            read_monitor& monitor = default_read_monitor());
+            read_monitor& monitor = default_read_monitor(),
+            index_reader* = nullptr);
 
     // A reader which doesn't use the index at all. It reads everything from the
     // sstable and it doesn't support skipping.
@@ -369,6 +371,12 @@ public:
     }
     file& index_file() {
         return _index_file;
+    }
+    file& trie_index_file() {
+        return _partition_index_file;
+    }
+    uint64_t trie_root_offset() {
+        return _trie_root_offset;
     }
     file uncached_index_file();
     // Returns size of bloom filter data.
@@ -532,6 +540,13 @@ private:
     // it is then used to generate the ancestors metadata in the statistics or scylla components.
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
+    file _partition_index_file;
+    file _row_index_file;
+public:
+    seastar::shared_ptr<cached_file> _partition_index_file_cached;
+    seastar::shared_ptr<cached_file> _row_index_file_cached;
+private:
+    uint64_t _trie_root_offset = 0;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;
     uint64_t _data_file_size;
@@ -761,6 +776,7 @@ private:
     }
 
     future<> open_or_create_data(open_flags oflags, file_open_options options = {}) noexcept;
+    future<> init_trie_reader();
     // runs in async context (called from storage::open)
     void write_toc(file_writer w);
 public:
@@ -982,8 +998,12 @@ public:
 
     friend class mc::writer;
     friend class index_reader;
+    friend class index_reader_old;
     friend class promoted_index;
     friend class sstables_manager;
+    template <typename DataConsumeRowsContext>
+    friend std::unique_ptr<DataConsumeRowsContext>
+    data_consume_rows_2(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t);
     template <typename DataConsumeRowsContext>
     friend std::unique_ptr<DataConsumeRowsContext>
     data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t);
