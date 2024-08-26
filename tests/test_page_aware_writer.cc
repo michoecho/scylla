@@ -1,17 +1,10 @@
 #include "../src/trie.hh"
+#include "test_utils.hh"
 #include <algorithm>
 #include <fmt/ranges.h>
 #include <format>
 #include <gtest/gtest.h>
-#include <iostream>
-
-static void log(std::string_view sv) {
-    std::cout << sv << "\n";
-}
-
-static constexpr const_bytes operator""_b(const char* ptr, size_t sz) {
-    return const_bytes{static_cast<const std::byte*>(static_cast<const void*>(ptr)), sz};
-}
+#include <ranges>
 
 void test_one(const std::vector<std::string>& inputs) {
     assert(std::ranges::is_sorted(inputs));
@@ -124,53 +117,15 @@ void test_one(const std::vector<std::string>& inputs) {
 
 TEST(TrieWriter, Exhaustive) {
     size_t max_len = 4;
-    char chars[] = {'a', 'b'};
-    std::vector<std::string> all_strings;
-    all_strings.push_back("");
-    size_t prev_old_n = 0;
-    for (size_t i = 0; i < max_len; ++i) {
-        size_t old_n = all_strings.size();
-        for (size_t k = prev_old_n; k < old_n; ++k) {
-            for (auto c : chars) {
-                all_strings.push_back(all_strings[k]);
-                all_strings.back().push_back(c);
-            }
-        }
-        prev_old_n = old_n;
-    }
-    std::ranges::sort(all_strings);
+    std::vector<std::string> all_strings = generate_all_strings("ab", max_len);
     log(fmt::format("{}", fmt::join(all_strings, "\n")));
 
-    using sample = std::array<size_t, 4>;
-    sample wksp;
-    auto first = wksp.begin();
-    auto last = wksp.end();
-    // Fill wksp with first possible sample.
-    std::ranges::iota(wksp, 0);
-    size_t n_samples = 0;
-    std::vector<sample> samples;
-    size_t N = all_strings.size();
-    while (true) {
-        samples.push_back(wksp);
-        // Advance wksp to next possible sample.
-        auto mt = last;
-        --mt;
-        while (mt > first && *mt == N - (last - mt)) {
-            --mt;
-        }
-        if (mt == first && *mt == N - (last - mt)) {
-            break;
-        }
-        ++(*mt);
-        while (++mt != last) {
-            *mt = *(mt - 1) + 1;
-        }
-    }
+    std::vector<std::vector<size_t>> samples = generate_all_subsets(all_strings.size(), 4);
 
     for (const auto& s : samples) {
         std::vector<std::string> inputs;
-        for (auto z : s) {
-            inputs.push_back(all_strings[z]);
+        for (auto i : s) {
+            inputs.push_back(all_strings[i]);
         }
         log(fmt::format("[{}]", fmt::join(inputs, ", ")));
         ASSERT_NO_FATAL_FAILURE(test_one(inputs));

@@ -1,6 +1,8 @@
-#include <span>
-#include <memory>
+#pragma once
+
 #include <array>
+#include <memory>
+#include <span>
 #include <vector>
 
 using const_bytes = std::span<const std::byte>;
@@ -20,6 +22,13 @@ inline constexpr size_t round_up(size_t a, size_t factor) {
     return round_down(a + factor - 1, factor);
 }
 
+static constexpr bool equiv(bool a, bool b) {
+    return a == b;
+}
+
+static constexpr bool implies(bool a, bool b) {
+    return !a || b;
+}
 
 struct node;
 
@@ -65,7 +74,25 @@ public:
     ~trie_writer();
     void add(size_t depth, const_bytes key_tail, const payload&);
     ssize_t finish();
+
 private:
     class impl;
     std::unique_ptr<impl> _pimpl;
+};
+
+class partition_index_trie_writer {
+public:
+    partition_index_trie_writer(trie_writer_output&);
+    ~partition_index_trie_writer();
+    void add(const_bytes key, uint64_t data_file_offset);
+    ssize_t finish();
+    using buf = std::vector<std::byte>;
+
+private:
+    trie_writer_output& _out;
+    trie_writer _wr = {_out};
+    size_t _added_keys = 0;
+    size_t _last_key_mismatch = 0;
+    buf _last_key;
+    uint64_t _last_payload;
 };

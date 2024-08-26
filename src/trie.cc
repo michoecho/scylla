@@ -3,14 +3,6 @@
 #include <cassert>
 #include <set>
 
-static constexpr bool equiv(bool a, bool b) {
-    return a == b;
-}
-
-static constexpr bool implies(bool a, bool b) {
-    return !a || b;
-}
-
 payload::payload() noexcept {
 }
 payload::payload(uint8_t payload_bits, const_bytes payload) noexcept {
@@ -25,8 +17,7 @@ const_bytes payload::blob() const noexcept {
 }
 
 node::node(std::byte b) noexcept
-    : _transition(b)
-{}
+    : _transition(b) { }
 node* node::add_child(std::byte b) {
     assert(_children.empty() || b > _children.back()->_transition);
     _children.push_back(std::make_unique<node>(b));
@@ -53,7 +44,7 @@ size_t node::recalc_sizes(const trie_writer_output& out, size_t global_pos) {
         }
         node->_branch_size = global_pos - pos;
         if (node->_has_out_of_page_children || node->_has_out_of_page_descendants) {
-            node->_node_size = out.serialized_size(*node,  global_pos);
+            node->_node_size = out.serialized_size(*node, global_pos);
         }
         global_pos += node->_node_size;
         stack.pop_back();
@@ -97,19 +88,20 @@ public:
     impl(trie_writer_output&);
     void add(size_t depth, const_bytes key_tail, const payload&);
     ssize_t finish();
+
 private:
     void complete(node* x);
     void write(node* x);
     void lay_out_children(node* x);
     size_t recalc_total_size(node* x, size_t start_pos) const noexcept;
+
 private:
     std::vector<node*> _stack;
     std::unique_ptr<node> _root;
     trie_writer_output& _out;
 };
 trie_writer::impl::impl(trie_writer_output& out)
-    : _out(out)
-{
+    : _out(out) {
     _root = std::make_unique<node>(std::byte(0));
     _stack.push_back(_root.get());
 }
@@ -139,7 +131,7 @@ void trie_writer::impl::complete(node* x) {
 }
 void trie_writer::impl::lay_out_children(node* x) {
     assert(x->_output_pos < 0);
-    auto cmp = [] (node* a, node *b) { return std::make_pair(a->_branch_size + a->_node_size, a->_transition) < std::make_pair(b->_branch_size + b->_node_size, b->_transition); }; 
+    auto cmp = [](node* a, node* b) { return std::make_pair(a->_branch_size + a->_node_size, a->_transition) < std::make_pair(b->_branch_size + b->_node_size, b->_transition); };
     auto unwritten_children = std::set<node*, decltype(cmp)>(cmp);
     for (const auto& c : x->_children) {
         if (c->_output_pos < 0) {
@@ -216,7 +208,38 @@ ssize_t trie_writer::impl::finish() {
     return superroot._children[0]->_output_pos;
 }
 
-trie_writer::trie_writer(trie_writer_output& out) : _pimpl(std::make_unique<impl>(out)) {}
-trie_writer::~trie_writer() {}
+trie_writer::trie_writer(trie_writer_output& out)
+    : _pimpl(std::make_unique<impl>(out)) { }
+trie_writer::~trie_writer() { }
 void trie_writer::add(size_t depth, const_bytes key_tail, const payload& p) { _pimpl->add(depth, key_tail, p); }
 ssize_t trie_writer::finish() { return _pimpl->finish(); }
+
+partition_index_trie_writer::partition_index_trie_writer(trie_writer_output& out)
+    : _out(out) {
+}
+
+partition_index_trie_writer::~partition_index_trie_writer() {
+}
+
+void partition_index_trie_writer::add(const_bytes key, uint64_t offset) {
+    if (_added_keys > 0) {
+        size_t mismatch = std::ranges::mismatch(key, _last_key).in2 - _last_key.begin();
+        size_t needed_prefix = std::min(std::max(_last_key_mismatch, mismatch) + 1, _last_key.size());
+        auto payload_bytes = std::bit_cast<std::array<std::byte, sizeof(_last_payload)>>(_last_payload);
+        auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
+        _wr.add(_last_key_mismatch, tail, payload(1, payload_bytes));
+        _last_key_mismatch = mismatch;
+    }
+    _added_keys += 1;
+    _last_key.assign(key.begin(), key.end());
+    _last_payload = offset;
+}
+ssize_t partition_index_trie_writer::finish() {
+    if (_added_keys > 0) {
+        size_t needed_prefix = std::min(_last_key_mismatch + 1, _last_key.size());
+        auto payload_bytes = std::bit_cast<std::array<std::byte, sizeof(_last_payload)>>(_last_payload);
+        auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
+        _wr.add(_last_key_mismatch, tail, payload(1, payload_bytes));
+    }
+    return _wr.finish();
+}
