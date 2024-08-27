@@ -278,7 +278,8 @@ public:
             tracing::trace_state_ptr trace_state = {},
             streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no,
             mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes,
-            read_monitor& monitor = default_read_monitor());
+            read_monitor& monitor = default_read_monitor(),
+            index_reader* = nullptr);
 
     // A reader which doesn't use the index at all. It reads everything from the
     // sstable and it doesn't support skipping.
@@ -368,6 +369,9 @@ public:
     }
     file& index_file() {
         return _index_file;
+    }
+    file& trie_index_file() {
+        return _trie_index_file;
     }
     file uncached_index_file();
     // Returns size of bloom filter data.
@@ -531,6 +535,7 @@ private:
     // it is then used to generate the ancestors metadata in the statistics or scylla components.
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
+    file _trie_index_file;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;
     uint64_t _data_file_size;

@@ -129,8 +129,14 @@ future<data_sink> filesystem_storage::make_data_or_index_sink(sstable& sst, comp
     options.buffer_size = sst.sstable_buffer_size;
     options.write_behind = 10;
 
-    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index);
-    return make_file_data_sink(type == component_type::Data ? std::move(sst._data_file) : std::move(sst._index_file), options);
+    seastar::file f;
+    switch (type) {
+        case component_type::Data: f = std::move(sst._data_file); break;
+        case component_type::Index: f = std::move(sst._index_file); break;
+        case component_type::TrieIndex: f = std::move(sst._trie_index_file); break;
+        default: abort(); break;
+    }
+    return make_file_data_sink(std::move(f), options);
 }
 
 future<data_sink> filesystem_storage::make_component_sink(sstable& sst, component_type type, open_flags oflags, file_output_stream_options options) {

@@ -1294,11 +1294,13 @@ public:
                             tracing::trace_state_ptr trace_state,
                             streamed_mutation::forwarding fwd,
                             mutation_reader::forwarding fwd_mr,
-                            read_monitor& mon)
+                            read_monitor& mon,
+                            index_reader* ir)
             : mp_row_consumer_reader_mx(std::move(schema), permit, std::move(sst))
             , _slice_holder(std::move(slice))
             , _slice(_slice_holder.get())
             , _consumer(this, _schema, std::move(permit), _slice, std::move(trace_state), fwd, _sst)
+            , _index_reader(ir)
             // FIXME: I want to add `&& fwd_mr == mutation_reader::forwarding::no` below
             // but can't because many call sites use the default value for
             // `mutation_reader::forwarding` which is `yes`.
@@ -1706,10 +1708,11 @@ static mutation_reader make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& monitor) {
+        read_monitor& monitor,
+        index_reader* ir) {
     return make_mutation_reader<mx_sstable_mutation_reader>(
         std::move(sstable), std::move(schema), std::move(permit), range,
-        std::move(slice), std::move(trace_state), fwd, fwd_mr, monitor);
+        std::move(slice), std::move(trace_state), fwd, fwd_mr, monitor, ir);
 }
 
 mutation_reader make_reader(
@@ -1721,9 +1724,10 @@ mutation_reader make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& monitor) {
+        read_monitor& monitor,
+        index_reader* ir) {
     return make_reader(std::move(sstable), std::move(schema), std::move(permit), range,
-            value_or_reference(slice), std::move(trace_state), fwd, fwd_mr, monitor);
+            value_or_reference(slice), std::move(trace_state), fwd, fwd_mr, monitor, ir);
 }
 
 mutation_reader make_reader(
@@ -1735,9 +1739,10 @@ mutation_reader make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& monitor) {
+        read_monitor& monitor,
+        index_reader* ir) {
     return make_reader(std::move(sstable), std::move(schema), std::move(permit), range,
-            value_or_reference(std::move(slice)), std::move(trace_state), fwd, fwd_mr, monitor);
+            value_or_reference(std::move(slice)), std::move(trace_state), fwd, fwd_mr, monitor, ir);
 }
 
 class mx_crawling_sstable_mutation_reader : public mp_row_consumer_reader_mx {

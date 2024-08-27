@@ -26,6 +26,9 @@
 #include <boost/range/adaptor/indexed.hpp>
 #include <boost/range/algorithm/stable_partition.hpp>
 
+#include "sstables/trie.hh"
+#include "sstables/trie_writer_output_file_writer.hh"
+
 logging::logger slogger("mc_writer");
 
 namespace sstables {
@@ -534,6 +537,9 @@ private:
     bool _compression_enabled = false;
     std::unique_ptr<file_writer> _data_writer;
     std::unique_ptr<file_writer> _index_writer;
+    std::unique_ptr<file_writer> _trie_index_writer;
+    std::unique_ptr<trie_writer_output_file_writer> _twofw; 
+    std::unique_ptr<partition_index_trie_writer> _pitw;
     bool _tombstone_written = false;
     bool _static_row_written = false;
     // The length of partition header (partition key, partition deletion and static row, if present)
@@ -833,6 +839,9 @@ writer::~writer() {
         }
     };
     close_writer(_index_writer);
+    if (_trie_index_writer) {
+        close_writer(_trie_index_writer);
+    }
     close_writer(_data_writer);
 }
 
@@ -898,6 +907,12 @@ void writer::init_file_writers() {
 
     out = _sst._storage->make_data_or_index_sink(_sst, component_type::Index).get();
     _index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::Index));
+    if (_sst._schema->partition_key_type()->has_memcmp_comparable_form()) {
+        out = _sst._storage->make_data_or_index_sink(_sst, component_type::TrieIndex).get();
+        _trie_index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::TrieIndex));
+        _twofw = std::make_unique<trie_writer_output_file_writer>(*_trie_index_writer, 4096);
+        _pitw = std::make_unique<partition_index_trie_writer>(*_twofw);
+    }
 }
 
 std::unique_ptr<file_writer> writer::close_writer(std::unique_ptr<file_writer>& w) {
@@ -937,6 +952,19 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     // and collecting the sample of columns.
     write(_sst.get_version(), *_index_writer, p_key);
     write_vint(*_index_writer, _data_writer->offset());
+
+    if (_index_callback) {
+        _index_callback(dk, _data_writer->offset());
+    }
+
+    if (_pitw) {
+        auto byte_comparable_form = _sst._schema->partition_key_type()->memcmp_comparable_form(dk.key());
+        uint64_t token = seastar::cpu_to_be<uint64_t>(dk.token().unbias());
+        auto with_token = bytes(byte_comparable_form.size(), 0);
+        std::memcpy(with_token.data(), &token, sizeof(token));
+        std::memcpy(with_token.data() + sizeof(token), byte_comparable_form.data(), byte_comparable_form.size());
+        _pitw->add(std::as_bytes(std::span(with_token)), _data_writer->offset());
+    }
 
     _pi_write_m.first_entry.reset();
     _pi_write_m.blocks.clear();
@@ -1462,6 +1490,15 @@ void writer::consume_end_of_stream() {
         _collector.add_compression_ratio(_sst._components->compression.compressed_file_length(), _sst._components->compression.uncompressed_file_length());
     }
 
+    if (_pitw) {
+        if (auto trie_root_pos = _pitw->finish(); trie_root_pos >= 0) {
+            auto x = seastar::cpu_to_be<uint64_t>(trie_root_pos);
+            _trie_index_writer->write((const char*)&x, sizeof(x));
+        }
+        _pitw.reset();
+        _twofw.reset();
+        close_writer(_trie_index_writer);
+    }
     close_writer(_index_writer);
     _sst.set_first_and_last_keys();
 

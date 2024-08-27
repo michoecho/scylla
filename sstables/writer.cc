@@ -65,6 +65,10 @@ stop_iteration sstable_writer::consume_end_of_partition() {
     return _impl->consume_end_of_partition();
 }
 
+void sstable_writer::attach_index_callback(std::function<void(const dht::decorated_key&, uint64_t)> f) {
+    _impl->attach_index_callback(std::move(f));
+}
+
 void sstable_writer::consume_end_of_stream() {
     _impl->_validator.on_end_of_stream();
     if (_impl->_c_stats.capped_local_deletion_time) {

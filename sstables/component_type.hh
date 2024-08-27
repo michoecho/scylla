@@ -15,6 +15,7 @@ namespace sstables {
 
 enum class component_type {
     Index,
+    TrieIndex,
     CompressionInfo,
     Data,
     TOC,
@@ -41,6 +42,8 @@ struct fmt::formatter<sstables::component_type> : fmt::formatter<string_view> {
         switch (comp_type) {
         case Index:
             return formatter<string_view>::format("Index", ctx);
+        case TrieIndex:
+            return formatter<string_view>::format("TrieIndex", ctx);
         case CompressionInfo:
             return formatter<string_view>::format("CompressionInfo", ctx);
         case Data:

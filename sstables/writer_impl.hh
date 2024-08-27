@@ -26,6 +26,7 @@ struct sstable_writer::writer_impl {
     metadata_collector _collector;
     column_stats _c_stats;
     mutation_fragment_stream_validating_filter _validator;
+    std::function<void(const dht::decorated_key&, uint64_t)> _index_callback;
 
     writer_impl(sstable& sst, const schema& schema, const sstable_writer_config& cfg)
         : _sst(sst)
@@ -43,6 +44,9 @@ struct sstable_writer::writer_impl {
     virtual stop_iteration consume_end_of_partition() = 0;
     virtual void consume_end_of_stream() = 0;
     virtual ~writer_impl() {}
+    void attach_index_callback(std::function<void(const dht::decorated_key&, uint64_t)> f) {
+        _index_callback = std::move(f);
+    }
 };
 
-}
+} // namespace sstables

@@ -552,6 +552,7 @@ scylla_tests = set([
     'test/boost/snitch_reset_test',
     'test/boost/sstable_3_x_test',
     'test/boost/sstable_datafile_test',
+    'test/boost/sstable_trielike_index_test',
     'test/boost/sstable_generation_test',
     'test/boost/sstable_mutation_test',
     'test/boost/sstable_partition_index_cache_test',
@@ -871,6 +872,8 @@ scylla_core = (['message/messaging_service.cc',
                 'sstables/random_access_reader.cc',
                 'sstables/metadata_collector.cc',
                 'sstables/writer.cc',
+                'sstables/node.capnp.cc',
+                'sstables/trie.cc',
                 'transport/cql_protocol_extension.cc',
                 'transport/event.cc',
                 'transport/event_notifier.cc',
@@ -1833,6 +1836,8 @@ libs = ' '.join([maybe_static(args.staticyamlcpp, '-lyaml-cpp'), '-latomic', '-l
                  maybe_static(args.staticboost, '-lboost_date_time -lboost_regex -licuuc -licui18n'),
                  '-lxxhash',
                  '-ldeflate',
+                 '-lcapnp',
+                 '-lkj',
                 ])
 
 if not args.staticboost:

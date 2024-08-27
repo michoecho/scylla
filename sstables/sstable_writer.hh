@@ -43,6 +43,7 @@ public:
     stop_iteration consume(range_tombstone_change&& rtc);
     stop_iteration consume_end_of_partition();
     void consume_end_of_stream();
+    void attach_index_callback(std::function<void(const dht::decorated_key&, uint64_t)>);
 };
 
 } // namespace sstables

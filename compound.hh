@@ -297,6 +297,12 @@ public:
         // FIXME: call equal() on each component
         return compare(v1, v2) == 0;
     }
+    bool has_memcmp_comparable_form() {
+        return _types.size() == 1 && (_types.front() == bytes_type || _types.front() == utf8_type || _types.front() == long_type || _types.front() == ascii_type);
+    }
+    bytes memcmp_comparable_form(managed_bytes_view v) {
+        return std::move(deserialize_value(v)[0]);
+    }
 };
 
 using compound_prefix = compound_type<allow_prefixes::yes>;

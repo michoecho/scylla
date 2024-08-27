@@ -856,6 +856,7 @@ void sstable::generate_toc() {
     _recognized_components.insert(component_type::Statistics);
     _recognized_components.insert(component_type::Digest);
     _recognized_components.insert(component_type::Index);
+    _recognized_components.insert(component_type::TrieIndex);
     _recognized_components.insert(component_type::Summary);
     _recognized_components.insert(component_type::Data);
     if (_schema->bloom_filter_fp_chance() != 1.0) {
@@ -1330,7 +1331,8 @@ future<file> sstable::open_file(component_type type, open_flags flags, file_open
 future<> sstable::open_or_create_data(open_flags oflags, file_open_options options) noexcept {
     return when_all_succeed(
         open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }),
-        open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); })
+        open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
+        open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _trie_index_file = std::move(f); })
     ).discard_result();
 }
 
@@ -1588,6 +1590,7 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
         _components = std::move(info.components);
         _data_file = make_checked_file(_read_error_handler, info.data.to_file());
         _index_file = make_checked_file(_read_error_handler, info.index.to_file());
+        _trie_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
         _shards = std::move(info.owners);
         _metadata_size_on_disk = info.metadata_size_on_disk;
         validate_min_max_metadata();
@@ -1602,7 +1605,7 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
 
 future<foreign_sstable_open_info> sstable::get_open_info() & {
     return _components.copy().then([this] (auto c) mutable {
-        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(),
+        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(), _trie_index_file.dup(),
             _generation, _version, _format, data_size(), _metadata_size_on_disk};
     });
 }
@@ -2265,10 +2268,11 @@ sstable::make_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor& mon) {
+        read_monitor& mon,
+        index_reader* ir) {
     const auto reversed = slice.is_reversed();
     if (_version >= version_types::mc && (!reversed || range.is_singular())) {
-        return mx::make_reader(shared_from_this(), std::move(query_schema), std::move(permit), range, slice, std::move(trace_state), fwd, fwd_mr, mon);
+        return mx::make_reader(shared_from_this(), std::move(query_schema), std::move(permit), range, slice, std::move(trace_state), fwd, fwd_mr, mon, ir);
     }
 
     // Multi-partition reversed queries are not yet supported natively in the mx reader.
@@ -2279,7 +2283,7 @@ sstable::make_reader(
     if (_version >= version_types::mc) {
         // The only mx case falling through here is reversed multi-partition reader
         auto rd = make_reversing_reader(mx::make_reader(shared_from_this(), query_schema->make_reversed(), std::move(permit),
-                range, reverse_slice(*query_schema, slice), std::move(trace_state), streamed_mutation::forwarding::no, fwd_mr, mon),
+                range, reverse_slice(*query_schema, slice), std::move(trace_state), streamed_mutation::forwarding::no, fwd_mr, mon, ir),
             max_result_size);
         if (fwd) {
             rd = make_forwardable(std::move(rd));
