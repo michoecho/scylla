@@ -120,6 +120,20 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
 }
 
 template <typename DataConsumeRowsContext>
+inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows_2(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer, sstable::disk_read_range toread, uint64_t last_end) {
+    // Although we were only asked to read until toread.end, we'll not limit
+    // the underlying file input stream to this end, but rather to last_end.
+    // This potentially enables read-ahead beyond end, until last_end, which
+    // can be beneficial if the user wants to fast_forward_to() on the
+    // returned context, and may make small skips.
+    auto recreator = [sst, p = consumer.permit(), t = consumer.trace_state()] (size_t begin, size_t end) {
+        return sst->data_stream(begin, end,
+                p, t, sst->_partition_range_history);
+    };
+    return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(recreator), toread.start, toread.end - toread.start);
+}
+
+template <typename DataConsumeRowsContext>
 struct reversed_context {
     std::unique_ptr<DataConsumeRowsContext> the_context;
 
@@ -163,10 +177,10 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
 template<typename T>
 concept RowConsumer =
     requires(T t,
-                    const partition_key& pk,
+                    const dht::decorated_key& dk,
                     position_range cr) {
         { t.is_mutation_end() } -> std::same_as<bool>;
-        { t.setup_for_partition(pk) } -> std::same_as<void>;
+        { t.setup_for_partition(dk) } -> std::same_as<void>;
         { t.push_ready_fragments() } -> std::same_as<void>;
         { t.maybe_skip() } -> std::same_as<std::optional<position_in_partition_view>>;
         { t.fast_forward_to(std::move(cr)) } -> std::same_as<std::optional<position_in_partition_view>>;

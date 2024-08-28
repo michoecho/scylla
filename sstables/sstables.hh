@@ -991,6 +991,9 @@ public:
     friend class sstables_manager;
     template <typename DataConsumeRowsContext>
     friend std::unique_ptr<DataConsumeRowsContext>
+    data_consume_rows_2(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t);
+    template <typename DataConsumeRowsContext>
+    friend std::unique_ptr<DataConsumeRowsContext>
     data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t);
     template <typename DataConsumeRowsContext>
     friend std::unique_ptr<DataConsumeRowsContext>

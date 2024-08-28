@@ -33,7 +33,7 @@ public:
         _permit.on_finish_sstable_read();
     }
 
-    void on_next_partition(dht::decorated_key, tombstone);
+    virtual data_consumer::proceed on_next_partition(dht::decorated_key, tombstone);
 };
 
 enum class row_processing_result {
@@ -252,10 +252,10 @@ public:
         return _is_mutation_end;
     }
 
-    void setup_for_partition(const partition_key& pk) {
-        sstlog.trace("mp_row_consumer_m {}: setup_for_partition({})", fmt::ptr(this), pk);
+    void setup_for_partition(const dht::decorated_key& dk) {
+        sstlog.trace("mp_row_consumer_m {}: setup_for_partition({})", fmt::ptr(this), dk);
         _is_mutation_end = false;
-        _mf_filter.emplace(*_schema, query::clustering_key_filter_ranges(_slice.row_ranges(*_schema, pk)), _fwd);
+        _mf_filter.emplace(*_schema, query::clustering_key_filter_ranges(_slice.row_ranges(*_schema, dk.key())), _fwd);
     }
 
     std::optional<position_in_partition_view> fast_forward_to(position_range r) {
@@ -312,9 +312,12 @@ public:
             return data_consumer::proceed::yes;
         }
         auto pk = key.to_partition_key(*_schema);
-        setup_for_partition(pk);
         auto dk = dht::decorate_key(*_schema, pk);
-        _reader->on_next_partition(std::move(dk), tombstone(deltime));
+        setup_for_partition(dk);
+        auto maybe_stop = _reader->on_next_partition(std::move(dk), tombstone(deltime));
+        if (maybe_stop == data_consumer::proceed::no) {
+            return data_consumer::proceed::no;
+        }
         return data_consumer::proceed(!_reader->is_buffer_full() && !need_preempt());
     }
 
@@ -1215,6 +1218,24 @@ public:
         setup_columns(_static_row, _column_translation.static_columns());
     }
 
+    data_consume_rows_context_m(const schema& s,
+                                const shared_sstable& sst,
+                                Consumer& consumer,
+                                std::function<input_stream<char>(size_t, size_t)> input_recreator,
+                                uint64_t start,
+                                uint64_t maxlen)
+        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>>(consumer.permit(), std::move(input_recreator), start, maxlen)
+        , _consumer(consumer)
+        , _sst(sst)
+        , _header(sst->get_serialization_header())
+        , _column_translation(sst->get_column_translation(s, _header, sst->features()))
+        , _has_shadowable_tombstones(sst->has_shadowable_tombstones())
+        , _gen(do_process_state())
+    {
+        setup_columns(_regular_row, _column_translation.regular_columns());
+        setup_columns(_static_row, _column_translation.static_columns());
+    }
+
     void verify_end_state() {
         // If reading a partial row (i.e., when we have a clustering row
         // filter and using a promoted index), we may be in FLAGS
@@ -1276,7 +1297,7 @@ class mx_sstable_mutation_reader : public mp_row_consumer_reader_mx {
     std::unique_ptr<index_reader> _index_reader;
     // We avoid unnecessary lookup for single partition reads thanks to this flag
     bool _single_partition_read = false;
-    const dht::partition_range& _pr;
+    std::reference_wrapper<const dht::partition_range> _pr;
     streamed_mutation::forwarding _fwd;
     mutation_reader::forwarding _fwd_mr;
     read_monitor& _monitor;
@@ -1381,7 +1402,7 @@ private:
             return read_from_datafile();
         }
         auto key = dht::decorate_key(*_schema, std::move(*pk));
-        _consumer.setup_for_partition(key.key());
+        _consumer.setup_for_partition(key);
         on_next_partition(std::move(key), tombstone(*tomb));
         return make_ready_future<>();
     }
@@ -1395,7 +1416,7 @@ private:
 
         _end_of_stream = true; // on_next_partition() will set it to true
         if (!_read_enabled) {
-            sstlog.trace("reader {}: eof", fmt::ptr(this));
+            sstlog.trace("reader {}: eof, _read_enabled", fmt::ptr(this));
             return make_ready_future<>();
         }
 
@@ -1412,7 +1433,7 @@ private:
         //
         if (_index_in_current_partition) {
             if (_context->eof()) {
-                sstlog.trace("reader {}: eof", fmt::ptr(this));
+                sstlog.trace("reader {}: eof, _context->eof()", fmt::ptr(this));
                 return make_ready_future<>();
             }
             if (_index_reader->partition_data_ready()) {
@@ -1434,7 +1455,7 @@ private:
         // If next partition exists then on_next_partition will be called
         // and _end_of_stream will be set to false again.
         _end_of_stream = true;
-        if (!_read_enabled || _single_partition_read) {
+        if (!_read_enabled) {
             sstlog.trace("reader {}: eof", fmt::ptr(this));
             return make_ready_future<>();
         }
@@ -1514,7 +1535,7 @@ private:
         }
         if (_single_partition_read) {
             _sst->get_stats().on_single_partition_read();
-            const auto& key = dht::ring_position_view(_pr.start()->value());
+            const auto& key = dht::ring_position_view(_pr.get().start()->value());
             position_in_partition_view pos = get_slice_upper_bound(*_schema, _slice, key);
             const auto present = co_await get_index_reader().advance_lower_and_check_if_present(key, pos);
 
@@ -1537,6 +1558,7 @@ private:
 
         if (_single_partition_read) {
             _read_enabled = (begin != *end);
+            sstlog.trace("mx_sstable_mutation_reader {}: _single_pratition_read {} {}", fmt::ptr(this), begin, *end);
             if (reversed()) {
                 auto reversed_context = data_consume_reversed_partition<DataConsumeRowsContext>(
                         *_schema, _sst, *_index_reader, _consumer, { begin, *end });
@@ -1549,7 +1571,7 @@ private:
             sstable::disk_read_range drr{begin, *end};
             auto last_end = _fwd_mr ? _sst->data_size() : drr.end;
             _read_enabled = bool(drr);
-            _context = data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end);
+            _context = data_consume_rows_2<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end);
         }
 
         _monitor.on_read_started(_context->reader_position());
@@ -1584,6 +1606,7 @@ public:
         }
 
         return maybe_initialize().then([this, &pr] (bool initialized) {
+            _pr = pr;
             if (!initialized) {
                 _end_of_stream = true;
                 return make_ready_future<>();
@@ -1697,6 +1720,27 @@ public:
             sstlog.warn("Failed closing of sstable_mutation_reader: {}. Ignored since the reader is already done.", ep);
         });
     }
+
+    data_consumer::proceed on_next_partition(dht::decorated_key key, tombstone tomb) override {
+        if (_pr.get().before(key, dht::ring_position_comparator(*_schema))) {
+            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 1", fmt::ptr(this), key);
+            _before_partition = false;
+            _end_of_stream = false;
+            _current_partition_key = std::move(key);
+            _partition_finished = true;
+            return data_consumer::proceed::no;
+        } else if (_pr.get().after(key, dht::ring_position_comparator(*_schema))) {
+            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 2", fmt::ptr(this), key);
+            _before_partition = false;
+            _end_of_stream = true;
+            _partition_finished = true;
+            _current_partition_key.reset();
+            return data_consumer::proceed::no;
+        } else {
+            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 3", fmt::ptr(this), key);
+            return mp_row_consumer_reader_mx::on_next_partition(std::move(key), tomb);
+        }
+    }
 };
 
 static mutation_reader make_reader(
@@ -1805,7 +1849,7 @@ mutation_reader make_crawling_reader(
             std::move(trace_state), monitor);
 }
 
-void mp_row_consumer_reader_mx::on_next_partition(dht::decorated_key key, tombstone tomb) {
+data_consumer::proceed mp_row_consumer_reader_mx::on_next_partition(dht::decorated_key key, tombstone tomb) {
     _partition_finished = false;
     _before_partition = false;
     _end_of_stream = false;
@@ -1813,6 +1857,7 @@ void mp_row_consumer_reader_mx::on_next_partition(dht::decorated_key key, tombst
     push_mutation_fragment(
             mutation_fragment_v2(*_schema, _permit, partition_start(*_current_partition_key, tomb)));
     _sst->get_stats().on_partition_read();
+    return data_consumer::proceed::yes;
 }
 
 // A validating consumer implementing the Consumer concept of data_consume_rows_context_m.
