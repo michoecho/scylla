@@ -84,6 +84,8 @@
 #include "release.hh"
 #include "utils/build_id.hh"
 
+#include "trie.hh"
+
 thread_local disk_error_signal_type sstable_read_error;
 thread_local disk_error_signal_type sstable_write_error;
 
@@ -1328,16 +1330,31 @@ future<file> sstable::open_file(component_type type, open_flags flags, file_open
     return new_sstable_component_file(_read_error_handler, type, flags, opts);
 }
 
+future<> sstable::init_trie_reader() {
+    sstlog.debug("init_trie_reader()");
+    _trie_reader_input = std::make_unique<seastar_file_trie_reader_input>(_trie_index_file);
+    sstlog.debug("init_trie_reader(): stat");
+    auto st = co_await _trie_index_file.stat();
+    sstlog.debug("init_trie_reader(): stat result: {}", st.st_size);
+    sstlog.debug("init_trie_reader(): read");
+    if (st.st_size > 0) {
+        auto p = co_await _trie_index_file.dma_read_exactly<char>(st.st_size - 8, 8);
+        _trie_root_offset = read_le<uint64_t>(p.get());
+        sstlog.debug("init_trie_reader: Trie root offset == {} for sstable {}", _trie_root_offset, this->index_filename());
+    }
+}
+
 future<> sstable::open_or_create_data(open_flags oflags, file_open_options options) noexcept {
-    return when_all_succeed(
+    co_await when_all_succeed(
         open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }),
         open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
         open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _trie_index_file = std::move(f); })
-    ).discard_result();
+    );
 }
 
 future<> sstable::open_data(sstable_open_config cfg) noexcept {
     co_await open_or_create_data(open_flags::ro);
+    co_await init_trie_reader();
     co_await update_info_for_opened_data(cfg);
     SCYLLA_ASSERT(!_shards.empty());
     auto* sm = _components->scylla_metadata->data.get<scylla_metadata_type::Sharding, sharding_metadata>();
@@ -1586,21 +1603,20 @@ future<> sstable::load(const dht::sharder& sharder, sstable_open_config cfg) noe
 
 future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
     static_assert(std::is_nothrow_move_constructible_v<sstables::foreign_sstable_open_info>);
-    return read_toc().then([this, info = std::move(info)] () mutable {
-        _components = std::move(info.components);
-        _data_file = make_checked_file(_read_error_handler, info.data.to_file());
-        _index_file = make_checked_file(_read_error_handler, info.index.to_file());
-        _trie_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
-        _shards = std::move(info.owners);
-        _metadata_size_on_disk = info.metadata_size_on_disk;
-        validate_min_max_metadata();
-        validate_max_local_deletion_time();
-        validate_partitioner();
-        return update_info_for_opened_data().then([this]() {
-            _total_reclaimable_memory.reset();
-            _manager.increment_total_reclaimable_memory_and_maybe_reclaim(this);
-        });
-    });
+    co_await read_toc();
+    _components = std::move(info.components);
+    _data_file = make_checked_file(_read_error_handler, info.data.to_file());
+    _index_file = make_checked_file(_read_error_handler, info.index.to_file());
+    _trie_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
+    co_await init_trie_reader();
+    _shards = std::move(info.owners);
+    _metadata_size_on_disk = info.metadata_size_on_disk;
+    validate_min_max_metadata();
+    validate_max_local_deletion_time();
+    validate_partitioner();
+    co_await update_info_for_opened_data();
+    _total_reclaimable_memory.reset();
+    _manager.increment_total_reclaimable_memory_and_maybe_reclaim(this);
 }
 
 future<foreign_sstable_open_info> sstable::get_open_info() & {
@@ -3166,6 +3182,9 @@ sstable::sstable(schema_ptr schema,
     , _manager(manager)
 {
     manager.add(this);
+}
+
+sstable::~sstable() {
 }
 
 file sstable::uncached_index_file() {

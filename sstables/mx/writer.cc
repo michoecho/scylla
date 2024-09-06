@@ -960,7 +960,7 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     if (_pitw) {
         auto byte_comparable_form = _sst._schema->partition_key_type()->memcmp_comparable_form(dk.key());
         uint64_t token = seastar::cpu_to_be<uint64_t>(dk.token().unbias());
-        auto with_token = bytes(byte_comparable_form.size(), 0);
+        auto with_token = bytes(sizeof(token) + byte_comparable_form.size(), 0);
         std::memcpy(with_token.data(), &token, sizeof(token));
         std::memcpy(with_token.data() + sizeof(token), byte_comparable_form.data(), byte_comparable_form.size());
         _pitw->add(std::as_bytes(std::span(with_token)), _data_writer->offset());
@@ -1492,7 +1492,7 @@ void writer::consume_end_of_stream() {
 
     if (_pitw) {
         if (auto trie_root_pos = _pitw->finish(); trie_root_pos >= 0) {
-            auto x = seastar::cpu_to_be<uint64_t>(trie_root_pos);
+            auto x = seastar::cpu_to_le<uint64_t>(trie_root_pos);
             _trie_index_writer->write((const char*)&x, sizeof(x));
         }
         _pitw.reset();

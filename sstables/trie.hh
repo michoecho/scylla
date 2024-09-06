@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sstables/index_reader.hh"
 #include <array>
 #include <memory>
 #include <span>
@@ -72,4 +73,105 @@ private:
     size_t _last_key_mismatch = 0;
     buf _last_key;
     uint64_t _last_payload;
+};
+
+struct reader_node {
+    struct child {
+        std::byte transition;
+        uint64_t offset;
+    };
+    std::vector<child> children;
+    std::vector<std::byte> payload;
+};
+
+struct trie_reader_input {
+    virtual ~trie_reader_input();
+    virtual future<reader_node> read(uint64_t offset) = 0;
+};
+
+struct node_cursor {
+    reader_node node;
+    int child_idx;
+};
+
+enum class set_result {
+    eof,
+    no_match,
+    match,
+};
+
+class trie_cursor {
+    std::reference_wrapper<trie_reader_input> _in;
+    std::vector<node_cursor> _path;
+public:
+    trie_cursor(trie_reader_input&);
+    trie_cursor& operator=(const trie_cursor&) = default;
+    future<void> init(uint64_t root_offset);
+    future<set_result> set_before(const_bytes key);
+    future<set_result> set_after(const_bytes key);
+    future<set_result> step();
+    const_bytes payload() const;
+    bool eof() const;
+};
+
+class trie_index_reader : public sstables::index_reader {
+    std::optional<trie_cursor> _lower;
+    std::optional<trie_cursor> _upper;
+    trie_reader_input& _in;
+    uint64_t _root;
+    uint64_t _total_file_size;
+    schema_ptr _s;
+
+    static uint64_t payload_to_offset(const_bytes p);
+    std::vector<std::byte> translate_key(dht::ring_position_view key);
+public:
+    trie_index_reader(trie_reader_input& in, uint64_t root_offset, uint64_t total_file_size, schema_ptr s);
+    virtual future<> close() noexcept override;
+    virtual sstables::data_file_positions_range data_file_positions() const override;
+    virtual future<std::optional<uint64_t>> last_block_offset() override;
+    virtual future<bool> advance_lower_and_check_if_present(dht::ring_position_view key, std::optional<position_in_partition_view> pos = {}) override;
+    virtual future<> advance_to_next_partition() override;
+    virtual sstables::indexable_element element_kind() const override;
+    virtual future<> advance_to(dht::ring_position_view pos) override;
+    virtual future<> advance_to(position_in_partition_view pos) override;
+    virtual std::optional<sstables::deletion_time> partition_tombstone() override;
+    virtual std::optional<partition_key> get_partition_key() override;
+    virtual partition_key get_partition_key_prefix() override;
+    virtual bool partition_data_ready() const override;
+    virtual future<> read_partition_data() override;
+    virtual future<> advance_reverse(position_in_partition_view pos) override;
+    virtual future<> advance_to(const dht::partition_range& range) override;
+    virtual future<> advance_reverse_to_next_partition() override;
+    virtual std::optional<sstables::open_rt_marker> end_open_marker() const override;
+    virtual std::optional<sstables::open_rt_marker> reverse_end_open_marker() const override;
+    virtual sstables::clustered_index_cursor* current_clustered_cursor() override;
+    virtual uint64_t get_data_file_position() override;
+    virtual uint64_t get_promoted_index_size() override;
+    virtual bool eof() const override;
+};
+
+namespace capnp {
+    class MessageBuilder;
+}
+
+class seastar_file_trie_writer_output : public trie_writer_output {
+    size_t _pos = 0;
+    seastar::output_stream<char>& _f;
+    void serialize(const node& x, ::capnp::MessageBuilder& mb) const;
+
+public:
+    seastar_file_trie_writer_output(seastar::output_stream<char>&);
+    size_t serialized_size(const node&, size_t pos) const override;
+    size_t write(const node&, size_t depth) override;
+    size_t page_size() const override;
+    size_t bytes_left_in_page() override;
+    size_t pad_to_page_boundary() override;
+    size_t pos() const override;
+};
+
+class seastar_file_trie_reader_input : public trie_reader_input {
+    seastar::file _f;
+public:
+    seastar_file_trie_reader_input(seastar::file);
+    future<reader_node> read(uint64_t offset) override;
 };

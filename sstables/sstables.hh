@@ -55,6 +55,8 @@ namespace db {
 class large_data_handler;
 }
 
+struct trie_reader_input;
+
 namespace sstables {
 
 class random_access_reader;
@@ -65,6 +67,7 @@ extern thread_local utils::updateable_value<bool> global_cache_index_pages;
 namespace mc {
 class writer;
 }
+
 
 namespace fs = std::filesystem;
 
@@ -205,6 +208,7 @@ public:
     sstable& operator=(const sstable&) = delete;
     sstable(const sstable&) = delete;
     sstable(sstable&&) = delete;
+    ~sstable();
 
     // disk_read_range describes a byte ranges covering part of an sstable
     // row that we need to read from disk. Usually this is the whole byte
@@ -373,6 +377,12 @@ public:
     file& trie_index_file() {
         return _trie_index_file;
     }
+    trie_reader_input& get_trie_reader_input() {
+        return *_trie_reader_input.get();
+    }
+    uint64_t trie_root_offset() {
+        return _trie_root_offset;
+    }
     file uncached_index_file();
     // Returns size of bloom filter data.
     uint64_t filter_size() const;
@@ -536,6 +546,8 @@ private:
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
     file _trie_index_file;
+    std::unique_ptr<trie_reader_input> _trie_reader_input;
+    uint64_t _trie_root_offset = 0;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;
     uint64_t _data_file_size;
@@ -765,6 +777,7 @@ private:
     }
 
     future<> open_or_create_data(open_flags oflags, file_open_options options = {}) noexcept;
+    future<> init_trie_reader();
     // runs in async context (called from storage::open)
     void write_toc(file_writer w);
 public:

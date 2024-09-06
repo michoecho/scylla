@@ -1,5 +1,6 @@
 #include "index_reader.hh"
 #include "downsampling.hh"
+#include "trie.hh"
 
 namespace sstables {
 
@@ -696,6 +697,16 @@ make_index_reader(
     use_caching caching,
     bool single_partition_read
 ) {
+    if (sst->get_schema()->partition_key_type()->has_memcmp_comparable_form() && !sst->get_schema()->ks_name().contains("system")) {
+        sstlog.debug("Using trie index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());
+        return std::make_unique<trie_index_reader>(
+            sst->get_trie_reader_input(),
+            sst->trie_root_offset(),
+            sst->data_size(),
+            sst->get_schema()
+        );
+    }
+    sstlog.debug("Using normal index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());
     return std::make_unique<index_reader_old>(
         std::move(sst),
         std::move(permit),

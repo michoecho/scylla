@@ -1441,7 +1441,11 @@ private:
             }
             if (_will_likely_slice) {
                 return _index_reader->read_partition_data().then([this] {
-                    return read_from_index();
+                    if (_index_reader->partition_data_ready()) {
+                        return read_from_index();
+                    } else {
+                        return read_from_datafile();
+                    }
                 });
             }
         }
@@ -1536,6 +1540,7 @@ private:
         if (_single_partition_read) {
             _sst->get_stats().on_single_partition_read();
             const auto& key = dht::ring_position_view(_pr.get().start()->value());
+            sstlog.debug("maybe_initialize: slice_ranges.size={}", _slice.row_ranges(*_schema, *key.key()).size());
             position_in_partition_view pos = get_slice_upper_bound(*_schema, _slice, key);
             const auto present = co_await get_index_reader().advance_lower_and_check_if_present(key, pos);
 
