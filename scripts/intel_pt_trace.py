@@ -172,7 +172,7 @@ async def with_perf_record(record_dir: str, args: list[str]) -> typing.AsyncIter
     os.mkfifo(control_fname)
     os.mkfifo(ack_fname)
     try:
-        proc = await asyncio.subprocess.create_subprocess_exec("sudo", "perf", "record", "--snapshot", "--kcore", "--delay=-1", f"--control=fifo:{control_fname},{ack_fname}", "--mmap-pages=256M,256M", *args, cwd=record_dir)
+        proc = await asyncio.subprocess.create_subprocess_exec("perf", "record", "--snapshot=e", "--delay=-1", f"--control=fifo:{control_fname},{ack_fname}", "--mmap-pages=256M,256M", *args, cwd=record_dir)
         with open(control_fname, "wb", buffering=0) as w:
             with open(ack_fname, "rb", buffering=0) as r:
                 try:

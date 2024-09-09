@@ -697,7 +697,7 @@ make_index_reader(
     use_caching caching,
     bool single_partition_read
 ) {
-    if (sst->get_schema()->partition_key_type()->has_memcmp_comparable_form() && !sst->get_schema()->ks_name().contains("system")) {
+    if (false && sst->get_schema()->partition_key_type()->has_memcmp_comparable_form() && !sst->get_schema()->ks_name().contains("system")) {
         sstlog.debug("Using trie index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());
         return std::make_unique<trie_index_reader>(
             sst->get_trie_reader_input(),

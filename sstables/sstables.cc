@@ -1455,6 +1455,7 @@ void sstable::write_filter() {
 }
 
 void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
+    return;
     if (!has_component(component_type::Filter)) {
         return;
     }

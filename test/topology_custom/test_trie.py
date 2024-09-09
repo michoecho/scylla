@@ -8,6 +8,7 @@ import asyncio
 import pytest
 import logging
 import time
+from scripts.intel_pt_trace import with_perf_enabled, with_perf_record
 from test.pylib.manager_client import ManagerClient
 from test.pylib.random_tables import RandomTables
 from test.pylib.util import wait_for_cql_and_get_hosts
@@ -36,6 +37,7 @@ async def test_trie(manager: ManagerClient):
 
     insert = cql.prepare("insert into test_ks.test_cf(pk, v) values (?, ?)");
     select = cql.prepare("select v from test_ks.test_cf where pk = ? bypass cache");
+    select_all = cql.prepare("select v from test_ks.test_cf bypass cache");
     cql.execute(insert, ["a", 0]);
     cql.execute(insert, ["b", 1]);
     cql.execute(insert, ["c", 2]);
@@ -46,6 +48,8 @@ async def test_trie(manager: ManagerClient):
     await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
     res = cql.execute(select, "d")
     assert res[0][0] == 3
+    res = cql.execute(select_all)
+    assert [x[0] for x in res] == [0, 1, 2, 3, 4, 5, 6]
 
 @pytest.mark.asyncio
 async def test_trie_clustering(manager: ManagerClient):
@@ -55,6 +59,8 @@ async def test_trie_clustering(manager: ManagerClient):
         "--logger-log-level=compaction=warn",
         "--smp=1"]
     servers = [await manager.server_add(cmdline=cmdline)]
+    pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
+    pidstring = ",".join(str(p) for p in pids)
     cql = manager.cql
     await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
     logger.info("Node started")
@@ -64,7 +70,9 @@ async def test_trie_clustering(manager: ManagerClient):
     logger.info("Test table created")
 
     insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v, pad) values (?, ?, ?, ?)")
-    select = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
+    select_asc_one = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
+    select_asc_range = cql.prepare("select v from test_ks.test_cf where pk = ? and ck >= ? and ck <= ? bypass cache")
+    select_desc_one = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? order by ck desc bypass cache")
     pad = "a" * 66000
     cql.execute(insert, ["a", "a", 0, pad]);
     cql.execute(insert, ["a", "b", 1, pad]);
@@ -72,5 +80,11 @@ async def test_trie_clustering(manager: ManagerClient):
     cql.execute(insert, ["a", "d", 3, pad]);
     cql.execute(insert, ["a", "e", 4, pad]);
     await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
-    res = cql.execute(select, ["a", "c"])
-    assert res[0][0] == 2
+    async with with_perf_record(".", [f"--pid={pidstring}", f"--event=intel_pt/cyc=1/"]) as control:
+        async with with_perf_enabled(control):
+            res = cql.execute(select_asc_one, ["a", "c"])
+            assert [x[0] for x in res] == [2]
+            res = cql.execute(select_asc_range, ["a", "b", "d"])
+            assert [x[0] for x in res] == [1, 2, 3]
+            res = cql.execute(select_desc_one, ["a", "c"])
+            assert [x[0] for x in res] == [2]

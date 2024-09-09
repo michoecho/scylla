@@ -354,14 +354,14 @@ std::vector<std::byte> trie_index_reader::translate_key(dht::ring_position_view 
 }
 sstables::data_file_positions_range trie_index_reader::data_file_positions() const {
     trie_logger.debug("trie_index_reader::data_file_positions this={}", fmt::ptr(this));
-    auto lo = _lower ? payload_to_offset(_lower->payload()) : _total_file_size;
-    auto hi = _upper ? payload_to_offset(_upper->payload()) : _total_file_size;
+    auto lo = _lower && !_lower->eof() ? payload_to_offset(_lower->payload()) : _total_file_size;
+    auto hi = _upper && !_upper->eof() ? payload_to_offset(_upper->payload()) : _total_file_size;
     trie_logger.debug("trie_index_reader::data_file_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
     return {lo, hi};
 }
 future<std::optional<uint64_t>> trie_index_reader::last_block_offset() {
     trie_logger.debug("trie_index_reader::last_block_offset this={}", fmt::ptr(this));
-    abort();
+    return make_ready_future<std::optional<uint64_t>>(std::optional<uint64_t>());
 }
 future<> trie_index_reader::close() noexcept {
     trie_logger.debug("trie_index_reader::close this={}", fmt::ptr(this));
@@ -394,7 +394,11 @@ future<bool> trie_index_reader::advance_lower_and_check_if_present(dht::ring_pos
 }
 future<> trie_index_reader::advance_to_next_partition() {
     trie_logger.debug("trie_index_reader::advance_to_next_partition this={}", fmt::ptr(this));
-    co_await _lower.value().step();
+    auto res = co_await _lower.value().step();
+    if (res == set_result::eof) {
+        _lower.reset();
+    }
+    co_return;
 }
 sstables::indexable_element trie_index_reader::element_kind() const {
     trie_logger.debug("trie_index_reader::element_kind");
@@ -406,7 +410,7 @@ future<> trie_index_reader::advance_to(dht::ring_position_view pos) {
 }
 future<> trie_index_reader::advance_to(position_in_partition_view pos) {
     trie_logger.debug("trie_index_reader::advance_to(row) this={} pos={}", fmt::ptr(this), pos);
-    abort();
+    return make_ready_future<>();
 }
 std::optional<sstables::deletion_time> trie_index_reader::partition_tombstone() {
     trie_logger.debug("trie_index_reader::partition_tombstone this={}", fmt::ptr(this));
@@ -426,7 +430,7 @@ bool trie_index_reader::partition_data_ready() const {
 }
 future<> trie_index_reader::advance_reverse(position_in_partition_view pos) {
     trie_logger.debug("trie_index_reader::advance_reverse this={} pos={}", fmt::ptr(this), pos);
-    abort();
+    return make_ready_future<>();
 }
 future<> trie_index_reader::read_partition_data() {
     trie_logger.debug("trie_index_reader::read_partition_data this={}", fmt::ptr(this));
@@ -451,7 +455,7 @@ future<> trie_index_reader::advance_to(const dht::partition_range& range) {
 }
 future<> trie_index_reader::advance_reverse_to_next_partition() {
     trie_logger.debug("trie_index_reader::advance_reverse_to_next_partition() this={}", fmt::ptr(this));
-    abort();
+    return make_ready_future<>();
 }
 std::optional<sstables::open_rt_marker> trie_index_reader::end_open_marker() const {
     trie_logger.debug("trie_index_reader::end_open_marker() this={}", fmt::ptr(this));
@@ -476,7 +480,7 @@ uint64_t trie_index_reader::get_promoted_index_size() {
 }
 bool trie_index_reader::eof() const {
     trie_logger.debug("trie_index_reader::eof() this={}", fmt::ptr(this));
-    return _lower->eof();
+    return !_lower;
 }
 
 seastar_file_trie_writer_output::seastar_file_trie_writer_output(seastar::output_stream<char>& f) : _f(f) {

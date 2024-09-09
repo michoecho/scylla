@@ -114,6 +114,7 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
+    sstables::sstlog.trace("data_consume_rows 0(): beg={} end={}", toread.start, toread.end);
     auto input = sst->data_stream(toread.start, last_end - toread.start,
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history);
     return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end - toread.start);
@@ -126,8 +127,10 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows_2(const schema&
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
-    auto recreator = [sst, p = consumer.permit(), t = consumer.trace_state()] (size_t begin, size_t end) {
-        return sst->data_stream(begin, end,
+    sstables::sstlog.trace("data_consume_rows_2 0(): beg={} end={}", toread.start, toread.end);
+    auto recreator = [sst, p = consumer.permit(), t = consumer.trace_state(), last_end] (size_t begin, size_t end) {
+        sstables::sstlog.trace("data_consume_rows_2(): beg={} end={}", begin, end);
+        return sst->data_stream(begin, last_end - begin,
                 p, t, sst->_partition_range_history);
     };
     return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(recreator), toread.start, toread.end - toread.start);

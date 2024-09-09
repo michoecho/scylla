@@ -353,6 +353,7 @@ public:
             , _compression(*cm)
             , _permit(std::move(permit))
     {
+        sstables::sstlog.trace("compressed_file_data_source_impl(): this={} pos={}, len={}", fmt::ptr(this), pos, len);
         _beg_pos = pos;
         if (pos > _compression_metadata->uncompressed_file_length()) {
             throw std::runtime_error("attempt to uncompress beyond end");
@@ -437,7 +438,9 @@ public:
 
     virtual future<temporary_buffer<char>> skip(uint64_t n) override {
         _pos += n;
-        SCYLLA_ASSERT(_pos <= _end_pos);
+        if (!(_pos <= _end_pos)) {
+            on_internal_error(sstables::sstlog, fmt::format("this={} _pos={}, _end_pos={}", fmt::ptr(this), _pos, _end_pos));
+        }
         if (_pos == _end_pos) {
             return make_ready_future<temporary_buffer<char>>();
         }

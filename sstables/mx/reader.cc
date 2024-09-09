@@ -398,8 +398,8 @@ public:
                                    gc_clock::time_point local_deletion_time,
                                    bool is_deleted) {
         const std::optional<column_id>& column_id = column_info.id;
-        sstlog.trace("mp_row_consumer_m {}: consume_column(id={}, path={}, value={}, ts={}, ttl={}, del_time={}, deleted={})", fmt::ptr(this),
-            column_id, fmt_hex(cell_path), value, timestamp, ttl.count(), local_deletion_time.time_since_epoch().count(), is_deleted);
+        // sstlog.trace("mp_row_consumer_m {}: consume_column(id={}, path={}, value={}, ts={}, ttl={}, del_time={}, deleted={})", fmt::ptr(this),
+            // column_id, fmt_hex(cell_path), value, timestamp, ttl.count(), local_deletion_time.time_since_epoch().count(), is_deleted);
         check_column_missing_in_current_schema(column_info, timestamp);
         if (!column_id) {
             return data_consumer::proceed::yes;
@@ -1297,6 +1297,7 @@ class mx_sstable_mutation_reader : public mp_row_consumer_reader_mx {
     std::unique_ptr<index_reader> _index_reader;
     // We avoid unnecessary lookup for single partition reads thanks to this flag
     bool _single_partition_read = false;
+    uint64_t _partitions_read = 0;
     std::reference_wrapper<const dht::partition_range> _pr;
     streamed_mutation::forwarding _fwd;
     mutation_reader::forwarding _fwd_mr;
@@ -1379,6 +1380,7 @@ private:
                 : get_index_reader().advance_to(dht::ring_position_view::for_after_key(*_current_partition_key))).then([this] {
             _index_in_current_partition = true;
             auto [start, end] = _index_reader->data_file_positions();
+            sstlog.trace("reader {}: advance_to_next_partition: start: {}, end: {}", fmt::ptr(this), start, end);
             if (end && start > *end) {
                 _read_enabled = false;
                 return make_ready_future<>();
@@ -1459,7 +1461,7 @@ private:
         // If next partition exists then on_next_partition will be called
         // and _end_of_stream will be set to false again.
         _end_of_stream = true;
-        if (!_read_enabled) {
+        if (!_read_enabled || (_single_partition_read && _partitions_read)) {
             sstlog.trace("reader {}: eof", fmt::ptr(this));
             return make_ready_future<>();
         }
@@ -1576,7 +1578,7 @@ private:
             sstable::disk_read_range drr{begin, *end};
             auto last_end = _fwd_mr ? _sst->data_size() : drr.end;
             _read_enabled = bool(drr);
-            _context = data_consume_rows_2<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end);
+            _context = data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end);
         }
 
         _monitor.on_read_started(_context->reader_position());
@@ -1624,6 +1626,7 @@ public:
                 auto f1 = _index_reader->advance_to(pr);
                 return f1.then([this] {
                     auto [start, end] = _index_reader->data_file_positions();
+                    sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), start={}, end={}", fmt::ptr(this), start, end);
                     SCYLLA_ASSERT(end);
                     if (start != *end) {
                         _read_enabled = true;
@@ -1742,6 +1745,7 @@ public:
             _current_partition_key.reset();
             return data_consumer::proceed::no;
         } else {
+            _partitions_read += 1;
             sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 3", fmt::ptr(this), key);
             return mp_row_consumer_reader_mx::on_next_partition(std::move(key), tomb);
         }
