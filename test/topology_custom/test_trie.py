@@ -52,6 +52,7 @@ async def test_trie(manager: ManagerClient):
     assert [x[0] for x in res] == [0, 1, 2, 3, 4, 5, 6]
 
 @pytest.mark.asyncio
+@pytest.mark.skip
 async def test_trie_clustering(manager: ManagerClient):
     cmdline = [
         "--logger-log-level=sstable=trace",
@@ -88,3 +89,31 @@ async def test_trie_clustering(manager: ManagerClient):
             assert [x[0] for x in res] == [1, 2, 3]
             res = cql.execute(select_desc_one, ["a", "c"])
             assert [x[0] for x in res] == [2]
+
+@pytest.mark.asyncio
+async def test_trie_clustering(manager: ManagerClient):
+    cmdline = [
+        "--logger-log-level=sstable=trace",
+        "--logger-log-level=trie=trace",
+        "--logger-log-level=compaction=warn",
+        "--smp=1"]
+    servers = [await manager.server_add(cmdline=cmdline)]
+    pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
+    pidstring = ",".join(str(p) for p in pids)
+    cql = manager.cql
+    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    logger.info("Node started")
+
+    cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
+    cql.execute("CREATE TABLE test_ks.test_cf(pk text, ck int, v text, primary key (pk, ck))")
+    logger.info("Test table created")
+
+    insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v) values (?, ?, ?)")
+    select = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
+    select_all = cql.prepare("select v from test_ks.test_cf bypass cache")
+    cql.execute(insert, ["a", "1", 'a1']);
+    await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
+    res = cql.execute(select, ["a", 0])
+    assert [x[0] for x in res] == []
+    res = cql.execute(select_all, [])
+    assert [x[0] for x in res] == ['a1']

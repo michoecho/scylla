@@ -1377,7 +1377,15 @@ private:
         }
         return (_index_in_current_partition
                 ? _index_reader->advance_to_next_partition()
-                : get_index_reader().advance_to(dht::ring_position_view::for_after_key(*_current_partition_key))).then([this] {
+
+    // ASSUMES SKIP DIRECTLY TO *NEXT* PARTITION!!!
+    //
+    /
+                : get_index_reader().advance_to(dht::ring_position_view::for_after_key(*_current_partition_key)))
+        .then([this] {
+            return make_ready_future<>();
+        })
+        .then([this] {
             _index_in_current_partition = true;
             auto [start, end] = _index_reader->data_file_positions();
             sstlog.trace("reader {}: advance_to_next_partition: start: {}, end: {}", fmt::ptr(this), start, end);
@@ -1578,7 +1586,7 @@ private:
             sstable::disk_read_range drr{begin, *end};
             auto last_end = _fwd_mr ? _sst->data_size() : drr.end;
             _read_enabled = bool(drr);
-            _context = data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end);
+            _context = data_consume_rows_2<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end);
         }
 
         _monitor.on_read_started(_context->reader_position());

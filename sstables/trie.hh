@@ -153,22 +153,6 @@ public:
 namespace capnp {
     class MessageBuilder;
 }
-
-class seastar_file_trie_writer_output : public trie_writer_output {
-    size_t _pos = 0;
-    seastar::output_stream<char>& _f;
-    void serialize(const node& x, ::capnp::MessageBuilder& mb) const;
-
-public:
-    seastar_file_trie_writer_output(seastar::output_stream<char>&);
-    size_t serialized_size(const node&, size_t pos) const override;
-    size_t write(const node&, size_t depth) override;
-    size_t page_size() const override;
-    size_t bytes_left_in_page() override;
-    size_t pad_to_page_boundary() override;
-    size_t pos() const override;
-};
-
 class seastar_file_trie_reader_input : public trie_reader_input {
     seastar::file _f;
 public:

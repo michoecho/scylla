@@ -88,8 +88,15 @@ void node::write(trie_writer_output& out) {
             continue;
         }
         node->_output_pos = out.pos();
-        out.write(*node, 0);
+        auto sz = out.write(*node, 0);
+        if (!(static_cast<ssize_t>(sz) == node->_node_size)) {
+            trie_logger.error("diff: {}, ns={}", sz, node->_node_size);
+            abort();
+        }
         stack.pop_back();
+    }
+    if (!(static_cast<ssize_t>(out.pos() - starting_pos) == _branch_size + _node_size)) {
+        trie_logger.error("diff: {}, bs={}, ns={}", out.pos() - starting_pos, _branch_size, _node_size);
     }
     assert(static_cast<ssize_t>(out.pos() - starting_pos) == _branch_size + _node_size);
     _children.clear();
@@ -186,7 +193,10 @@ void trie_writer::impl::lay_out_children(node* x) {
     x->_has_out_of_page_children = true;
     x->_has_out_of_page_descendants = false;
     x->_node_size = _out.serialized_size(*x, _out.pos());
-    assert(x->_node_size <= static_cast<ssize_t>(_out.page_size()));
+    if (!(x->_node_size <= static_cast<ssize_t>(_out.page_size()))) {
+        trie_logger.error("_node_size: {}, page_size: {}", x->_node_size, _out.page_size());
+        assert(x->_node_size <= static_cast<ssize_t>(_out.page_size()));
+    }
 }
 size_t trie_writer::impl::recalc_total_size(node* branch, size_t global_pos) const noexcept {
     return branch->recalc_sizes(_out, global_pos);
@@ -341,6 +351,9 @@ uint64_t trie_index_reader::payload_to_offset(const_bytes p) {
 std::vector<std::byte> trie_index_reader::translate_key(dht::ring_position_view key) {
     auto trie_key = std::vector<std::byte>();
     uint64_t token = seastar::cpu_to_be<uint64_t>(key.token().unbias());
+    if (key.token().is_maximum()) {
+        token = std::numeric_limits<uint64_t>::max();
+    }
     if (auto k = key.key()) {
         auto byte_comparable_form = _s->partition_key_type()->memcmp_comparable_form(*k);
         trie_key.resize(byte_comparable_form.size() + sizeof(token));
@@ -450,7 +463,9 @@ future<> trie_index_reader::advance_to(const dht::partition_range& range) {
     if (const auto e = range.end()) {
         _upper.emplace(_in);
         co_await _upper->init(_root);
-        co_await _upper->set_before(translate_key(e.value().value()));
+        co_await _upper->set_after(translate_key(e.value().value()));
+    } else {
+        _upper.reset();
     }
 }
 future<> trie_index_reader::advance_reverse_to_next_partition() {
@@ -483,64 +498,9 @@ bool trie_index_reader::eof() const {
     return !_lower;
 }
 
-seastar_file_trie_writer_output::seastar_file_trie_writer_output(seastar::output_stream<char>& f) : _f(f) {
-}
-size_t seastar_file_trie_writer_output::serialized_size(const node& x, size_t pos) const {
-    ::capnp::MallocMessageBuilder message;
-    serialize(x, message);
-    return ::capnp::computeSerializedSizeInWords(message) * 8;
-}
-size_t seastar_file_trie_writer_output::write(const node& x, size_t depth) {
-    for (size_t i = 0; i < x._children.size(); ++i) {
-        assert(x._children[i]->_output_pos >= 0);
-    }
-    ::capnp::MallocMessageBuilder message;
-    serialize(x, message);
-    struct out : kj::OutputStream {
-        size_t sz = 0;
-        seastar::output_stream<char>& _f;
-        out(seastar::output_stream<char>& f) : _f(f) {}
-        void write(const void* buffer, size_t size) override {
-            sz += size;
-            _f.write((char*)buffer, size).get();
-        }
-    };
-    auto o = out(_f);
-    ::capnp::writeMessage(o, message);
-    _pos += o.sz;
-    return o.sz;
-}
-size_t seastar_file_trie_writer_output::page_size() const {
-    return 4096;
-}
-size_t seastar_file_trie_writer_output::bytes_left_in_page() {
-    return round_up(_pos + 1, page_size()) - _pos;
-}
-size_t seastar_file_trie_writer_output::pad_to_page_boundary() {
-    size_t pad = bytes_left_in_page();
-    _pos += pad;
-    return pad;
-}
-size_t seastar_file_trie_writer_output::pos() const {
-    return _pos;
-}
-void seastar_file_trie_writer_output::serialize(const node& x, ::capnp::MessageBuilder& mb) const {
-    Node::Builder node = mb.initRoot<Node>();
-    ::capnp::List<Child>::Builder children = node.initChildren(x._children.size());
-    for (size_t i = 0; i < x._children.size(); ++i) {
-        Child::Builder cb = children[i];
-        cb.setOffset(x._children[i]->_output_pos);
-        cb.setTransition(uint8_t(x._children[i]->_transition));
-    }
-    Payload::Builder payload = node.initPayload();
-    payload.setBits(x._payload._payload_bits);
-    auto payload_bytes = x._payload.blob();
-    payload.setBytes({(const kj::byte*)payload_bytes.data(), payload_bytes.size()});
-}
-
 future<reader_node> seastar_file_trie_reader_input::read(uint64_t offset) {
-    constexpr size_t page_size = 4096;
-    auto p = co_await _f.dma_read<char>(offset / page_size, page_size);
+    constexpr size_t page_size = 16*1024;
+    auto p = co_await _f.dma_read<char>(round_down(offset, page_size), page_size);
     capnp::word src[page_size/sizeof(capnp::word)];
     auto off = offset % page_size;
     memcpy(src, p.get() + off, page_size - off);

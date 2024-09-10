@@ -43,17 +43,20 @@ public:
         }
         ::capnp::MallocMessageBuilder message;
         serialize(x, message);
-        size_t sz = ::capnp::computeSerializedSizeInWords(message) * 8;
-        struct out : public kj::OutputStream {
+        auto expected_sz = ::capnp::computeSerializedSizeInWords(message) * 8;
+        struct out : kj::OutputStream {
+            size_t sz = 0;
             file_writer& _w;
-            out(file_writer& w) : _w(w) {}
-            virtual void write(const void* buffer, size_t size) {
-                _w.write((const char*)buffer, size);
+            out(file_writer& f) : _w(f) {}
+            void write(const void* buffer, size_t size) override {
+                sz += size;
+                _w.write((char*)buffer, size);
             }
         };
-        out o(_w);
+        auto o = out(_w);
         ::capnp::writeMessage(o, message);
-        return sz;
+        assert(expected_sz == o.sz);
+        return o.sz;
     }
     virtual size_t page_size() const override {
         return _page_size;

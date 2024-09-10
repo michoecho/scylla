@@ -910,7 +910,7 @@ void writer::init_file_writers() {
     if (_sst._schema->partition_key_type()->has_memcmp_comparable_form()) {
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::TrieIndex).get();
         _trie_index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::TrieIndex));
-        _twofw = std::make_unique<trie_writer_output_file_writer>(*_trie_index_writer, 4096);
+        _twofw = std::make_unique<trie_writer_output_file_writer>(*_trie_index_writer, 16*1024);
         _pitw = std::make_unique<partition_index_trie_writer>(*_twofw);
     }
 }
