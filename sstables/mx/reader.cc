@@ -1377,13 +1377,21 @@ private:
         }
         return (_index_in_current_partition
                 ? _index_reader->advance_to_next_partition()
-
-    // ASSUMES SKIP DIRECTLY TO *NEXT* PARTITION!!!
-    //
-    /
                 : get_index_reader().advance_to(dht::ring_position_view::for_after_key(*_current_partition_key)))
         .then([this] {
-            return make_ready_future<>();
+            auto [start, end] = _index_reader->data_file_positions();
+            if (start > _context->position()) {
+                return make_ready_future<>();
+            } else [[unlikely]] {
+                return seastar::repeat([this] {
+                    auto [start, end] = _index_reader->data_file_positions();
+                    if (start > _context->position() || _index_reader->eof()) {
+                        return make_ready_future<stop_iteration>(stop_iteration::yes);
+                    } else {
+                        return _index_reader->advance_to_next_partition().then([] { return stop_iteration::no; });
+                    }
+                });
+            }
         })
         .then([this] {
             _index_in_current_partition = true;
