@@ -1348,7 +1348,8 @@ future<> sstable::open_or_create_data(open_flags oflags, file_open_options optio
     co_await when_all_succeed(
         open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }),
         open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
-        open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _trie_index_file = std::move(f); })
+        open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _trie_index_file = std::move(f); }),
+        open_file(component_type::Rows, oflags, options).then([this] (file f) { _row_index_file = std::move(f); })
     );
 }
 
@@ -1609,6 +1610,7 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
     _data_file = make_checked_file(_read_error_handler, info.data.to_file());
     _index_file = make_checked_file(_read_error_handler, info.index.to_file());
     _trie_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
+    _row_index_file = make_checked_file(_read_error_handler, info.row_index.to_file());
     co_await init_trie_reader();
     _shards = std::move(info.owners);
     _metadata_size_on_disk = info.metadata_size_on_disk;
@@ -1622,7 +1624,7 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
 
 future<foreign_sstable_open_info> sstable::get_open_info() & {
     return _components.copy().then([this] (auto c) mutable {
-        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(), _trie_index_file.dup(),
+        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(), _trie_index_file.dup(), _row_index_file.dup(),
             _generation, _version, _format, data_size(), _metadata_size_on_disk};
     });
 }

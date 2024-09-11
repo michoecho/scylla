@@ -540,6 +540,9 @@ private:
     std::unique_ptr<file_writer> _trie_index_writer;
     std::unique_ptr<trie_writer_output_file_writer> _twofw; 
     std::unique_ptr<partition_index_trie_writer> _pitw;
+    std::unique_ptr<file_writer> _trie_row_index_writer;
+    std::unique_ptr<trie_writer_output_file_writer> _trwofw; 
+    std::unique_ptr<row_index_trie_writer> _ritw;
     bool _tombstone_written = false;
     bool _static_row_written = false;
     // The length of partition header (partition key, partition deletion and static row, if present)
@@ -548,6 +551,7 @@ private:
     uint64_t _partition_header_length = 0;
     uint64_t _prev_row_start = 0;
     std::optional<key> _partition_key;
+    std::optional<dht::decorated_key> _dk;
     std::optional<key> _first_key, _last_key;
     index_sampling_state _index_sampling_state;
     bytes_ostream _tmp_bufs;
@@ -590,6 +594,7 @@ private:
         uint64_t block_start_offset;
         uint64_t block_next_start_offset;
         std::optional<clustering_info> first_clustering;
+        tombstone tombstone_at_start;
         std::optional<clustering_info> last_clustering;
 
         // for this partition
@@ -839,9 +844,8 @@ writer::~writer() {
         }
     };
     close_writer(_index_writer);
-    if (_trie_index_writer) {
-        close_writer(_trie_index_writer);
-    }
+    close_writer(_trie_index_writer);
+    close_writer(_trie_row_index_writer);
     close_writer(_data_writer);
 }
 
@@ -849,9 +853,31 @@ void writer::maybe_set_pi_first_clustering(const writer::clustering_info& info) 
     uint64_t pos = _data_writer->offset();
     if (!_pi_write_m.first_clustering) {
         _pi_write_m.first_clustering = info;
+        _pi_write_m.tombstone_at_start = _current_tombstone;
         _pi_write_m.block_start_offset = pos;
         _pi_write_m.block_next_start_offset = pos + _pi_write_m.desired_block_size;
     }
+}
+
+std::byte convert_bound_to_byte(bound_kind_m b) {
+    switch (b) {
+    case sstables::bound_kind_m::excl_end: return std::byte(0x20);
+    case sstables::bound_kind_m::incl_start: return std::byte(0x20);
+    case sstables::bound_kind_m::excl_end_incl_start: return std::byte(0x20);
+    case sstables::bound_kind_m::clustering: return std::byte(0x40);
+    case sstables::bound_kind_m::static_clustering: return std::byte(0x40);
+    case sstables::bound_kind_m::excl_start: return std::byte(0x60);
+    case sstables::bound_kind_m::incl_end_excl_start: return std::byte(0x60);
+    case sstables::bound_kind_m::incl_end: return std::byte(0x60);
+    default: abort();
+    }
+}
+
+bytes clustering_info_to_byte_comparable(const schema& s, const clustering_key_prefix& clustering, bound_kind_m kind) {
+    auto first = s.clustering_key_type()->memcmp_comparable_form(clustering);
+    first.resize(first.size() + 1);
+    first[first.size() - 1] = static_cast<bytes::value_type>(convert_bound_to_byte(kind));
+    return first;
 }
 
 void writer::add_pi_block() {
@@ -883,11 +909,12 @@ void writer::add_pi_block() {
     }
 }
 
-void writer::maybe_add_pi_block() {
+    void writer::maybe_add_pi_block() {
     uint64_t pos = _data_writer->offset();
     if (pos >= _pi_write_m.block_next_start_offset) {
         add_pi_block();
         _pi_write_m.first_clustering.reset();
+        _pi_write_m.tombstone_at_start = tombstone();
         _pi_write_m.block_next_start_offset = pos + _pi_write_m.desired_block_size;
     }
 }
@@ -907,11 +934,18 @@ void writer::init_file_writers() {
 
     out = _sst._storage->make_data_or_index_sink(_sst, component_type::Index).get();
     _index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::Index));
+
+    out = _sst._storage->make_data_or_index_sink(_sst, component_type::TrieIndex).get();
+    _trie_index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::TrieIndex));
+    out = _sst._storage->make_data_or_index_sink(_sst, component_type::Rows).get();
+    _trie_row_index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::Rows));
     if (_sst._schema->partition_key_type()->has_memcmp_comparable_form()) {
-        out = _sst._storage->make_data_or_index_sink(_sst, component_type::TrieIndex).get();
-        _trie_index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::TrieIndex));
         _twofw = std::make_unique<trie_writer_output_file_writer>(*_trie_index_writer, 16*1024);
         _pitw = std::make_unique<partition_index_trie_writer>(*_twofw);
+        if (_sst._schema->clustering_key_size() > 0 || _sst._schema->clustering_key_type()->has_memcmp_comparable_form()) {
+            _trwofw = std::make_unique<trie_writer_output_file_writer>(*_trie_row_index_writer, 16*1024);
+            _ritw = std::make_unique<row_index_trie_writer>(*_trwofw);
+        }
     }
 }
 
@@ -937,6 +971,7 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     _prev_row_start = _data_writer->offset();
 
     _partition_key = key::from_partition_key(_schema, dk.key());
+    _dk = dk;
     maybe_add_summary_entry(dk.token(), bytes_view(*_partition_key));
 
     _sst._components->filter->add(bytes_view(*_partition_key));
@@ -955,15 +990,6 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
 
     if (_index_callback) {
         _index_callback(dk, _data_writer->offset());
-    }
-
-    if (_pitw) {
-        auto byte_comparable_form = _sst._schema->partition_key_type()->memcmp_comparable_form(dk.key());
-        uint64_t token = seastar::cpu_to_be<uint64_t>(dk.token().unbias());
-        auto with_token = bytes(sizeof(token) + byte_comparable_form.size(), 0);
-        std::memcpy(with_token.data(), &token, sizeof(token));
-        std::memcpy(with_token.data() + sizeof(token), byte_comparable_form.data(), byte_comparable_form.size());
-        _pitw->add(std::as_bytes(std::span(with_token)), _data_writer->offset());
     }
 
     _pi_write_m.first_entry.reset();
@@ -1402,6 +1428,12 @@ void writer::write_pi_block(const pi_block& block) {
     if (block.open_marker) {
         write(_sst.get_version(), blocks, to_deletion_time(*block.open_marker));
     }
+    if (_ritw) {
+        auto first = clustering_info_to_byte_comparable(*_sst._schema, block.first.clustering, block.first.kind);
+        auto last = clustering_info_to_byte_comparable(*_sst._schema, block.last.clustering, block.last.kind);
+        auto dt = deletion_time{_pi_write_m.tombstone_at_start.deletion_time.time_since_epoch().count(), _pi_write_m.tombstone_at_start.timestamp};
+        _ritw->add(std::as_bytes(std::span(first)), std::as_bytes(std::span(first)), block.offset, dt);
+    }
 }
 
 void writer::write_clustered(const rt_marker& marker, uint64_t prev_row_size) {
@@ -1464,6 +1496,18 @@ stop_iteration writer::consume_end_of_partition() {
 
     write_promoted_index();
 
+    if (_pitw) {
+        if (_ritw) {
+            _ritw->finish();
+        }
+        auto byte_comparable_form = _sst._schema->partition_key_type()->memcmp_comparable_form(_dk->key());
+        uint64_t token = seastar::cpu_to_be<uint64_t>(_dk->token().unbias());
+        auto with_token = bytes(sizeof(token) + byte_comparable_form.size(), 0);
+        std::memcpy(with_token.data(), &token, sizeof(token));
+        std::memcpy(with_token.data() + sizeof(token), byte_comparable_form.data(), byte_comparable_form.size());
+        _pitw->add(std::as_bytes(std::span(with_token)), _data_writer->offset());
+    }
+
     // compute size of the current row.
     _c_stats.partition_size = _data_writer->offset() - _c_stats.start_offset;
 
@@ -1497,8 +1541,13 @@ void writer::consume_end_of_stream() {
         }
         _pitw.reset();
         _twofw.reset();
-        close_writer(_trie_index_writer);
+        if (_ritw) {
+            _trwofw.reset();
+            _ritw.reset();
+        }
     }
+    close_writer(_trie_index_writer);
+    close_writer(_trie_row_index_writer);
     close_writer(_index_writer);
     _sst.set_first_and_last_keys();
 

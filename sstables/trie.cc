@@ -515,7 +515,78 @@ future<reader_node> seastar_file_trie_reader_input::read(uint64_t offset) {
     rn.payload = std::vector(x.begin(), x.end());
     co_return rn;
 }
+
 trie_reader_input::~trie_reader_input() {
 }
+
 seastar_file_trie_reader_input::seastar_file_trie_reader_input(seastar::file f) : _f(f) {
+}
+
+row_index_trie_writer::row_index_trie_writer(trie_writer_output& out) :_out(out) {
+}
+row_index_trie_writer::~row_index_trie_writer() {
+}
+std::span<const std::byte> repr(const TriviallyCopyable auto & x) {
+    return {reinterpret_cast<const std::byte*>(&x), sizeof(x)};
+}
+fmt_hex fmt_hex_cb(const_bytes cb) {
+    return {{reinterpret_cast<const bytes::value_type*>(cb.data()), cb.size()}};
+}
+void row_index_trie_writer::add(
+    const_bytes first_ck,
+    const_bytes last_ck,
+    uint64_t data_file_offset,
+    sstables::deletion_time dt
+) {
+    trie_logger.trace("row_index_trie_writer::add() this={} first_ck={} last_ck={} data_file_offset={} dt={} _last_sep={}, _last_sep_mismatch={}",
+        fmt::ptr(this),
+        fmt_hex_cb(first_ck),
+        fmt_hex_cb(last_ck),
+        data_file_offset,
+        dt,
+        fmt_hex_cb(_last_separator),
+        _last_sep_mismatch
+    );
+    if (_added_blocks > 0) {
+        size_t separator_mismatch = std::ranges::mismatch(first_ck, _last_key).in2 - _last_key.begin();
+        size_t needed_pref = std::min(separator_mismatch + 1, first_ck.size());
+        auto sp = std::span(first_ck).subspan(0, needed_pref);
+
+        size_t mismatch = std::ranges::mismatch(sp, _last_separator).in2 - _last_separator.begin();
+        size_t needed_prefix = std::min(std::max(_last_sep_mismatch, mismatch) + 1, _last_separator.size());
+        auto tail = std::span(_last_separator).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
+
+        std::array<std::byte, 20> payload_bytes;
+        void* p = payload_bytes.data();
+        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.data_file_offset));
+        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.marked_for_delete_at));
+        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.local_deletion_time));
+        assert(p == payload_bytes.data() + payload_bytes.size());
+
+        trie_logger.trace("row_index_trie_writer::add(): _wr.add({}, {}, {})", _last_sep_mismatch, fmt_hex_cb(tail), fmt_hex_cb(payload_bytes));
+        _wr.add(_last_sep_mismatch, tail, payload(1, payload_bytes));
+
+        _last_separator.assign(sp.begin(), sp.end());
+        _last_sep_mismatch = mismatch;
+    }
+    _added_blocks += 1;
+    _last_key.assign(last_ck.begin(), last_ck.end());
+    _last_payload = row_index_payload{.data_file_offset = data_file_offset, .dt = dt};
+}
+ssize_t row_index_trie_writer::finish() {
+    if (_added_blocks > 0) {
+        size_t needed_prefix = std::min(_last_sep_mismatch + 1, _last_separator.size());
+        auto tail = std::span(_last_separator).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
+
+        std::array<std::byte, 20> payload_bytes;
+        void* p = payload_bytes.data();
+        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.data_file_offset));
+        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.marked_for_delete_at));
+        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.local_deletion_time));
+        assert(p == payload_bytes.data() + payload_bytes.size());
+
+        trie_logger.trace("row_index_trie_writer::finish(): _wr.add({}, {}, {})", _last_sep_mismatch, fmt_hex_cb(tail), fmt_hex_cb(payload_bytes));
+        _wr.add(_last_sep_mismatch, tail, payload(1, payload_bytes));
+    }
+    return _wr.finish();
 }

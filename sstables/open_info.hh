@@ -57,6 +57,7 @@ struct foreign_sstable_open_info {
     seastar::file_handle data;
     seastar::file_handle index;
     seastar::file_handle trie_index;
+    seastar::file_handle row_index;
     generation_type generation;
     sstable_version_types version;
     sstable_format_types format;

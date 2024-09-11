@@ -546,6 +546,7 @@ private:
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
     file _trie_index_file;
+    file _row_index_file;
     std::unique_ptr<trie_reader_input> _trie_reader_input;
     uint64_t _trie_root_offset = 0;
     seastar::shared_ptr<cached_file> _cached_index_file;

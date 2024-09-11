@@ -20,7 +20,7 @@ struct trie_writer_output {
 };
 
 struct payload {
-    std::array<std::byte, 19> _payload_buf = {};
+    std::array<std::byte, 20> _payload_buf = {};
     uint8_t _payload_bits = {};
     uint8_t _payload_size = {};
     payload() noexcept;
@@ -73,6 +73,29 @@ private:
     size_t _last_key_mismatch = 0;
     buf _last_key;
     uint64_t _last_payload;
+};
+
+class row_index_trie_writer {
+public:
+    row_index_trie_writer(trie_writer_output&);
+    ~row_index_trie_writer();
+    void add(const_bytes first_ck, const_bytes last_ck, uint64_t data_file_offset, sstables::deletion_time);
+    ssize_t finish();
+    using buf = std::vector<std::byte>;
+
+    struct row_index_payload {
+        uint64_t data_file_offset;
+        sstables::deletion_time dt;
+    };
+
+private:
+    trie_writer_output& _out;
+    trie_writer _wr = {_out};
+    size_t _added_blocks = 0;
+    size_t _last_sep_mismatch = 0;
+    buf _last_separator;
+    buf _last_key;
+    row_index_payload _last_payload;
 };
 
 struct reader_node {

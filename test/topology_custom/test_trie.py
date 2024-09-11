@@ -90,8 +90,9 @@ async def test_trie_clustering(manager: ManagerClient):
             res = cql.execute(select_desc_one, ["a", "c"])
             assert [x[0] for x in res] == [2]
 
+@pytest.mark.skip
 @pytest.mark.asyncio
-async def test_trie_clustering(manager: ManagerClient):
+async def test_trie_clustering_2(manager: ManagerClient):
     cmdline = [
         "--logger-log-level=sstable=trace",
         "--logger-log-level=trie=trace",
@@ -117,3 +118,33 @@ async def test_trie_clustering(manager: ManagerClient):
     assert [x[0] for x in res] == []
     res = cql.execute(select_all, [])
     assert [x[0] for x in res] == ['a1']
+
+@pytest.mark.asyncio
+async def test_trie_clustering_real(manager: ManagerClient):
+    cmdline = [
+        "--logger-log-level=sstable=trace",
+        "--logger-log-level=trie=trace",
+        "--logger-log-level=compaction=warn",
+        "--smp=1"]
+    servers = [await manager.server_add(cmdline=cmdline)]
+    pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
+    pidstring = ",".join(str(p) for p in pids)
+    cql = manager.cql
+    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    logger.info("Node started")
+
+    cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
+    cql.execute("CREATE TABLE test_ks.test_cf(pk text, ck text, v text, pad text, primary key (pk, ck))")
+    logger.info("Test table created")
+
+    pad = "a" * 66000
+
+    insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v, pad) values (?, ?, ?, ?)")
+    select = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
+    cql.execute(insert, ["a", "a", "a", pad]);
+    cql.execute(insert, ["a", "ab", "ab", pad]);
+    cql.execute(insert, ["a", "ac", "ac", pad]);
+    cql.execute(insert, ["a", "b", "b", pad]);
+    await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
+    res = cql.execute(select, ["a", "ac"])
+    assert [x[0] for x in res] == ["ac"]

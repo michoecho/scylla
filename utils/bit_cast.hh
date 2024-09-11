@@ -22,6 +22,7 @@ To read_unaligned(const void* src) {
 }
 
 template <TriviallyCopyable From>
-void write_unaligned(void* dst, const From& src) {
+void* write_unaligned(void* dst, const From& src) {
     std::memcpy(dst, &src, sizeof(From));
+    return (void*)((char*)(dst) + sizeof(From));
 }
