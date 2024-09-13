@@ -1333,6 +1333,7 @@ future<file> sstable::open_file(component_type type, open_flags flags, file_open
 future<> sstable::init_trie_reader() {
     sstlog.debug("init_trie_reader()");
     _trie_reader_input = std::make_unique<seastar_file_trie_reader_input>(_trie_index_file);
+    _trie_reader_row_input = std::make_unique<seastar_file_trie_reader_input>(_row_index_file);
     sstlog.debug("init_trie_reader(): stat");
     auto st = co_await _trie_index_file.stat();
     sstlog.debug("init_trie_reader(): stat result: {}", st.st_size);

@@ -380,6 +380,9 @@ public:
     trie_reader_input& get_trie_reader_input() {
         return *_trie_reader_input.get();
     }
+    trie_reader_input& get_trie_reader_row_input() {
+        return *_trie_reader_row_input.get();
+    }
     uint64_t trie_root_offset() {
         return _trie_root_offset;
     }
@@ -548,6 +551,7 @@ private:
     file _trie_index_file;
     file _row_index_file;
     std::unique_ptr<trie_reader_input> _trie_reader_input;
+    std::unique_ptr<trie_reader_input> _trie_reader_row_input;
     uint64_t _trie_root_offset = 0;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;

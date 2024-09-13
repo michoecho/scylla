@@ -62,7 +62,7 @@ class partition_index_trie_writer {
 public:
     partition_index_trie_writer(trie_writer_output&);
     ~partition_index_trie_writer();
-    void add(const_bytes key, uint64_t data_file_offset);
+    void add(const_bytes key, int64_t data_file_offset);
     ssize_t finish();
     using buf = std::vector<std::byte>;
 
@@ -72,7 +72,7 @@ private:
     size_t _added_keys = 0;
     size_t _last_key_mismatch = 0;
     buf _last_key;
-    uint64_t _last_payload;
+    int64_t _last_payload;
 };
 
 class row_index_trie_writer {
@@ -107,9 +107,17 @@ struct reader_node {
     std::vector<std::byte> payload;
 };
 
+struct row_index_header {
+    sstables::key partition_key = bytes();
+    uint64_t trie_root;
+    uint64_t data_offset;
+    tombstone partition_tombstone;
+};
+
 struct trie_reader_input {
     virtual ~trie_reader_input();
     virtual future<reader_node> read(uint64_t offset) = 0;
+    virtual future<row_index_header> read_row_index_header(uint64_t offset, reader_permit) = 0;
 };
 
 struct node_cursor {
@@ -135,20 +143,50 @@ public:
     future<set_result> step();
     const_bytes payload() const;
     bool eof() const;
+    bool initialized() const;
+    void reset();
+};
+
+int64_t payload_to_offset(const_bytes p);
+
+class index_cursor {
+    trie_cursor _partition_cursor;
+    trie_cursor _row_cursor;
+    std::optional<row_index_header> _partition_metadata;
+public:
+    index_cursor(trie_reader_input& par, trie_reader_input& row);
+    index_cursor& operator=(const index_cursor&) = default;
+    future<> init(uint64_t root_offset);
+    uint64_t data_file_pos(uint64_t file_size) const;
+    const row_index_header& partition_metadata() const;
+    future<> set_before_partition(const_bytes prefix);
+    future<> set_after_partition(const_bytes prefix);
+    future<> next_partition();
+    future<> set_before_row(const_bytes prefix);
 };
 
 class trie_index_reader : public sstables::index_reader {
     std::optional<trie_cursor> _lower;
+    std::optional<trie_cursor> _lower_row;
     std::optional<trie_cursor> _upper;
+    std::optional<trie_cursor> _upper_row;
     trie_reader_input& _in;
+    [[maybe_unused]]
+    trie_reader_input& _in_row;
     uint64_t _root;
     uint64_t _total_file_size;
     schema_ptr _s;
+    reader_permit _permit;
+    uint64_t _lower_offset;
+    uint64_t _upper_offset;
+    std::optional<row_index_header> _lower_header;
+    std::optional<row_index_header> _upper_header;
 
-    static uint64_t payload_to_offset(const_bytes p);
+    future<row_index_header> read_row_index_header(uint64_t);
+    future<> refresh_offsets();
     std::vector<std::byte> translate_key(dht::ring_position_view key);
 public:
-    trie_index_reader(trie_reader_input& in, uint64_t root_offset, uint64_t total_file_size, schema_ptr s);
+    trie_index_reader(trie_reader_input& in, trie_reader_input& in_row, uint64_t root_offset, uint64_t total_file_size, schema_ptr s, reader_permit);
     virtual future<> close() noexcept override;
     virtual sstables::data_file_positions_range data_file_positions() const override;
     virtual future<std::optional<uint64_t>> last_block_offset() override;
@@ -181,4 +219,5 @@ class seastar_file_trie_reader_input : public trie_reader_input {
 public:
     seastar_file_trie_reader_input(seastar::file);
     future<reader_node> read(uint64_t offset) override;
+    future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override;
 };

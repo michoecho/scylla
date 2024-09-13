@@ -300,8 +300,31 @@ public:
     bool has_memcmp_comparable_form() {
         return _types.size() == 1 && (_types.front() == bytes_type || _types.front() == utf8_type || _types.front() == long_type || _types.front() == ascii_type);
     }
-    bytes memcmp_comparable_form(managed_bytes_view v) {
-        return std::move(deserialize_value(v)[0]);
+    void memcmp_comparable_form(managed_bytes_view v, std::vector<std::byte>& out) {
+        for (const managed_bytes_view comp : components(v)) {
+            out.push_back(std::byte(0x40));
+            auto lin = linearized(comp);
+            for (size_t i = 0; i < lin.size(); ++i) {
+                if (lin[i] != 0) {
+                    out.push_back(std::byte(lin[i]));
+                } else {
+                    out.push_back(std::byte(0));
+                    ++i;
+                    while (true) {
+                        if (i == lin.size()) {
+                            out.push_back(std::byte(0xfe));
+                            break;
+                        } else if (lin[i] == 0) {
+                            out.push_back(std::byte(0xfe));
+                            ++i;
+                        } else {
+                            out.push_back(std::byte(0xff));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 };
 

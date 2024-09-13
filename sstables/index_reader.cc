@@ -701,9 +701,11 @@ make_index_reader(
         sstlog.debug("Using trie index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());
         return std::make_unique<trie_index_reader>(
             sst->get_trie_reader_input(),
+            sst->get_trie_reader_row_input(),
             sst->trie_root_offset(),
             sst->data_size(),
-            sst->get_schema()
+            sst->get_schema(),
+            std::move(permit)
         );
     }
     sstlog.debug("Using normal index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());

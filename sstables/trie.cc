@@ -5,6 +5,7 @@
 #include <capnp/message.h>
 #include <capnp/serialize-packed.h>
 #include "node.capnp.h"
+#include "seastar/util/closeable.hh"
 
 static seastar::logger trie_logger("trie");
 
@@ -17,6 +18,10 @@ inline constexpr size_t round_up(size_t a, size_t factor) {
 
 static constexpr bool implies(bool a, bool b) {
     return !a || b;
+}
+
+fmt_hex fmt_hex_cb(const_bytes cb) {
+    return {{reinterpret_cast<const bytes::value_type*>(cb.data()), cb.size()}};
 }
 
 payload::payload() noexcept {
@@ -247,11 +252,12 @@ partition_index_trie_writer::partition_index_trie_writer(trie_writer_output& out
 partition_index_trie_writer::~partition_index_trie_writer() {
 }
 
-void partition_index_trie_writer::add(const_bytes key, uint64_t offset) {
+void partition_index_trie_writer::add(const_bytes key, int64_t offset) {
+    trie_logger.trace("partition_index_trie_writer::add({}, ...)", fmt_hex_cb(key));
     if (_added_keys > 0) {
         size_t mismatch = std::ranges::mismatch(key, _last_key).in2 - _last_key.begin();
         size_t needed_prefix = std::min(std::max(_last_key_mismatch, mismatch) + 1, _last_key.size());
-        auto payload_bytes = std::bit_cast<std::array<std::byte, sizeof(_last_payload)>>(seastar::cpu_to_le(_last_payload));
+        auto payload_bytes = std::bit_cast<std::array<std::byte, sizeof(_last_payload)>>(seastar::cpu_to_be(_last_payload));
         auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
         _wr.add(_last_key_mismatch, tail, payload(1, payload_bytes));
         _last_key_mismatch = mismatch;
@@ -276,11 +282,12 @@ trie_cursor::trie_cursor(trie_reader_input& in)
 }
 
 future<void> trie_cursor::init(uint64_t root_offset) {
+    reset();
     _path.push_back({co_await _in.get().read(root_offset), -1});
 }
 
 future<set_result> trie_cursor::set_before(const_bytes key) {
-    assert(_path.size() > 0);
+    assert(initialized());
     assert(_path.back().child_idx == -1);
     _path.resize(1);
     _path.back().child_idx = -1;
@@ -307,7 +314,7 @@ future<set_result> trie_cursor::set_before(const_bytes key) {
 }
 
 future<set_result> trie_cursor::set_after(const_bytes key) {
-    assert(_path.size() > 0);
+    assert(initialized());
     auto res = co_await set_before(key);
     if (res == set_result::match) {
         co_return co_await step();
@@ -316,7 +323,7 @@ future<set_result> trie_cursor::set_after(const_bytes key) {
 }
 
 future<set_result> trie_cursor::step() {
-    assert(_path.size() > 0);
+    assert(initialized() && !eof());
     _path.back().child_idx += 1;
     while (size_t(_path.back().child_idx) == _path.back().node.children.size()) {
         if (_path.size() == 1) {
@@ -335,42 +342,79 @@ future<set_result> trie_cursor::step() {
 }
 
 const_bytes trie_cursor::payload() const {
-    assert(_path.size() > 0);
+    assert(initialized());
     assert(_path.back().child_idx == -1);
     return _path.back().node.payload;
 }
 
 bool trie_cursor::eof() const {
+    assert(initialized());
     return size_t(_path.begin()->child_idx) == _path.begin()->node.children.size();
 }
 
-uint64_t trie_index_reader::payload_to_offset(const_bytes p) {
-    assert(p.size() == sizeof(uint64_t));
-    return seastar::le_to_cpu(read_unaligned<uint64_t>(p.data()));
+bool trie_cursor::initialized() const {
+    return !_path.empty();
+}
+
+void trie_cursor::reset() {
+    _path.clear();
+}
+
+index_cursor::index_cursor(trie_reader_input& par, trie_reader_input& row)
+    : _partition_cursor(par)
+    , _row_cursor(row)
+{}
+
+future<> index_cursor::init(uint64_t root_offset) {
+    _row_cursor.reset();
+    _partition_metadata.reset();
+    return _partition_cursor.init(root_offset);
+}
+
+uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
+    assert(_partition_cursor.initialized());
+    if (_partition_metadata) {
+        return _partition_metadata->data_offset;
+    }
+    if (!_partition_cursor.eof()) {
+        auto res = payload_to_offset(_partition_cursor.payload());
+        assert(res >= 0);
+        return res;
+    }
+    return file_size;
+}
+
+int64_t payload_to_offset(const_bytes p) {
+    assert(p.size() == sizeof(int64_t));
+    return seastar::le_to_cpu(read_unaligned<int64_t>(p.data()));
+}
+future<row_index_header> trie_index_reader::read_row_index_header(uint64_t pos) {
+    auto hdr = co_await _in_row.read_row_index_header(pos, _permit);
+    trie_logger.trace("trie_index_reader::payload_to_offset this={} pos={} result={}", fmt::ptr(this), pos, hdr.data_offset);
+    co_return hdr;
 }
 std::vector<std::byte> trie_index_reader::translate_key(dht::ring_position_view key) {
     auto trie_key = std::vector<std::byte>();
-    uint64_t token = seastar::cpu_to_be<uint64_t>(key.token().unbias());
-    if (key.token().is_maximum()) {
-        token = std::numeric_limits<uint64_t>::max();
-    }
+    trie_key.push_back(std::byte(0x40));
+    auto token = key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : key.token().unbias();
+    append_to_vector(trie_key, object_representation(seastar::cpu_to_be<uint64_t>(token)));
     if (auto k = key.key()) {
-        auto byte_comparable_form = _s->partition_key_type()->memcmp_comparable_form(*k);
-        trie_key.resize(byte_comparable_form.size() + sizeof(token));
-        std::memcpy(trie_key.data(), &token, sizeof(token));
-        std::memcpy(trie_key.data() + sizeof(token), byte_comparable_form.data(), byte_comparable_form.size());
-    } else {
-        trie_key.resize(sizeof(token));
-        std::memcpy(trie_key.data(), &token, sizeof(token));
+        _s->partition_key_type()->memcmp_comparable_form(*k, trie_key);
     }
+    std::byte ending;
+    if (key.weight() < 0) {
+        ending = std::byte(0x20);
+    } else if (key.weight() == 0) {
+        ending = std::byte(0x38);
+    } else {
+        ending = std::byte(0x60);
+    }
+    trie_key.push_back(ending);
     return trie_key;
 }
 sstables::data_file_positions_range trie_index_reader::data_file_positions() const {
-    trie_logger.debug("trie_index_reader::data_file_positions this={}", fmt::ptr(this));
-    auto lo = _lower && !_lower->eof() ? payload_to_offset(_lower->payload()) : _total_file_size;
-    auto hi = _upper && !_upper->eof() ? payload_to_offset(_upper->payload()) : _total_file_size;
-    trie_logger.debug("trie_index_reader::data_file_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
-    return {lo, hi};
+    trie_logger.debug("trie_index_reader::data_file_positions this={} result=({}, {})", fmt::ptr(this), _lower_offset, _upper_offset);
+    return {_lower_offset, _upper_offset};
 }
 future<std::optional<uint64_t>> trie_index_reader::last_block_offset() {
     trie_logger.debug("trie_index_reader::last_block_offset this={}", fmt::ptr(this));
@@ -380,8 +424,15 @@ future<> trie_index_reader::close() noexcept {
     trie_logger.debug("trie_index_reader::close this={}", fmt::ptr(this));
     return make_ready_future<>();
 }
-trie_index_reader::trie_index_reader(trie_reader_input& in, uint64_t root_offset, uint64_t total_file_size, schema_ptr s)
-    : _in(in), _root(root_offset), _total_file_size(total_file_size), _s(s) {
+trie_index_reader::trie_index_reader(
+    trie_reader_input& in,
+    trie_reader_input& row_in,
+    uint64_t root_offset,
+    uint64_t total_file_size,
+    schema_ptr s,
+    reader_permit rp
+)
+    : _in(in), _in_row(row_in), _root(root_offset), _total_file_size(total_file_size), _s(s), _permit(std::move(rp)) {
     trie_logger.debug("trie_index_reader::constructor: this={} root_offset={} total_file_size={} table={}.{}",
         fmt::ptr(this), root_offset, total_file_size, _s->ks_name(), _s->cf_name());
 }
@@ -403,6 +454,7 @@ future<bool> trie_index_reader::advance_lower_and_check_if_present(dht::ring_pos
             }
         }
     }
+    co_await refresh_offsets();
     co_return true;
 }
 future<> trie_index_reader::advance_to_next_partition() {
@@ -411,6 +463,7 @@ future<> trie_index_reader::advance_to_next_partition() {
     if (res == set_result::eof) {
         _lower.reset();
     }
+    co_await refresh_offsets();
     co_return;
 }
 sstables::indexable_element trie_index_reader::element_kind() const {
@@ -420,6 +473,7 @@ sstables::indexable_element trie_index_reader::element_kind() const {
 future<> trie_index_reader::advance_to(dht::ring_position_view pos) {
     trie_logger.debug("trie_index_reader::advance_to(partition) this={} pos={}", fmt::ptr(this), pos);
     co_await _lower->set_before(translate_key(pos));
+    co_await refresh_offsets();
 }
 future<> trie_index_reader::advance_to(position_in_partition_view pos) {
     trie_logger.debug("trie_index_reader::advance_to(row) this={} pos={}", fmt::ptr(this), pos);
@@ -449,6 +503,32 @@ future<> trie_index_reader::read_partition_data() {
     trie_logger.debug("trie_index_reader::read_partition_data this={}", fmt::ptr(this));
     return make_ready_future<>();
 }
+future<> trie_index_reader::refresh_offsets() {
+    _lower_offset = _total_file_size;
+    _upper_offset = _total_file_size;
+    _lower_header.reset();
+    _upper_header.reset();
+    _lower_row.reset();
+    _upper_row.reset();
+    if (_lower && !_lower->eof()) {
+        auto off = payload_to_offset(_lower->payload());
+        if (off >= 0) {
+            _lower_offset = off;
+        } else {
+            _lower_header = co_await read_row_index_header(-off);
+            _lower_offset = _lower_header->data_offset;
+        }
+    }
+    if (_upper && !_upper->eof()) {
+        auto off = payload_to_offset(_upper->payload());
+        if (off >= 0) {
+            _upper_offset = off;
+        } else {
+            _upper_header = co_await read_row_index_header(-off);
+            _upper_offset = _upper_header->data_offset;
+        }
+    }
+}
 future<> trie_index_reader::advance_to(const dht::partition_range& range) {
     trie_logger.debug("trie_index_reader::advance_to(range) this={} range={}", fmt::ptr(this), range);
     if (const auto s = range.start()) {
@@ -467,6 +547,7 @@ future<> trie_index_reader::advance_to(const dht::partition_range& range) {
     } else {
         _upper.reset();
     }
+    co_await refresh_offsets();
 }
 future<> trie_index_reader::advance_reverse_to_next_partition() {
     trie_logger.debug("trie_index_reader::advance_reverse_to_next_partition() this={}", fmt::ptr(this));
@@ -485,9 +566,8 @@ sstables::clustered_index_cursor* trie_index_reader::current_clustered_cursor() 
     abort();
 }
 uint64_t trie_index_reader::get_data_file_position() {
-    auto retval = payload_to_offset(_lower->payload());
-    trie_logger.debug("trie_index_reader::current_clustered_cursor() this={} result={}", fmt::ptr(this), retval);
-    return retval;
+    trie_logger.debug("trie_index_reader::current_clustered_cursor() this={} result={}", fmt::ptr(this), _lower_offset);
+    return _lower_offset;
 }
 uint64_t trie_index_reader::get_promoted_index_size() {
     trie_logger.debug("trie_index_reader::get_promoted_index_size() this={}", fmt::ptr(this));
@@ -516,6 +596,126 @@ future<reader_node> seastar_file_trie_reader_input::read(uint64_t offset) {
     co_return rn;
 }
 
+enum class blabla_state {
+    START,
+    KEY_SIZE,
+    KEY_BYTES,
+    POSITION,
+    ROOT_OFFSET,
+    LOCAL_DELETION_TIME,
+    MARKED_FOR_DELETE_AT,
+    END,
+};
+
+inline std::string_view format_as(blabla_state s) {
+    using enum blabla_state;
+    switch (s) {
+    case START: return "START";
+    case KEY_SIZE: return "KEY_SIZE";
+    case KEY_BYTES: return "KEY_BYTES";
+    case POSITION: return "POSITION";
+    case ROOT_OFFSET: return "ROOT_OFFSET";
+    case LOCAL_DELETION_TIME: return "LOCAL_DELETION_TIME";
+    case MARKED_FOR_DELETE_AT: return "MARKED_FOR_DELETE_AT";
+    case END: return "END";
+    default: abort();
+    }
+}
+
+struct blabla_context : public data_consumer::continuous_data_consumer<blabla_context> {
+    using processing_result = data_consumer::processing_result;
+    using proceed = data_consumer::proceed;
+    using state = blabla_state;
+    state _state = state::START;
+    row_index_header _result;
+    uint64_t _position_offset;
+    temporary_buffer<char> _key;
+    void verify_end_state() {
+        if (_state != state::END) {
+            throw sstables::malformed_sstable_exception(fmt::format("blabla_context: {}", _state));
+        }
+    }
+    bool non_consuming() const {
+        return ((_state == state::END) || (_state == state::START));
+    }
+    processing_result process_state(temporary_buffer<char>& data) {
+        auto current_pos = [&] { return this->position() - data.size(); };
+
+        switch (_state) {
+        // START comes first, to make the handling of the 0-quantity case simpler
+        case state::START:
+            trie_logger.trace("{}: pos {} state {} - data.size()={}", fmt::ptr(this), current_pos(), state::START, data.size());
+            _state = state::KEY_SIZE;
+            break;
+        case state::KEY_SIZE:
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::KEY_SIZE);
+            if (this->read_16(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::KEY_BYTES;
+                break;
+            }
+            [[fallthrough]];
+        case state::KEY_BYTES:
+            trie_logger.trace("{}: pos {} state {} - size={}", fmt::ptr(this), current_pos(), state::KEY_BYTES, this->_u16);
+            if (this->read_bytes_contiguous(data, this->_u16, _key) != continuous_data_consumer::read_status::ready) {
+                _state = state::POSITION;
+                break;
+            }
+            [[fallthrough]];
+        case state::POSITION:
+            _result.partition_key = sstables::key(to_bytes(to_bytes_view(_key)));
+            _position_offset = current_pos();
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::POSITION);
+            if (read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::ROOT_OFFSET;
+                break;
+            }
+            [[fallthrough]];
+        case state::ROOT_OFFSET:
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::ROOT_OFFSET);
+            _result.data_offset = this->_u64;
+            if (read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::LOCAL_DELETION_TIME;
+                break;
+            }
+            [[fallthrough]];
+        case state::LOCAL_DELETION_TIME: {
+            _result.trie_root = _position_offset - this->_u64;
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
+            if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::MARKED_FOR_DELETE_AT;
+                break;
+            }
+        }
+            [[fallthrough]];
+        case state::MARKED_FOR_DELETE_AT:
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
+            _result.partition_tombstone.deletion_time = gc_clock::time_point(gc_clock::duration(this->_u32));
+            if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::END;
+                break;
+            }
+            [[fallthrough]];
+        case state::END: {
+            _state = blabla_state::END;
+            _result.partition_tombstone.timestamp = this->_u64;
+        }
+        }
+        trie_logger.trace("{}: exit pos {} state {}", fmt::ptr(this), current_pos(), _state);
+        return _state == state::END ? proceed::no : proceed::yes;
+    }
+public:
+    blabla_context(reader_permit rp, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
+        : continuous_data_consumer(std::move(rp), std::move(input), start, maxlen)
+    {}
+};
+
+future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(uint64_t offset, reader_permit rp) {
+    auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f, offset), offset, co_await _f.size() - offset);
+    auto close = deferred_close(ctx);
+    co_await ctx.consume_input();
+    co_return std::move(ctx._result);
+}
+
 trie_reader_input::~trie_reader_input() {
 }
 
@@ -526,12 +726,7 @@ row_index_trie_writer::row_index_trie_writer(trie_writer_output& out) :_out(out)
 }
 row_index_trie_writer::~row_index_trie_writer() {
 }
-std::span<const std::byte> repr(const TriviallyCopyable auto & x) {
-    return {reinterpret_cast<const std::byte*>(&x), sizeof(x)};
-}
-fmt_hex fmt_hex_cb(const_bytes cb) {
-    return {{reinterpret_cast<const bytes::value_type*>(cb.data()), cb.size()}};
-}
+
 void row_index_trie_writer::add(
     const_bytes first_ck,
     const_bytes last_ck,

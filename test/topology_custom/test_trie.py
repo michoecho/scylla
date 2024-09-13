@@ -141,10 +141,11 @@ async def test_trie_clustering_real(manager: ManagerClient):
 
     insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v, pad) values (?, ?, ?, ?)")
     select = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
-    cql.execute(insert, ["a", "a", "a", pad]);
-    cql.execute(insert, ["a", "ab", "ab", pad]);
-    cql.execute(insert, ["a", "ac", "ac", pad]);
-    cql.execute(insert, ["a", "b", "b", pad]);
+    for pk in ["a", "b", "c"]:
+        cql.execute(insert, [pk, "a", "a", pad])
+        cql.execute(insert, [pk, "ab", "ab", pad])
+        cql.execute(insert, [pk, "ac", "ac", pad])
+        cql.execute(insert, [pk, "b", "b", pad])
     await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
-    res = cql.execute(select, ["a", "ac"])
+    res = cql.execute(select, ["b", "ac"])
     assert [x[0] for x in res] == ["ac"]

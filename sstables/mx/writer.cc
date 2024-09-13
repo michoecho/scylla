@@ -11,10 +11,8 @@
 #include "encoding_stats.hh"
 #include "schema/schema.hh"
 #include "mutation/mutation_fragment.hh"
-#include "vint-serialization.hh"
 #include "sstables/types.hh"
 #include "sstables/mx/types.hh"
-#include "db/config.hh"
 #include "mutation/atomic_cell.hh"
 #include "utils/assert.hh"
 #include "utils/exceptions.hh"
@@ -538,9 +536,9 @@ private:
     std::unique_ptr<file_writer> _data_writer;
     std::unique_ptr<file_writer> _index_writer;
     std::unique_ptr<file_writer> _trie_index_writer;
+    std::unique_ptr<file_writer> _trie_row_index_writer;
     std::unique_ptr<trie_writer_output_file_writer> _twofw; 
     std::unique_ptr<partition_index_trie_writer> _pitw;
-    std::unique_ptr<file_writer> _trie_row_index_writer;
     std::unique_ptr<trie_writer_output_file_writer> _trwofw; 
     std::unique_ptr<row_index_trie_writer> _ritw;
     bool _tombstone_written = false;
@@ -552,6 +550,7 @@ private:
     uint64_t _prev_row_start = 0;
     std::optional<key> _partition_key;
     std::optional<dht::decorated_key> _dk;
+    uint64_t _cur_par_offset = 0;
     std::optional<key> _first_key, _last_key;
     index_sampling_state _index_sampling_state;
     bytes_ostream _tmp_bufs;
@@ -873,10 +872,10 @@ std::byte convert_bound_to_byte(bound_kind_m b) {
     }
 }
 
-bytes clustering_info_to_byte_comparable(const schema& s, const clustering_key_prefix& clustering, bound_kind_m kind) {
-    auto first = s.clustering_key_type()->memcmp_comparable_form(clustering);
-    first.resize(first.size() + 1);
-    first[first.size() - 1] = static_cast<bytes::value_type>(convert_bound_to_byte(kind));
+std::vector<std::byte> clustering_info_to_byte_comparable(const schema& s, const clustering_key_prefix& clustering, bound_kind_m kind) {
+    std::vector<std::byte> first;
+    s.clustering_key_type()->memcmp_comparable_form(clustering, first);
+    first.push_back(convert_bound_to_byte(kind));
     return first;
 }
 
@@ -991,6 +990,8 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     if (_index_callback) {
         _index_callback(dk, _data_writer->offset());
     }
+
+    _cur_par_offset = _data_writer->offset();
 
     _pi_write_m.first_entry.reset();
     _pi_write_m.blocks.clear();
@@ -1484,6 +1485,16 @@ stop_iteration writer::consume(range_tombstone_change&& rtc) {
     return stop_iteration::no;
 }
 
+static std::vector<std::byte> decorated_key_byte_comparable(const schema& s, const dht::decorated_key& dk) {
+    std::vector<std::byte> res;
+    res.push_back(std::byte(0x40));
+    append_to_vector(res, object_representation(seastar::cpu_to_be<uint64_t>(dk.token().unbias())));
+    assert(res.size() == 9);
+    s.partition_key_type()->memcmp_comparable_form(dk.key(), res);
+    res.push_back(std::byte(0x38));
+    return res;
+}
+
 stop_iteration writer::consume_end_of_partition() {
     ensure_tombstone_is_written();
     ensure_static_row_is_written_if_needed();
@@ -1497,15 +1508,24 @@ stop_iteration writer::consume_end_of_partition() {
     write_promoted_index();
 
     if (_pitw) {
+        int64_t pitw_payload = _cur_par_offset;
         if (_ritw) {
-            _ritw->finish();
+            if (auto root = _ritw->finish(); root >= 0) {
+                auto pos = _trie_row_index_writer->offset();
+                sstlog.trace("consume_end_of_partition: key: {}", _trie_row_index_writer->offset());
+                write(_sst.get_version(), *_trie_row_index_writer, disk_string_view<uint16_t>(bytes_view(key::from_partition_key(_schema, _dk->key()))));
+                sstlog.trace("consume_end_of_partition: pos: {} {}", _trie_row_index_writer->offset(), _cur_par_offset);
+                write_vint(*_trie_row_index_writer, _cur_par_offset);
+                sstlog.trace("consume_end_of_partition: root_offset: {} {}", _trie_row_index_writer->offset(), pos - root);
+                write_vint(*_trie_row_index_writer, pos - root);
+                sstlog.trace("consume_end_of_partition: deletime: {}", _trie_row_index_writer->offset());
+                write(_sst.get_version(), *_trie_row_index_writer, to_deletion_time(_pi_write_m.tomb));
+                pitw_payload = -pos;
+                sstlog.trace("consume_end_of_partition: payload={}", pitw_payload);
+                _ritw = std::make_unique<row_index_trie_writer>(*_trwofw);
+            }
         }
-        auto byte_comparable_form = _sst._schema->partition_key_type()->memcmp_comparable_form(_dk->key());
-        uint64_t token = seastar::cpu_to_be<uint64_t>(_dk->token().unbias());
-        auto with_token = bytes(sizeof(token) + byte_comparable_form.size(), 0);
-        std::memcpy(with_token.data(), &token, sizeof(token));
-        std::memcpy(with_token.data() + sizeof(token), byte_comparable_form.data(), byte_comparable_form.size());
-        _pitw->add(std::as_bytes(std::span(with_token)), _data_writer->offset());
+        _pitw->add(decorated_key_byte_comparable(*_sst._schema, *_dk), pitw_payload);
     }
 
     // compute size of the current row.
