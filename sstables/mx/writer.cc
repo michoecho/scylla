@@ -908,7 +908,7 @@ void writer::add_pi_block() {
     }
 }
 
-    void writer::maybe_add_pi_block() {
+void writer::maybe_add_pi_block() {
     uint64_t pos = _data_writer->offset();
     if (pos >= _pi_write_m.block_next_start_offset) {
         add_pi_block();
@@ -1511,20 +1511,21 @@ stop_iteration writer::consume_end_of_partition() {
         int64_t pitw_payload = _cur_par_offset;
         if (_ritw) {
             if (auto root = _ritw->finish(); root >= 0) {
-                auto pos = _trie_row_index_writer->offset();
+                auto pos_key = _trie_row_index_writer->offset();
                 sstlog.trace("consume_end_of_partition: key: {}", _trie_row_index_writer->offset());
                 write(_sst.get_version(), *_trie_row_index_writer, disk_string_view<uint16_t>(bytes_view(key::from_partition_key(_schema, _dk->key()))));
+                auto pos_datapos = _trie_row_index_writer->offset();
                 sstlog.trace("consume_end_of_partition: pos: {} {}", _trie_row_index_writer->offset(), _cur_par_offset);
                 write_vint(*_trie_row_index_writer, _cur_par_offset);
-                sstlog.trace("consume_end_of_partition: root_offset: {} {}", _trie_row_index_writer->offset(), pos - root);
-                write_vint(*_trie_row_index_writer, pos - root);
+                sstlog.trace("consume_end_of_partition: root_offset: {} {}", _trie_row_index_writer->offset(), pos_datapos - root);
+                write_vint(*_trie_row_index_writer, pos_datapos - root);
                 sstlog.trace("consume_end_of_partition: deletime: {}", _trie_row_index_writer->offset());
                 write(_sst.get_version(), *_trie_row_index_writer, to_deletion_time(_pi_write_m.tomb));
-                pitw_payload = -pos;
-                sstlog.trace("consume_end_of_partition: payload={}", pitw_payload);
+                pitw_payload = -pos_key;
                 _ritw = std::make_unique<row_index_trie_writer>(*_trwofw);
             }
         }
+        sstlog.trace("consume_end_of_partition: payload={}", pitw_payload);
         _pitw->add(decorated_key_byte_comparable(*_sst._schema, *_dk), pitw_payload);
     }
 

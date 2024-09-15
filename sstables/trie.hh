@@ -141,6 +141,7 @@ public:
     future<set_result> set_before(const_bytes key);
     future<set_result> set_after(const_bytes key);
     future<set_result> step();
+    future<set_result> step_back();
     const_bytes payload() const;
     bool eof() const;
     bool initialized() const;
@@ -152,39 +153,39 @@ int64_t payload_to_offset(const_bytes p);
 class index_cursor {
     trie_cursor _partition_cursor;
     trie_cursor _row_cursor;
+    std::reference_wrapper<trie_reader_input> _in_row;
+    reader_permit _permit;
     std::optional<row_index_header> _partition_metadata;
+    future<> maybe_read_metadata();
 public:
-    index_cursor(trie_reader_input& par, trie_reader_input& row);
+    index_cursor(trie_reader_input& par, trie_reader_input& row, reader_permit);
     index_cursor& operator=(const index_cursor&) = default;
     future<> init(uint64_t root_offset);
     uint64_t data_file_pos(uint64_t file_size) const;
-    const row_index_header& partition_metadata() const;
-    future<> set_before_partition(const_bytes prefix);
-    future<> set_after_partition(const_bytes prefix);
-    future<> next_partition();
-    future<> set_before_row(const_bytes prefix);
+    tombstone open_tombstone() const;
+    const std::optional<row_index_header>& partition_metadata() const;
+    future<set_result> set_before_partition(const_bytes);
+    future<set_result> set_after_partition(const_bytes);
+    future<set_result> next_partition();
+    future<set_result> set_before_row(const_bytes);
+    future<set_result> set_after_row(const_bytes);
+    bool row_cursor_set() const;
 };
 
 class trie_index_reader : public sstables::index_reader {
-    std::optional<trie_cursor> _lower;
-    std::optional<trie_cursor> _lower_row;
-    std::optional<trie_cursor> _upper;
-    std::optional<trie_cursor> _upper_row;
     trie_reader_input& _in;
-    [[maybe_unused]]
     trie_reader_input& _in_row;
-    uint64_t _root;
-    uint64_t _total_file_size;
     schema_ptr _s;
     reader_permit _permit;
-    uint64_t _lower_offset;
-    uint64_t _upper_offset;
-    std::optional<row_index_header> _lower_header;
-    std::optional<row_index_header> _upper_header;
+    index_cursor _lower;
+    index_cursor _upper;
+    uint64_t _root;
+    uint64_t _total_file_size;
+    bool _initialized = false;
 
     future<row_index_header> read_row_index_header(uint64_t);
-    future<> refresh_offsets();
     std::vector<std::byte> translate_key(dht::ring_position_view key);
+    future<> maybe_init();
 public:
     trie_index_reader(trie_reader_input& in, trie_reader_input& in_row, uint64_t root_offset, uint64_t total_file_size, schema_ptr s, reader_permit);
     virtual future<> close() noexcept override;

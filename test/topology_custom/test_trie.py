@@ -27,8 +27,7 @@ async def test_trie(manager: ManagerClient):
         "--logger-log-level=compaction=warn",
         "--smp=1"]
     servers = [await manager.server_add(cmdline=cmdline)]
-    cql = manager.cql
-    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    cql, hosts = await manager.get_ready_cql(servers)
     logger.info("Node started")
 
     cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
@@ -62,8 +61,7 @@ async def test_trie_clustering(manager: ManagerClient):
     servers = [await manager.server_add(cmdline=cmdline)]
     pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
     pidstring = ",".join(str(p) for p in pids)
-    cql = manager.cql
-    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    cql, hosts = await manager.get_ready_cql(servers)
     logger.info("Node started")
 
     cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
@@ -99,10 +97,7 @@ async def test_trie_clustering_2(manager: ManagerClient):
         "--logger-log-level=compaction=warn",
         "--smp=1"]
     servers = [await manager.server_add(cmdline=cmdline)]
-    pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
-    pidstring = ",".join(str(p) for p in pids)
-    cql = manager.cql
-    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    cql, hosts = await manager.get_ready_cql(servers)
     logger.info("Node started")
 
     cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
@@ -127,10 +122,7 @@ async def test_trie_clustering_real(manager: ManagerClient):
         "--logger-log-level=compaction=warn",
         "--smp=1"]
     servers = [await manager.server_add(cmdline=cmdline)]
-    pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
-    pidstring = ",".join(str(p) for p in pids)
-    cql = manager.cql
-    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    cql, hosts = await manager.get_ready_cql(servers)
     logger.info("Node started")
 
     cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
@@ -149,3 +141,38 @@ async def test_trie_clustering_real(manager: ManagerClient):
     await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
     res = cql.execute(select, ["b", "ac"])
     assert [x[0] for x in res] == ["ac"]
+
+#@pytest.mark.asyncio
+#async def test_trie_token_range(manager: ManagerClient):
+#    cmdline = [
+#        "--logger-log-level=sstable=trace",
+#        "--logger-log-level=trie=trace",
+#        "--logger-log-level=compaction=warn",
+#        "--num-tokens=1",
+#        "--initial-token=-9223372036854775807",
+#        "--smp=1"]
+#    servers = [await manager.server_add(cmdline=cmdline)]
+#    cql, hosts = await manager.get_ready_cql(servers)
+#    logger.info("Node started")
+#
+#    cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
+#    cql.execute("CREATE TABLE test_ks.test_cf(pk text, primary key (pk))")
+#    logger.info("Test table created")
+#
+#    insert = cql.prepare("insert into test_ks.test_cf(pk) values (?)")
+#    pks = ["a", "b", "c", "d", "e"]
+#    for pk in pks:
+#        cql.execute(insert, [pk])
+#    await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
+#    res = cql.execute("SELECT token(pk) from test_ks.test_cf BYPASS CACHE")
+#    tokens = [x[0] for x in res]
+#    assert len(pks) == len(tokens)
+#    assert tokens == sorted(tokens)
+#
+#    sele = cql.prepare("select token(pk) from test_ks.test_cf where token(pk) > ? and token(pk) < ? bypass cache")
+#    res = cql.execute(sele, [tokens[1], tokens[3]])
+#    assert [x[0] for x in res] == tokens[2:3]
+#
+#    sele = cql.prepare("select token(pk) from test_ks.test_cf where token(pk) >= ? and token(pk) <= ? bypass cache")
+#    res = cql.execute(sele, [tokens[1], tokens[3]])
+#    assert [x[0] for x in res] == tokens[1:4]
