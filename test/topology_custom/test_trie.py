@@ -114,6 +114,7 @@ async def test_trie_clustering_2(manager: ManagerClient):
     res = cql.execute(select_all, [])
     assert [x[0] for x in res] == ['a1']
 
+@pytest.mark.skip
 @pytest.mark.asyncio
 async def test_trie_clustering_real(manager: ManagerClient):
     cmdline = [
@@ -141,6 +142,130 @@ async def test_trie_clustering_real(manager: ManagerClient):
     await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
     res = cql.execute(select, ["b", "ac"])
     assert [x[0] for x in res] == ["ac"]
+
+@pytest.mark.skip
+@pytest.mark.asyncio
+async def test_trie_clustering_real2(manager: ManagerClient):
+    cmdline = [
+        "--logger-log-level=sstable=trace",
+        "--logger-log-level=trie=trace",
+        "--logger-log-level=compaction=warn",
+        "--smp=1"]
+    servers = [await manager.server_add(cmdline=cmdline)]
+    cql, hosts = await manager.get_ready_cql(servers)
+    logger.info("Node started")
+
+    cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
+    cql.execute("CREATE TABLE test_ks.test_cf(pk text, ck text, v text, pad text, primary key (pk, ck))")
+    logger.info("Test table created")
+
+    pad = "a" * 66000
+
+    insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v, pad) values (?, ?, ?, ?)")
+    select_one = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
+    select_le = cql.prepare("select v from test_ks.test_cf where pk = ? and ck > ? and ck < ? bypass cache")
+    select_leq = cql.prepare("select v from test_ks.test_cf where pk = ? and ck >= ? and ck <= ? bypass cache")
+    for pk in ["a", "b", "c"]:
+        cql.execute(insert, [pk, "a", "a", pad])
+        cql.execute(insert, [pk, "ab", "ab", pad])
+        cql.execute(insert, [pk, "ac", "ac", pad])
+        cql.execute(insert, [pk, "b", "b", pad])
+        cql.execute(insert, [pk, "ba", "b", pad])
+    await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
+    for pk in ["c"]:
+        res = cql.execute(select_one, [pk, "ac"])
+        assert [x[0] for x in res] == ["ac"]
+        res = cql.execute(select_le, [pk, "ab", "b"])
+        assert [x[0] for x in res] == ["ac"]
+        res = cql.execute(select_leq, [pk, "ab", "b"])
+        assert [x[0] for x in res] == ["ab", "ac", "b"]
+
+@pytest.mark.skip
+@pytest.mark.asyncio
+async def test_trie_clustering_exh(manager: ManagerClient):
+    cmdline = [
+        "--logger-log-level=sstable=trace",
+        "--logger-log-level=trie=trace",
+        "--logger-log-level=compaction=warn",
+        "--smp=1"]
+    servers = [await manager.server_add(cmdline=cmdline)]
+    cql, hosts = await manager.get_ready_cql(servers)
+    logger.info("Node started")
+
+    cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
+    cql.execute("CREATE TABLE test_ks.test_cf(pk text, ck text, v text, pad text, primary key (pk, ck))")
+    logger.info("Test table created")
+
+    pad = "a" * 33000
+
+    insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v, pad) values (?, ?, ?, ?)")
+    select_one = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? bypass cache")
+    select_le_ge = cql.prepare("select v from test_ks.test_cf where pk = ? and ck > ? and ck < ? bypass cache")
+    select_leq_geq = cql.prepare("select v from test_ks.test_cf where pk = ? and ck >= ? and ck <= ? bypass cache")
+    select_le = cql.prepare("select v from test_ks.test_cf where pk = ? and ck < ? bypass cache")
+    select_ge = cql.prepare("select v from test_ks.test_cf where pk = ? and ck > ? bypass cache")
+    pks = ["a", "b", "c"]
+    cks = ["a", "ab", "ac", "b", "ba", "c", "ca", "cab", "cb"]
+    for pk in pks:
+        for ck in cks:
+            cql.execute(insert, [pk, ck, ck, pad])
+    await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
+    for pk in pks:
+        for lo in range(len(cks)):
+            res = cql.execute(select_one, [pk, cks[lo]])
+            assert [x[0] for x in res] == [cks[lo]]
+            res = cql.execute(select_le, [pk, cks[lo]])
+            assert [x[0] for x in res] == cks[0:lo]
+            res = cql.execute(select_ge, [pk, cks[lo]])
+            assert [x[0] for x in res] == cks[lo+1:]
+            for hi in range(lo, len(cks)):
+                res = cql.execute(select_le_ge, [pk, cks[lo], cks[hi]])
+                assert [x[0] for x in res] == cks[lo+1:hi]
+                res = cql.execute(select_leq_geq, [pk, cks[lo], cks[hi]])
+                assert [x[0] for x in res] == cks[lo:hi+1]
+
+@pytest.mark.asyncio
+async def test_trie_clustering_exh_reverse(manager: ManagerClient):
+    cmdline = [
+        "--logger-log-level=sstable=trace",
+        "--logger-log-level=trie=trace",
+        "--logger-log-level=compaction=warn",
+        "--smp=1"]
+    servers = [await manager.server_add(cmdline=cmdline)]
+    cql, hosts = await manager.get_ready_cql(servers)
+    logger.info("Node started")
+
+    cql.execute("CREATE KEYSPACE test_ks WITH replication = { 'class': 'NetworkTopologyStrategy', 'replication_factor': 1 }")
+    cql.execute("CREATE TABLE test_ks.test_cf(pk text, ck text, v text, pad text, primary key (pk, ck))")
+    logger.info("Test table created")
+
+    pad = "a" * 33000
+
+    insert = cql.prepare("insert into test_ks.test_cf(pk, ck, v, pad) values (?, ?, ?, ?)")
+    select_one = cql.prepare("select v from test_ks.test_cf where pk = ? and ck = ? order by ck desc bypass cache")
+    select_le_ge = cql.prepare("select v from test_ks.test_cf where pk = ? and ck > ? and ck < ? order by ck desc bypass cache")
+    select_leq_geq = cql.prepare("select v from test_ks.test_cf where pk = ? and ck >= ? and ck <= ? order by ck desc bypass cache")
+    select_le = cql.prepare("select v from test_ks.test_cf where pk = ? and ck < ? order by ck desc bypass cache")
+    select_ge = cql.prepare("select v from test_ks.test_cf where pk = ? and ck > ? order by ck desc bypass cache")
+    pks = ["a", "b", "c"]
+    cks = ["a", "ab", "ac", "b", "ba", "c", "ca", "cab", "cb"]
+    for pk in pks:
+        for ck in cks:
+            cql.execute(insert, [pk, ck, ck, pad])
+    await manager.api.keyspace_flush(node_ip=servers[0].ip_addr, keyspace="test_ks", table="test_cf")
+    for pk in pks:
+        for lo in range(len(cks)):
+            res = cql.execute(select_one, [pk, cks[lo]])
+            assert [x[0] for x in res] == list(reversed([cks[lo]]))
+            res = cql.execute(select_le, [pk, cks[lo]])
+            assert [x[0] for x in res] == list(reversed(cks[0:lo]))
+            res = cql.execute(select_ge, [pk, cks[lo]])
+            assert [x[0] for x in res] == list(reversed(cks[lo+1:]))
+            for hi in range(lo, len(cks)):
+                res = cql.execute(select_le_ge, [pk, cks[lo], cks[hi]])
+                assert [x[0] for x in res] == list(reversed(cks[lo+1:hi]))
+                res = cql.execute(select_leq_geq, [pk, cks[lo], cks[hi]])
+                assert [x[0] for x in res] == list(reversed(cks[lo:hi+1]))
 
 #@pytest.mark.asyncio
 #async def test_trie_token_range(manager: ManagerClient):

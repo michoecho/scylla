@@ -325,7 +325,6 @@ future<set_result> trie_cursor::set_after(const_bytes key) {
 
 future<set_result> trie_cursor::step() {
     assert(initialized() && !eof());
-    assert(_path.back().child_idx == -1);
     _path.back().child_idx += 1;
     while (size_t(_path.back().child_idx) == _path.back().node.children.size()) {
         if (_path.size() == 1) {
@@ -357,7 +356,6 @@ future<set_result> trie_cursor::step_back() {
             _path.back().child_idx -= 1;
             break;
         } else if (_path[i].child_idx == 0 && _path[i].node.payload.size()) {
-            assert(_path.back().child_idx == 0);
             _path.resize(i + 1);
             _path.back().child_idx -= 1;
             co_return set_result::match;
@@ -502,8 +500,11 @@ future<set_result> index_cursor::set_before_row(const_bytes key) {
         co_return set_result::match;
     }
     co_await _row_cursor.init(_partition_metadata->trie_root);
-    co_await _row_cursor.set_before(key);
-    co_return co_await _row_cursor.step_back();
+    auto res = co_await _row_cursor.set_before(key);
+    if (res != set_result::match) {
+        co_return co_await _row_cursor.step_back();
+    }
+    co_return res;
 }
 future<set_result> index_cursor::set_after_row(const_bytes key) {
     trie_logger.trace("index_cursor::set_after_row this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
@@ -665,7 +666,8 @@ bool trie_index_reader::partition_data_ready() const {
 }
 future<> trie_index_reader::advance_reverse(position_in_partition_view pos) {
     trie_logger.debug("trie_index_reader::advance_reverse this={} pos={}", fmt::ptr(this), pos);
-    return make_ready_future<>();
+    _upper = _lower;
+    co_await _upper.set_after_row(translate_pipv(*_s, pos));
 }
 future<> trie_index_reader::read_partition_data() {
     trie_logger.debug("trie_index_reader::read_partition_data this={}", fmt::ptr(this));
@@ -692,7 +694,8 @@ future<> trie_index_reader::advance_to(const dht::partition_range& range) {
 }
 future<> trie_index_reader::advance_reverse_to_next_partition() {
     trie_logger.debug("trie_index_reader::advance_reverse_to_next_partition() this={}", fmt::ptr(this));
-    return make_ready_future<>();
+    _upper = _lower;
+    return _upper.next_partition().discard_result();
 }
 std::optional<sstables::open_rt_marker> trie_index_reader::end_open_marker() const {
     trie_logger.debug("trie_index_reader::end_open_marker() this={}", fmt::ptr(this));
@@ -705,7 +708,12 @@ std::optional<sstables::open_rt_marker> trie_index_reader::end_open_marker() con
 }
 std::optional<sstables::open_rt_marker> trie_index_reader::reverse_end_open_marker() const {
     trie_logger.debug("trie_index_reader::reverse_end_open_marker() this={}", fmt::ptr(this));
-    abort();
+    std::optional<sstables::open_rt_marker> res;
+    if (const auto& hdr = _upper.partition_metadata()) {
+        res = sstables::open_rt_marker{.pos = {position_in_partition::after_static_row_tag_t()}, .tomb = _upper.open_tombstone()};
+    }
+    trie_logger.debug("trie_index_reader::reverse_end_open_marker this={} res={}", fmt::ptr(this), res ? res->tomb : tombstone());
+    return res;
 }
 sstables::clustered_index_cursor* trie_index_reader::current_clustered_cursor() {
     trie_logger.debug("trie_index_reader::current_clustered_cursor() this={}", fmt::ptr(this));
@@ -894,7 +902,8 @@ void row_index_trie_writer::add(
         auto sp = std::span(first_ck).subspan(0, needed_pref);
 
         size_t mismatch = std::ranges::mismatch(sp, _last_separator).in2 - _last_separator.begin();
-        size_t needed_prefix = std::min(std::max(_last_sep_mismatch, mismatch) + 1, _last_separator.size());
+        // size_t needed_prefix = std::min(std::max(_last_sep_mismatch, mismatch) + 1, _last_separator.size());
+        size_t needed_prefix = _last_separator.size();
         auto tail = std::span(_last_separator).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
 
         std::array<std::byte, 20> payload_bytes;

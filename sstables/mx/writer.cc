@@ -1433,7 +1433,7 @@ void writer::write_pi_block(const pi_block& block) {
         auto first = clustering_info_to_byte_comparable(*_sst._schema, block.first.clustering, block.first.kind);
         auto last = clustering_info_to_byte_comparable(*_sst._schema, block.last.clustering, block.last.kind);
         auto dt = deletion_time{_pi_write_m.tombstone_at_start.deletion_time.time_since_epoch().count(), _pi_write_m.tombstone_at_start.timestamp};
-        _ritw->add(std::as_bytes(std::span(first)), std::as_bytes(std::span(first)), block.offset, dt);
+        _ritw->add(std::as_bytes(std::span(first)), std::as_bytes(std::span(last)), block.offset, dt);
     }
 }
 
