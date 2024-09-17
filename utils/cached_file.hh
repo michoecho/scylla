@@ -24,6 +24,8 @@
 
 using namespace seastar;
 
+extern seastar::logger cached_file_logger;
+
 /// \brief A read-through cache of a file.
 ///
 /// Caches contents with page granularity (4 KiB).
@@ -257,7 +259,7 @@ public:
         auto offset = global_pos % page_size;
         auto page_idx = global_pos / page_size;
         return get_page_ptr(page_idx, 1, trace_state).then([offset, permit = std::move(permit)] (auto ptr) mutable {
-            return page_view(offset, page_size - offset, std::move(ptr), permit.consume_memory(page_size));
+            return page_view(offset, ptr->get_view().size() - offset, std::move(ptr), permit.consume_memory(page_size));
         });
     }
 
@@ -530,6 +532,7 @@ public:
     virtual std::unique_ptr<seastar::file_handle_impl> dup() override { return get_file_impl(_cf.get_file())->dup(); }
 
     virtual future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t size, io_intent* intent) override {
+        cached_file_logger.trace("cached_file_impl::dma_read_bulk: offset={} size={} total={}", offset, size, _cf.size());
         return do_with(_cf.read(offset, std::nullopt, _trace_state, size), size, temporary_buffer<uint8_t>(),
                 [this, size] (cached_file::stream& s, size_t& size_left, temporary_buffer<uint8_t>& result) {
             if (size_left == 0) {

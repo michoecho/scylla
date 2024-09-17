@@ -615,7 +615,7 @@ future<file> s3_storage::open_component(const sstable& sst, component_type type,
 }
 
 future<data_sink> s3_storage::make_data_or_index_sink(sstable& sst, component_type type) {
-    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index);
+    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index || type == component_type::TrieIndex || type == component_type::Rows);
     // FIXME: if we have file size upper bound upfront, it's better to use make_upload_sink() instead
     co_return _client->make_upload_jumbo_sink(make_s3_object_name(sst, type));
 }

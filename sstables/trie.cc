@@ -281,7 +281,7 @@ ssize_t partition_index_trie_writer::finish() {
 payload_result reader_node::payload() const {
     auto p = raw_bytes.get_view();
     auto tail = p.subspan(payload_offset);
-    trie_logger.trace("(reader_node::payload: bits={} offset={} result={})", payload_bits, payload_offset, fmt_hex_cb(tail.subspan(std::min<int>(20, tail.size()))));;
+    trie_logger.trace("(reader_node::payload: bits={} offset={} result={})", payload_bits, payload_offset, fmt_hex_cb(tail.subspan(0, std::min<int>(20, tail.size()))));;
     return {payload_bits, raw_bytes.get_view().subspan(payload_offset)};
 }
 
@@ -922,7 +922,8 @@ public:
 };
 
 future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(uint64_t offset, reader_permit rp) {
-    auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f_file, offset), offset, _f.size() - offset);
+    trie_logger.trace("seastar_file_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
+    auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f_file, offset, _f.size() - offset), offset, _f.size() - offset);
     auto close = deferred_close(ctx);
     co_await ctx.consume_input();
     co_return std::move(ctx._result);
@@ -1005,3 +1006,5 @@ ssize_t row_index_trie_writer::finish() {
     }
     return _wr.finish();
 }
+
+seastar::logger cached_file_logger("cached_file");
