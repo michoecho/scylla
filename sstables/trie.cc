@@ -31,6 +31,7 @@ payload::payload(uint8_t payload_bits, const_bytes payload) noexcept {
     assert(payload_bits < 16);
     _payload_bits = payload_bits;
     _payload_size = payload.size();
+    assert(bool(_payload_size) == bool(_payload_bits));
     std::ranges::copy(payload, _payload_buf.data());
 }
 const_bytes payload::blob() const noexcept {
@@ -277,6 +278,66 @@ ssize_t partition_index_trie_writer::finish() {
     return _wr.finish();
 }
 
+payload_result reader_node::payload() const {
+    auto p = raw_bytes.get_view();
+    auto tail = p.subspan(payload_offset);
+    trie_logger.trace("(reader_node::payload: bits={} offset={} result={})", payload_bits, payload_offset, fmt_hex_cb(tail.subspan(std::min<int>(20, tail.size()))));;
+    return {payload_bits, raw_bytes.get_view().subspan(payload_offset)};
+}
+
+auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> auto& f) {
+    capnp::word src[cached_file::page_size/sizeof(capnp::word)];
+    assert(sizeof(src) > p.size());
+    memcpy(src, p.data(), p.size());
+    ::capnp::FlatArrayMessageReader message({std::data(src), std::size(src)});
+    Node::Reader node = message.getRoot<Node>();
+    return f(node, src);
+}
+
+constinit const static node_parser capnp_node_parser {
+    .lookup = [] (const_bytes p, std::byte transition) -> node_parser::lookup_result {
+        return with_deser(p, [transition] (const Node::Reader& node, void*) {
+            std::vector<std::byte> children;
+            for (const auto& x : node.getChildren()) {
+                children.emplace_back(std::byte(x.getTransition()));
+            }
+            auto idx = std::ranges::lower_bound(children, transition) - children.begin();
+            return node_parser::lookup_result{
+                .idx = idx,
+                .byte = children[idx],
+                .offset = node.getChildren()[idx].getOffset(),
+            };
+        });
+    },
+    .get_child = [] (const_bytes p, int idx) -> node_parser::lookup_result {
+        return with_deser(p, [idx] (const Node::Reader& node, void*) -> node_parser::lookup_result {
+            return node_parser::lookup_result{
+                .idx = idx,
+                .byte = std::byte(node.getChildren()[idx].getTransition()),
+                .offset = node.getChildren()[idx].getOffset(),
+            };
+        });
+    },
+};
+
+// reader_node::reader_node(cached_file::page_view pv) {
+//     _raw_bytes = std::move(pv);
+//     _parser = &capnp_node_parser;
+//     with_deser(_raw_bytes.get_view(), [this] (const Node::Reader& node) {
+//         _payload_bits = node.getPayload().getBits();
+//         _payload_offset = reinterpret_cast<const std::byte*>(node.getPayload().getBytes().begin()) - _raw_bytes.get_view().data();
+//         _n_children = node.getChildren().size();
+//     });
+// }
+
+node_parser::lookup_result reader_node::lookup(std::byte transition) {
+    return parser->lookup(raw_bytes.get_view(), transition);
+}
+
+node_parser::lookup_result reader_node::get_child(int idx) {
+    return parser->get_child(raw_bytes.get_view(), idx);
+}
+
 trie_cursor::trie_cursor(trie_reader_input& in)
     : _in(in)
 {
@@ -294,20 +355,20 @@ future<set_result> trie_cursor::set_before(const_bytes key) {
     _path.back().child_idx = -1;
     size_t i = 0;
     while (i < key.size()) {
-        if (!_path[i].node.children.size()) {
+        if (!_path[i].node.n_children) {
             break;
         }
-        auto it = std::ranges::lower_bound(_path[i].node.children, key[i], std::less(), &reader_node::child::transition);
-        _path[i].child_idx = it - _path[i].node.children.begin();
-        if (size_t(_path[i].child_idx) == _path[i].node.children.size()
-            || _path.back().node.children[_path.back().child_idx].transition != key[i]) {
+        auto it = _path[i].node.lookup(key[i]);
+        _path[i].child_idx = it.idx;
+        if (size_t(_path[i].child_idx) == _path[i].node.n_children
+            || it.byte != key[i]) {
             _path[i].child_idx -= 1;
             co_return co_await step();
         }
-        _path.push_back({co_await _in.get().read(_path.back().node.children[_path.back().child_idx].offset), -1});
+        _path.push_back({co_await _in.get().read(it.offset), -1});
         i += 1;
     }
-    if (_path.back().node.payload.size()) {
+    if (_path.back().node.payload_bits) {
         co_return set_result::match;
     } else {
         co_return co_await step();
@@ -326,18 +387,18 @@ future<set_result> trie_cursor::set_after(const_bytes key) {
 future<set_result> trie_cursor::step() {
     assert(initialized() && !eof());
     _path.back().child_idx += 1;
-    while (size_t(_path.back().child_idx) == _path.back().node.children.size()) {
+    while (size_t(_path.back().child_idx) == _path.back().node.n_children) {
         if (_path.size() == 1) {
             co_return set_result::eof;
         }
         _path.pop_back();
         _path.back().child_idx += 1;
     }
-    _path.push_back({co_await _in.get().read(_path.back().node.children[_path.back().child_idx].offset), -1});
-    while (!_path.back().node.payload.size()) {
+    _path.push_back({co_await _in.get().read(_path.back().node.get_child(_path.back().child_idx).offset), -1});
+    while (!_path.back().node.payload_bits) {
         _path.back().child_idx += 1;
-        assert(_path.back().child_idx < int(_path.back().node.children.size()));
-        _path.push_back({co_await _in.get().read(_path.back().node.children[_path.back().child_idx].offset), -1});
+        assert(_path.back().child_idx < int(_path.back().node.n_children));
+        _path.push_back({co_await _in.get().read(_path.back().node.get_child(_path.back().child_idx).offset), -1});
     }
     co_return set_result::no_match;
 }
@@ -355,7 +416,7 @@ future<set_result> trie_cursor::step_back() {
             _path.resize(i + 1);
             _path.back().child_idx -= 1;
             break;
-        } else if (_path[i].child_idx == 0 && _path[i].node.payload.size()) {
+        } else if (_path[i].child_idx == 0 && _path[i].node.payload_bits) {
             _path.resize(i + 1);
             _path.back().child_idx -= 1;
             co_return set_result::match;
@@ -367,25 +428,25 @@ future<set_result> trie_cursor::step_back() {
             continue;
         }
     }
-    _path.push_back({co_await _in.get().read(_path.back().node.children[_path.back().child_idx].offset), -1});
-    while (_path.back().node.children.size()) {
-        _path.back().child_idx = _path.back().node.children.size() - 1;
-        _path.push_back({co_await _in.get().read(_path.back().node.children[_path.back().child_idx].offset), -1});
+    _path.push_back({co_await _in.get().read(_path.back().node.get_child(_path.back().child_idx).offset), -1});
+    while (_path.back().node.n_children) {
+        _path.back().child_idx = _path.back().node.n_children - 1;
+        _path.push_back({co_await _in.get().read(_path.back().node.get_child(_path.back().child_idx).offset), -1});
     }
     assert(_path.back().child_idx == -1);
-    assert(_path.back().node.payload.size());
+    assert(_path.back().node.payload_bits);
     co_return set_result::match;
 }
 
-const_bytes trie_cursor::payload() const {
+payload_result trie_cursor::payload() const {
     assert(initialized());
     assert(_path.back().child_idx == -1);
-    return _path.back().node.payload;
+    return _path.back().node.payload();
 }
 
 bool trie_cursor::eof() const {
     assert(initialized());
-    return size_t(_path.begin()->child_idx) == _path.begin()->node.children.size();
+    return size_t(_path.begin()->child_idx) == _path.begin()->node.n_children;
 }
 
 bool trie_cursor::initialized() const {
@@ -424,13 +485,13 @@ uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
             return _partition_metadata->data_offset;
         }
         const auto p = _row_cursor.payload();
-        assert(p.size() >= 8);
-        auto res = _partition_metadata->data_offset + seastar::le_to_cpu(read_unaligned<uint64_t>(p.data()));
+        assert(p.bytes.size() >= 8);
+        auto res = _partition_metadata->data_offset + seastar::le_to_cpu(read_unaligned<uint64_t>(p.bytes.data()));
         trie_logger.trace("index_cursor::data_file_pos this={} from row cursor: {}", fmt::ptr(this), res);
         return res;
     }
     if (!_partition_cursor.eof()) {
-        auto res = payload_to_offset(_partition_cursor.payload());
+        auto res = payload_to_offset(_partition_cursor.payload().bytes);
         assert(res >= 0);
         trie_logger.trace("index_cursor::data_file_pos this={} from partition cursor: {}", fmt::ptr(this), res);
         return res;
@@ -449,9 +510,9 @@ tombstone index_cursor::open_tombstone() const {
         return res;
     } else {
         const auto p = _row_cursor.payload();
-        assert(p.size() >= 20);
-        auto marked = seastar::le_to_cpu(read_unaligned<uint64_t>(p.data() + 8));
-        auto deletion_time = seastar::le_to_cpu(read_unaligned<int32_t>(p.data() + 16));
+        assert(p.bytes.size() >= 20);
+        auto marked = seastar::le_to_cpu(read_unaligned<uint64_t>(p.bytes.data() + 8));
+        auto deletion_time = seastar::le_to_cpu(read_unaligned<int32_t>(p.bytes.data() + 16));
         auto res = tombstone(marked, gc_clock::time_point(gc_clock::duration(deletion_time)));
         trie_logger.trace("index_cursor::open_tombstone this={} from payload: {}", fmt::ptr(this), res);
         return res;
@@ -466,7 +527,7 @@ future<> index_cursor::maybe_read_metadata() {
     if (_partition_cursor.eof()) {
         co_return;
     }
-    if (auto res = payload_to_offset(_partition_cursor.payload()); res < 0) {
+    if (auto res = payload_to_offset(_partition_cursor.payload().bytes); res < 0) {
         _partition_metadata = co_await _in_row.get().read_row_index_header(-res, _permit);
     }
 }
@@ -520,11 +581,11 @@ future<set_result> index_cursor::set_after_row(const_bytes key) {
 }
 
 int64_t payload_to_offset(const_bytes p) {
-    assert(p.size() == sizeof(int64_t));
+    assert(p.size() >= sizeof(int64_t));
     return seastar::be_to_cpu(read_unaligned<int64_t>(p.data()));
 }
 future<row_index_header> trie_index_reader::read_row_index_header(uint64_t pos) {
-    auto hdr = co_await _in_row.read_row_index_header(pos, _permit);
+    auto hdr = co_await _in_row->read_row_index_header(pos, _permit);
     trie_logger.trace("trie_index_reader::read_row_index_header this={} pos={} result={}", fmt::ptr(this), pos, hdr.data_offset);
     co_return hdr;
 }
@@ -563,19 +624,19 @@ future<> trie_index_reader::close() noexcept {
     return make_ready_future<>();
 }
 trie_index_reader::trie_index_reader(
-    trie_reader_input& in,
-    trie_reader_input& row_in,
+    std::unique_ptr<trie_reader_input> in,
+    std::unique_ptr<trie_reader_input> row_in,
     uint64_t root_offset,
     uint64_t total_file_size,
     schema_ptr s,
     reader_permit rp
 )
-    : _in(in)
-    , _in_row(row_in)
+    : _in(std::move(in))
+    , _in_row(std::move(row_in))
     , _s(s)
     , _permit(std::move(rp))
-    , _lower(_in, _in_row, _permit)
-    , _upper(_in, _in_row, _permit)
+    , _lower(*_in, *_in_row, _permit)
+    , _upper(*_in, *_in_row, _permit)
     , _root(root_offset)
     , _total_file_size(total_file_size)
 {
@@ -733,21 +794,18 @@ bool trie_index_reader::eof() const {
 
 future<reader_node> seastar_file_trie_reader_input::read(uint64_t offset) {
     trie_logger.trace("seastar_file_trie_reader_input::read(): reading at {}", offset);
-    constexpr size_t page_size = 16*1024;
-    auto p = co_await _f.dma_read<char>(round_down(offset, page_size), page_size);
-    capnp::word src[page_size/sizeof(capnp::word)];
-    auto off = offset % page_size;
-    memcpy(src, p.get() + off, page_size - off);
-    ::capnp::FlatArrayMessageReader message({std::data(src), std::size(src)});
-    Node::Reader node = message.getRoot<Node>();
-    std::vector<reader_node::child> children;
-    reader_node rn;
-    for (const auto& x : node.getChildren()) {
-        rn.children.emplace_back(reader_node::child{std::byte(x.getTransition()), x.getOffset()});
-    }
-    auto x = std::as_bytes(std::span(node.getPayload().getBytes().asBytes()));
-    rn.payload = std::vector(x.begin(), x.end());
-    co_return rn;
+    return _f.get_page_view(offset, _permit, nullptr).then([] (cached_file::page_view pv) -> reader_node {
+        return with_deser(pv.get_view(), [pv = std::move(pv)] (const Node::Reader& node, void* b) -> reader_node {
+            auto payload_offset = reinterpret_cast<const std::byte*>(node.getPayload().getBytes().begin()) - reinterpret_cast<const std::byte*>(b);
+            return reader_node {
+                .raw_bytes = std::move(pv),
+                .parser = &capnp_node_parser,
+                .payload_offset = payload_offset,
+                .n_children = node.getChildren().size(),
+                .payload_bits = node.getPayload().getBits(),
+            };
+        });
+    });
 }
 
 enum class blabla_state {
@@ -864,7 +922,7 @@ public:
 };
 
 future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(uint64_t offset, reader_permit rp) {
-    auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f, offset), offset, co_await _f.size() - offset);
+    auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f_file, offset), offset, _f.size() - offset);
     auto close = deferred_close(ctx);
     co_await ctx.consume_input();
     co_return std::move(ctx._result);
@@ -873,7 +931,14 @@ future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(u
 trie_reader_input::~trie_reader_input() {
 }
 
-seastar_file_trie_reader_input::seastar_file_trie_reader_input(seastar::file f) : _f(f) {
+seastar_file_trie_reader_input::seastar_file_trie_reader_input(cached_file& f, reader_permit permit)
+    : _f(f)
+    , _f_file(make_cached_seastar_file(_f))
+    , _permit(std::move(permit))
+{}
+
+future<> seastar_file_trie_reader_input::close() {
+    return _f_file.close();
 }
 
 row_index_trie_writer::row_index_trie_writer(trie_writer_output& out) :_out(out) {

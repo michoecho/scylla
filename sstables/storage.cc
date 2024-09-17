@@ -133,7 +133,7 @@ future<data_sink> filesystem_storage::make_data_or_index_sink(sstable& sst, comp
     switch (type) {
         case component_type::Data: f = std::move(sst._data_file); break;
         case component_type::Index: f = std::move(sst._index_file); break;
-        case component_type::TrieIndex: f = std::move(sst._trie_index_file); break;
+        case component_type::TrieIndex: f = std::move(sst._partition_index_file); break;
         case component_type::Rows: f = std::move(sst._row_index_file); break;
         default: abort(); break;
     }

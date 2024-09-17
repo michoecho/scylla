@@ -375,13 +375,7 @@ public:
         return _index_file;
     }
     file& trie_index_file() {
-        return _trie_index_file;
-    }
-    trie_reader_input& get_trie_reader_input() {
-        return *_trie_reader_input.get();
-    }
-    trie_reader_input& get_trie_reader_row_input() {
-        return *_trie_reader_row_input.get();
+        return _partition_index_file;
     }
     uint64_t trie_root_offset() {
         return _trie_root_offset;
@@ -548,10 +542,12 @@ private:
     // it is then used to generate the ancestors metadata in the statistics or scylla components.
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
-    file _trie_index_file;
+    file _partition_index_file;
     file _row_index_file;
-    std::unique_ptr<trie_reader_input> _trie_reader_input;
-    std::unique_ptr<trie_reader_input> _trie_reader_row_input;
+public:
+    seastar::shared_ptr<cached_file> _partition_index_file_cached;
+    seastar::shared_ptr<cached_file> _row_index_file_cached;
+private:
     uint64_t _trie_root_offset = 0;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;

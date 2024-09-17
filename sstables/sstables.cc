@@ -1332,14 +1332,12 @@ future<file> sstable::open_file(component_type type, open_flags flags, file_open
 
 future<> sstable::init_trie_reader() {
     sstlog.debug("init_trie_reader()");
-    _trie_reader_input = std::make_unique<seastar_file_trie_reader_input>(_trie_index_file);
-    _trie_reader_row_input = std::make_unique<seastar_file_trie_reader_input>(_row_index_file);
     sstlog.debug("init_trie_reader(): stat");
-    auto st = co_await _trie_index_file.stat();
+    auto st = co_await _partition_index_file.stat();
     sstlog.debug("init_trie_reader(): stat result: {}", st.st_size);
     sstlog.debug("init_trie_reader(): read");
     if (st.st_size > 0) {
-        auto p = co_await _trie_index_file.dma_read_exactly<char>(st.st_size - 8, 8);
+        auto p = co_await _partition_index_file.dma_read_exactly<char>(st.st_size - 8, 8);
         _trie_root_offset = read_le<uint64_t>(p.get());
         sstlog.debug("init_trie_reader: Trie root offset == {} for sstable {}", _trie_root_offset, this->index_filename());
     }
@@ -1349,7 +1347,7 @@ future<> sstable::open_or_create_data(open_flags oflags, file_open_options optio
     co_await when_all_succeed(
         open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }),
         open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
-        open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _trie_index_file = std::move(f); }),
+        open_file(component_type::TrieIndex, oflags, options).then([this] (file f) { _partition_index_file = std::move(f); }),
         open_file(component_type::Rows, oflags, options).then([this] (file f) { _row_index_file = std::move(f); })
     );
 }
@@ -1392,6 +1390,16 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
     auto size = co_await _index_file.size();
     _index_file_size = size;
     SCYLLA_ASSERT(!_cached_index_file);
+    _partition_index_file_cached = seastar::make_shared<cached_file>(_partition_index_file,
+                                                            _manager.get_cache_tracker().get_partition_index_file_cached_stats(),
+                                                            _manager.get_cache_tracker().get_lru(),
+                                                            _manager.get_cache_tracker().region(),
+                                                            co_await _partition_index_file.size());
+    _row_index_file_cached = seastar::make_shared<cached_file>(_row_index_file,
+                                                            _manager.get_cache_tracker().get_row_index_file_cached_stats(),
+                                                            _manager.get_cache_tracker().get_lru(),
+                                                            _manager.get_cache_tracker().region(),
+                                                            co_await _row_index_file.size());
     _cached_index_file = seastar::make_shared<cached_file>(_index_file,
                                                             _manager.get_cache_tracker().get_index_cached_file_stats(),
                                                             _manager.get_cache_tracker().get_lru(),
@@ -1610,7 +1618,7 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
     _components = std::move(info.components);
     _data_file = make_checked_file(_read_error_handler, info.data.to_file());
     _index_file = make_checked_file(_read_error_handler, info.index.to_file());
-    _trie_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
+    _partition_index_file = make_checked_file(_read_error_handler, info.trie_index.to_file());
     _row_index_file = make_checked_file(_read_error_handler, info.row_index.to_file());
     co_await init_trie_reader();
     _shards = std::move(info.owners);
@@ -1625,7 +1633,7 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
 
 future<foreign_sstable_open_info> sstable::get_open_info() & {
     return _components.copy().then([this] (auto c) mutable {
-        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(), _trie_index_file.dup(), _row_index_file.dup(),
+        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(), _partition_index_file.dup(), _row_index_file.dup(),
             _generation, _version, _format, data_size(), _metadata_size_on_disk};
     });
 }

@@ -5,6 +5,7 @@
 #include <memory>
 #include <span>
 #include <vector>
+#include "utils/cached_file.hh"
 
 using const_bytes = std::span<const std::byte>;
 
@@ -98,13 +99,32 @@ private:
     row_index_payload _last_payload;
 };
 
-struct reader_node {
-    struct child {
-        std::byte transition;
+struct node_parser {
+    struct lookup_result {
+        int idx;
+        std::byte byte;
         uint64_t offset;
     };
-    std::vector<child> children;
-    std::vector<std::byte> payload;
+    lookup_result (*lookup)(const_bytes, std::byte transition);
+    lookup_result (*get_child)(const_bytes, int idx);
+};
+
+
+struct payload_result {
+    uint8_t bits;
+    const_bytes bytes;
+};
+
+struct reader_node {
+    cached_file::page_view raw_bytes;
+    const node_parser* parser;
+    uint16_t payload_offset;
+    uint8_t n_children;
+    uint8_t payload_bits;
+
+    node_parser::lookup_result lookup(std::byte transition);
+    node_parser::lookup_result get_child(int idx);
+    payload_result payload() const;
 };
 
 struct row_index_header {
@@ -142,7 +162,7 @@ public:
     future<set_result> set_after(const_bytes key);
     future<set_result> step();
     future<set_result> step_back();
-    const_bytes payload() const;
+    payload_result payload() const;
     bool eof() const;
     bool initialized() const;
     void reset();
@@ -173,8 +193,8 @@ public:
 };
 
 class trie_index_reader : public sstables::index_reader {
-    trie_reader_input& _in;
-    trie_reader_input& _in_row;
+    std::unique_ptr<trie_reader_input> _in;
+    std::unique_ptr<trie_reader_input> _in_row;
     schema_ptr _s;
     reader_permit _permit;
     index_cursor _lower;
@@ -187,7 +207,7 @@ class trie_index_reader : public sstables::index_reader {
     std::vector<std::byte> translate_key(dht::ring_position_view key);
     future<> maybe_init();
 public:
-    trie_index_reader(trie_reader_input& in, trie_reader_input& in_row, uint64_t root_offset, uint64_t total_file_size, schema_ptr s, reader_permit);
+    trie_index_reader(std::unique_ptr<trie_reader_input> in, std::unique_ptr<trie_reader_input> in_row, uint64_t root_offset, uint64_t total_file_size, schema_ptr s, reader_permit);
     virtual future<> close() noexcept override;
     virtual sstables::data_file_positions_range data_file_positions() const override;
     virtual future<std::optional<uint64_t>> last_block_offset() override;
@@ -212,13 +232,13 @@ public:
     virtual bool eof() const override;
 };
 
-namespace capnp {
-    class MessageBuilder;
-}
 class seastar_file_trie_reader_input : public trie_reader_input {
-    seastar::file _f;
+    cached_file& _f;
+    seastar::file _f_file;
+    reader_permit _permit;
 public:
-    seastar_file_trie_reader_input(seastar::file);
+    seastar_file_trie_reader_input(cached_file&, reader_permit);
     future<reader_node> read(uint64_t offset) override;
     future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override;
+    future<> close();
 };

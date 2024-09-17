@@ -36,7 +36,7 @@ using namespace seastar;
 class cached_file {
 public:
     // Must be aligned to _file.disk_read_dma_alignment(). 4K is always safe.
-    static constexpr size_t page_size = 4096;
+    static constexpr size_t page_size = 4096*4;
 
     // The content of the underlying file (_file) is divided into pages
     // of equal size (page_size). This type is used to identify pages.
@@ -120,6 +120,13 @@ private:
         // The buffer is invalidated when the page is evicted or when the owning LSA region invalidates references.
         temporary_buffer<char> get_buf_weak() {
             return temporary_buffer<char>(_lsa_buf.get(), _lsa_buf.size(), deleter());
+        }
+
+        // Returns a buffer which reflects contents of this page.
+        // The buffer will not prevent eviction.
+        // The buffer is invalidated when the page is evicted or when the owning LSA region invalidates references.
+        std::span<const std::byte> get_view() const {
+            return std::as_bytes(std::span<const char>(_lsa_buf.get(), _lsa_buf.size()));
         }
 
         size_t size_in_allocator() {
@@ -218,6 +225,18 @@ public:
                 , _size(size)
                 , _units(std::move(units))
         {}
+        page_view(const page_view& other) {
+            *this = other;
+        }
+        page_view(page_view&&) = default;
+        page_view& operator=(page_view&& other) = default;
+        page_view& operator=(const page_view& other) {
+            _page = other._page->share();
+            _offset = other._offset;
+            _size = other._size;
+            _units = other._units ? other._units->permit().consume_memory(page_size) : decltype(_units)();
+            return *this;
+        }
 
         // The returned buffer is valid only until the LSA region associated with cached_file invalidates references.
         temporary_buffer<char> get_buf() {
@@ -227,8 +246,20 @@ public:
             return buf;
         }
 
+        std::span<const std::byte> get_view() const {
+            return _page->get_view().subspan(_offset);
+        }
+
         operator bool() const { return bool(_page); }
     };
+
+    future<page_view> get_page_view(size_t global_pos, reader_permit permit, tracing::trace_state_ptr trace_state) {
+        auto offset = global_pos % page_size;
+        auto page_idx = global_pos / page_size;
+        return get_page_ptr(page_idx, 1, trace_state).then([offset, permit = std::move(permit)] (auto ptr) mutable {
+            return page_view(offset, page_size - offset, std::move(ptr), permit.consume_memory(page_size));
+        });
+    }
 
     // Generator of subsequent pages of data reflecting the contents of the file.
     // Single-user.
