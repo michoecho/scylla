@@ -319,6 +319,7 @@ public:
                             ++i;
                         } else {
                             out.push_back(std::byte(0xff));
+                            --i;
                             break;
                         }
                     }

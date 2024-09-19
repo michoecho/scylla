@@ -50,6 +50,7 @@ void node::set_payload(const payload& p) noexcept {
     _payload = p;
 }
 size_t node::recalc_sizes(const trie_writer_output& out, size_t global_pos) {
+    trie_logger.trace("node::recalc_sizes(): this={}", fmt::ptr(this));
     struct local_state {
         node* _node;
         size_t _pos;
@@ -64,6 +65,9 @@ size_t node::recalc_sizes(const trie_writer_output& out, size_t global_pos) {
             stack.push_back({node->_children[stage - 1].get(), global_pos, 0});
             continue;
         }
+        if (!node->_has_out_of_page_descendants) {
+            global_pos += node->_branch_size;
+        }
         node->_branch_size = global_pos - pos;
         if (node->_has_out_of_page_children || node->_has_out_of_page_descendants) {
             node->_node_size = out.serialized_size(*node, global_pos);
@@ -74,6 +78,7 @@ size_t node::recalc_sizes(const trie_writer_output& out, size_t global_pos) {
     return _branch_size + _node_size;
 }
 void node::write(trie_writer_output& out) {
+    trie_logger.trace("node::write(): this={}", fmt::ptr(this));
     size_t starting_pos = out.pos();
     assert(_node_size > 0);
     assert(round_down(out.pos(), out.page_size()) == round_down(out.pos() + _branch_size + _node_size - 1, out.page_size()));
@@ -81,25 +86,28 @@ void node::write(trie_writer_output& out) {
     struct local_state {
         node* _node;
         int _stage;
+        int _startpos;
     };
     std::vector<local_state> stack;
-    stack.push_back({this, 0});
+    stack.push_back({this, 0, out.pos()});
     while (!stack.empty()) {
-        auto& [node, stage] = stack.back();
+        auto& [node, stage, startpos] = stack.back();
         if (stage < static_cast<int>(node->_children.size())) {
             stage += 1;
             if (node->_children[stage - 1]->_output_pos < 0) {
-                stack.push_back({node->_children[stage - 1].get(), 0});
+                stack.push_back({node->_children[stage - 1].get(), 0, out.pos()});
             }
             continue;
         }
         node->_output_pos = out.pos();
-        trie_logger.trace("node::write(): writing at {}", out.pos());
+        trie_logger.trace("node::write(): writing at {}, children={}", out.pos(), node->_children.size());
+        assert(node->_payload._payload_bits || node->_children.size());
         auto sz = out.write(*node, 0);
         if (!(static_cast<ssize_t>(sz) == node->_node_size)) {
             trie_logger.error("diff: {}, ns={}", sz, node->_node_size);
             abort();
         }
+        assert(static_cast<ssize_t>(out.pos() - startpos) == node->_branch_size + node->_node_size);
         stack.pop_back();
     }
     if (!(static_cast<ssize_t>(out.pos() - starting_pos) == _branch_size + _node_size)) {
@@ -136,6 +144,7 @@ trie_writer::impl::impl(trie_writer_output& out)
     _stack.push_back(_root.get());
 }
 void trie_writer::impl::complete(node* x) {
+    trie_logger.trace("complete: x={}", fmt::ptr(x));
     assert(x->_branch_size < 0);
     assert(x->_node_size < 0);
     assert(x->_has_out_of_page_children == false);
@@ -160,6 +169,7 @@ void trie_writer::impl::complete(node* x) {
     }
 }
 void trie_writer::impl::lay_out_children(node* x) {
+    trie_logger.trace("layout_children: x={}", fmt::ptr(x));
     assert(x->_output_pos < 0);
     auto cmp = [](node* a, node* b) { return std::make_pair(a->_branch_size + a->_node_size, a->_transition) < std::make_pair(b->_branch_size + b->_node_size, b->_transition); };
     auto unwritten_children = std::set<node*, decltype(cmp)>(cmp);
@@ -232,13 +242,16 @@ ssize_t trie_writer::impl::finish() {
         complete(_stack.back());
         _stack.pop_back();
     }
-    if (_root->_children.empty() && !_root->_payload._payload_bits) {
-        return -1;
+    ssize_t res = -1;
+    if (_root->_children.size() || _root->_payload._payload_bits) {
+        node superroot(std::byte(0));
+        superroot._children.push_back(std::move(_root));
+        lay_out_children(&superroot);
+        res = superroot._children[0]->_output_pos;
     }
-    node superroot(std::byte(0));
-    superroot._children.push_back(std::move(_root));
-    lay_out_children(&superroot);
-    return superroot._children[0]->_output_pos;
+    _root = std::make_unique<node>(std::byte(0));
+    _stack.push_back(_root.get());
+    return res;
 }
 
 trie_writer::trie_writer(trie_writer_output& out)
@@ -287,7 +300,7 @@ payload_result reader_node::payload() const {
 
 auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> auto& f) {
     capnp::word src[cached_file::page_size/sizeof(capnp::word)];
-    assert(sizeof(src) > p.size());
+    assert(sizeof(src) >= p.size());
     memcpy(src, p.data(), p.size());
     ::capnp::FlatArrayMessageReader message({std::data(src), std::size(src)});
     Node::Reader node = message.getRoot<Node>();
@@ -350,7 +363,7 @@ future<void> trie_cursor::init(uint64_t root_offset) {
 
 future<set_result> trie_cursor::set_before(const_bytes key) {
     assert(initialized());
-    assert(_path.back().child_idx == -1);
+    assert(_path.back().child_idx == -1 || eof());
     _path.resize(1);
     _path.back().child_idx = -1;
     size_t i = 0;
@@ -384,6 +397,7 @@ future<set_result> trie_cursor::set_after(const_bytes key) {
     co_return res;
 }
 
+#pragma clang optimize off
 future<set_result> trie_cursor::step() {
     assert(initialized() && !eof());
     _path.back().child_idx += 1;
@@ -402,6 +416,7 @@ future<set_result> trie_cursor::step() {
     }
     co_return set_result::no_match;
 }
+#pragma clang optimize on
 
 future<set_result> trie_cursor::step_back() {
     assert(initialized());
@@ -953,24 +968,26 @@ void row_index_trie_writer::add(
     uint64_t data_file_offset,
     sstables::deletion_time dt
 ) {
-    trie_logger.trace("row_index_trie_writer::add() this={} first_ck={} last_ck={} data_file_offset={} dt={} _last_sep={}, _last_sep_mismatch={}",
+    trie_logger.trace("row_index_trie_writer::add() this={} first_ck={} last_ck={} data_file_offset={} dt={} _last_sep={}, _last_sep_mismatch={}, _first_key_mismatch={}",
         fmt::ptr(this),
         fmt_hex_cb(first_ck),
         fmt_hex_cb(last_ck),
         data_file_offset,
         dt,
-        fmt_hex_cb(_last_separator),
-        _last_sep_mismatch
+        fmt_hex_cb(_first_key),
+        _last_sep_mismatch,
+        _first_key_mismatch
     );
     if (_added_blocks > 0) {
         size_t separator_mismatch = std::ranges::mismatch(first_ck, _last_key).in2 - _last_key.begin();
-        size_t needed_pref = std::min(separator_mismatch + 1, first_ck.size());
-        auto sp = std::span(first_ck).subspan(0, needed_pref);
+        assert(separator_mismatch < first_ck.size());
+        assert(separator_mismatch < _last_key.size());
 
-        size_t mismatch = std::ranges::mismatch(sp, _last_separator).in2 - _last_separator.begin();
+        size_t mismatch = std::ranges::mismatch(first_ck, _first_key).in2 - _first_key.begin();
         // size_t needed_prefix = std::min(std::max(_last_sep_mismatch, mismatch) + 1, _last_separator.size());
-        size_t needed_prefix = _last_separator.size();
-        auto tail = std::span(_last_separator).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
+        size_t needed_prefix = std::max(_first_key_mismatch, mismatch) + 1;
+        assert(needed_prefix <= _first_key.size());
+        auto tail = std::span(_first_key).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
 
         std::array<std::byte, 20> payload_bytes;
         void* p = payload_bytes.data();
@@ -982,8 +999,11 @@ void row_index_trie_writer::add(
         trie_logger.trace("row_index_trie_writer::add(): _wr.add({}, {}, {})", _last_sep_mismatch, fmt_hex_cb(tail), fmt_hex_cb(payload_bytes));
         _wr.add(_last_sep_mismatch, tail, payload(1, payload_bytes));
 
-        _last_separator.assign(sp.begin(), sp.end());
+        _first_key.assign(first_ck.begin(), first_ck.end());
+        _first_key_mismatch = separator_mismatch;
         _last_sep_mismatch = mismatch;
+    } else {
+        _first_key.assign(first_ck.begin(), first_ck.end());
     }
     _added_blocks += 1;
     _last_key.assign(last_ck.begin(), last_ck.end());
@@ -991,8 +1011,8 @@ void row_index_trie_writer::add(
 }
 ssize_t row_index_trie_writer::finish() {
     if (_added_blocks > 0) {
-        size_t needed_prefix = std::min(_last_sep_mismatch + 1, _last_separator.size());
-        auto tail = std::span(_last_separator).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
+        size_t needed_prefix = std::min(_last_sep_mismatch + 1, _first_key.size());
+        auto tail = std::span(_first_key).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
 
         std::array<std::byte, 20> payload_bytes;
         void* p = payload_bytes.data();

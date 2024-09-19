@@ -859,6 +859,7 @@ void sstable::generate_toc() {
     _recognized_components.insert(component_type::Digest);
     _recognized_components.insert(component_type::Index);
     _recognized_components.insert(component_type::TrieIndex);
+    _recognized_components.insert(component_type::Rows);
     _recognized_components.insert(component_type::Summary);
     _recognized_components.insert(component_type::Data);
     if (_schema->bloom_filter_fp_chance() != 1.0) {

@@ -1749,7 +1749,7 @@ public:
         if (_pr.get().before(key, dht::ring_position_comparator(*_schema))) {
             sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 1", fmt::ptr(this), key);
             _before_partition = false;
-            _end_of_stream = false;
+            _end_of_stream = _single_partition_read;
             _current_partition_key = std::move(key);
             _partition_finished = true;
             return data_consumer::proceed::no;

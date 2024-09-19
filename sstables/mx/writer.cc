@@ -638,7 +638,7 @@ private:
             _index_writer->offset(), _index_sampling_state);
     }
 
-    void maybe_set_pi_first_clustering(const clustering_info& info);
+    void maybe_set_pi_first_clustering(const clustering_info& info, tombstone open);
     void maybe_add_pi_block();
     void add_pi_block();
     void write_pi_block(const pi_block&);
@@ -741,9 +741,10 @@ private:
 
     template <typename T>
     requires Clustered<T>
-    void write_clustered(const T& clustered) {
+    void write_clustered(const T& clustered, tombstone open) {
+        sstlog.trace("write_clustered: key={}", clustered.key());
         clustering_info info {clustered.key(), get_kind(clustered)};
-        maybe_set_pi_first_clustering(info);
+        maybe_set_pi_first_clustering(info, open);
         uint64_t pos = _data_writer->offset();
         write_clustered(clustered, pos - _prev_row_start);
         _pi_write_m.last_clustering = info;
@@ -751,7 +752,7 @@ private:
         maybe_add_pi_block();
     }
     void write_promoted_index();
-    void consume(rt_marker&& marker);
+    void consume(rt_marker&& marker, tombstone open);
 
     // Must be called in a seastar thread.
     void flush_tmp_bufs(file_writer& writer) {
@@ -848,11 +849,11 @@ writer::~writer() {
     close_writer(_data_writer);
 }
 
-void writer::maybe_set_pi_first_clustering(const writer::clustering_info& info) {
+void writer::maybe_set_pi_first_clustering(const writer::clustering_info& info, tombstone open) {
     uint64_t pos = _data_writer->offset();
     if (!_pi_write_m.first_clustering) {
         _pi_write_m.first_clustering = info;
-        _pi_write_m.tombstone_at_start = _current_tombstone;
+        _pi_write_m.tombstone_at_start = open;
         _pi_write_m.block_start_offset = pos;
         _pi_write_m.block_next_start_offset = pos + _pi_write_m.desired_block_size;
     }
@@ -941,7 +942,7 @@ void writer::init_file_writers() {
     if (_sst._schema->partition_key_type()->has_memcmp_comparable_form()) {
         _twofw = std::make_unique<trie_writer_output_file_writer>(*_trie_index_writer, 16*1024);
         _pitw = std::make_unique<partition_index_trie_writer>(*_twofw);
-        if (_sst._schema->clustering_key_size() > 0 || _sst._schema->clustering_key_type()->has_memcmp_comparable_form()) {
+        if (_sst._schema->clustering_key_size() > 0 && _sst._schema->clustering_key_type()->has_memcmp_comparable_form()) {
             _trwofw = std::make_unique<trie_writer_output_file_writer>(*_trie_row_index_writer, 16*1024);
             _ritw = std::make_unique<row_index_trie_writer>(*_trwofw);
         }
@@ -1361,7 +1362,7 @@ stop_iteration writer::consume(clustering_row&& cr) {
     }
     ensure_tombstone_is_written();
     ensure_static_row_is_written_if_needed();
-    write_clustered(cr);
+    write_clustered(cr, _current_tombstone);
 
     auto can_split_partition_at_clustering_boundary = [this] {
         // will allow size limit to be exceeded for 10%, so we won't perform unnecessary split
@@ -1458,8 +1459,8 @@ void writer::write_clustered(const rt_marker& marker, uint64_t prev_row_size) {
     collect_range_tombstone_stats();
 }
 
-void writer::consume(rt_marker&& marker) {
-    write_clustered(marker);
+void writer::consume(rt_marker&& marker, tombstone open) {
+    write_clustered(marker, open);
 }
 
 stop_iteration writer::consume(range_tombstone_change&& rtc) {
@@ -1472,15 +1473,15 @@ stop_iteration writer::consume(range_tombstone_change&& rtc) {
     tombstone prev_tombstone = std::exchange(_current_tombstone, rtc.tombstone());
     if (!prev_tombstone) { // start bound
         auto bv = pos.as_start_bound_view();
-        consume(rt_marker{pos.key(), to_bound_kind_m(bv.kind()), rtc.tombstone(), {}});
+        consume(rt_marker{pos.key(), to_bound_kind_m(bv.kind()), rtc.tombstone(), {}}, prev_tombstone);
     } else if (!rtc.tombstone()) { // end bound
         auto bv = pos.as_end_bound_view();
-        consume(rt_marker{pos.key(), to_bound_kind_m(bv.kind()), prev_tombstone, {}});
+        consume(rt_marker{pos.key(), to_bound_kind_m(bv.kind()), prev_tombstone, {}}, prev_tombstone);
     } else { // boundary
         auto bk = pos.get_bound_weight() == bound_weight::before_all_prefixed
             ? bound_kind_m::excl_end_incl_start
             : bound_kind_m::incl_end_excl_start;
-        consume(rt_marker{pos.key(), bk, prev_tombstone, rtc.tombstone()});
+        consume(rt_marker{pos.key(), bk, prev_tombstone, rtc.tombstone()}, prev_tombstone);
     }
     return stop_iteration::no;
 }

@@ -94,7 +94,8 @@ private:
     trie_writer _wr = {_out};
     size_t _added_blocks = 0;
     size_t _last_sep_mismatch = 0;
-    buf _last_separator;
+    size_t _first_key_mismatch = 0;
+    buf _first_key;
     buf _last_key;
     row_index_payload _last_payload;
 };
@@ -119,7 +120,7 @@ struct reader_node {
     cached_file::page_view raw_bytes;
     const node_parser* parser;
     uint16_t payload_offset;
-    uint8_t n_children;
+    uint16_t n_children;
     uint8_t payload_bits;
 
     node_parser::lookup_result lookup(std::byte transition);
