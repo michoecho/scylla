@@ -12,6 +12,7 @@ using const_bytes = std::span<const std::byte>;
 struct node;
 
 struct trie_writer_output {
+    virtual ~trie_writer_output() = default;
     virtual size_t serialized_size(const node&, size_t pos) const = 0;
     virtual size_t write(const node&) = 0;
     virtual size_t page_size() const = 0;
@@ -121,6 +122,7 @@ struct reader_node {
     uint16_t payload_offset;
     uint16_t n_children;
     uint8_t payload_bits;
+    size_t pos;
 
     node_parser::lookup_result lookup(std::byte transition);
     node_parser::lookup_result get_child(int idx);
@@ -242,3 +244,6 @@ public:
     future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override;
     future<> close();
 };
+
+std::unique_ptr<trie_writer_output> make_trie_writer_output(sstables::file_writer&, size_t page_size);
+std::unique_ptr<trie_reader_input> make_trie_reader_input(cached_file&, reader_permit);

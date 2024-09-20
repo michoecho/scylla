@@ -700,8 +700,8 @@ make_index_reader(
     if (sst->get_schema()->partition_key_type()->has_memcmp_comparable_form() && !sst->get_schema()->ks_name().contains("system")) {
         sstlog.debug("Using trie index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());
         return std::make_unique<trie_index_reader>(
-            std::make_unique<seastar_file_trie_reader_input>(*sst->_partition_index_file_cached, permit),
-            std::make_unique<seastar_file_trie_reader_input>(*sst->_row_index_file_cached, permit),
+            make_trie_reader_input(*sst->_partition_index_file_cached, permit),
+            make_trie_reader_input(*sst->_row_index_file_cached, permit),
             sst->trie_root_offset(),
             sst->data_size(),
             sst->get_schema(),

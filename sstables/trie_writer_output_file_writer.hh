@@ -24,7 +24,7 @@ public:
         ::capnp::List<Child>::Builder children = node.initChildren(x._children.size());
         for (size_t i = 0; i < x._children.size(); ++i) {
             Child::Builder cb = children[i];
-            cb.setOffset(x._children[i]->_output_pos);
+            cb.setOffset(x._output_pos - x._children[i]->_output_pos);
             cb.setTransition(uint8_t(x._children[i]->_transition));
         }
         Payload::Builder payload = node.initPayload();
