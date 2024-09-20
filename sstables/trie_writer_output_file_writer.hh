@@ -37,7 +37,7 @@ public:
         serialize(x, message);
         return ::capnp::computeSerializedSizeInWords(message) * 8;
     }
-    virtual size_t write(const node& x, size_t depth) override {
+    virtual size_t write(const node& x) override {
         for (size_t i = 0; i < x._children.size(); ++i) {
             assert(x._children[i]->_output_pos >= 0);
         }

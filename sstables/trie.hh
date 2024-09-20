@@ -13,7 +13,7 @@ struct node;
 
 struct trie_writer_output {
     virtual size_t serialized_size(const node&, size_t pos) const = 0;
-    virtual size_t write(const node&, size_t depth) = 0;
+    virtual size_t write(const node&) = 0;
     virtual size_t page_size() const = 0;
     virtual size_t bytes_left_in_page() = 0;
     virtual size_t pad_to_page_boundary() = 0;
@@ -42,7 +42,6 @@ struct node {
     node(std::byte b) noexcept;
     node* add_child(std::byte b);
     void set_payload(const payload&) noexcept;
-    const_bytes get_payload() const noexcept;
     size_t recalc_sizes(const trie_writer_output&, size_t starting_pos);
     void write(trie_writer_output&);
 };

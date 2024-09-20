@@ -102,7 +102,7 @@ void node::write(trie_writer_output& out) {
         node->_output_pos = out.pos();
         trie_logger.trace("node::write(): writing at {}, children={}", out.pos(), node->_children.size());
         assert(node->_payload._payload_bits || node->_children.size());
-        auto sz = out.write(*node, 0);
+        auto sz = out.write(*node);
         if (!(static_cast<ssize_t>(sz) == node->_node_size)) {
             trie_logger.error("diff: {}, ns={}", sz, node->_node_size);
             abort();
