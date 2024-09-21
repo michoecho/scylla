@@ -433,7 +433,7 @@ node_parser my_parser {
             auto bpp = bits_per_pointer_arr[type];
             while (idx < int(dense_span)) {
                 if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
-                    return {idx, transition, off};
+                    return {idx, std::byte(start + idx), off};
                 } else {
                     ++idx;
                 }
@@ -476,12 +476,12 @@ node_parser my_parser {
         case DENSE_32:
         case DENSE_40:
         case LONG_DENSE: {
-            auto transition = std::byte(uint8_t(sp[1]) + idx);
             auto dense_span = uint64_t(sp[2]) + 1;
             auto bpp = bits_per_pointer_arr[type];
             assert(idx < int(dense_span));
             while (idx < int(dense_span) && idx >= 0) {
                 if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    auto transition = std::byte(uint8_t(sp[1]) + idx);
                     return {idx, transition, off};
                 } else {
                     idx += forward ? 1 : -1;
