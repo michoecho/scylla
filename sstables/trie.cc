@@ -103,7 +103,7 @@ node_type choose_node_type_impl(const node& x, size_t pos) {
     const size_t dense_span = 1 + size_t(x._children.back()->_transition) - size_t(x._children.front()->_transition);
     auto sparse_size = 16 + div_ceil((bits_per_pointer_arr[sparses[width_idx]] + 8) * n_children, 8);
     auto dense_size = 24 + div_ceil(bits_per_pointer_arr[denses[width_idx]] * dense_span, 8);
-    if (sparse_size < dense_size || true) {
+    if (sparse_size < dense_size) {
         return sparses[width_idx];
     } else {
         return denses[width_idx];
@@ -167,9 +167,15 @@ public:
         return 3 + dense_span * (bytes_per_pointer) + x._payload.blob().size();
     }
     size_t size_dense(const node& x, int bits_per_pointer) const  {
-        return 3 + div_ceil(bits_per_pointer * (int(x._children.back()->_transition) - int(x._children.front()->_transition)), 8) + x._payload.blob().size();
+        return 3 + div_ceil(bits_per_pointer * (1 + int(x._children.back()->_transition) - int(x._children.front()->_transition)), 8) + x._payload.blob().size();
     }
     virtual size_t write(const node& x) override {
+        auto s = serialized_size(x, x._output_pos);
+        auto r = write_impl(x);
+        assert(s == r);
+        return r;
+    }
+    size_t write_impl(const node& x) {
         const auto my_pos = x._output_pos;
         auto type = choose_node_type(x, my_pos);
         switch (type) {
