@@ -116,8 +116,21 @@ struct payload_result {
     const_bytes bytes;
 };
 
+
 struct reader_node {
-    cached_file::page_view raw_bytes;
+    struct page_ptr : cached_file::ptr_type {
+        using parent = cached_file::ptr_type;
+        page_ptr() = default;
+        page_ptr(parent&& x) : parent(std::move(x)) {}
+        page_ptr(const page_ptr& other) : parent(other->share()) {}
+        page_ptr(page_ptr&&) = default;
+        page_ptr& operator=(page_ptr&&) = default;
+        page_ptr& operator=(const page_ptr& other) {
+            parent::operator=(other->share());
+            return *this;
+        }
+    };
+    page_ptr raw_bytes;
     const node_parser* parser;
     uint16_t payload_offset;
     uint16_t n_children;
@@ -127,6 +140,7 @@ struct reader_node {
     node_parser::lookup_result lookup(std::byte transition);
     node_parser::lookup_result get_child(int idx, bool forward);
     payload_result payload() const;
+    const_bytes raw() const;
 };
 
 struct row_index_header {

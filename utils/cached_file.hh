@@ -103,6 +103,10 @@ private:
             SCYLLA_ASSERT(!_use_count);
         }
 
+        size_t pos() const {
+            return idx * page_size;
+        }
+
         void on_evicted() noexcept override;
 
         temporary_buffer<char> get_buf() {
@@ -255,12 +259,10 @@ public:
         operator bool() const { return bool(_page); }
     };
 
-    future<page_view> get_page_view(size_t global_pos, reader_permit permit, tracing::trace_state_ptr trace_state) {
-        auto offset = global_pos % page_size;
-        auto page_idx = global_pos / page_size;
-        return get_page_ptr(page_idx, 1, trace_state).then([offset, permit = std::move(permit)] (auto ptr) mutable {
-            return page_view(offset, ptr->get_view().size() - offset, std::move(ptr), permit.consume_memory(page_size));
-        });
+    using ptr_type = cached_page::ptr_type;
+
+    future<ptr_type> get_page_view(size_t global_pos, tracing::trace_state_ptr trace_state) {
+        return get_page_ptr(global_pos / page_size, 1, trace_state);
     }
 
     // Generator of subsequent pages of data reflecting the contents of the file.

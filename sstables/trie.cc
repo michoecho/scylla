@@ -1,4 +1,4 @@
-#pragma clang optimize off
+// #pragma clang optimize off
 #include "trie.hh"
 #include <algorithm>
 #include <cassert>
@@ -761,11 +761,15 @@ ssize_t partition_index_trie_writer::finish() {
     return _wr.finish();
 }
 
+const_bytes reader_node::raw() const {
+    return raw_bytes->get_view().subspan(pos % cached_file::page_size);
+}
+
 payload_result reader_node::payload() const {
-    auto p = raw_bytes.get_view();
+    auto p = raw();
     auto tail = p.subspan(payload_offset);
     trie_logger.trace("(reader_node::payload: bits={} offset={} result={})", payload_bits, payload_offset, fmt_hex_cb(tail.subspan(0, std::min<int>(20, tail.size()))));;
-    return {payload_bits, raw_bytes.get_view().subspan(payload_offset)};
+    return {payload_bits, tail};
 }
 
 auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> auto& f) {
@@ -814,11 +818,11 @@ auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> 
 // }
 
 node_parser::lookup_result reader_node::lookup(std::byte transition) {
-    return parser->lookup(raw_bytes.get_view(), transition);
+    return parser->lookup(raw(), transition);
 }
 
 node_parser::lookup_result reader_node::get_child(int idx, bool forward) {
-    return parser->get_child(raw_bytes.get_view(), idx, forward);
+    return parser->get_child(raw(), idx, forward);
 }
 
 trie_cursor::trie_cursor(trie_reader_input& in)
@@ -1504,8 +1508,8 @@ struct my_trie_reader_input : trie_reader_input {
     reader_permit _permit;
     my_trie_reader_input(cached_file& f, reader_permit p) : _f(f), _permit(p) {}
     future<reader_node> read(uint64_t offset) override {
-        auto pv = co_await _f.get_page_view(offset, _permit, nullptr);
-        auto sp = pv.get_view();
+        auto pv = co_await _f.get_page_view(offset, nullptr);
+        auto sp = pv->get_view().subspan(offset % cached_file::page_size);
         trie_logger.trace("my_trie_reader_input::read(): reading at {} {}", offset, fmt_hex_cb(sp.subspan(0, 32)));
 
         auto type = uint8_t(sp[0]) >> 4;
