@@ -427,8 +427,8 @@ node_parser my_parser {
         case DENSE_32:
         case DENSE_40:
         case LONG_DENSE: {
-            auto start = uint8_t(sp[1]);
-            auto idx = uint8_t(transition) - start;
+            auto start = int(sp[1]);
+            auto idx = std::max<int>(0, int(transition) - start);
             auto dense_span = uint64_t(sp[2]) + 1;
             auto bpp = bits_per_pointer_arr[type];
             while (idx < int(dense_span)) {
@@ -843,12 +843,12 @@ future<set_result> trie_cursor::set_before(const_bytes key) {
         }
         auto it = _path[i].node.lookup(key[i]);
         _path[i].child_idx = it.idx;
+        trie_logger.trace("set_before, lookup: key={:x} children={} idx={}, offset={} pos={}", uint8_t(key[i]),_path[i].node.n_children, it.idx, it.offset, _path.back().node.pos);
         if (size_t(_path[i].child_idx) == _path[i].node.n_children
             || it.byte != key[i]) {
             _path[i].child_idx -= 1;
             co_return co_await step();
         }
-        trie_logger.trace("set_before: lookup_result={}, offset={} pos={}", it.idx, it.offset, _path.back().node.pos);
         _path.push_back({co_await _in.get().read(_path.back().node.pos - it.offset), -1});
         i += 1;
     }
