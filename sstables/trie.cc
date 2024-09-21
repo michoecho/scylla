@@ -68,15 +68,15 @@ fmt_hex fmt_hex_cb(const_bytes cb);
 size_t max_offset_from_child(const node& x, size_t pos) {
     size_t result = 0;
     size_t offset = 0;
-    for (const auto& c : x._children) {
-        offset += c->_node_size;
-        if (c->_output_pos >= 0) {
-            assert(size_t(c->_output_pos) < pos);
-            result = std::max<size_t>(result, pos - c->_output_pos);
+    for (auto it = x._children.rbegin(); it != x._children.rend(); ++it) {
+        offset += it->get()->_node_size;
+        if (it->get()->_output_pos >= 0) {
+            assert(size_t(it->get()->_output_pos) < pos);
+            result = std::max<size_t>(result, pos - it->get()->_output_pos);
         } else {
             result = std::max<size_t>(result, offset);
         }
-        offset += c->_branch_size;
+        offset += it->get()->_branch_size;
     }
     trie_logger.trace("max_offset_from_child: node={}, pos={}, result={}", fmt::ptr(&x), pos, result);
     return result;
