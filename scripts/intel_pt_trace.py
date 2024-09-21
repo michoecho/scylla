@@ -235,6 +235,7 @@ if __name__ == "__main__":
     if not os.path.exists(dlfilter):
         raise RuntimeError(f"Make sure to build {dlfilter} first. (Go into perf2perfetto/ and run `cargo build --release`).")
     with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = "tmpdir"
         cwd = os.getcwd()
         os.chdir(tmp_dir)
         asyncio.run(main())

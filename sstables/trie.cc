@@ -381,7 +381,7 @@ uint64_t read_offset(const_bytes sp, int idx, int bpp) {
     return off;
 }
 
-node_parser my_parser {
+constexpr node_parser my_parser {
     .lookup = [] (const_bytes sp, std::byte transition) -> node_parser::lookup_result {
         auto type = uint8_t(sp[0]) >> 4;
         switch (type) {
@@ -818,21 +818,195 @@ auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> 
 // }
 
 node_parser::lookup_result reader_node::lookup(std::byte transition) {
-    return parser->lookup(raw(), transition);
+    return my_parser.lookup(raw(), transition);
 }
 
 node_parser::lookup_result reader_node::get_child(int idx, bool forward) {
-    return parser->get_child(raw(), idx, forward);
+    return my_parser.get_child(raw(), idx, forward);
 }
 
+
+enum class blabla_state {
+    START,
+    KEY_SIZE,
+    KEY_BYTES,
+    POSITION,
+    ROOT_OFFSET,
+    LOCAL_DELETION_TIME,
+    MARKED_FOR_DELETE_AT,
+    END,
+};
+
+inline std::string_view format_as(blabla_state s) {
+    using enum blabla_state;
+    switch (s) {
+    case START: return "START";
+    case KEY_SIZE: return "KEY_SIZE";
+    case KEY_BYTES: return "KEY_BYTES";
+    case POSITION: return "POSITION";
+    case ROOT_OFFSET: return "ROOT_OFFSET";
+    case LOCAL_DELETION_TIME: return "LOCAL_DELETION_TIME";
+    case MARKED_FOR_DELETE_AT: return "MARKED_FOR_DELETE_AT";
+    case END: return "END";
+    default: abort();
+    }
+}
+
+struct blabla_context : public data_consumer::continuous_data_consumer<blabla_context> {
+    using processing_result = data_consumer::processing_result;
+    using proceed = data_consumer::proceed;
+    using state = blabla_state;
+    state _state = state::START;
+    row_index_header _result;
+    uint64_t _position_offset;
+    temporary_buffer<char> _key;
+    void verify_end_state() {
+        if (_state != state::END) {
+            throw sstables::malformed_sstable_exception(fmt::format("blabla_context: {}", _state));
+        }
+    }
+    bool non_consuming() const {
+        return ((_state == state::END) || (_state == state::START));
+    }
+    processing_result process_state(temporary_buffer<char>& data) {
+        auto current_pos = [&] { return this->position() - data.size(); };
+
+        switch (_state) {
+        // START comes first, to make the handling of the 0-quantity case simpler
+        case state::START:
+            trie_logger.trace("{}: pos {} state {} - data.size()={}", fmt::ptr(this), current_pos(), state::START, data.size());
+            _state = state::KEY_SIZE;
+            break;
+        case state::KEY_SIZE:
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::KEY_SIZE);
+            if (this->read_16(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::KEY_BYTES;
+                break;
+            }
+            [[fallthrough]];
+        case state::KEY_BYTES:
+            trie_logger.trace("{}: pos {} state {} - size={}", fmt::ptr(this), current_pos(), state::KEY_BYTES, this->_u16);
+            if (this->read_bytes_contiguous(data, this->_u16, _key) != continuous_data_consumer::read_status::ready) {
+                _state = state::POSITION;
+                break;
+            }
+            [[fallthrough]];
+        case state::POSITION:
+            _result.partition_key = sstables::key(to_bytes(to_bytes_view(_key)));
+            _position_offset = current_pos();
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::POSITION);
+            if (read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::ROOT_OFFSET;
+                break;
+            }
+            [[fallthrough]];
+        case state::ROOT_OFFSET:
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::ROOT_OFFSET);
+            _result.data_offset = this->_u64;
+            if (read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::LOCAL_DELETION_TIME;
+                break;
+            }
+            [[fallthrough]];
+        case state::LOCAL_DELETION_TIME: {
+            _result.trie_root = _position_offset - this->_u64;
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
+            if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::MARKED_FOR_DELETE_AT;
+                break;
+            }
+        }
+            [[fallthrough]];
+        case state::MARKED_FOR_DELETE_AT:
+            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
+            _result.partition_tombstone.deletion_time = gc_clock::time_point(gc_clock::duration(this->_u32));
+            if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::END;
+                break;
+            }
+            [[fallthrough]];
+        case state::END: {
+            _state = blabla_state::END;
+            _result.partition_tombstone.timestamp = this->_u64;
+        }
+        }
+        trie_logger.trace("{}: exit pos {} state {}", fmt::ptr(this), current_pos(), _state);
+        return _state == state::END ? proceed::no : proceed::yes;
+    }
+public:
+    blabla_context(reader_permit rp, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
+        : continuous_data_consumer(std::move(rp), std::move(input), start, maxlen)
+    {}
+};
+
+struct my_trie_reader_input final : trie_reader_input {
+    cached_file& _f;
+    reader_permit _permit;
+    my_trie_reader_input(cached_file& f, reader_permit p) : _f(f), _permit(p) {}
+    reader_node pv_to_reader_node(size_t offset, cached_file::ptr_type pv) {
+        auto sp = pv->get_view().subspan(offset % cached_file::page_size);
+        trie_logger.trace("my_trie_reader_input::read(): reading at {} {}", offset, fmt_hex_cb(sp.subspan(0, 32)));
+
+        auto type = uint8_t(sp[0]) >> 4;
+        switch (type) {
+        case PAYLOAD_ONLY:
+            return reader_node{std::move(pv), &my_parser, 1, 0, uint8_t(sp[0]) & 0xf, offset};
+        case SINGLE_NOPAYLOAD_4:
+        case SINGLE_NOPAYLOAD_12:
+            return reader_node{std::move(pv), &my_parser, 1 + div_ceil(bits_per_pointer_arr[type], 8), 1, 0, offset};
+        case SINGLE_8:
+        case SINGLE_16:
+            return reader_node{std::move(pv), &my_parser, 2 + div_ceil(bits_per_pointer_arr[type], 8), 1, uint8_t(sp[0]) & 0xf, offset};
+        case SPARSE_8:
+        case SPARSE_12:
+        case SPARSE_16:
+        case SPARSE_24:
+        case SPARSE_40: {
+            auto n_children = uint8_t(sp[1]);
+            auto payload_offset = 2 + div_ceil(n_children * (8 + bits_per_pointer_arr[type]), 8);
+            return reader_node{std::move(pv), &my_parser, payload_offset, n_children, uint8_t(sp[0]) & 0xf, offset};
+        }
+        case DENSE_12:
+        case DENSE_16:
+        case DENSE_24:
+        case DENSE_32:
+        case DENSE_40:
+        case LONG_DENSE: {
+            auto dense_span = uint8_t(sp[2]) + 1;
+            auto payload_offset = 3 + div_ceil(dense_span * bits_per_pointer_arr[type], 8);
+            return reader_node{std::move(pv), &my_parser, payload_offset, dense_span, uint8_t(sp[0]) & 0xf, offset};
+        }
+        default: abort();
+        }
+    }
+    [[gnu::always_inline]]
+    future<reader_node> read(uint64_t offset) override {
+        auto x = _f.try_get_page_ptr(offset / cached_file::page_size, nullptr);
+        if (x) {
+            return make_ready_future<reader_node>(pv_to_reader_node(offset, std::move(x)));
+        }
+        return _f.get_page_view(offset, nullptr).then([offset, this] (auto&& pv) { return pv_to_reader_node(offset, std::move(pv)); });
+
+    }
+    future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override {
+        trie_logger.trace("my_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
+        auto ctx = blabla_context(std::move(rp), make_file_input_stream(file(make_shared<cached_file_impl>(_f)), offset, _f.size() - offset), offset, _f.size() - offset);
+        auto close = deferred_close(ctx);
+        co_await ctx.consume_input();
+        co_return std::move(ctx._result);
+    }
+};
+
 trie_cursor::trie_cursor(trie_reader_input& in)
-    : _in(in)
+    : _in(static_cast<my_trie_reader_input&>(in))
 {
 }
 
 future<void> trie_cursor::init(uint64_t root_offset) {
-    reset();
-    _path.push_back({co_await _in.get().read(root_offset), -1});
+    return _in.get().read(root_offset).then([this] (auto v) {
+        reset();
+        _path.push_back({std::move(v), -1});
+    });
 }
 
 future<set_result> trie_cursor::set_before(const_bytes key) {
@@ -882,11 +1056,11 @@ future<set_result> trie_cursor::step() {
         _path.pop_back();
         _path.back().child_idx += 1;
     }
-    _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, true).offset), -1});
+    _path.emplace_back(co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, true).offset), -1);
     while (!_path.back().node.payload_bits) {
         _path.back().child_idx += 1;
         assert(_path.back().child_idx < int(_path.back().node.n_children));
-        _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, true).offset), -1});
+        _path.emplace_back(co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, true).offset), -1);
     }
     co_return set_result::no_match;
 }
@@ -1010,14 +1184,18 @@ tombstone index_cursor::open_tombstone() const {
 const std::optional<row_index_header>& index_cursor::partition_metadata() const {
     return _partition_metadata;
 }
+[[gnu::always_inline]]
 future<> index_cursor::maybe_read_metadata() {
     trie_logger.trace("index_cursor::maybe_read_metadata this={}", fmt::ptr(this));
     if (_partition_cursor.eof()) {
-        co_return;
+        return make_ready_future<>();
     }
     if (auto res = payload_to_offset(_partition_cursor.payload().bytes); res < 0) {
-        _partition_metadata = co_await _in_row.get().read_row_index_header(-res, _permit);
+        return _in_row.get().read_row_index_header(-res, _permit).then([this] (auto result) {
+            _partition_metadata = result;
+        });
     }
+    return make_ready_future<>();
 }
 future<set_result> index_cursor::set_before_partition(const_bytes key) {
     trie_logger.trace("index_cursor::set_before_partition this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
@@ -1039,9 +1217,9 @@ future<set_result> index_cursor::next_partition() {
     trie_logger.trace("index_cursor::next_partition() this={}", fmt::ptr(this));
     _row_cursor.reset();
     _partition_metadata.reset();
-    auto res = co_await _partition_cursor.step();
-    co_await maybe_read_metadata();
-    co_return res;
+    return _partition_cursor.step().then([this] (auto res) -> future<set_result> {
+        return maybe_read_metadata().then([res] { return res; });
+    });
 }
 future<set_result> index_cursor::set_before_row(const_bytes key) {
     trie_logger.trace("index_cursor::set_before_row this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
@@ -1058,14 +1236,17 @@ future<set_result> index_cursor::set_before_row(const_bytes key) {
 future<set_result> index_cursor::set_after_row(const_bytes key) {
     trie_logger.trace("index_cursor::set_after_row this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
     if (!_partition_metadata) {
-        co_return co_await next_partition();
+        return next_partition();
     }
-    co_await _row_cursor.init(_partition_metadata->trie_root);
-    auto rowres = co_await _row_cursor.set_after(key);
-    if (rowres == set_result::eof) {
-        co_return co_await next_partition();
+    return _row_cursor.init(_partition_metadata->trie_root).then([this, key] () -> future<set_result> {
+        return _row_cursor.set_after(key).then([this] (auto rowres) {
+            if (rowres == set_result::eof) {
+                return next_partition();
+            }
+            return make_ready_future<set_result>(rowres);
+        });
     }
-    co_return rowres;
+    );
 }
 
 int64_t payload_to_offset(const_bytes p) {
@@ -1079,10 +1260,12 @@ future<row_index_header> trie_index_reader::read_row_index_header(uint64_t pos) 
 }
 std::vector<std::byte> trie_index_reader::translate_key(dht::ring_position_view key) {
     auto trie_key = std::vector<std::byte>();
+    trie_key.reserve(256);
     trie_key.push_back(std::byte(0x40));
     auto token = key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : key.token().unbias();
     append_to_vector(trie_key, object_representation(seastar::cpu_to_be<uint64_t>(token)));
     if (auto k = key.key()) {
+        trie_key.reserve(k->representation().size() + 64);
         _s->partition_key_type()->memcmp_comparable_form(*k, trie_key);
     }
     std::byte ending;
@@ -1148,6 +1331,7 @@ std::byte bound_weight_to_terminator(bound_weight b) {
 std::vector<std::byte> translate_pipv(const schema& s, position_in_partition_view pipv) {
     std::vector<std::byte> res;
     if (pipv.has_key()) {
+        res.reserve(pipv.key().representation().size() + 64);
         s.clustering_key_type()->memcmp_comparable_form(pipv.key(), res);
     }
     res.push_back(bound_weight_to_terminator(pipv.get_bound_weight()));
@@ -1297,119 +1481,6 @@ bool trie_index_reader::eof() const {
 //     });
 // }
 
-enum class blabla_state {
-    START,
-    KEY_SIZE,
-    KEY_BYTES,
-    POSITION,
-    ROOT_OFFSET,
-    LOCAL_DELETION_TIME,
-    MARKED_FOR_DELETE_AT,
-    END,
-};
-
-inline std::string_view format_as(blabla_state s) {
-    using enum blabla_state;
-    switch (s) {
-    case START: return "START";
-    case KEY_SIZE: return "KEY_SIZE";
-    case KEY_BYTES: return "KEY_BYTES";
-    case POSITION: return "POSITION";
-    case ROOT_OFFSET: return "ROOT_OFFSET";
-    case LOCAL_DELETION_TIME: return "LOCAL_DELETION_TIME";
-    case MARKED_FOR_DELETE_AT: return "MARKED_FOR_DELETE_AT";
-    case END: return "END";
-    default: abort();
-    }
-}
-
-struct blabla_context : public data_consumer::continuous_data_consumer<blabla_context> {
-    using processing_result = data_consumer::processing_result;
-    using proceed = data_consumer::proceed;
-    using state = blabla_state;
-    state _state = state::START;
-    row_index_header _result;
-    uint64_t _position_offset;
-    temporary_buffer<char> _key;
-    void verify_end_state() {
-        if (_state != state::END) {
-            throw sstables::malformed_sstable_exception(fmt::format("blabla_context: {}", _state));
-        }
-    }
-    bool non_consuming() const {
-        return ((_state == state::END) || (_state == state::START));
-    }
-    processing_result process_state(temporary_buffer<char>& data) {
-        auto current_pos = [&] { return this->position() - data.size(); };
-
-        switch (_state) {
-        // START comes first, to make the handling of the 0-quantity case simpler
-        case state::START:
-            trie_logger.trace("{}: pos {} state {} - data.size()={}", fmt::ptr(this), current_pos(), state::START, data.size());
-            _state = state::KEY_SIZE;
-            break;
-        case state::KEY_SIZE:
-            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::KEY_SIZE);
-            if (this->read_16(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::KEY_BYTES;
-                break;
-            }
-            [[fallthrough]];
-        case state::KEY_BYTES:
-            trie_logger.trace("{}: pos {} state {} - size={}", fmt::ptr(this), current_pos(), state::KEY_BYTES, this->_u16);
-            if (this->read_bytes_contiguous(data, this->_u16, _key) != continuous_data_consumer::read_status::ready) {
-                _state = state::POSITION;
-                break;
-            }
-            [[fallthrough]];
-        case state::POSITION:
-            _result.partition_key = sstables::key(to_bytes(to_bytes_view(_key)));
-            _position_offset = current_pos();
-            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::POSITION);
-            if (read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::ROOT_OFFSET;
-                break;
-            }
-            [[fallthrough]];
-        case state::ROOT_OFFSET:
-            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::ROOT_OFFSET);
-            _result.data_offset = this->_u64;
-            if (read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::LOCAL_DELETION_TIME;
-                break;
-            }
-            [[fallthrough]];
-        case state::LOCAL_DELETION_TIME: {
-            _result.trie_root = _position_offset - this->_u64;
-            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
-            if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::MARKED_FOR_DELETE_AT;
-                break;
-            }
-        }
-            [[fallthrough]];
-        case state::MARKED_FOR_DELETE_AT:
-            trie_logger.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
-            _result.partition_tombstone.deletion_time = gc_clock::time_point(gc_clock::duration(this->_u32));
-            if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::END;
-                break;
-            }
-            [[fallthrough]];
-        case state::END: {
-            _state = blabla_state::END;
-            _result.partition_tombstone.timestamp = this->_u64;
-        }
-        }
-        trie_logger.trace("{}: exit pos {} state {}", fmt::ptr(this), current_pos(), _state);
-        return _state == state::END ? proceed::no : proceed::yes;
-    }
-public:
-    blabla_context(reader_permit rp, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
-        : continuous_data_consumer(std::move(rp), std::move(input), start, maxlen)
-    {}
-};
-
 // future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(uint64_t offset, reader_permit rp) {
 //     trie_logger.trace("seastar_file_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
 //     auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f_file, offset, _f.size() - offset), offset, _f.size() - offset);
@@ -1503,55 +1574,6 @@ ssize_t row_index_trie_writer::finish() {
 
 seastar::logger cached_file_logger("cached_file");
 
-struct my_trie_reader_input : trie_reader_input {
-    cached_file& _f;
-    reader_permit _permit;
-    my_trie_reader_input(cached_file& f, reader_permit p) : _f(f), _permit(p) {}
-    future<reader_node> read(uint64_t offset) override {
-        auto pv = co_await _f.get_page_view(offset, nullptr);
-        auto sp = pv->get_view().subspan(offset % cached_file::page_size);
-        trie_logger.trace("my_trie_reader_input::read(): reading at {} {}", offset, fmt_hex_cb(sp.subspan(0, 32)));
-
-        auto type = uint8_t(sp[0]) >> 4;
-        switch (type) {
-        case PAYLOAD_ONLY:
-            co_return reader_node{std::move(pv), &my_parser, 1, 0, uint8_t(sp[0]) & 0xf, offset};
-        case SINGLE_NOPAYLOAD_4:
-        case SINGLE_NOPAYLOAD_12:
-            co_return reader_node{std::move(pv), &my_parser, 1 + div_ceil(bits_per_pointer_arr[type], 8), 1, 0, offset};
-        case SINGLE_8:
-        case SINGLE_16:
-            co_return reader_node{std::move(pv), &my_parser, 2 + div_ceil(bits_per_pointer_arr[type], 8), 1, uint8_t(sp[0]) & 0xf, offset};
-        case SPARSE_8:
-        case SPARSE_12:
-        case SPARSE_16:
-        case SPARSE_24:
-        case SPARSE_40: {
-            auto n_children = uint8_t(sp[1]);
-            auto payload_offset = 2 + div_ceil(n_children * (8 + bits_per_pointer_arr[type]), 8);
-            co_return reader_node{std::move(pv), &my_parser, payload_offset, n_children, uint8_t(sp[0]) & 0xf, offset};
-        }
-        case DENSE_12:
-        case DENSE_16:
-        case DENSE_24:
-        case DENSE_32:
-        case DENSE_40:
-        case LONG_DENSE: {
-            auto dense_span = uint8_t(sp[2]) + 1;
-            auto payload_offset = 3 + div_ceil(dense_span * bits_per_pointer_arr[type], 8);
-            co_return reader_node{std::move(pv), &my_parser, payload_offset, dense_span, uint8_t(sp[0]) & 0xf, offset};
-        }
-        default: abort();
-        }
-    }
-    future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override {
-        trie_logger.trace("my_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
-        auto ctx = blabla_context(std::move(rp), make_file_input_stream(file(make_shared<cached_file_impl>(_f)), offset, _f.size() - offset), offset, _f.size() - offset);
-        auto close = deferred_close(ctx);
-        co_await ctx.consume_input();
-        co_return std::move(ctx._result);
-    }
-};
 
 std::unique_ptr<trie_reader_input> make_trie_reader_input(cached_file& f, reader_permit p) {
     return std::make_unique<my_trie_reader_input>(f, p);

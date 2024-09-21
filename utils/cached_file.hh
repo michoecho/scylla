@@ -210,6 +210,7 @@ private:
                 return first_page;
             });
     }
+
     future<temporary_buffer<char>> get_page(page_idx_type idx,
                                             page_count_type count,
                                             tracing::trace_state_ptr trace_state) {
@@ -263,6 +264,17 @@ public:
 
     future<ptr_type> get_page_view(size_t global_pos, tracing::trace_state_ptr trace_state) {
         return get_page_ptr(global_pos / page_size, 1, trace_state);
+    }
+    cached_page::ptr_type try_get_page_ptr(page_idx_type idx,
+            tracing::trace_state_ptr trace_state) {
+        auto i = _cache.lower_bound(idx);
+        if (i != _cache.end() && i->idx == idx) {
+            ++_metrics.page_hits;
+            tracing::trace(trace_state, "page cache hit: file={}, page={}", _file_name, idx);
+            cached_page& cp = *i;
+            return cp.share();
+        }
+        return nullptr;
     }
 
     // Generator of subsequent pages of data reflecting the contents of the file.

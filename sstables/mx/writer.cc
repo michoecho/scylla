@@ -874,6 +874,7 @@ std::byte convert_bound_to_byte(bound_kind_m b) {
 
 std::vector<std::byte> clustering_info_to_byte_comparable(const schema& s, const clustering_key_prefix& clustering, bound_kind_m kind) {
     std::vector<std::byte> first;
+    first.reserve(clustering.representation().size() + 64);
     s.clustering_key_type()->memcmp_comparable_form(clustering, first);
     first.push_back(convert_bound_to_byte(kind));
     return first;
@@ -1487,6 +1488,7 @@ stop_iteration writer::consume(range_tombstone_change&& rtc) {
 
 static std::vector<std::byte> decorated_key_byte_comparable(const schema& s, const dht::decorated_key& dk) {
     std::vector<std::byte> res;
+    res.reserve(dk.key().representation().size() + 64);
     res.push_back(std::byte(0x40));
     append_to_vector(res, object_representation(seastar::cpu_to_be<uint64_t>(dk.token().unbias())));
     assert(res.size() == 9);

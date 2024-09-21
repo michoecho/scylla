@@ -1542,6 +1542,7 @@ def get_warning_options(cxx):
         '-Wno-c++11-narrowing',
         '-Wno-overloaded-virtual',
         '-Wno-unused-parameter',
+        '-Wno-always-inline-coroutine',
         '-Wno-unsupported-friend',
         '-Wno-missing-field-initializers',
         '-Wno-deprecated-copy',

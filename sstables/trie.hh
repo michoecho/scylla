@@ -120,12 +120,12 @@ struct payload_result {
 struct reader_node {
     struct page_ptr : cached_file::ptr_type {
         using parent = cached_file::ptr_type;
-        page_ptr() = default;
-        page_ptr(parent&& x) : parent(std::move(x)) {}
-        page_ptr(const page_ptr& other) : parent(other->share()) {}
-        page_ptr(page_ptr&&) = default;
-        page_ptr& operator=(page_ptr&&) = default;
-        page_ptr& operator=(const page_ptr& other) {
+        page_ptr() noexcept = default;
+        page_ptr(parent&& x) noexcept : parent(std::move(x)) {}
+        page_ptr(const page_ptr& other) noexcept : parent(other->share()) {}
+        page_ptr(page_ptr&&) noexcept = default;
+        page_ptr& operator=(page_ptr&&) noexcept = default;
+        page_ptr& operator=(const page_ptr& other) noexcept {
             parent::operator=(other->share());
             return *this;
         }
@@ -167,9 +167,11 @@ enum class set_result {
     match,
 };
 
+class my_trie_reader_input;
+
 class trie_cursor {
-    std::reference_wrapper<trie_reader_input> _in;
-    std::vector<node_cursor> _path;
+    std::reference_wrapper<my_trie_reader_input> _in;
+    utils::small_vector<node_cursor, 8> _path;
 public:
     trie_cursor(trie_reader_input&);
     trie_cursor& operator=(const trie_cursor&) = default;
