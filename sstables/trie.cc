@@ -1,3 +1,4 @@
+#pragma clang optimize off
 #include "trie.hh"
 #include <algorithm>
 #include <cassert>
@@ -408,8 +409,11 @@ node_parser my_parser {
             auto bpp = bits_per_pointer_arr[type];
             auto n_children = uint8_t(sp[1]);
             auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
-            assert(idx < n_children);
-            return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+            if (idx < n_children) {
+                return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+            } else {
+                return {idx, std::byte(0), 0};
+            }
         }
         case DENSE_12:
         case DENSE_16:
@@ -421,13 +425,19 @@ node_parser my_parser {
             auto idx = uint8_t(transition) - start;
             auto dense_span = uint64_t(sp[2]) + 1;
             auto bpp = bits_per_pointer_arr[type];
-            assert(idx < int(dense_span));
-            return {idx, transition, read_offset(sp.subspan(3), idx, bpp)};
+            while (idx < int(dense_span)) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, transition, off};
+                } else {
+                    ++idx;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
         }
         default: abort();
         }
     },
-    .get_child = [] (const_bytes sp, int idx) -> node_parser::lookup_result {
+    .get_child = [] (const_bytes sp, int idx, bool forward) -> node_parser::lookup_result {
         auto type = uint8_t(sp[0]) >> 4;
         switch (type) {
         case PAYLOAD_ONLY:
@@ -464,7 +474,14 @@ node_parser my_parser {
             auto dense_span = uint64_t(sp[2]) + 1;
             auto bpp = bits_per_pointer_arr[type];
             assert(idx < int(dense_span));
-            return {idx, transition, read_offset(sp.subspan(3), idx, bpp)};
+            while (idx < int(dense_span) && idx >= 0) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, transition, off};
+                } else {
+                    idx += forward ? 1 : -1;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
         }
         default: abort();
         }
@@ -754,31 +771,31 @@ auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> 
     return f(node, src);
 }
 
-constinit const static node_parser capnp_node_parser {
-    .lookup = [] (const_bytes p, std::byte transition) -> node_parser::lookup_result {
-        return with_deser(p, [transition] (const Node::Reader& node, void*) {
-            std::vector<std::byte> children;
-            for (const auto& x : node.getChildren()) {
-                children.emplace_back(std::byte(x.getTransition()));
-            }
-            auto idx = std::ranges::lower_bound(children, transition) - children.begin();
-            return node_parser::lookup_result{
-                .idx = idx,
-                .byte = children[idx],
-                .offset = node.getChildren()[idx].getOffset(),
-            };
-        });
-    },
-    .get_child = [] (const_bytes p, int idx) -> node_parser::lookup_result {
-        return with_deser(p, [idx] (const Node::Reader& node, void*) -> node_parser::lookup_result {
-            return node_parser::lookup_result{
-                .idx = idx,
-                .byte = std::byte(node.getChildren()[idx].getTransition()),
-                .offset = node.getChildren()[idx].getOffset(),
-            };
-        });
-    },
-};
+// constinit const static node_parser capnp_node_parser {
+//     .lookup = [] (const_bytes p, std::byte transition) -> node_parser::lookup_result {
+//         return with_deser(p, [transition] (const Node::Reader& node, void*) {
+//             std::vector<std::byte> children;
+//             for (const auto& x : node.getChildren()) {
+//                 children.emplace_back(std::byte(x.getTransition()));
+//             }
+//             auto idx = std::ranges::lower_bound(children, transition) - children.begin();
+//             return node_parser::lookup_result{
+//                 .idx = idx,
+//                 .byte = children[idx],
+//                 .offset = node.getChildren()[idx].getOffset(),
+//             };
+//         });
+//     },
+//     .get_child = [] (const_bytes p, int idx) -> node_parser::lookup_result {
+//         return with_deser(p, [idx] (const Node::Reader& node, void*) -> node_parser::lookup_result {
+//             return node_parser::lookup_result{
+//                 .idx = idx,
+//                 .byte = std::byte(node.getChildren()[idx].getTransition()),
+//                 .offset = node.getChildren()[idx].getOffset(),
+//             };
+//         });
+//     },
+// };
 
 // reader_node::reader_node(cached_file::page_view pv) {
 //     _raw_bytes = std::move(pv);
@@ -794,8 +811,8 @@ node_parser::lookup_result reader_node::lookup(std::byte transition) {
     return parser->lookup(raw_bytes.get_view(), transition);
 }
 
-node_parser::lookup_result reader_node::get_child(int idx) {
-    return parser->get_child(raw_bytes.get_view(), idx);
+node_parser::lookup_result reader_node::get_child(int idx, bool forward) {
+    return parser->get_child(raw_bytes.get_view(), idx, forward);
 }
 
 trie_cursor::trie_cursor(trie_reader_input& in)
@@ -845,7 +862,6 @@ future<set_result> trie_cursor::set_after(const_bytes key) {
     co_return res;
 }
 
-#pragma clang optimize off
 future<set_result> trie_cursor::step() {
     assert(initialized() && !eof());
     _path.back().child_idx += 1;
@@ -856,15 +872,14 @@ future<set_result> trie_cursor::step() {
         _path.pop_back();
         _path.back().child_idx += 1;
     }
-    _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx).offset), -1});
+    _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, true).offset), -1});
     while (!_path.back().node.payload_bits) {
         _path.back().child_idx += 1;
         assert(_path.back().child_idx < int(_path.back().node.n_children));
-        _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx).offset), -1});
+        _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, true).offset), -1});
     }
     co_return set_result::no_match;
 }
-#pragma clang optimize on
 
 future<set_result> trie_cursor::step_back() {
     assert(initialized());
@@ -891,10 +906,10 @@ future<set_result> trie_cursor::step_back() {
             continue;
         }
     }
-    _path.push_back({co_await _in.get().read(_path.back().node.pos -_path.back().node.get_child(_path.back().child_idx).offset), -1});
+    _path.push_back({co_await _in.get().read(_path.back().node.pos -_path.back().node.get_child(_path.back().child_idx, false).offset), -1});
     while (_path.back().node.n_children) {
         _path.back().child_idx = _path.back().node.n_children - 1;
-        _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx).offset), -1});
+        _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, false).offset), -1});
     }
     assert(_path.back().child_idx == -1);
     assert(_path.back().node.payload_bits);
@@ -1255,22 +1270,22 @@ bool trie_index_reader::eof() const {
     return _lower.data_file_pos(_total_file_size) >= _total_file_size;
 }
 
-future<reader_node> seastar_file_trie_reader_input::read(uint64_t offset) {
-    trie_logger.trace("seastar_file_trie_reader_input::read(): reading at {}", offset);
-    return _f.get_page_view(offset, _permit, nullptr).then([offset] (cached_file::page_view pv) -> reader_node {
-        return with_deser(pv.get_view(), [offset, pv = std::move(pv)] (const Node::Reader& node, void* b) -> reader_node {
-            auto payload_offset = reinterpret_cast<const std::byte*>(node.getPayload().getBytes().begin()) - reinterpret_cast<const std::byte*>(b);
-            return reader_node {
-                .raw_bytes = std::move(pv),
-                .parser = &capnp_node_parser,
-                .payload_offset = payload_offset,
-                .n_children = node.getChildren().size(),
-                .payload_bits = node.getPayload().getBits(),
-                .pos = offset,
-            };
-        });
-    });
-}
+// future<reader_node> seastar_file_trie_reader_input::read(uint64_t offset) {
+//     trie_logger.trace("seastar_file_trie_reader_input::read(): reading at {}", offset);
+//     return _f.get_page_view(offset, _permit, nullptr).then([offset] (cached_file::page_view pv) -> reader_node {
+//         return with_deser(pv.get_view(), [offset, pv = std::move(pv)] (const Node::Reader& node, void* b) -> reader_node {
+//             auto payload_offset = reinterpret_cast<const std::byte*>(node.getPayload().getBytes().begin()) - reinterpret_cast<const std::byte*>(b);
+//             return reader_node {
+//                 .raw_bytes = std::move(pv),
+//                 .parser = &capnp_node_parser,
+//                 .payload_offset = payload_offset,
+//                 .n_children = node.getChildren().size(),
+//                 .payload_bits = node.getPayload().getBits(),
+//                 .pos = offset,
+//             };
+//         });
+//     });
+// }
 
 enum class blabla_state {
     START,
@@ -1385,26 +1400,26 @@ public:
     {}
 };
 
-future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(uint64_t offset, reader_permit rp) {
-    trie_logger.trace("seastar_file_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
-    auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f_file, offset, _f.size() - offset), offset, _f.size() - offset);
-    auto close = deferred_close(ctx);
-    co_await ctx.consume_input();
-    co_return std::move(ctx._result);
-}
+// future<row_index_header> seastar_file_trie_reader_input::read_row_index_header(uint64_t offset, reader_permit rp) {
+//     trie_logger.trace("seastar_file_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
+//     auto ctx = blabla_context(std::move(rp), make_file_input_stream(_f_file, offset, _f.size() - offset), offset, _f.size() - offset);
+//     auto close = deferred_close(ctx);
+//     co_await ctx.consume_input();
+//     co_return std::move(ctx._result);
+// }
 
 trie_reader_input::~trie_reader_input() {
 }
 
-seastar_file_trie_reader_input::seastar_file_trie_reader_input(cached_file& f, reader_permit permit)
-    : _f(f)
-    , _f_file(make_cached_seastar_file(_f))
-    , _permit(std::move(permit))
-{}
+// seastar_file_trie_reader_input::seastar_file_trie_reader_input(cached_file& f, reader_permit permit)
+//     : _f(f)
+//     , _f_file(make_cached_seastar_file(_f))
+//     , _permit(std::move(permit))
+// {}
 
-future<> seastar_file_trie_reader_input::close() {
-    return _f_file.close();
-}
+// future<> seastar_file_trie_reader_input::close() {
+//     return _f_file.close();
+// }
 
 row_index_trie_writer::row_index_trie_writer(trie_writer_output& out) :_out(out) {
 }

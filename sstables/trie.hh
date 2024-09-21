@@ -107,7 +107,7 @@ struct node_parser {
         uint64_t offset;
     };
     lookup_result (*lookup)(const_bytes, std::byte transition);
-    lookup_result (*get_child)(const_bytes, int idx);
+    lookup_result (*get_child)(const_bytes, int idx, bool forward);
 };
 
 
@@ -125,7 +125,7 @@ struct reader_node {
     size_t pos;
 
     node_parser::lookup_result lookup(std::byte transition);
-    node_parser::lookup_result get_child(int idx);
+    node_parser::lookup_result get_child(int idx, bool forward);
     payload_result payload() const;
 };
 
