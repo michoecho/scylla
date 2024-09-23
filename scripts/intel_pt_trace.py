@@ -202,7 +202,7 @@ async def run(manager: ManagerClient) -> None:
     # Setup for the traced operation.
     cluster = Cluster(["127.11.11.1"], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
     cql = cluster.connect()
-    select = cql.prepare(f"SELECT * FROM keyspace1.standard1 WHERE key = ?")
+    select = cql.prepare(f"SELECT * FROM keyspace1.standard1 WHERE key = ? bypass cache")
     flag = '' if RECORD_KERNEL else 'u'
     string, _ = await (await asyncio.subprocess.create_subprocess_shell("pgrep -x -d, scylla", stdout=asyncio.subprocess.PIPE)).communicate()
     string = string.strip().decode()
@@ -220,6 +220,7 @@ async def run(manager: ManagerClient) -> None:
         await cql.run_async(select, [pk0])
         await cql.run_async(select, [pk0])
         print("Recording...")
+        await cql.run_async(select, [pk])
         async with with_perf_enabled(control):
             # Here the actual trace happens.
             await cql.run_async(select, [pk])

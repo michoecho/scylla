@@ -131,11 +131,11 @@ struct reader_node {
         }
     };
     page_ptr raw_bytes;
-    const node_parser* parser;
     uint16_t payload_offset;
     uint16_t n_children;
     uint8_t payload_bits;
     size_t pos;
+    std::byte transition;
 
     node_parser::lookup_result lookup(std::byte transition);
     node_parser::lookup_result get_child(int idx, bool forward);
@@ -172,6 +172,7 @@ class my_trie_reader_input;
 class trie_cursor {
     std::reference_wrapper<my_trie_reader_input> _in;
     utils::small_vector<node_cursor, 8> _path;
+    utils::small_vector<reader_node::page_ptr, 8> _pages;
 public:
     trie_cursor(trie_reader_input&);
     trie_cursor& operator=(const trie_cursor&) = default;
@@ -184,6 +185,7 @@ public:
     bool eof() const;
     bool initialized() const;
     void reset();
+    future<reader_node> read(uint64_t offset);
 };
 
 int64_t payload_to_offset(const_bytes p);
