@@ -2,6 +2,7 @@
 #include "trie.hh"
 #include <algorithm>
 #include <cassert>
+#include <immintrin.h>
 #include <set>
 #include <capnp/message.h>
 #include <capnp/serialize-packed.h>
@@ -371,14 +372,23 @@ public:
     }
 };
 
+[[gnu::always_inline]]
 uint64_t read_offset(const_bytes sp, int idx, int bpp) {
-    uint64_t off = 0;
-    for (int i = 0; i < div_ceil(bpp, 8); ++i) {
-        off = off << 8 | uint64_t(sp[(idx * bpp) / 8 + i]);
+    if (bpp % 8 == 0) {
+        auto b = bpp / 8;
+        uint64_t a = seastar::read_be<uint64_t>((const char*)sp.data() + b * idx);
+        return a >> 8*(8 - b);
+    } else {
+        // uint64_t off = 0;
+        // for (int i = 0; i < div_ceil(bpp, 8); ++i) {
+        //     off = off << 8 | uint64_t(sp[(idx * bpp) / 8 + i]);
+        // }
+        // off >>= (8 - (bpp * (idx + 1) % 8)) % 8;
+        // off &= uint64_t(-1) >> (64 - bpp);
+        auto z = (seastar::read_be<uint32_t>((const char*)sp.data() + 3 * (idx / 2)) >> (20 - 12 * (idx % 2))) & 0xfff;
+        // assert(z == off);
+        return z;
     }
-    off >>= (8 - (bpp * (idx + 1) % 8)) % 8;
-    off &= uint64_t(-1) >> (64 - bpp);
-    return off;
 }
 
 constexpr node_parser my_parser {
@@ -407,10 +417,46 @@ constexpr node_parser my_parser {
                 return {0, sp[1], uint64_t(sp[1]) << 8 | uint64_t(sp[2])};
             }
             return {1, std::byte(0), 0};
-        case SPARSE_8:
-        case SPARSE_12:
-        case SPARSE_16:
-        case SPARSE_24:
+        case SPARSE_8: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+            if (idx < n_children) {
+                return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+            } else {
+                return {idx, std::byte(0), 0};
+            }
+        }
+        case SPARSE_12: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+            if (idx < n_children) {
+                return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+            } else {
+                return {idx, std::byte(0), 0};
+            }
+        }
+        case SPARSE_16: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+            if (idx < n_children) {
+                return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+            } else {
+                return {idx, std::byte(0), 0};
+            }
+        }
+        case SPARSE_24: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+            if (idx < n_children) {
+                return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+            } else {
+                return {idx, std::byte(0), 0};
+            }
+        }
         case SPARSE_40: {
             auto bpp = bits_per_pointer_arr[type];
             auto n_children = uint8_t(sp[1]);
@@ -421,11 +467,76 @@ constexpr node_parser my_parser {
                 return {idx, std::byte(0), 0};
             }
         }
-        case DENSE_12:
-        case DENSE_16:
-        case DENSE_24:
-        case DENSE_32:
-        case DENSE_40:
+        case DENSE_12: {
+            auto start = int(sp[1]);
+            auto idx = std::max<int>(0, int(transition) - start);
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            while (idx < int(dense_span)) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, std::byte(start + idx), off};
+                } else {
+                    ++idx;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_16: {
+            auto start = int(sp[1]);
+            auto idx = std::max<int>(0, int(transition) - start);
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            while (idx < int(dense_span)) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, std::byte(start + idx), off};
+                } else {
+                    ++idx;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_24: {
+            auto start = int(sp[1]);
+            auto idx = std::max<int>(0, int(transition) - start);
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            while (idx < int(dense_span)) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, std::byte(start + idx), off};
+                } else {
+                    ++idx;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_32: {
+            auto start = int(sp[1]);
+            auto idx = std::max<int>(0, int(transition) - start);
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            while (idx < int(dense_span)) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, std::byte(start + idx), off};
+                } else {
+                    ++idx;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_40: {
+            auto start = int(sp[1]);
+            auto idx = std::max<int>(0, int(transition) - start);
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            while (idx < int(dense_span)) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    return {idx, std::byte(start + idx), off};
+                } else {
+                    ++idx;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
         case LONG_DENSE: {
             auto start = int(sp[1]);
             auto idx = std::max<int>(0, int(transition) - start);
@@ -460,21 +571,106 @@ constexpr node_parser my_parser {
         case SINGLE_16:
             assert(idx == 0);
             return {idx, sp[1], uint64_t(sp[2]) << 8 | uint64_t(sp[3])};
-        case SPARSE_8:
-        case SPARSE_12:
-        case SPARSE_16:
-        case SPARSE_24:
+        case SPARSE_8: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            assert(idx < n_children);
+            return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+        }
+        case SPARSE_12: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            assert(idx < n_children);
+            return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+        }
+        case SPARSE_16: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            assert(idx < n_children);
+            return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+        }
+        case SPARSE_24: {
+            auto bpp = bits_per_pointer_arr[type];
+            auto n_children = uint8_t(sp[1]);
+            assert(idx < n_children);
+            return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+        }
         case SPARSE_40: {
             auto bpp = bits_per_pointer_arr[type];
             auto n_children = uint8_t(sp[1]);
             assert(idx < n_children);
             return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
         }
-        case DENSE_12:
-        case DENSE_16:
-        case DENSE_24:
-        case DENSE_32:
-        case DENSE_40:
+        case DENSE_12: {
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            assert(idx < int(dense_span));
+            while (idx < int(dense_span) && idx >= 0) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    auto transition = std::byte(uint8_t(sp[1]) + idx);
+                    return {idx, transition, off};
+                } else {
+                    idx += forward ? 1 : -1;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_16: {
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            assert(idx < int(dense_span));
+            while (idx < int(dense_span) && idx >= 0) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    auto transition = std::byte(uint8_t(sp[1]) + idx);
+                    return {idx, transition, off};
+                } else {
+                    idx += forward ? 1 : -1;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_24: {
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            assert(idx < int(dense_span));
+            while (idx < int(dense_span) && idx >= 0) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    auto transition = std::byte(uint8_t(sp[1]) + idx);
+                    return {idx, transition, off};
+                } else {
+                    idx += forward ? 1 : -1;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_32: {
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            assert(idx < int(dense_span));
+            while (idx < int(dense_span) && idx >= 0) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    auto transition = std::byte(uint8_t(sp[1]) + idx);
+                    return {idx, transition, off};
+                } else {
+                    idx += forward ? 1 : -1;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
+        case DENSE_40: {
+            auto dense_span = uint64_t(sp[2]) + 1;
+            auto bpp = bits_per_pointer_arr[type];
+            assert(idx < int(dense_span));
+            while (idx < int(dense_span) && idx >= 0) {
+                if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+                    auto transition = std::byte(uint8_t(sp[1]) + idx);
+                    return {idx, transition, off};
+                } else {
+                    idx += forward ? 1 : -1;
+                }
+            }
+            return {dense_span, std::byte(0), 0};
+        }
         case LONG_DENSE: {
             auto dense_span = uint64_t(sp[2]) + 1;
             auto bpp = bits_per_pointer_arr[type];
@@ -761,14 +957,48 @@ ssize_t partition_index_trie_writer::finish() {
     return _wr.finish();
 }
 
-const_bytes reader_node::raw() const {
-    return raw_bytes->get_view().subspan(pos % cached_file::page_size);
+const_bytes reader_node::raw(const page_ptr& ptr) const {
+    return ptr->get_view().subspan(pos % cached_file::page_size);
 }
 
-payload_result reader_node::payload() const {
-    auto p = raw();
-    auto tail = p.subspan(payload_offset);
-    trie_logger.trace("(reader_node::payload: bits={} offset={} result={})", payload_bits, payload_offset, fmt_hex_cb(tail.subspan(0, std::min<int>(20, tail.size()))));;
+payload_result reader_node::payload(const page_ptr& ptr) const {
+    auto sp = raw(ptr);
+    auto type = uint8_t(sp[0]) >> 4;
+    uint64_t payload_offset;
+    switch (type) {
+    case PAYLOAD_ONLY:
+        payload_offset = 1;
+        break;
+    case SINGLE_NOPAYLOAD_4:
+    case SINGLE_NOPAYLOAD_12:
+        payload_offset = 1 + div_ceil(bits_per_pointer_arr[type], 8);
+        break;
+    case SINGLE_8:
+    case SINGLE_16:
+        payload_offset = 2 + div_ceil(bits_per_pointer_arr[type], 8);
+        break;
+    case SPARSE_8:
+    case SPARSE_12:
+    case SPARSE_16:
+    case SPARSE_24:
+    case SPARSE_40: {
+        payload_offset = 2 + div_ceil(n_children * (8 + bits_per_pointer_arr[type]), 8);
+        break;
+    }
+    case DENSE_12:
+    case DENSE_16:
+    case DENSE_24:
+    case DENSE_32:
+    case DENSE_40:
+    case LONG_DENSE: {
+        auto dense_span = uint8_t(sp[2]) + 1;
+        payload_offset = 3 + div_ceil(dense_span * bits_per_pointer_arr[type], 8);
+        break;
+    }
+    default: abort();
+    }
+    auto tail = sp.subspan(payload_offset);
+    // trie_logger.trace("(reader_node::payload: bits={} offset={} result={})", payload_bits, payload_offset, fmt_hex_cb(tail.subspan(0, std::min<int>(20, tail.size()))));;
     return {payload_bits, tail};
 }
 
@@ -817,12 +1047,12 @@ auto with_deser(const_bytes p, const std::invocable<const Node::Reader&, void*> 
 //     });
 // }
 
-node_parser::lookup_result reader_node::lookup(std::byte transition) {
-    return my_parser.lookup(raw(), transition);
+node_parser::lookup_result reader_node::lookup(std::byte transition, const page_ptr& ptr) {
+    return my_parser.lookup(raw(ptr), transition);
 }
 
-node_parser::lookup_result reader_node::get_child(int idx, bool forward) {
-    return my_parser.get_child(raw(), idx, forward);
+node_parser::lookup_result reader_node::get_child(int idx, bool forward, const page_ptr& ptr) {
+    return my_parser.get_child(raw(ptr), idx, forward);
 }
 
 
@@ -939,28 +1169,27 @@ public:
     {}
 };
 
-reader_node pv_to_reader_node(size_t offset, cached_file::ptr_type pv) {
+reader_node pv_to_reader_node(size_t offset, const cached_file::ptr_type& pv) {
     auto sp = pv->get_view().subspan(offset % cached_file::page_size);
-    trie_logger.trace("my_trie_reader_input::read(): reading at {} {}", offset, fmt_hex_cb(sp.subspan(0, 32)));
+    // trie_logger.trace("my_trie_reader_input::read(): reading at {} {}", offset, fmt_hex_cb(sp.subspan(0, 32)));
 
     auto type = uint8_t(sp[0]) >> 4;
     switch (type) {
     case PAYLOAD_ONLY:
-        return reader_node{std::move(pv), 1, 0, uint8_t(sp[0]) & 0xf, offset};
+        return reader_node{offset, 0, uint8_t(sp[0]) & 0xf};
     case SINGLE_NOPAYLOAD_4:
     case SINGLE_NOPAYLOAD_12:
-        return reader_node{std::move(pv), 1 + div_ceil(bits_per_pointer_arr[type], 8), 1, 0, offset};
+        return reader_node{offset, 1, 0};
     case SINGLE_8:
     case SINGLE_16:
-        return reader_node{std::move(pv), 2 + div_ceil(bits_per_pointer_arr[type], 8), 1, uint8_t(sp[0]) & 0xf, offset};
+        return reader_node{offset, 1, uint8_t(sp[0]) & 0xf};
     case SPARSE_8:
     case SPARSE_12:
     case SPARSE_16:
     case SPARSE_24:
     case SPARSE_40: {
         auto n_children = uint8_t(sp[1]);
-        auto payload_offset = 2 + div_ceil(n_children * (8 + bits_per_pointer_arr[type]), 8);
-        return reader_node{std::move(pv), payload_offset, n_children, uint8_t(sp[0]) & 0xf, offset};
+        return reader_node{offset, n_children, uint8_t(sp[0]) & 0xf};
     }
     case DENSE_12:
     case DENSE_16:
@@ -969,8 +1198,7 @@ reader_node pv_to_reader_node(size_t offset, cached_file::ptr_type pv) {
     case DENSE_40:
     case LONG_DENSE: {
         auto dense_span = uint8_t(sp[2]) + 1;
-        auto payload_offset = 3 + div_ceil(dense_span * bits_per_pointer_arr[type], 8);
-        return reader_node{std::move(pv), payload_offset, dense_span, uint8_t(sp[0]) & 0xf, offset};
+        return reader_node{offset, dense_span, uint8_t(sp[0]) & 0xf};
     }
     default: abort();
     }
@@ -989,6 +1217,10 @@ struct my_trie_reader_input final : trie_reader_input {
         return _f.get_page_view(offset, nullptr).then([offset] (auto&& pv) { return pv_to_reader_node(offset, std::move(pv)); });
 
     }
+    future<cached_file::ptr_type> read_page(uint64_t offset) {
+        return _f.get_page_view(offset, nullptr);
+
+    }
     future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override {
         trie_logger.trace("my_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
         auto ctx = blabla_context(std::move(rp), make_file_input_stream(file(make_shared<cached_file_impl>(_f)), offset, _f.size() - offset), offset, _f.size() - offset);
@@ -1003,46 +1235,155 @@ trie_cursor::trie_cursor(trie_reader_input& in)
 {
 }
 
-future<void> trie_cursor::init(uint64_t root_offset) {
-    return _in.get().read(root_offset).then([this] (auto v) {
-        reset();
-        _path.push_back({std::move(v), -1});
+[[gnu::noinline]]
+future<> trie_cursor::push_page_and_node(uint64_t root_offset) {
+    return _in.get().read_page(root_offset).then([this, root_offset] (auto v) {
+        _pages.emplace_back(std::move(v));
+        _path.push_back({pv_to_reader_node(root_offset, _pages.back()), -1});
     });
 }
 
 [[gnu::always_inline]]
-future<reader_node> trie_cursor::read(uint64_t offset) {
-    if (_path.back().node.pos / cached_file::page_size == offset / cached_file::page_size) {
-        return make_ready_future<reader_node>(pv_to_reader_node(offset, _path.back().node.raw_bytes->share()));
+future<> trie_cursor::push_maybe_page_and_node(uint64_t offset) {
+    if (push(offset)) {
+        return make_ready_future<>();
+    } else {
+        return push_page_and_node(offset);
     }
-    return _in.get().read(offset);
+}
+
+future<void> trie_cursor::init(uint64_t root_offset) {
+    reset();
+    return push_page_and_node(root_offset);
+}
+
+bool trie_cursor::push(uint64_t offset) {
+    if (_path.back().node.pos / cached_file::page_size == offset / cached_file::page_size) {
+        // trie_logger.trace("saved");
+        if (_path.back().node.n_children == 1 && _path.back().node.payload_bits == 0) {
+            _path.back() = {pv_to_reader_node(offset, _pages.back()), -1};
+        } else {
+            _path.push_back({pv_to_reader_node(offset, _pages.back()), -1});
+        }
+        return true;
+    }
+    // trie_logger.trace("notsaved");
+    return false;
+}
+
+void trie_cursor::pop() {
+    if (_path.size() > 1) {
+        if (_path[_path.size() - 1].node.pos / cached_file::page_size != _path[_path.size() - 2].node.pos / cached_file::page_size) {
+            _pages.pop_back();
+        }
+    }
+    _path.pop_back();
 } 
 
+__attribute__((target("avx2")))
 future<set_result> trie_cursor::set_before(const_bytes key) {
     assert(initialized());
     assert(_path.back().child_idx == -1 || eof());
-    for (size_t k = 1; k < _path.size(); ++k) {
-        if (_path[k].node.transition != key[k - 1]) {
-            _path.resize(k);
-            break;
-        }
-    }
-    trie_logger.debug("set_before, startk={}", _path.size());
+    // for (size_t k = 1; k < _path.size(); ++k) {
+    //     if (_path[k].node.transition != key[k - 1]) {
+    //         while (_path.size() > k) {
+    //             pop();
+    //         }
+    //     }
+    // }
+    _path.resize(1);
+    // trie_logger.debug("set_before, startk={}", _path.size());
     _path.back().child_idx = -1;
     size_t i = 0;
     while (i < key.size()) {
-        if (!_path[i].node.n_children) {
+        if (!_path.back().node.n_children) {
             break;
         }
-        auto it = _path[i].node.lookup(key[i]);
-        _path[i].child_idx = it.idx;
-        trie_logger.trace("set_before, lookup: key={:x} children={} idx={}, offset={} pos={}", uint8_t(key[i]),_path[i].node.n_children, it.idx, it.offset, _path.back().node.pos);
-        if (size_t(_path[i].child_idx) == _path[i].node.n_children
+        node_parser::lookup_result it;
+        const uint8_t* __restrict__ p = reinterpret_cast<const uint8_t* __restrict__>(_pages.back()->get_view().data() + _path.back().node.pos % cached_file::page_size);
+        // trie_logger.debug("p=: {}", p);
+        if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2) & *(p + 1) == uint8_t(key[i])) {
+            const uint8_t* start = p; 
+            const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
+            const size_t keysize = key.size();
+            while (p - 32 >= beg && i+16 <= keysize - 1) {
+                typedef unsigned char  vector32b  __attribute__((__vector_size__(32)));
+                typedef unsigned char  vector16b  __attribute__((__vector_size__(16)));
+                vector32b a = {};
+                memcpy(&a, p - 32, 32);
+                auto z = uint8_t(SINGLE_NOPAYLOAD_4 << 4 | 2);
+                vector16b b = {};
+                memcpy(&b, &key[i], 16);
+                vector16b c = {z, z, z, z, z, z, z, z, z, z, z, z, z, z, z, z};
+                // auto a = _mm256_loadu_epi8(p - 32);
+                // memc
+                // auto b = _mm256_castsi128_si256(_mm_loadu_epi8(&key[i]));
+                vector32b d = __builtin_shufflevector(c, b, 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31);
+                if (!__builtin_reduce_and(a == d)) {
+                    break;
+                }
+                p -= 32;
+                i += 16;
+            }
+            _path.back() = node_cursor{reader_node{_path.back().node.pos - (start - p), 1, (*p)&0xf, std::byte(*(p+1))}, -1};
+        }
+        // if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2)) {
+        //     const uint8_t* start = p; 
+        //     const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
+        //     const size_t keysize = key.size();
+        //     while (p - 2 > beg && i < keysize - 1 && (*(p - 2) == (SINGLE_NOPAYLOAD_4 << 4 | 2) & *(p + 1) == uint8_t(key[i]))) {
+        //         p -= 2;
+        //         i += 1;
+        //     }
+        //     // trie_logger.debug("fast forwarded: {}", p - start);
+        //     _path.back() = node_cursor{reader_node{_path.back().node.pos - (start - p), 1, (*p)&0xf, std::byte(*(p+1))}, -1};
+        // }
+        it = _path.back().node.lookup(key[i], _pages.back());
+        _path.back().child_idx = it.idx;
+        // trie_logger.trace("set_before, lookup: key={:x} children={} idx={}, offset={} pos={}", uint8_t(key[i]),_path.back().node.n_children, it.idx, it.offset, _path.back().node.pos);
+        if (size_t(_path.back().child_idx) == _path.back().node.n_children
             || it.byte != key[i]) {
-            _path[i].child_idx -= 1;
+            _path.back().child_idx -= 1;
             co_return co_await step();
         }
-        _path.push_back({co_await read(_path.back().node.pos - it.offset), -1});
+        co_await push_maybe_page_and_node(_path.back().node.pos - it.offset);
+        _path.back().node.transition = key[i];
+        i += 1;
+    }
+    if (_path.back().node.payload_bits) {
+        co_return set_result::match;
+    } else {
+        co_return co_await step();
+    }
+}
+
+future<set_result> trie_cursor::set_before2(const_bytes key) {
+    assert(initialized());
+    assert(_path.back().child_idx == -1 || eof());
+    // for (size_t k = 1; k < _path.size(); ++k) {
+    //     if (_path[k].node.transition != key[k - 1]) {
+    //         while (_path.size() > k) {
+    //             pop();
+    //         }
+    //     }
+    // }
+    _path.resize(1);
+    // trie_logger.debug("set_before, startk={}", _path.size());
+    _path.back().child_idx = -1;
+    size_t i = 0;
+    while (i < key.size()) {
+        if (!_path.back().node.n_children) {
+            break;
+        }
+        auto it = _path.back().node.lookup(key[i], _pages.back());
+        _path.back().child_idx = it.idx;
+        // trie_logger.trace("set_before, lookup: key={:x} children={} idx={}, offset={} pos={}", uint8_t(key[i]),_path.back().node.n_children, it.idx, it.offset, _path.back().node.pos);
+        if (size_t(_path.back().child_idx) == _path.back().node.n_children
+            || it.byte != key[i]) {
+            _path.back().child_idx -= 1;
+            co_return co_await step();
+        }
+        co_await push_maybe_page_and_node(_path.back().node.pos - it.offset);
         _path.back().node.transition = key[i];
         i += 1;
     }
@@ -1066,20 +1407,26 @@ future<set_result> trie_cursor::step() {
     assert(initialized() && !eof());
     _path.back().child_idx += 1;
     while (size_t(_path.back().child_idx) == _path.back().node.n_children) {
+        // trie_logger.trace("up");
         if (_path.size() == 1) {
             co_return set_result::eof;
         }
-        _path.pop_back();
+        pop();
         _path.back().child_idx += 1;
     }
-    auto getc = _path.back().node.get_child(_path.back().child_idx, true);
-    _path.emplace_back(co_await read(_path.back().node.pos - getc.offset), -1);
+    auto getc = _path.back().node.get_child(_path.back().child_idx, true, _pages.back());
+    if (!push(_path.back().node.pos - getc.offset)) {
+        co_await push_maybe_page_and_node(_path.back().node.pos - getc.offset);
+    }
     _path.back().node.transition = getc.byte;
     while (!_path.back().node.payload_bits) {
+        // trie_logger.trace("yes");
         _path.back().child_idx += 1;
         assert(_path.back().child_idx < int(_path.back().node.n_children));
-        getc = _path.back().node.get_child(_path.back().child_idx, true);
-        _path.emplace_back(co_await read(_path.back().node.pos - getc.offset), -1);
+        getc = _path.back().node.get_child(_path.back().child_idx, true, _pages.back());
+        if (!push(_path.back().node.pos - getc.offset)) {
+            co_await push_maybe_page_and_node(_path.back().node.pos - getc.offset);
+        }
         _path.back().node.transition = getc.byte;
     }
     co_return set_result::no_match;
@@ -1110,10 +1457,10 @@ future<set_result> trie_cursor::step_back() {
             continue;
         }
     }
-    _path.push_back({co_await _in.get().read(_path.back().node.pos -_path.back().node.get_child(_path.back().child_idx, false).offset), -1});
+    co_await push_maybe_page_and_node(_path.back().node.pos -_path.back().node.get_child(_path.back().child_idx, false, _pages.back()).offset);
     while (_path.back().node.n_children) {
         _path.back().child_idx = _path.back().node.n_children - 1;
-        _path.push_back({co_await _in.get().read(_path.back().node.pos - _path.back().node.get_child(_path.back().child_idx, false).offset), -1});
+        co_await push_maybe_page_and_node(_path.back().node.pos -_path.back().node.get_child(_path.back().child_idx, false, _pages.back()).offset);
     }
     assert(_path.back().child_idx == -1);
     assert(_path.back().node.payload_bits);
@@ -1123,7 +1470,7 @@ future<set_result> trie_cursor::step_back() {
 payload_result trie_cursor::payload() const {
     assert(initialized());
     assert(_path.back().child_idx == -1);
-    return _path.back().node.payload();
+    return _path.back().node.payload(_pages.back());
 }
 
 bool trie_cursor::eof() const {
@@ -1137,6 +1484,7 @@ bool trie_cursor::initialized() const {
 
 void trie_cursor::reset() {
     _path.clear();
+    _pages.clear();
 }
 
 index_cursor::index_cursor(trie_reader_input& par, trie_reader_input& row, reader_permit permit)
@@ -1159,7 +1507,7 @@ bool index_cursor::row_cursor_set() const {
 }
 
 uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
-    trie_logger.trace("index_cursor::data_file_pos this={}", fmt::ptr(this));
+    // trie_logger.trace("index_cursor::data_file_pos this={}", fmt::ptr(this));
     assert(_partition_cursor.initialized());
     if (_partition_metadata) {
         if (!_row_cursor.initialized()) {
@@ -1175,10 +1523,10 @@ uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
     if (!_partition_cursor.eof()) {
         auto res = payload_to_offset(_partition_cursor.payload().bytes);
         assert(res >= 0);
-        trie_logger.trace("index_cursor::data_file_pos this={} from partition cursor: {}", fmt::ptr(this), res);
+        // trie_logger.trace("index_cursor::data_file_pos this={} from partition cursor: {}", fmt::ptr(this), res);
         return res;
     }
-    trie_logger.trace("index_cursor::data_file_pos this={} from eof: {}", fmt::ptr(this), file_size);
+    // trie_logger.trace("index_cursor::data_file_pos this={} from eof: {}", fmt::ptr(this), file_size);
     return file_size;
 }
 
@@ -1218,12 +1566,12 @@ future<> index_cursor::maybe_read_metadata() {
     return make_ready_future<>();
 }
 future<set_result> index_cursor::set_before_partition(const_bytes key) {
-    trie_logger.trace("index_cursor::set_before_partition this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
+    // trie_logger.trace("index_cursor::set_before_partition this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
     _row_cursor.reset();
     _partition_metadata.reset();
-    auto res = co_await _partition_cursor.set_before(key);
-    co_await maybe_read_metadata();
-    co_return res;
+    return _partition_cursor.set_before(key).then([this] (auto res) -> future<set_result> {
+        return maybe_read_metadata().then([res] { return res; });
+    });
 }
 future<set_result> index_cursor::set_after_partition(const_bytes key) {
     trie_logger.trace("index_cursor::set_after_partition this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
@@ -1253,11 +1601,8 @@ future<set_result> index_cursor::set_before_row(const_bytes key) {
     }
     co_return res;
 }
-future<set_result> index_cursor::set_after_row(const_bytes key) {
-    trie_logger.trace("index_cursor::set_after_row this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
-    if (!_partition_metadata) {
-        return next_partition();
-    }
+
+future<set_result> index_cursor::set_after_row_cold(const_bytes key) {
     return _row_cursor.init(_partition_metadata->trie_root).then([this, key] () -> future<set_result> {
         return _row_cursor.set_after(key).then([this] (auto rowres) {
             if (rowres == set_result::eof) {
@@ -1267,6 +1612,15 @@ future<set_result> index_cursor::set_after_row(const_bytes key) {
         });
     }
     );
+}
+
+[[gnu::always_inline]]
+future<set_result> index_cursor::set_after_row(const_bytes key) {
+    // trie_logger.trace("index_cursor::set_after_row this={} key={}", fmt::ptr(this), fmt_hex_cb(key));
+    if (!_partition_metadata) {
+        return next_partition();
+    }
+    return set_after_row_cold(key);
 }
 
 int64_t payload_to_offset(const_bytes p) {

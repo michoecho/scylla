@@ -221,9 +221,14 @@ async def run(manager: ManagerClient) -> None:
         await cql.run_async(select, [pk0])
         print("Recording...")
         await cql.run_async(select, [pk])
+
+        select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
+        cql.execute(select, ["a", "x" * 60000 + f"{50}"])
         async with with_perf_enabled(control):
             # Here the actual trace happens.
-            await cql.run_async(select, [pk])
+            #await cql.run_async(select, [pk])
+
+            print(cql.execute(select, ["a", "x" * 60000 + f"{50}"]).one())
 
 async def main() -> None:
     print("Setting up the manager...")

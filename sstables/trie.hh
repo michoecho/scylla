@@ -130,17 +130,15 @@ struct reader_node {
             return *this;
         }
     };
-    page_ptr raw_bytes;
-    uint16_t payload_offset;
+    size_t pos;
     uint16_t n_children;
     uint8_t payload_bits;
-    size_t pos;
     std::byte transition;
 
-    node_parser::lookup_result lookup(std::byte transition);
-    node_parser::lookup_result get_child(int idx, bool forward);
-    payload_result payload() const;
-    const_bytes raw() const;
+    node_parser::lookup_result lookup(std::byte transition, const page_ptr& ptr);
+    node_parser::lookup_result get_child(int idx, bool forward, const page_ptr& ptr);
+    payload_result payload(const page_ptr& ptr) const;
+    const_bytes raw(const page_ptr& ptr) const;
 };
 
 struct row_index_header {
@@ -178,6 +176,7 @@ public:
     trie_cursor& operator=(const trie_cursor&) = default;
     future<void> init(uint64_t root_offset);
     future<set_result> set_before(const_bytes key);
+    future<set_result> set_before2(const_bytes key);
     future<set_result> set_after(const_bytes key);
     future<set_result> step();
     future<set_result> step_back();
@@ -185,7 +184,10 @@ public:
     bool eof() const;
     bool initialized() const;
     void reset();
-    future<reader_node> read(uint64_t offset);
+    bool push(uint64_t offset);
+    future<> push_page_and_node(uint64_t offset);
+    future<> push_maybe_page_and_node(uint64_t offset);
+    void pop();
 };
 
 int64_t payload_to_offset(const_bytes p);
@@ -209,6 +211,7 @@ public:
     future<set_result> next_partition();
     future<set_result> set_before_row(const_bytes);
     future<set_result> set_after_row(const_bytes);
+    future<set_result> set_after_row_cold(const_bytes);
     bool row_cursor_set() const;
 };
 

@@ -313,7 +313,7 @@ public:
                     while (true) {
                         if (i == lin.size()) {
                             out.push_back(std::byte(0xfe));
-                            break;
+                            goto next;
                         } else if (lin[i] == 0) {
                             out.push_back(std::byte(0xfe));
                             ++i;
@@ -325,6 +325,8 @@ public:
                     }
                 }
             }
+            out.push_back(std::byte(0x0));
+next:
         }
     }
 };
