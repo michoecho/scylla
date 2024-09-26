@@ -20,6 +20,8 @@
 
 enum class allow_prefixes { no, yes };
 
+void memcmp_comparable_form_inner(bytes_view, std::vector<std::byte>& out);
+
 template<allow_prefixes AllowPrefixes = allow_prefixes::no>
 class compound_type final {
 private:
@@ -304,29 +306,8 @@ public:
         for (const managed_bytes_view comp : components(v)) {
             out.push_back(std::byte(0x40));
             auto lin = linearized(comp);
-            for (size_t i = 0; i < lin.size(); ++i) {
-                if (lin[i] != 0) {
-                    out.push_back(std::byte(lin[i]));
-                } else {
-                    out.push_back(std::byte(0));
-                    ++i;
-                    while (true) {
-                        if (i == lin.size()) {
-                            out.push_back(std::byte(0xfe));
-                            goto next;
-                        } else if (lin[i] == 0) {
-                            out.push_back(std::byte(0xfe));
-                            ++i;
-                        } else {
-                            out.push_back(std::byte(0xff));
-                            --i;
-                            break;
-                        }
-                    }
-                }
-            }
+            memcmp_comparable_form_inner(lin, out);
             out.push_back(std::byte(0x0));
-next:
         }
     }
 };

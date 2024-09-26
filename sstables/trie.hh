@@ -176,6 +176,7 @@ public:
     trie_cursor& operator=(const trie_cursor&) = default;
     future<void> init(uint64_t root_offset);
     future<set_result> set_before(const_bytes key);
+    future<set_result> fast_traverse(const_bytes key);
     future<set_result> set_before2(const_bytes key);
     future<set_result> set_after(const_bytes key);
     future<set_result> step();

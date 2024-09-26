@@ -1278,10 +1278,202 @@ void trie_cursor::pop() {
         }
     }
     _path.pop_back();
-} 
+}
+
+[[gnu::noinline]]
+future<set_result> trie_cursor::fast_traverse(const_bytes key) {
+    assert(initialized());
+    uint64_t current = _path.front().node.pos;
+    uint64_t pagebeg = std::numeric_limits<uint64_t>::max();
+    cached_file::ptr_type page_holder = nullptr;
+    const uint8_t* __restrict__ page = nullptr;
+    const uint8_t* __restrict__ key_ptr = reinterpret_cast<const uint8_t*>(key.data());
+    const uint8_t* key_end = reinterpret_cast<const uint8_t*>(key.data() + key.size());
+next:
+    if (current < pagebeg) [[unlikely]] {
+        pagebeg = round_down(current, cached_file::page_size);
+        page_holder = co_await _in.get().read_page(pagebeg);
+        page = reinterpret_cast<const uint8_t*>(page_holder->get_view().data());
+    }
+    if (key_ptr == key_end) {
+        co_return set_result::match;
+    }
+    const uint8_t* __restrict__ node = page + (current - pagebeg);
+    auto k = *key_ptr;
+    switch (node[0] >> 4) {
+    case PAYLOAD_ONLY:
+        co_return set_result::no_match;
+    case SINGLE_NOPAYLOAD_4:
+        if (k <= node[1]) {
+            current -= node[0] & 0xf;
+        } else {
+            co_return set_result::no_match;
+        }
+        break;
+    case SINGLE_8:
+        if (k <= node[1]) {
+            current -= node[0] & 0xf;
+        } else {
+            co_return set_result::no_match;
+        }
+        break;
+    case SINGLE_NOPAYLOAD_12:
+        if (k <= node[2]) {
+            current -= (node[0] & 0xf) << 8 | node[1];
+        } else {
+            co_return set_result::no_match;
+        }
+        break;
+    case SINGLE_16:
+        if (k <= node[2]) {
+            current -= uint64_t(node[1]) << 8 | uint64_t(node[2]);
+        } else {
+            co_return set_result::no_match;
+        }
+        break;
+    case SPARSE_8: {
+        auto n_children = uint8_t(node[1]);
+        auto idx = std::lower_bound(&node[2], &node[2 + n_children], k) - &node[2];
+        if (idx < n_children) {
+            current -= node[2 + n_children + idx];
+        } else {
+            co_return set_result::no_match;
+        }
+        break;
+    }
+    // case SPARSE_12: {
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     auto n_children = uint8_t(sp[1]);
+    //     auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+    //     if (idx < n_children) {
+    //         return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+    //     } else {
+    //         return {idx, std::byte(0), 0};
+    //     }
+    // }
+    // case SPARSE_16: {
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     auto n_children = uint8_t(sp[1]);
+    //     auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+    //     if (idx < n_children) {
+    //         return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+    //     } else {
+    //         return {idx, std::byte(0), 0};
+    //     }
+    // }
+    // case SPARSE_24: {
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     auto n_children = uint8_t(sp[1]);
+    //     auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+    //     if (idx < n_children) {
+    //         return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+    //     } else {
+    //         return {idx, std::byte(0), 0};
+    //     }
+    // }
+    // case SPARSE_40: {
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     auto n_children = uint8_t(sp[1]);
+    //     auto idx = std::lower_bound(&sp[2], &sp[2 + n_children], transition) - &sp[2];
+    //     if (idx < n_children) {
+    //         return {idx, sp[2 + idx], read_offset(sp.subspan(2+n_children), idx, bpp)};
+    //     } else {
+    //         return {idx, std::byte(0), 0};
+    //     }
+    // }
+    // case DENSE_12: {
+    //     auto start = int(sp[1]);
+    //     auto idx = std::max<int>(0, int(transition) - start);
+    //     auto dense_span = uint64_t(sp[2]) + 1;
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     while (idx < int(dense_span)) {
+    //         if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+    //             return {idx, std::byte(start + idx), off};
+    //         } else {
+    //             ++idx;
+    //         }
+    //     }
+    //     return {dense_span, std::byte(0), 0};
+    // }
+    // case DENSE_16: {
+    //     auto start = int(sp[1]);
+    //     auto idx = std::max<int>(0, int(transition) - start);
+    //     auto dense_span = uint64_t(sp[2]) + 1;
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     while (idx < int(dense_span)) {
+    //         if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+    //             return {idx, std::byte(start + idx), off};
+    //         } else {
+    //             ++idx;
+    //         }
+    //     }
+    //     return {dense_span, std::byte(0), 0};
+    // }
+    // case DENSE_24: {
+    //     auto start = int(sp[1]);
+    //     auto idx = std::max<int>(0, int(transition) - start);
+    //     auto dense_span = uint64_t(sp[2]) + 1;
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     while (idx < int(dense_span)) {
+    //         if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+    //             return {idx, std::byte(start + idx), off};
+    //         } else {
+    //             ++idx;
+    //         }
+    //     }
+    //     return {dense_span, std::byte(0), 0};
+    // }
+    // case DENSE_32: {
+    //     auto start = int(sp[1]);
+    //     auto idx = std::max<int>(0, int(transition) - start);
+    //     auto dense_span = uint64_t(sp[2]) + 1;
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     while (idx < int(dense_span)) {
+    //         if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+    //             return {idx, std::byte(start + idx), off};
+    //         } else {
+    //             ++idx;
+    //         }
+    //     }
+    //     return {dense_span, std::byte(0), 0};
+    // }
+    // case DENSE_40: {
+    //     auto start = int(sp[1]);
+    //     auto idx = std::max<int>(0, int(transition) - start);
+    //     auto dense_span = uint64_t(sp[2]) + 1;
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     while (idx < int(dense_span)) {
+    //         if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+    //             return {idx, std::byte(start + idx), off};
+    //         } else {
+    //             ++idx;
+    //         }
+    //     }
+    //     return {dense_span, std::byte(0), 0};
+    // }
+    // case LONG_DENSE: {
+    //     auto start = int(sp[1]);
+    //     auto idx = std::max<int>(0, int(transition) - start);
+    //     auto dense_span = uint64_t(sp[2]) + 1;
+    //     auto bpp = bits_per_pointer_arr[type];
+    //     while (idx < int(dense_span)) {
+    //         if (auto off = read_offset(sp.subspan(3), idx, bpp)) {
+    //             return {idx, std::byte(start + idx), off};
+    //         } else {
+    //             ++idx;
+    //         }
+    //     }
+    //     return {dense_span, std::byte(0), 0};
+    // }
+    default: co_return set_result::no_match;
+    }
+    key_ptr += 1;
+    goto next;
+}
 
 __attribute__((target("avx2")))
 future<set_result> trie_cursor::set_before(const_bytes key) {
+    co_await fast_traverse(key);
     assert(initialized());
     assert(_path.back().child_idx == -1 || eof());
     // for (size_t k = 1; k < _path.size(); ++k) {
@@ -1300,33 +1492,33 @@ future<set_result> trie_cursor::set_before(const_bytes key) {
             break;
         }
         node_parser::lookup_result it;
-        const uint8_t* __restrict__ p = reinterpret_cast<const uint8_t* __restrict__>(_pages.back()->get_view().data() + _path.back().node.pos % cached_file::page_size);
+        // const uint8_t* __restrict__ p = reinterpret_cast<const uint8_t* __restrict__>(_pages.back()->get_view().data() + _path.back().node.pos % cached_file::page_size);
         // trie_logger.debug("p=: {}", p);
-        if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2) & *(p + 1) == uint8_t(key[i])) {
-            const uint8_t* start = p; 
-            const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
-            const size_t keysize = key.size();
-            while (p - 32 >= beg && i+16 <= keysize - 1) {
-                typedef unsigned char  vector32b  __attribute__((__vector_size__(32)));
-                typedef unsigned char  vector16b  __attribute__((__vector_size__(16)));
-                vector32b a = {};
-                memcpy(&a, p - 32, 32);
-                auto z = uint8_t(SINGLE_NOPAYLOAD_4 << 4 | 2);
-                vector16b b = {};
-                memcpy(&b, &key[i], 16);
-                vector16b c = {z, z, z, z, z, z, z, z, z, z, z, z, z, z, z, z};
-                // auto a = _mm256_loadu_epi8(p - 32);
-                // memc
-                // auto b = _mm256_castsi128_si256(_mm_loadu_epi8(&key[i]));
-                vector32b d = __builtin_shufflevector(c, b, 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31);
-                if (!__builtin_reduce_and(a == d)) {
-                    break;
-                }
-                p -= 32;
-                i += 16;
-            }
-            _path.back() = node_cursor{reader_node{_path.back().node.pos - (start - p), 1, (*p)&0xf, std::byte(*(p+1))}, -1};
-        }
+        // if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2) & *(p + 1) == uint8_t(key[i])) {
+        //     const uint8_t* start = p; 
+        //     const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
+        //     const size_t keysize = key.size();
+        //     while (p - 32 >= beg && i+16 <= keysize - 1) {
+        //         typedef unsigned char  vector32b  __attribute__((__vector_size__(32)));
+        //         typedef unsigned char  vector16b  __attribute__((__vector_size__(16)));
+        //         vector32b a = {};
+        //         memcpy(&a, p - 32, 32);
+        //         auto z = uint8_t(SINGLE_NOPAYLOAD_4 << 4 | 2);
+        //         vector16b b = {};
+        //         memcpy(&b, &key[i], 16);
+        //         vector16b c = {z, z, z, z, z, z, z, z, z, z, z, z, z, z, z, z};
+        //         // auto a = _mm256_loadu_epi8(p - 32);
+        //         // memc
+        //         // auto b = _mm256_castsi128_si256(_mm_loadu_epi8(&key[i]));
+        //         vector32b d = __builtin_shufflevector(c, b, 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31);
+        //         if (!__builtin_reduce_and(a == d)) {
+        //             break;
+        //         }
+        //         p -= 32;
+        //         i += 16;
+        //     }
+        //     _path.back() = node_cursor{reader_node{_path.back().node.pos - (start - p), 1, (*p)&0xf, std::byte(*(p+1))}, -1};
+        // }
         // if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2)) {
         //     const uint8_t* start = p; 
         //     const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
@@ -1957,3 +2149,46 @@ std::unique_ptr<trie_writer_output> make_trie_writer_output(sstables::file_write
     return std::make_unique<trie_serializer>(w, page_size);
 }
 
+// void memcmp_comparable_form_inner(bytes_view lin, std::vector<std::byte>& res) {
+//     res.resize(res.size() + lin.size() * 2);
+//     std::byte* __restrict__ out = &res[res.size() - lin.size() * 2];
+//     const std::byte* __restrict__ in = reinterpret_cast<const std::byte*>(lin.data());
+//     const std::byte* in_end = in + lin.size();
+//     bool zero = false;
+//     while (true) {
+//         int incr = !(bool(*in) && zero);
+//         *out++ = zero ? std::byte(bool(*in) ? 0xff : 0xfe) : (*in);
+//         zero = !bool(*in);
+//         in += incr;
+//         if (in == in_end) {
+//             break;
+//         }
+//     }
+//     if (zero) {
+//         *out++ = std::byte(0xfe);
+//     }
+//     res.resize(out - res.data());
+// }
+void memcmp_comparable_form_inner(bytes_view lin, std::vector<std::byte>& out) {
+    for (size_t i = 0; i < lin.size(); ++i) {
+        if (lin[i] != 0) {
+            out.push_back(std::byte(lin[i]));
+        } else {
+            out.push_back(std::byte(0));
+            ++i;
+            while (true) {
+                if (i == lin.size()) {
+                    out.push_back(std::byte(0xfe));
+                    return;
+                } else if (lin[i] == 0) {
+                    out.push_back(std::byte(0xfe));
+                    ++i;
+                } else {
+                    out.push_back(std::byte(0xff));
+                    --i;
+                    break;
+                }
+            }
+        }
+    }
+}
