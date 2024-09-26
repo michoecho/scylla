@@ -200,7 +200,8 @@ async def with_perf_enabled(control_fds: tuple[typing.IO, typing.IO]) -> typing.
 async def run(manager: ManagerClient) -> None:
     print("Setting up the cluster...")
     # Setup for the traced operation.
-    cluster = Cluster(["127.11.11.1"], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
+    ip_addr = "127.11.11.1"
+    cluster = Cluster([ip_addr], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
     cql = cluster.connect()
     select = cql.prepare(f"SELECT * FROM keyspace1.standard1 WHERE key = ? bypass cache")
     flag = '' if RECORD_KERNEL else 'u'
@@ -222,18 +223,23 @@ async def run(manager: ManagerClient) -> None:
         print("Recording...")
         await cql.run_async(select, [pk])
 
+        insert = cql.prepare(f"INSERT INTO ks.t(pk, ck) VALUES(?, ?)")
         select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
-        cql.execute(select, ["a", "x" * 60000 + f"{50}"])
+        #cql.execute(select, ["a", "x" * 60000 + f"{50}"])
+
+        cql.execute(insert, ["a", "x" * 60000 + f"{50}"])
+        cql.execute(insert, ["a", "x" * 60000 + f"{51}"])
+
         async with with_perf_enabled(control):
             # Here the actual trace happens.
             #await cql.run_async(select, [pk])
-
-            print(cql.execute(select, ["a", "x" * 60000 + f"{50}"]).one())
+            await manager.api.keyspace_flush(ip_addr, "ks", "t")
+            #print(cql.execute(select, ["a", "x" * 60000 + f"{50}"]).one())
 
 async def main() -> None:
     print("Setting up the manager...")
-    #async with with_manager() as manager:
-    await run(None)
+    async with with_manager() as manager:
+        await run(manager)
 
 if __name__ == "__main__":
     subprocess.run(["sudo", "-v"])
