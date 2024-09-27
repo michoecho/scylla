@@ -6,6 +6,7 @@
 #include <span>
 #include <vector>
 #include "utils/cached_file.hh"
+#include "utils/small_vector.hh"
 
 using const_bytes = std::span<const std::byte>;
 
@@ -35,7 +36,7 @@ struct node {
     std::byte _transition = {};
     bool _has_out_of_page_children = false;
     bool _has_out_of_page_descendants = false;
-    std::vector<std::unique_ptr<node>> _children;
+    utils::small_vector<std::unique_ptr<node>, 2> _children;
     ssize_t _node_size = -1;
     ssize_t _branch_size = -1;
     ssize_t _output_pos = -1;

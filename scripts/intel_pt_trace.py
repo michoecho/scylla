@@ -22,7 +22,7 @@
 # c: cycles
 TIME_AXIS = "i"
 # Not recording the kernel can remove some noise, but can also make the trace more disjointed.
-RECORD_KERNEL = True
+RECORD_KERNEL = False
 
 import sys
 import os
@@ -172,7 +172,7 @@ async def with_perf_record(record_dir: str, args: list[str]) -> typing.AsyncIter
     os.mkfifo(control_fname)
     os.mkfifo(ack_fname)
     try:
-        proc = await asyncio.subprocess.create_subprocess_exec("sudo", "perf", "record", "--snapshot=e", "--delay=-1", f"--control=fifo:{control_fname},{ack_fname}", "--mmap-pages=256M,256M", *args, cwd=record_dir)
+        proc = await asyncio.subprocess.create_subprocess_exec("sudo", "perf", "record", "--snapshot=e", "--delay=-1", f"--control=fifo:{control_fname},{ack_fname}", "--mmap-pages=8M,8M", *args, cwd=record_dir)
         with open(control_fname, "wb", buffering=0) as w:
             with open(ack_fname, "rb", buffering=0) as r:
                 try:
@@ -197,13 +197,39 @@ async def with_perf_enabled(control_fds: tuple[typing.IO, typing.IO]) -> typing.
     w.write(b"snapshot\n")
     r.read(5)
 
+async def run2(manager: ManagerClient) -> None:
+    print("Setting up the cluster...")
+    # Setup for the traced operation.
+    ip_addr = "127.11.11.1"
+    cluster = Cluster([ip_addr], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
+    cql = cluster.connect()
+    flag = '' if RECORD_KERNEL else 'u'
+    string, _ = await (await asyncio.subprocess.create_subprocess_shell("pgrep -x -d, scylla", stdout=asyncio.subprocess.PIPE)).communicate()
+    string = string.strip().decode()
+    print("string", string)
+
+    # The meat.
+    print("Starting `perf record`...")
+    async with with_perf_record(".", [f"--pid={string}", f"--event=intel_pt/cyc=1/{flag}"]) as control:
+        cql.execute("drop keyspace if exists ks")
+        cql.execute("create keyspace ks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND TABLETS = { 'enabled': false }")
+        cql.execute("create table ks.t(pk text, ck text, primary key (pk, ck))")
+        insert = cql.prepare(f"INSERT INTO ks.t(pk, ck) VALUES(?, ?)")
+
+        for i in range(50):
+            cql.execute(insert, [str(i), str(i)]);
+
+        print("Recording...")
+        async with with_perf_enabled(control):
+            await manager.api.keyspace_flush(ip_addr, "ks", "t")
+
 async def run(manager: ManagerClient) -> None:
     print("Setting up the cluster...")
     # Setup for the traced operation.
     ip_addr = "127.11.11.1"
     cluster = Cluster([ip_addr], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
     cql = cluster.connect()
-    select = cql.prepare(f"SELECT * FROM keyspace1.standard1 WHERE key = ? bypass cache")
+    #select = cql.prepare(f"SELECT * FROM keyspace1.standard1 WHERE key = ? bypass cache")
     flag = '' if RECORD_KERNEL else 'u'
     string, _ = await (await asyncio.subprocess.create_subprocess_shell("pgrep -x -d, scylla", stdout=asyncio.subprocess.PIPE)).communicate()
     string = string.strip().decode()
@@ -218,17 +244,18 @@ async def run(manager: ManagerClient) -> None:
         # etc. are performed ahead of time, so that they don't pollute the trace.
         pk0 = bytes.fromhex("3335503436334b333630")
         pk = bytes.fromhex("4e4b373350354e344c30")
-        await cql.run_async(select, [pk0])
-        await cql.run_async(select, [pk0])
+        #await cql.run_async(select, [pk0])
+        #await cql.run_async(select, [pk0])
         print("Recording...")
-        await cql.run_async(select, [pk])
+        #await cql.run_async(select, [pk])
 
         insert = cql.prepare(f"INSERT INTO ks.t(pk, ck) VALUES(?, ?)")
-        select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
-        #cql.execute(select, ["a", "x" * 60000 + f"{50}"])
+        #select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
+        ##cql.execute(select, ["a", "x" * 60000 + f"{50}"])
 
         cql.execute(insert, ["a", "x" * 60000 + f"{50}"])
         cql.execute(insert, ["a", "x" * 60000 + f"{51}"])
+        cql.execute(insert, ["a", "x" * 60000 + f"{52}"])
 
         async with with_perf_enabled(control):
             # Here the actual trace happens.
@@ -239,7 +266,7 @@ async def run(manager: ManagerClient) -> None:
 async def main() -> None:
     print("Setting up the manager...")
     async with with_manager() as manager:
-        await run(manager)
+        await run2(manager)
 
 if __name__ == "__main__":
     subprocess.run(["sudo", "-v"])

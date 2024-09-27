@@ -79,7 +79,7 @@ size_t max_offset_from_child(const node& x, size_t pos) {
         }
         offset += it->get()->_branch_size;
     }
-    trie_logger.trace("max_offset_from_child: node={}, pos={}, result={}", fmt::ptr(&x), pos, result);
+    // trie_logger.trace("max_offset_from_child: node={}, pos={}, result={}", fmt::ptr(&x), pos, result);
     return result;
 }
 
@@ -89,11 +89,30 @@ node_type choose_node_type_impl(const node& x, size_t pos) {
         return PAYLOAD_ONLY;
     }
     auto max_offset = max_offset_from_child(x, pos);
-    constexpr int widths[] = {4, 8, 12, 16, 24, 32, 40, 64};
+    // constexpr int widths[] = {4, 8, 12, 16, 24, 32, 40, 64};
+    constexpr uint8_t widths_lookup[] = {
+        0,
+        0, 0, 0, 0,
+        1, 1, 1, 1,
+        2, 2, 2, 2,
+        3, 3, 3, 3,
+        4, 4, 4, 4,
+        4, 4, 4, 4,
+        5, 5, 5, 5,
+        5, 5, 5, 5,
+        6, 6, 6, 6,
+        6, 6, 6, 6,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+        7, 7, 7, 7,
+    };
     constexpr node_type singles[] = {SINGLE_NOPAYLOAD_4, SINGLE_8, SINGLE_NOPAYLOAD_12, SINGLE_16, DENSE_24, DENSE_32, DENSE_40, LONG_DENSE};
     constexpr node_type sparses[] = {SPARSE_8, SPARSE_8, SPARSE_12, SPARSE_16, SPARSE_24, SPARSE_40, SPARSE_40, LONG_DENSE};
     constexpr node_type denses[] = {DENSE_12, DENSE_12, DENSE_12, DENSE_16, DENSE_24, DENSE_32, DENSE_40, LONG_DENSE};
-    auto width_idx = std::ranges::lower_bound(widths, std::bit_width(max_offset)) - widths;
+    auto width_idx = widths_lookup[std::bit_width(max_offset)];
     if (n_children == 1) {
         const auto has_payload = x._payload._payload_bits;
         if (has_payload && (width_idx == 0 || width_idx == 2)) {
@@ -113,7 +132,7 @@ node_type choose_node_type_impl(const node& x, size_t pos) {
 
 node_type choose_node_type(const node& x, size_t pos) {
     auto res = choose_node_type_impl(x, pos);
-    trie_logger.trace("choose_node_type: node={}, pos={}, result={}", fmt::ptr(&x), pos, int(res));
+    // trie_logger.trace("choose_node_type: node={}, pos={}, result={}", fmt::ptr(&x), pos, int(res));
     return res;
 }
 
@@ -171,9 +190,9 @@ public:
         return 3 + div_ceil(bits_per_pointer * (1 + int(x._children.back()->_transition) - int(x._children.front()->_transition)), 8) + x._payload.blob().size();
     }
     virtual size_t write(const node& x) override {
-        auto s = serialized_size(x, x._output_pos);
+        // auto s = serialized_size(x, x._output_pos);
         auto r = write_impl(x);
-        assert(s == r);
+        // assert(s == r);
         return r;
     }
     size_t write_impl(const node& x) {
@@ -188,18 +207,23 @@ public:
         case SINGLE_NOPAYLOAD_4: {
             size_t offset = my_pos - x._children.front()->_output_pos;
             uint8_t transition = uint8_t(x._children.front()->_transition);
-            write_int((type << 4) | offset, 1);
-            write_int(transition, 1);
+            uint8_t arr[2];
+            arr[0] = (type << 4) | offset;
+            arr[1] = transition;
+            _w.write(reinterpret_cast<const char*>(arr), 2);
             return 2;
         }
         case SINGLE_8: {
             size_t offset = my_pos - x._children.front()->_output_pos;
             uint8_t transition = uint8_t(x._children.front()->_transition);
-            write_int((type << 4) | x._payload._payload_bits, 1);
-            write_int(transition, 1);
-            write_int(offset, 1);
-            write_bytes(x._payload.blob());
-            return 3 + x._payload.blob().size();
+            uint8_t arr[64];
+            arr[0] = (type << 4) | x._payload._payload_bits;
+            arr[1] = transition;
+            arr[2] = offset;
+            auto sz = x._payload.blob().size();
+            memcpy(&arr[3], x._payload.blob().data(), sz);
+            _w.write(reinterpret_cast<const char*>(arr), 3 + sz);
+            return 3 + sz;
         }
         case SINGLE_NOPAYLOAD_12: {
             size_t offset = my_pos - x._children.front()->_output_pos;
@@ -715,7 +739,8 @@ void node::set_payload(const payload& p) noexcept {
     assert(_output_pos < 0);
     _payload = p;
 }
-size_t node::recalc_sizes(const trie_writer_output& out, size_t global_pos) {
+size_t node::recalc_sizes(const trie_writer_output& outraw, size_t global_pos) {
+    const auto& out = static_cast<const trie_serializer&>(outraw);
     trie_logger.trace("node::recalc_sizes(): this={}", fmt::ptr(this));
     struct local_state {
         node* _node;
@@ -743,7 +768,8 @@ size_t node::recalc_sizes(const trie_writer_output& out, size_t global_pos) {
     }
     return _branch_size + _node_size;
 }
-void node::write(trie_writer_output& out) {
+void node::write(trie_writer_output& outraw) {
+    auto& out = static_cast<trie_serializer&>(outraw);
     trie_logger.trace("node::write(): this={}", fmt::ptr(this));
     size_t starting_pos = out.pos();
     assert(_node_size > 0);
@@ -775,6 +801,7 @@ void node::write(trie_writer_output& out) {
         }
         assert(static_cast<ssize_t>(out.pos() - startpos) == node->_branch_size + node->_node_size);
         stack.pop_back();
+        node->_children.clear();
     }
     if (!(static_cast<ssize_t>(out.pos() - starting_pos) == _branch_size + _node_size)) {
         trie_logger.error("diff: {}, bs={}, ns={}", out.pos() - starting_pos, _branch_size, _node_size);
@@ -786,6 +813,8 @@ void node::write(trie_writer_output& out) {
     _has_out_of_page_children = 0;
     _has_out_of_page_descendants = 0;
 }
+
+class trie_serializer;
 
 class trie_writer::impl {
 public:
@@ -802,10 +831,10 @@ private:
 private:
     std::vector<node*> _stack;
     std::unique_ptr<node> _root;
-    trie_writer_output& _out;
+    trie_serializer& _out;
 };
 trie_writer::impl::impl(trie_writer_output& out)
-    : _out(out) {
+    : _out(static_cast<trie_serializer&>(out)) {
     _root = std::make_unique<node>(std::byte(0));
     _stack.push_back(_root.get());
 }
@@ -1224,9 +1253,16 @@ struct my_trie_reader_input final : trie_reader_input {
     future<row_index_header> read_row_index_header(uint64_t offset, reader_permit rp) override {
         trie_logger.trace("my_trie_reader_input::read_row_index_header: this={}, f.size={} offset={}", fmt::ptr(this), _f.size(), offset);
         auto ctx = blabla_context(std::move(rp), make_file_input_stream(file(make_shared<cached_file_impl>(_f)), offset, _f.size() - offset), offset, _f.size() - offset);
-        auto close = deferred_close(ctx);
-        co_await ctx.consume_input();
-        co_return std::move(ctx._result);
+        std::exception_ptr ex;
+        try {
+            co_await ctx.consume_input();
+            co_await ctx.close();
+            co_return std::move(ctx._result);
+        } catch (...) {
+            ex = std::current_exception();
+        }
+        co_await ctx.close();
+        std::rethrow_exception(ex);
     }
 };
 
@@ -2179,6 +2215,7 @@ void memcmp_comparable_form_inner(bytes_view lin, std::vector<std::byte>& out) {
             while (true) {
                 if (i == lin.size()) {
                     out.push_back(std::byte(0xfe));
+                    out.push_back(std::byte(0x0));
                     return;
                 } else if (lin[i] == 0) {
                     out.push_back(std::byte(0xfe));
@@ -2191,4 +2228,5 @@ void memcmp_comparable_form_inner(bytes_view lin, std::vector<std::byte>& out) {
             }
         }
     }
+    out.push_back(std::byte(0x0));
 }
