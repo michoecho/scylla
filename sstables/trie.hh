@@ -64,7 +64,7 @@ class partition_index_trie_writer {
 public:
     partition_index_trie_writer(trie_writer_output&);
     ~partition_index_trie_writer();
-    void add(const_bytes key, int64_t data_file_offset);
+    void add(const_bytes key, int64_t data_file_offset, uint8_t hash_bits);
     ssize_t finish();
     using buf = std::vector<std::byte>;
 
@@ -74,7 +74,8 @@ private:
     size_t _added_keys = 0;
     size_t _last_key_mismatch = 0;
     buf _last_key;
-    int64_t _last_payload;
+    int64_t _last_offset;
+    uint8_t _last_hash_bits;
 };
 
 class row_index_trie_writer {
@@ -191,8 +192,6 @@ public:
     future<> push_maybe_page_and_node(uint64_t offset);
     void pop();
 };
-
-int64_t payload_to_offset(const_bytes p);
 
 class index_cursor {
     trie_cursor _partition_cursor;

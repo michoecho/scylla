@@ -7,7 +7,6 @@
 #include <capnp/message.h>
 #include <capnp/serialize-packed.h>
 #include "node.capnp.h"
-#include "seastar/util/closeable.hh"
 
 static seastar::logger trie_logger("trie");
 
@@ -962,26 +961,35 @@ partition_index_trie_writer::partition_index_trie_writer(trie_writer_output& out
 partition_index_trie_writer::~partition_index_trie_writer() {
 }
 
-void partition_index_trie_writer::add(const_bytes key, int64_t offset) {
+void partition_index_trie_writer::add(const_bytes key, int64_t offset, uint8_t hash_bits) {
     trie_logger.trace("partition_index_trie_writer::add({}, ...)", fmt_hex_cb(key));
     if (_added_keys > 0) {
         size_t mismatch = std::ranges::mismatch(key, _last_key).in2 - _last_key.begin();
         size_t needed_prefix = std::min(std::max(_last_key_mismatch, mismatch) + 1, _last_key.size());
-        auto payload_bytes = std::bit_cast<std::array<std::byte, sizeof(_last_payload)>>(seastar::cpu_to_be(_last_payload));
         auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
-        _wr.add(_last_key_mismatch, tail, payload(1, payload_bytes));
+        std::array<std::byte, 9> payload_bytes;
+        uint64_t offset_be = seastar::cpu_to_be(_last_offset);
+        payload_bytes[0] = std::byte(_last_hash_bits);
+        auto payload_bits = div_ceil(std::bit_width<uint64_t>(std::abs(_last_offset)) + 1, 8);
+        std::memcpy(&payload_bytes[1], (const char*)(&offset_be) + 8 - payload_bits, payload_bits);
+        _wr.add(_last_key_mismatch, tail, payload(payload_bits | 8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
         _last_key_mismatch = mismatch;
     }
     _added_keys += 1;
     _last_key.assign(key.begin(), key.end());
-    _last_payload = offset;
+    _last_offset = offset;
+    _last_hash_bits = hash_bits;
 }
 ssize_t partition_index_trie_writer::finish() {
     if (_added_keys > 0) {
         size_t needed_prefix = std::min(_last_key_mismatch + 1, _last_key.size());
-        auto payload_bytes = std::bit_cast<std::array<std::byte, sizeof(_last_payload)>>(seastar::cpu_to_be(_last_payload));
         auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
-        _wr.add(_last_key_mismatch, tail, payload(1, payload_bytes));
+        std::array<std::byte, 9> payload_bytes;
+        uint64_t offset_be = seastar::cpu_to_be(_last_offset);
+        payload_bytes[0] = std::byte(_last_hash_bits);
+        auto payload_bits = div_ceil(std::bit_width<uint64_t>(std::abs(_last_offset)) + 1, 8);
+        std::memcpy(&payload_bytes[1], (const char*)(&offset_be) + 8 - payload_bits, payload_bits);
+        _wr.add(_last_key_mismatch, tail, payload(payload_bits | 8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
     }
     return _wr.finish();
 }
@@ -1734,6 +1742,16 @@ bool index_cursor::row_cursor_set() const {
     return _row_cursor.initialized();
 }
 
+static int64_t payload_to_offset(const payload_result& p) {
+    uint64_t bits = p.bits & 0x7;
+    assert(p.bytes.size() >= bits + 1);
+    uint64_t be_result = 0;
+    std::memcpy(&be_result, p.bytes.data() + 1, bits);
+    auto result = int64_t(seastar::be_to_cpu(be_result)) >> 8*(8 - bits);
+    trie_logger.trace("payload_to_offset: be_result={:016x} bits={}, bytes={}, result={:016x}", be_result, bits, fmt_hex_cb(p.bytes), uint64_t(result));
+    return result;
+}
+
 uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
     // trie_logger.trace("index_cursor::data_file_pos this={}", fmt::ptr(this));
     assert(_partition_cursor.initialized());
@@ -1743,13 +1761,17 @@ uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
             return _partition_metadata->data_offset;
         }
         const auto p = _row_cursor.payload();
-        assert(p.bytes.size() >= 8);
-        auto res = _partition_metadata->data_offset + seastar::le_to_cpu(read_unaligned<uint64_t>(p.bytes.data()));
-        trie_logger.trace("index_cursor::data_file_pos this={} from row cursor: {}", fmt::ptr(this), res);
+        uint64_t bits = p.bits & 0x7;
+        assert(p.bytes.size() >= size_t(bits + 12));
+        uint64_t be_result = 0;
+        std::memcpy(&be_result, p.bytes.data(), bits);
+        auto result = seastar::be_to_cpu(be_result) >> 8*(8 - bits);
+        auto res = _partition_metadata->data_offset + result;
+        trie_logger.trace("index_cursor::data_file_pos this={} from row cursor: {} bytes={} bits={}", fmt::ptr(this), res, fmt_hex_cb(p.bytes), bits);
         return res;
     }
     if (!_partition_cursor.eof()) {
-        auto res = payload_to_offset(_partition_cursor.payload().bytes);
+        auto res = payload_to_offset(_partition_cursor.payload());
         assert(res >= 0);
         // trie_logger.trace("index_cursor::data_file_pos this={} from partition cursor: {}", fmt::ptr(this), res);
         return res;
@@ -1768,9 +1790,10 @@ tombstone index_cursor::open_tombstone() const {
         return res;
     } else {
         const auto p = _row_cursor.payload();
-        assert(p.bytes.size() >= 20);
-        auto marked = seastar::le_to_cpu(read_unaligned<uint64_t>(p.bytes.data() + 8));
-        auto deletion_time = seastar::le_to_cpu(read_unaligned<int32_t>(p.bytes.data() + 16));
+        uint64_t bits = p.bits & 0x7;
+        assert(p.bytes.size() >= size_t(bits + 12));
+        auto marked = seastar::be_to_cpu(read_unaligned<uint64_t>(p.bytes.data() + bits));
+        auto deletion_time = seastar::be_to_cpu(read_unaligned<int32_t>(p.bytes.data() + bits));
         auto res = tombstone(marked, gc_clock::time_point(gc_clock::duration(deletion_time)));
         trie_logger.trace("index_cursor::open_tombstone this={} from payload: {}", fmt::ptr(this), res);
         return res;
@@ -1786,7 +1809,7 @@ future<> index_cursor::maybe_read_metadata() {
     if (_partition_cursor.eof()) {
         return make_ready_future<>();
     }
-    if (auto res = payload_to_offset(_partition_cursor.payload().bytes); res < 0) {
+    if (auto res = payload_to_offset(_partition_cursor.payload()); res < 0) {
         return _in_row.get().read_row_index_header(-res, _permit).then([this] (auto result) {
             _partition_metadata = result;
         });
@@ -1851,10 +1874,6 @@ future<set_result> index_cursor::set_after_row(const_bytes key) {
     return set_after_row_cold(key);
 }
 
-int64_t payload_to_offset(const_bytes p) {
-    assert(p.size() >= sizeof(int64_t));
-    return seastar::be_to_cpu(read_unaligned<int64_t>(p.data()));
-}
 future<row_index_header> trie_index_reader::read_row_index_header(uint64_t pos) {
     auto hdr = co_await _in_row->read_row_index_header(pos, _permit);
     trie_logger.trace("trie_index_reader::read_row_index_header this={} pos={} result={}", fmt::ptr(this), pos, hdr.data_offset);
@@ -2137,14 +2156,16 @@ void row_index_trie_writer::add(
         auto tail = std::span(_first_key).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
 
         std::array<std::byte, 20> payload_bytes;
-        void* p = payload_bytes.data();
-        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.data_file_offset));
-        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.marked_for_delete_at));
-        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.local_deletion_time));
-        assert(p == payload_bytes.data() + payload_bytes.size());
+        auto payload_bits = div_ceil(std::bit_width<uint64_t>(_last_payload.data_file_offset), 8);
+        std::byte* p = payload_bytes.data();
+        uint64_t offset_be = seastar::cpu_to_be(_last_payload.data_file_offset);
+        std::memcpy(p, (const char*)(&offset_be) + 8 - payload_bits, payload_bits);
+        p += payload_bits;
+        p = write_unaligned(p, seastar::cpu_to_be(_last_payload.dt.marked_for_delete_at));
+        p = write_unaligned(p, seastar::cpu_to_be(_last_payload.dt.local_deletion_time));
 
-        trie_logger.trace("row_index_trie_writer::add(): _wr.add({}, {}, {})", _last_sep_mismatch, fmt_hex_cb(tail), fmt_hex_cb(payload_bytes));
-        _wr.add(_last_sep_mismatch, tail, payload(1, payload_bytes));
+        trie_logger.trace("row_index_trie_writer::add(): _wr.add({}, {}, {}, {}, {:016x})", _last_sep_mismatch, fmt_hex_cb(tail), fmt_hex_cb(payload_bytes), payload_bits, _last_payload.data_file_offset);
+        _wr.add(_last_sep_mismatch, tail, payload(8 | payload_bits, {payload_bytes.data(), p}));
 
         _first_key.assign(first_ck.begin(), first_ck.end());
         _first_key_mismatch = separator_mismatch;
@@ -2162,14 +2183,18 @@ ssize_t row_index_trie_writer::finish() {
         auto tail = std::span(_first_key).subspan(_last_sep_mismatch, needed_prefix - _last_sep_mismatch);
 
         std::array<std::byte, 20> payload_bytes;
-        void* p = payload_bytes.data();
-        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.data_file_offset));
-        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.marked_for_delete_at));
-        p = write_unaligned(p, seastar::cpu_to_le(_last_payload.dt.local_deletion_time));
-        assert(p == payload_bytes.data() + payload_bytes.size());
+        std::byte* p = payload_bytes.data();
+
+        auto payload_bits = div_ceil(std::bit_width<uint64_t>(_last_payload.data_file_offset), 8);
+        uint64_t offset_be = seastar::cpu_to_be(_last_payload.data_file_offset);
+        std::memcpy(p, (const char*)(&offset_be) + 8 - payload_bits, payload_bits);
+
+        p += payload_bits;
+        p = write_unaligned(p, seastar::cpu_to_be(_last_payload.dt.marked_for_delete_at));
+        p = write_unaligned(p, seastar::cpu_to_be(_last_payload.dt.local_deletion_time));
 
         trie_logger.trace("row_index_trie_writer::finish(): _wr.add({}, {}, {})", _last_sep_mismatch, fmt_hex_cb(tail), fmt_hex_cb(payload_bytes));
-        _wr.add(_last_sep_mismatch, tail, payload(1, payload_bytes));
+        _wr.add(_last_sep_mismatch, tail, payload(8 | payload_bits, {payload_bytes.data(), p}));
     }
     return _wr.finish();
 }

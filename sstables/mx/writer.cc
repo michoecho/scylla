@@ -1528,7 +1528,8 @@ stop_iteration writer::consume_end_of_partition() {
             }
         }
         sstlog.trace("consume_end_of_partition: payload={}", pitw_payload);
-        _pitw->add(decorated_key_byte_comparable(*_sst._schema, *_dk), pitw_payload);
+        uint8_t hash_bits = _dk->token().unbias() & uint64_t(0xff);
+        _pitw->add(decorated_key_byte_comparable(*_sst._schema, *_dk), pitw_payload, hash_bits);
     }
 
     // compute size of the current row.

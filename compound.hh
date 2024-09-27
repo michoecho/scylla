@@ -303,6 +303,7 @@ public:
         return _types.size() == 1 && (_types.front() == bytes_type || _types.front() == utf8_type || _types.front() == long_type || _types.front() == ascii_type);
     }
     void memcmp_comparable_form(managed_bytes_view v, std::vector<std::byte>& out) {
+        out.reserve(v.size_bytes() * 2);
         for (const managed_bytes_view comp : components(v)) {
             out.push_back(std::byte(0x40));
             auto lin = linearized(comp);
