@@ -380,7 +380,7 @@ public:
         return _partition_index_file;
     }
     uint64_t trie_root_offset() {
-        return _trie_root_offset;
+        return _trie_index_header.root_pos;
     }
     file uncached_index_file();
     // Returns size of bloom filter data.
@@ -549,6 +549,12 @@ public:
     seastar::shared_ptr<cached_file> _partition_index_file_cached;
     seastar::shared_ptr<cached_file> _row_index_file_cached;
 private:
+    struct trie_index_header {
+        uint64_t serialized_minmax_pk_pos = 0;
+        uint64_t n_keys = 0;
+        uint64_t root_pos = 0;
+    };
+    trie_index_header _trie_index_header;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;
     uint64_t _data_file_size;
@@ -796,6 +802,7 @@ private:
     }
 
     future<> open_or_create_data(open_flags oflags, file_open_options options = {}) noexcept;
+    future<> init_trie_reader();
     // runs in async context (called from storage::open)
     void write_toc(file_writer w);
 public:
