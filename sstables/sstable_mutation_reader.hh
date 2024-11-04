@@ -49,6 +49,18 @@ protected:
     bool _before_partition = true;
 
     std::optional<dht::decorated_key> _current_partition_key;
+
+    // In inexact sstable indexes are used, the reader might only realizes
+    // it has exceeded the queried range after it has already parsed
+    // the partition header following the range.
+    //
+    // In this case the parsed partition key and tombstone can't be emitted.
+    // However, the reader will need to emit them if its forwarded to that
+    // key later. It can't re-parse them, since the parser can't go backwards
+    // and recreating the context is awkward, so it saves the partition key
+    // and the tombstone and serves them to the consumer if that case happens.
+    bool _paused_after_partition_start = false;
+    tombstone _saved_partition_tombstone;
 public:
     mp_row_consumer_reader_base(shared_sstable sst);
 
