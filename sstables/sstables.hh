@@ -111,6 +111,7 @@ struct sstable_writer_config {
     size_t summary_byte_cost;
     sstring origin;
     bool correct_pi_block_width = true;
+    bool write_trie_index = true;
 
 private:
     explicit sstable_writer_config() {}
