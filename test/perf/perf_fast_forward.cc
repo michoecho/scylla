@@ -37,6 +37,7 @@
 #include "compaction/compaction_manager.hh"
 #include "transport/messages/result_message.hh"
 #include "sstables/partition_index_cache.hh"
+#include "utils/div_ceil.hh"
 #include <fstream>
 
 using namespace std::chrono_literals;
@@ -140,6 +141,7 @@ struct test_group {
     enum type {
         large_partition,
         small_partition,
+        big_promoted_index,
     };
 
     std::string name;
@@ -1075,6 +1077,40 @@ public:
     }
 };
 
+class thousand_rows_per_part_ds1 : public dataset {
+public:
+    thousand_rows_per_part_ds1() : dataset("thousand-rows-per-part", "Many partitions, each with 1000 rows",
+        "create table {} (pk int, ck int, value blob, primary key (pk, ck))") {}
+
+    partition_key make_pk(const schema& s, int pk) {
+        return partition_key::from_single_value(s, serialized(pk));
+    }
+
+    clustering_key make_ck(const schema& s, int ck) {
+        return clustering_key::from_single_value(s, serialized(ck * 2 + 1));
+    }
+
+    generator_fn make_generator(schema_ptr s, const table_config& cfg) override {
+        auto value = serialized(make_blob(cfg.value_size));
+        auto& value_cdef = *s->get_column_definition("value");
+        constexpr int rows_per_partition = 1000;
+        return [this, s, ck = 0, n_ck = cfg.n_rows, &value_cdef, value, pk = 0] () mutable -> std::optional<mutation> {
+            if (ck == n_ck) {
+                return std::nullopt;
+            }
+            auto ts = api::new_timestamp();
+            mutation m(s, make_pk(*s, pk));
+            auto& row = m.partition().clustered_row(*s, make_ck(*s, ck));
+            row.cells().apply(value_cdef, atomic_cell::make_live(*value_cdef.type, ts, value));
+            ++ck;
+            if (ck % rows_per_partition == 0) {
+                pk += 1;
+            }
+            return m;
+        };
+    }
+};
+
 class scylla_bench_large_part_ds1 : public scylla_bench_ds {
 public:
     scylla_bench_large_part_ds1() : scylla_bench_ds("sb-large-part-ds1", "One large partition with many small rows, scylla-bench schema") {}
@@ -1777,6 +1813,47 @@ void test_small_partition_slicing(app_template &app, replica::column_family& cf2
     test(n_parts / 2, 4096);
 }
 
+static test_result select_first_row(replica::column_family& cf, thousand_rows_per_part_ds1& ds, int pk) {
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+    auto sb = partition_slice_builder(*cf.schema());
+    sb.with_range(query::clustering_range::make_singular(ds.make_ck(*cf.schema(), pk * 1000)));
+
+    auto pr = dht::partition_range::make_singular(dht::decorate_key(*cf.schema(), ds.make_pk(*cf.schema(), pk)));
+    auto slice = sb.build();
+    auto rd = cf.make_reader_v2(cf.schema(),
+        semaphore.make_permit(),
+        pr,
+        slice);
+    auto close_rd = deferred_close(rd);
+
+    return test_reading_all(rd);
+}
+
+void test_multi_kilobyte_promoted_index_select_middle(app_template &app, replica::column_family& cf, thousand_rows_per_part_ds1& ds) {
+    auto n_rows = cfg.n_rows;
+    auto n_partitions = div_ceil(n_rows, 1000);
+
+    output_mgr->set_test_param_names({{"offset", "{:<7}"}}, test_result::stats_names());
+    auto test = [&](int offset) {
+      run_test_case(app, [&] {
+        auto r = select_first_row(cf, ds, offset);
+        r.set_params(to_sstrings(offset));
+        check_fragment_count(r, 1);
+        return r;
+      });
+    };
+
+    test(0);
+    test(0);
+    test(1);
+    test(2);
+    test(n_partitions / 2);
+    test(n_partitions - 2);
+    test(n_partitions - 1);
+    test(n_partitions);
+    test(n_partitions * 2);
+}
+
 static
 auto make_datasets() {
     std::map<std::string, std::unique_ptr<dataset>> dsets;
@@ -1791,6 +1868,7 @@ auto make_datasets() {
     add(std::make_unique<large_part_ds1>());
     add(std::make_unique<scylla_bench_large_part_ds1>());
     add(std::make_unique<scylla_bench_small_part_ds1>());
+    add(std::make_unique<thousand_rows_per_part_ds1>());
     return dsets;
 }
 
@@ -1941,6 +2019,13 @@ static std::initializer_list<test_group> test_groups = {
         test_group::type::small_partition,
         make_test_fn(test_small_partition_slicing),
     },
+    {
+        "one-partition-per-big-index-page",
+        "Testing selecting a row from a partition that takes a whole index page",
+        test_group::requires_cache::no,
+        test_group::type::big_promoted_index,
+        make_test_fn(test_multi_kilobyte_promoted_index_select_middle),
+    },
 };
 
 // Disables compaction for given tables.
@@ -2025,6 +2110,7 @@ int scylla_fast_forward_main(int argc, char** argv) {
             }
             return make_ready_future<int>(0);
         }
+        sstables::sstlog.set_level(seastar::log_level::trace);
 
         sstring datadir = app.configuration()["data-directory"].as<sstring>();
         ::mkdir(datadir.c_str(), S_IRWXU);
@@ -2141,6 +2227,7 @@ int scylla_fast_forward_main(int argc, char** argv) {
 
                     run_tests(test_group::type::large_partition);
                     run_tests(test_group::type::small_partition);
+                    run_tests(test_group::type::big_promoted_index);
                 }
             });
         }, db_cfg_ptr).then([] {
