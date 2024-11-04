@@ -470,9 +470,13 @@ public:
     virtual bool eof() const = 0;
 };
 
+struct allow_trie_tag {};
+using allow_trie = bool_class<allow_trie_tag>;
+
 std::unique_ptr<index_reader> make_index_reader(shared_sstable sst, reader_permit permit,
                  tracing::trace_state_ptr trace_state = {},
                  use_caching caching = use_caching::yes,
-                 bool single_partition_read = false);
+                 bool single_partition_read = false,
+                 allow_trie = allow_trie::yes);
 
 }
