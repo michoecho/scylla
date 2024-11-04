@@ -1346,7 +1346,7 @@ private:
         }
         return (_index_in_current_partition
                 ? _index_reader->advance_to_next_partition()
-                : get_index_reader().advance_to(dht::ring_position_view::for_after_key(*_current_partition_key)))
+                : get_index_reader().advance_after_existing(*_current_partition_key))
         .then([this] {
             _index_in_current_partition = true;
             auto [start, end] = _index_reader->data_file_positions();
