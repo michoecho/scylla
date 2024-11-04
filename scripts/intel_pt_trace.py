@@ -172,7 +172,7 @@ async def with_perf_record(record_dir: str, args: list[str]) -> typing.AsyncIter
     os.mkfifo(control_fname)
     os.mkfifo(ack_fname)
     try:
-        proc = await asyncio.subprocess.create_subprocess_exec("sudo", "perf", "record", "--snapshot", "--kcore", "--delay=-1", f"--control=fifo:{control_fname},{ack_fname}", "--mmap-pages=256M,256M", *args, cwd=record_dir)
+        proc = await asyncio.subprocess.create_subprocess_exec("sudo", "perf", "record", "--snapshot=e", "--delay=-1", f"--control=fifo:{control_fname},{ack_fname}", "--mmap-pages=8M,8M", *args, cwd=record_dir)
         with open(control_fname, "wb", buffering=0) as w:
             with open(ack_fname, "rb", buffering=0) as r:
                 try:
@@ -197,21 +197,44 @@ async def with_perf_enabled(control_fds: tuple[typing.IO, typing.IO]) -> typing.
     w.write(b"snapshot\n")
     r.read(5)
 
-async def run(manager: ManagerClient) -> None:
+async def run2(manager: ManagerClient) -> None:
     print("Setting up the cluster...")
     # Setup for the traced operation.
-    servers = [await manager.server_add(cmdline=["--idle-poll-time-us=0", "--smp=1"]) for i in range(2)]
-    cql = manager.get_cql()
-    hosts = await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
-    pids = await asyncio.gather(*[manager.server_get_pid(s.server_id) for s in servers])
-    string = ",".join(str(p) for p in pids)
-    await cql.run_async("CREATE KEYSPACE ks WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 2}")
-    await cql.run_async("CREATE TABLE ks.t (pk int primary key, v int)")
-    insert = cql.prepare(f"INSERT INTO ks.t (pk, v) VALUES (?, ?)")
-    select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? BYPASS CACHE")
-    await cql.run_async(insert, [0, 0])
-    await asyncio.gather(*[manager.api.keyspace_flush(s.ip_addr, "ks", "t") for s in servers])
+    ip_addr = "127.11.11.1"
+    cluster = Cluster([ip_addr], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
+    cql = cluster.connect()
     flag = '' if RECORD_KERNEL else 'u'
+    string, _ = await (await asyncio.subprocess.create_subprocess_shell("pgrep -x -d, scylla", stdout=asyncio.subprocess.PIPE)).communicate()
+    string = string.strip().decode()
+    print("string", string)
+
+    # The meat.
+    print("Starting `perf record`...")
+    async with with_perf_record(".", [f"--pid={string}", f"--event=intel_pt/cyc=1/{flag}"]) as control:
+        cql.execute("drop keyspace if exists ks")
+        cql.execute("create keyspace ks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND TABLETS = { 'enabled': false }")
+        cql.execute("create table ks.t(pk text, ck text, primary key (pk, ck))")
+        insert = cql.prepare(f"INSERT INTO ks.t(pk, ck) VALUES(?, ?)")
+
+        for i in range(50):
+            cql.execute(insert, [str(i), str(i)]);
+
+        print("Recording...")
+        await manager.api.keyspace_flush(ip_addr, "ks", "t")
+        async with with_perf_enabled(control):
+            await manager.api.keyspace_upgrade_sstables(ip_addr, "ks")
+
+async def run1(manager: ManagerClient) -> None:
+    print("Setting up the cluster...")
+    # Setup for the traced operation.
+    ip_addr = "127.11.11.1"
+    cluster = Cluster([ip_addr], auth_provider=PlainTextAuthProvider(username="cassandra", password="cassandra"))
+    cql = cluster.connect()
+    #select = cql.prepare(f"SELECT * FROM keyspace1.standard1 WHERE key = ? bypass cache")
+    flag = '' if RECORD_KERNEL else 'u'
+    string, _ = await (await asyncio.subprocess.create_subprocess_shell("pgrep -x -d, scylla", stdout=asyncio.subprocess.PIPE)).communicate()
+    string = string.strip().decode()
+    print("string", string)
 
     # The meat.
     print("Starting `perf record`...")
@@ -220,16 +243,31 @@ async def run(manager: ManagerClient) -> None:
         # It should raise the probability that all relevant lazy initialization
         # (authenticating clients by Scylla, paging the relevant parts of the executable into memory,
         # etc. are performed ahead of time, so that they don't pollute the trace.
-        await cql.run_async(select, [0], host=hosts[0])
+        pk0 = bytes.fromhex("3335503436334b333630")
+        pk = bytes.fromhex("4e4b373350354e344c30")
+        #await cql.run_async(select, [pk0])
+        #await cql.run_async(select, [pk0])
         print("Recording...")
+        #await cql.run_async(select, [pk])
+
+        insert = cql.prepare(f"INSERT INTO ks.t(pk, ck) VALUES(?, ?)")
+        #select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
+        ##cql.execute(select, ["a", "x" * 60000 + f"{50}"])
+
+        cql.execute(insert, ["a", "x" * 60000 + f"{50}"])
+        cql.execute(insert, ["a", "x" * 60000 + f"{51}"])
+        cql.execute(insert, ["a", "x" * 60000 + f"{52}"])
+
         async with with_perf_enabled(control):
             # Here the actual trace happens.
-            await cql.run_async(select, [0], host=hosts[0])
+            #await cql.run_async(select, [pk])
+            await manager.api.keyspace_flush(ip_addr, "ks", "t")
+            #print(cql.execute(select, ["a", "x" * 60000 + f"{50}"]).one())
 
 async def main() -> None:
     print("Setting up the manager...")
     async with with_manager() as manager:
-        await run(manager)
+        await run1(manager)
 
 if __name__ == "__main__":
     subprocess.run(["sudo", "-v"])
@@ -237,6 +275,7 @@ if __name__ == "__main__":
     if not os.path.exists(dlfilter):
         raise RuntimeError(f"Make sure to build {dlfilter} first. (Go into perf2perfetto/ and run `cargo build --release`).")
     with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = "tmpdir"
         cwd = os.getcwd()
         os.chdir(tmp_dir)
         asyncio.run(main())
