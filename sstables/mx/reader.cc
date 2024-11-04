@@ -1299,6 +1299,7 @@ public:
             , _fwd_mr(fwd_mr)
             , _monitor(mon)
             , _integrity(integrity) {
+        sstlog.trace("init: _pr={}", _pr.get());
         if (reversed()) {
             if (!_single_partition_read) {
                 on_internal_error(sstlog, format(
@@ -1594,6 +1595,7 @@ private:
         if (begin <= _context->position()) {
             return make_ready_future<>();
         }
+        _right_after_pk = false;
         _context->reset(el);
         return _context->skip_to(begin);
     }
@@ -1609,6 +1611,16 @@ public:
             _partition_finished = true;
         }
     }
+    future<> advance_index_until_unseen_partition() {
+        while (true) {
+            auto [start, end] = _index_reader->data_file_positions();
+            if (start >= _context->position()) {
+                co_return;
+            } else {
+                co_await _index_reader->advance_to_next_partition();
+            }
+        }
+    }
     virtual future<> fast_forward_to(const dht::partition_range& pr) override {
         if (reversed()) {
             // FIXME
@@ -1617,6 +1629,7 @@ public:
 
         return maybe_initialize().then([this, &pr] (bool initialized) {
             _pr = pr;
+            sstlog.trace("fast_forward_to: _pr={}", _pr.get());
             if (!initialized) {
                 _end_of_stream = true;
                 return make_ready_future<>();
@@ -1629,11 +1642,35 @@ public:
                 auto f1 = _index_reader->advance_to(pr);
                 return f1.then([this] {
                     auto [start, end] = _index_reader->data_file_positions();
-                    sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), start={}, end={}", fmt::ptr(this), start, end);
+                    sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), start={}, end={}, _context->position={}", fmt::ptr(this), start, end, _context->position());
+                    if (start < _context->position()) {
+                        _index_in_current_partition = false;
+                        if (_right_after_pk) {
+                            sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), is right after pk", fmt::ptr(this));
+                            _before_partition = false;
+                            _partition_finished = false;
+                            if (*end >= _context->position()) {
+                                _read_enabled = true;
+                                return _context->fast_forward_to(_context->position(), *end);
+                            } else {
+                                _read_enabled = false;
+                                return make_ready_future<>();
+                            }
+                        } else {
+                            return advance_index_until_unseen_partition().then([this] {
+                                auto [start, end] = _index_reader->data_file_positions();
+                                _read_enabled = true;
+                                _context->reset(indexable_element::partition);
+                                sstlog.trace("fast forward to unseen {} {}", start, *end);
+                                return _context->fast_forward_to(start, *end);
+                            });
+                        }
+                    }
                     SCYLLA_ASSERT(end);
                     if (start != *end) {
                         _read_enabled = true;
                         _index_in_current_partition = true;
+                        _right_after_pk = false;
                         _context->reset(indexable_element::partition);
                         return _context->fast_forward_to(start, *end);
                     }
@@ -1667,6 +1704,10 @@ public:
                     return read_next_partition();
                 }
             } else {
+                if (_right_after_pk) {
+                    _right_after_pk = false;
+                    on_next_partition(*_current_partition_key, _current_tomb);
+                }
                 return do_until([this] { return is_buffer_full() || _partition_finished || _end_of_stream; }, [this] {
                     _consumer.push_ready_fragments();
                     if (is_buffer_full() || _partition_finished || _end_of_stream) {
@@ -1674,6 +1715,7 @@ public:
                     }
                     check_abort();
                     return advance_context(_consumer.maybe_skip()).then([this] {
+                        _right_after_pk = false;
                         return _context->consume_input();
                     });
                 });
@@ -1734,7 +1776,7 @@ public:
 
     data_consumer::proceed on_next_partition(dht::decorated_key key, tombstone tomb) override {
         if (_pr.get().before(key, dht::ring_position_comparator(*_schema))) {
-            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 1", fmt::ptr(this), key);
+            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), _pr=({}), branch 1", fmt::ptr(this), key, _pr.get());
             _before_partition = false;
             _end_of_stream = _single_partition_read;
             _current_partition_key = std::move(key);
@@ -1743,9 +1785,12 @@ public:
         } else if (_pr.get().after(key, dht::ring_position_comparator(*_schema))) {
             sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 2", fmt::ptr(this), key);
             _before_partition = false;
+            _partition_finished = false;
             _end_of_stream = true;
-            _partition_finished = true;
-            _current_partition_key.reset();
+            _right_after_pk = true;
+            _current_partition_key = std::move(key);
+            _current_tomb = tomb;
+            // _current_partition_key.reset();
             return data_consumer::proceed::no;
         } else {
             _partitions_read += 1;
