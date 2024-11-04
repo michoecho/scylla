@@ -396,6 +396,11 @@ class ScyllaRESTAPIClient:
             url += f"?cf={table}"
         await self.client.post(url, host=node_ip)
 
+    async def keyspace_upgrade_sstables(self, node_ip: str, keyspace: str) -> None:
+        """Flush the specified or all tables in the keyspace"""
+        url = f"/storage_service/keyspace_upgrade_sstables/{keyspace}"
+        await self.client.get(url, host=node_ip)
+
     async def keyspace_compaction(self, node_ip: str, keyspace: str, table: Optional[str] = None, consider_only_existing_data: bool = False) -> None:
         """Compact the specified or all tables in the keyspace"""
         url = f"/storage_service/keyspace_compaction/{keyspace}"
