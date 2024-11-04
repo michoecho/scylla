@@ -236,6 +236,11 @@ async def run1(manager: ManagerClient) -> None:
     string = string.strip().decode()
     print("string", string)
 
+    cql.execute("drop keyspace if exists ks")
+    cql.execute("create keyspace ks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND TABLETS = { 'enabled': false }")
+    cql.execute("create table ks.t(pk text, ck text, primary key (pk, ck))")
+    await manager.api.keyspace_flush(ip_addr, "ks", "t")
+
     # The meat.
     print("Starting `perf record`...")
     async with with_perf_record(".", [f"--pid={string}", f"--event=intel_pt/cyc=1/{flag}"]) as control:
@@ -251,18 +256,18 @@ async def run1(manager: ManagerClient) -> None:
         #await cql.run_async(select, [pk])
 
         insert = cql.prepare(f"INSERT INTO ks.t(pk, ck) VALUES(?, ?)")
-        #select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
-        ##cql.execute(select, ["a", "x" * 60000 + f"{50}"])
+        select = cql.prepare(f"SELECT * FROM ks.t WHERE pk = ? AND ck = ? BYPASS CACHE")
+        #cql.execute(select, ["a", "x" * 60000 + f"{50}"])
 
         cql.execute(insert, ["a", "x" * 60000 + f"{50}"])
         cql.execute(insert, ["a", "x" * 60000 + f"{51}"])
         cql.execute(insert, ["a", "x" * 60000 + f"{52}"])
+        await manager.api.keyspace_flush(ip_addr, "ks", "t")
 
         async with with_perf_enabled(control):
             # Here the actual trace happens.
             #await cql.run_async(select, [pk])
-            await manager.api.keyspace_flush(ip_addr, "ks", "t")
-            #print(cql.execute(select, ["a", "x" * 60000 + f"{50}"]).one())
+            print(cql.execute(select, ["a", "x" * 60000 + f"{50}"]).one())
 
 async def main() -> None:
     print("Setting up the manager...")
