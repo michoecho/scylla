@@ -80,7 +80,7 @@ SEASTAR_TEST_CASE(test_promoted_index_parsing_page_crossing_and_retries) {
         auto permit = semaphore.make_permit();
         tracing::trace_state_ptr trace = nullptr;
 
-        auto index = make_index_reader(sst, permit, trace, use_caching::yes, true);
+        auto index = make_index_reader(sst, permit, trace, use_caching::yes, true, allow_trie::no);
         auto close_index = deferred_close(*index);
 
         index->advance_to(dht::ring_position_view(pk)).get();
@@ -193,13 +193,13 @@ SEASTAR_TEST_CASE(test_no_data_file_read_on_missing_clustering_keys_with_dense_i
         auto permit = semaphore.make_permit();
         tracing::trace_state_ptr trace = nullptr;
 
-        auto index = make_index_reader(sst, permit, trace, use_caching::yes, true);
+        auto index = make_index_reader(sst, permit, trace, use_caching::yes, true, allow_trie::no);
         auto close_index = deferred_close(*index);
 
         index->advance_to(dht::ring_position_view(pk)).get();
         index->read_partition_data().get();
 
-        auto index2 = make_index_reader(sst, permit, trace, use_caching::yes, true);
+        auto index2 = make_index_reader(sst, permit, trace, use_caching::yes, true, allow_trie::no);
         auto close_index2 = deferred_close(*index2);
         index2->advance_to(dht::ring_position_view(pk)).get();
         index2->advance_to_next_partition().get();
