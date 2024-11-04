@@ -47,8 +47,10 @@ protected:
     // When set, the consumer is positioned right before a partition or at end of the data file.
     // _index_in_current_partition applies to the partition which is about to be read.
     bool _before_partition = true;
+    bool _right_after_pk = false;
 
     std::optional<dht::decorated_key> _current_partition_key;
+    tombstone _current_tomb;
 public:
     mp_row_consumer_reader_base(shared_sstable sst);
 
