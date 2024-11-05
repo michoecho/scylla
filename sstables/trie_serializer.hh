@@ -715,4 +715,134 @@ inline int get_n_children(const_bytes raw) {
     }
 }
 
+struct traversal_state {
+    int64_t payloaded_ancestor = -1;
+    int64_t left_continue = -1;
+    int64_t right_continue = -1;
+    int64_t final_node = -1;
+    uint32_t edges_traversed = 0;
+};
+
+struct node_traverse_result {
+    uint8_t payload_bits;
+    int n_children;
+    int found_idx;
+    int found_key;
+    int traversed_key_bytes;
+    int64_t moved_to;
+    int64_t prev_offset;
+    int64_t found_offset;
+    int64_t next_offset;
+};
+
+template <typename T>
+concept node_reader = requires(T& o, int64_t pos, const_bytes key, int child_idx) {
+    { o.cached(pos) } -> std::same_as<bool>;
+    { o.read_payload_bits(pos) } -> std::same_as<uint8_t>;
+    { o.traverse(pos, key) } -> std::same_as<node_traverse_result>;
+    { o.get_child_offset(pos, child_idx) } -> std::same_as<uint64_t>;
+};
+
+struct trail_entry {
+    uint64_t pos;
+    uint16_t n_children;
+    int16_t child_idx;
+    uint8_t payload_bits;
+};
+
+// WIP. Ignore.
+//
+// int64_t traverse(
+//     node_reader auto& input,
+//     int64_t starting_node,
+//     const_bytes key,
+//     traversal_state& state,
+//     utils::small_vector<trail_entry, 8>* trail
+// ) {
+//     int64_t pos = starting_node;
+//     while (input.cached(pos)) {
+//         // FIXME: consider a special-case optimization for long chains of SINGLE_NOPAYLOAD_4.
+//         // These arise in practice when there are groups of keys with a long common prefix.
+//         // 
+//         // For such workloads, traversing the trie node-by-node can be extremely expensive.
+//         // As an example special optimization, the code below can traverse 16 of these at once.
+//         //
+//         // const uint8_t* __restrict__ p = reinterpret_cast<const uint8_t* __restrict__>(_pages.back()->get_view().data() + _path.back().node.pos % cached_file::page_size);
+//         // if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2) & *(p + 1) == uint8_t(key[i])) {
+//         //     const uint8_t* start = p; 
+//         //     const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
+//         //     const size_t keysize = key.size();
+//         //     while (p - 32 >= beg && i+16 <= keysize - 1) {
+//         //         typedef unsigned char  vector32b  __attribute__((__vector_size__(32)));
+//         //         typedef unsigned char  vector16b  __attribute__((__vector_size__(16)));
+//         //         vector32b a = {};
+//         //         memcpy(&a, p - 32, 32);
+//         //         auto z = uint8_t(SINGLE_NOPAYLOAD_4 << 4 | 2);
+//         //         vector16b b = {};
+//         //         memcpy(&b, &key[i], 16);
+//         //         vector16b c = {z, z, z, z, z, z, z, z, z, z, z, z, z, z, z, z};
+//         //         vector32b d = __builtin_shufflevector(c, b, 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31);
+//         //         if (!__builtin_reduce_and(a == d)) {
+//         //             break;
+//         //         }
+//         //         p -= 32;
+//         //         i += 16;
+//         //     }
+//         //     _path.back() = node_cursor{reader_node{_path.back().node.pos - (start - p), 1, (*p)&0xf, std::byte(*(p+1))}, -1};
+//         // }
+//         //
+//         auto payload_bits = input.read_payload_bits(pos);
+//         // The child index with which we should add the current node to the trail.
+//         // We only need to add nodes which are payloaded or which have more than one child.
+//         // The initial value of -2 is special and means "don't add to the trail".
+//         int add_to_trail = -2;
+
+//         if (node.payload_bits) {
+//             add_to_trail = -1;
+//             state.payloaded_ancestor = pos;
+//         }
+    
+//         if (state.edges_traversed < key.size()) {
+//             a
+//             auto key_i = key[state.edges_traversed];
+//             lookup_result it = node.lookup(key_i, page);
+//             bool child_exists = it.byte == key_i;
+
+//             assert(it.idx <= node.n_children);
+//             expensive_log("follow, lookup query: (pos={} key={:x} n_children={}), lookup result: (offset={}, transition={:x} idx={})",
+//                 node.pos, uint8_t(key_i), node.n_children, it.offset, it.byte, it.idx);
+
+//             if (it.idx > 0) {
+//                 state.left_continue = pos - node.get_child(it.idx - 1, false, page).offset;
+//             }
+//             if (it.idx + child_exists < node.n_children) {
+//                 if (child_exists) {
+//                     state.right_continue = pos - node.get_child(it.idx + 1, true, page).offset;
+//                 } else {
+//                     state.right_continue = pos - it.offset;
+//                 }
+//             }
+//             if (node.n_children > 0) {
+//                 add_to_trail = it.idx;
+//             }
+//             if (!child_exists || it.idx == int(node.n_children)) {
+//                 pos = -1;
+//             } else {
+//                 auto continue_pos = pos - it.offset;
+//                 pos = continue_pos;
+//                 state.edges_traversed += 1;
+//             }
+//         } else {
+//             auto payload_bits = input.read_payload_bits();
+//             assert(node.payload_bits);
+//             state.final = pos;
+//             pos = -1;
+//         }
+//         if (trail && add_to_trail > -2) {
+//             trail->push_back(trail_entry(pos, add_to_trail));
+//         }
+//     }
+//     return pos;
+// }
+
 } // namespace trie
