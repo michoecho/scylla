@@ -229,6 +229,8 @@ BOOST_AUTO_TEST_CASE(test_body) {
             std::byte transition[] = {std::byte(child_transitions[i])};
             auto child = node->add_child(transition, alctr);
             child->_pos = pos - sink_offset(offsets[i]);
+            child->_node_size = node_size(1);
+            child->_branch_size = sink_offset(0);
             child->_transition_meta = uint8_t(transition[0]);
         }
         if (payload) {
