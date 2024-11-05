@@ -662,7 +662,9 @@ inline void writer_node::set_payload(const trie_payload& p) noexcept {
 }
 
 inline void writer_node::write(ptr<writer_node> self, trie_writer_sink auto& out, bool guaranteed_fit) {
-    expensive_log("writer_node::write: subtree={}", fmt::ptr(self.get()));
+    expensive_log(
+        "writer_node::write: subtree={} pos={}, ps={} sz={} ",
+        fmt::ptr(self.get()), out.pos().value(), out.page_size(), (self->_branch_size + self->_node_size).value);
     expensive_assert(!self->_pos.valid());
     expensive_assert(self->_node_size.valid());
     if (guaranteed_fit) {
