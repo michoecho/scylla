@@ -1218,24 +1218,6 @@ public:
         setup_columns(_static_row, _column_translation.static_columns());
     }
 
-    data_consume_rows_context_m(const schema& s,
-                                const shared_sstable& sst,
-                                Consumer& consumer,
-                                std::function<input_stream<char>(size_t, size_t)> input_recreator,
-                                uint64_t start,
-                                uint64_t maxlen)
-        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>>(consumer.permit(), std::move(input_recreator), start, maxlen)
-        , _consumer(consumer)
-        , _sst(sst)
-        , _header(sst->get_serialization_header())
-        , _column_translation(sst->get_column_translation(s, _header, sst->features()))
-        , _has_shadowable_tombstones(sst->has_shadowable_tombstones())
-        , _gen(do_process_state())
-    {
-        setup_columns(_regular_row, _column_translation.regular_columns());
-        setup_columns(_static_row, _column_translation.static_columns());
-    }
-
     void verify_end_state() {
         // If reading a partial row (i.e., when we have a clustering row
         // filter and using a promoted index), we may be in FLAGS
@@ -1329,6 +1311,7 @@ public:
             , _fwd(fwd)
             , _fwd_mr(fwd_mr)
             , _monitor(mon) {
+        sstlog.trace("init: _pr={}", _pr.get());
         if (reversed()) {
             if (!_single_partition_read) {
                 on_internal_error(sstlog, format(
@@ -1595,7 +1578,7 @@ private:
             sstable::disk_read_range drr{begin, *end};
             auto last_end = _fwd_mr ? _sst->data_size() : drr.end;
             _read_enabled = bool(drr);
-            _context = data_consume_rows_2<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end, sstable::integrity_check::no);
+            _context = data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end, sstable::integrity_check::no);
         }
 
         _monitor.on_read_started(_context->reader_position());
@@ -1608,6 +1591,7 @@ private:
         if (begin <= _context->position()) {
             return make_ready_future<>();
         }
+        _right_after_pk = false;
         _context->reset(el);
         return _context->skip_to(begin);
     }
@@ -1623,6 +1607,17 @@ public:
             _partition_finished = true;
         }
     }
+    future<> advance_index_until_unseen_partition() {
+        while (true) {
+            auto [start, end] = _index_reader->data_file_positions();
+            if (start >= end) {
+                co_return;
+            }
+            if (start < _context->position()) {
+                co_await _index_reader->advance_to_next_partition();
+            }
+        }
+    }
     virtual future<> fast_forward_to(const dht::partition_range& pr) override {
         if (reversed()) {
             // FIXME
@@ -1631,6 +1626,7 @@ public:
 
         return maybe_initialize().then([this, &pr] (bool initialized) {
             _pr = pr;
+            sstlog.trace("fast_forward_to: _pr={}", _pr.get());
             if (!initialized) {
                 _end_of_stream = true;
                 return make_ready_future<>();
@@ -1643,11 +1639,25 @@ public:
                 auto f1 = _index_reader->advance_to(pr);
                 return f1.then([this] {
                     auto [start, end] = _index_reader->data_file_positions();
+                    if (start < _context->position()) {
+                        _index_in_current_partition = false;
+                        if (_right_after_pk) {
+                            _before_partition = false;
+                            _partition_finished = false;
+                            _read_enabled = true;
+                            return _context->fast_forward_to(_context->position(), *end);
+                        } else {
+                            _read_enabled = true;
+                            _context->reset(indexable_element::partition);
+                            return _context->fast_forward_to(_context->position(), *end);
+                        }
+                    }
                     sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), start={}, end={}", fmt::ptr(this), start, end);
                     SCYLLA_ASSERT(end);
                     if (start != *end) {
                         _read_enabled = true;
                         _index_in_current_partition = true;
+                        _right_after_pk = false;
                         _context->reset(indexable_element::partition);
                         return _context->fast_forward_to(start, *end);
                     }
@@ -1681,6 +1691,10 @@ public:
                     return read_next_partition();
                 }
             } else {
+                if (_right_after_pk) {
+                    _right_after_pk = false;
+                    on_next_partition(*_current_partition_key, _current_tomb);
+                }
                 return do_until([this] { return is_buffer_full() || _partition_finished || _end_of_stream; }, [this] {
                     _consumer.push_ready_fragments();
                     if (is_buffer_full() || _partition_finished || _end_of_stream) {
@@ -1688,6 +1702,7 @@ public:
                     }
                     check_abort();
                     return advance_context(_consumer.maybe_skip()).then([this] {
+                        _right_after_pk = false;
                         return _context->consume_input();
                     });
                 });
@@ -1748,7 +1763,7 @@ public:
 
     data_consumer::proceed on_next_partition(dht::decorated_key key, tombstone tomb) override {
         if (_pr.get().before(key, dht::ring_position_comparator(*_schema))) {
-            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 1", fmt::ptr(this), key);
+            sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), _pr=({}), branch 1", fmt::ptr(this), key, _pr.get());
             _before_partition = false;
             _end_of_stream = _single_partition_read;
             _current_partition_key = std::move(key);
@@ -1757,9 +1772,12 @@ public:
         } else if (_pr.get().after(key, dht::ring_position_comparator(*_schema))) {
             sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 2", fmt::ptr(this), key);
             _before_partition = false;
+            _partition_finished = false;
             _end_of_stream = true;
-            _partition_finished = true;
-            _current_partition_key.reset();
+            _right_after_pk = true;
+            _current_partition_key = std::move(key);
+            _current_tomb = tomb;
+            // _current_partition_key.reset();
             return data_consumer::proceed::no;
         } else {
             _partitions_read += 1;

@@ -47,8 +47,10 @@ protected:
     // When set, the consumer is positioned right before a partition or at end of the data file.
     // _index_in_current_partition applies to the partition which is about to be read.
     bool _before_partition = true;
+    bool _right_after_pk = false;
 
     std::optional<dht::decorated_key> _current_partition_key;
+    tombstone _current_tomb;
 public:
     mp_row_consumer_reader_base(shared_sstable sst);
 
@@ -119,21 +121,6 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
     auto input = sst->data_stream(toread.start, last_end - toread.start,
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, sstable::raw_stream::no, integrity);
     return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end - toread.start);
-}
-
-template <typename DataConsumeRowsContext>
-inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows_2(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer, sstable::disk_read_range toread, uint64_t last_end, sstable::integrity_check integrity) {
-    // Although we were only asked to read until toread.end, we'll not limit
-    // the underlying file input stream to this end, but rather to last_end.
-    // This potentially enables read-ahead beyond end, until last_end, which
-    // can be beneficial if the user wants to fast_forward_to() on the
-    // returned context, and may make small skips.
-    auto recreator = [sst, p = consumer.permit(), t = consumer.trace_state(), last_end, integrity] (size_t begin, size_t end) {
-        sstables::sstlog.trace("data_consume_rows_2(): beg={} end={}", begin, end);
-        return sst->data_stream(begin, last_end - begin,
-                p, t, sst->_partition_range_history, sstable::raw_stream::no, integrity);
-    };
-    return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(recreator), toread.start, toread.end - toread.start);
 }
 
 template <typename DataConsumeRowsContext>
