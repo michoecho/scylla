@@ -44,10 +44,10 @@ namespace trie {
 
 // Enables code which is useful for debugging during development,
 // but too expensive to be compiled into release builds (even if dynamically disabled).
-constexpr bool developer_build = false;
+constexpr bool developer_build = true;
 // Adds expensive extra checks against use-after-free on pointers obtained from the bump_allocator.
 // Must be a macro so that it can affect whether some struct fields are defined or not.
-#define TRIE_SANITIZE_BUMP_ALLOCATOR developer_build
+#define TRIE_SANITIZE_BUMP_ALLOCATOR false
 // Many asserts and logs are only useful during development,
 // where the cost of logging doesn't matter at all.
 // And during development it might be useful to have A LOT of them,
@@ -664,7 +664,7 @@ inline void writer_node::set_payload(const trie_payload& p) noexcept {
 inline void writer_node::write(ptr<writer_node> self, trie_writer_sink auto& out, bool guaranteed_fit) {
     expensive_log(
         "writer_node::write: subtree={} pos={}, ps={} sz={} ",
-        fmt::ptr(self.get()), out.pos().value(), out.page_size(), (self->_branch_size + self->_node_size).value);
+        fmt::ptr(self.get()), out.pos().value, out.page_size(), (self->_branch_size + self->_node_size).value);
     expensive_assert(!self->_pos.valid());
     expensive_assert(self->_node_size.valid());
     if (guaranteed_fit) {
