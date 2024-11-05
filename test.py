@@ -1352,7 +1352,7 @@ def parse_cmd_line() -> argparse.Namespace:
         help="""Path to temporary test data and log files. The data is
         further segregated per build mode. Default: ./testlog.""",
     )
-    parser.add_argument("--gather-metrics", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--gather-metrics", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--mode', choices=all_modes.keys(), action="append", dest="modes",
                         help="Run only tests for given build mode(s)")
     parser.add_argument('--repeat', action="store", default="1", type=int,
