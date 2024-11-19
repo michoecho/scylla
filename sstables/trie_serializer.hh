@@ -715,134 +715,252 @@ inline int get_n_children(const_bytes raw) {
     }
 }
 
+struct trail_entry {
+    uint64_t pos;
+    uint16_t n_children;
+    int16_t child_idx;
+    uint8_t payload_bits;
+    // For tests
+    std::strong_ordering operator<=>(const trail_entry&) const = default;
+};
+
 struct traversal_state {
-    int64_t payloaded_ancestor = -1;
-    int64_t left_continue = -1;
-    int64_t right_continue = -1;
-    int64_t final_node = -1;
-    uint32_t edges_traversed = 0;
+    int64_t next_pos = -1;
+    int edges_traversed = 0;
+    utils::small_vector<trail_entry, 8> trail;
 };
 
 struct node_traverse_result {
     uint8_t payload_bits;
     int n_children;
     int found_idx;
-    int found_key;
+    int found_byte;
     int traversed_key_bytes;
-    int64_t moved_to;
-    int64_t prev_offset;
-    int64_t found_offset;
-    int64_t next_offset;
+    int64_t body_pos;
+    int64_t child_offset;
+};
+
+struct node_traverse_sidemost_result {
+    uint8_t payload_bits;
+    int n_children;
+    int64_t body_pos;
+    int64_t child_offset;
+};
+
+struct get_child_result {
+    int idx;
+    uint64_t offset;
+};
+
+struct load_final_node_result {
+    uint16_t n_children;
+    uint8_t payload_bits;
 };
 
 template <typename T>
 concept node_reader = requires(T& o, int64_t pos, const_bytes key, int child_idx) {
     { o.cached(pos) } -> std::same_as<bool>;
-    { o.read_payload_bits(pos) } -> std::same_as<uint8_t>;
-    { o.traverse(pos, key) } -> std::same_as<node_traverse_result>;
-    { o.get_child_offset(pos, child_idx) } -> std::same_as<uint64_t>;
+    { o.load(pos) } -> std::same_as<future<>>;
+    { o.read_final_node(pos) } -> std::same_as<load_final_node_result>;
+    { o.traverse_node_by_key(pos, key) } -> std::same_as<node_traverse_result>;
+    { o.traverse_node_leftmost(pos) } -> std::same_as<node_traverse_sidemost_result>;
+    { o.traverse_node_rightmost(pos) } -> std::same_as<node_traverse_sidemost_result>;
+    { o.get_child(pos, child_idx, bool()) } -> std::same_as<get_child_result>;
 };
 
-struct trail_entry {
-    uint64_t pos;
-    uint16_t n_children;
-    int16_t child_idx;
-    uint8_t payload_bits;
-};
+inline void traverse_single_page(
+    node_reader auto& page,
+    const_bytes key,
+    traversal_state& state
+) {
+    while (page.cached(state.next_pos) && state.edges_traversed < int(key.size())) {
+        node_traverse_result traverse_one = page.traverse_node_by_key(state.next_pos, key.subspan(state.edges_traversed));
+        state.edges_traversed += traverse_one.traversed_key_bytes;
+        bool add_to_trail = false;
+        if (traverse_one.payload_bits) {
+            add_to_trail = true;
+        }
+        if (traverse_one.found_idx > 0) {
+            add_to_trail = true;
+        }
+        bool can_continue = state.edges_traversed < int(key.size()) && traverse_one.found_byte == int(key[state.edges_traversed]);
+        if (traverse_one.found_idx + can_continue < traverse_one.n_children) {
+            add_to_trail = true;
+        }
 
-// WIP. Ignore.
-//
-// int64_t traverse(
-//     node_reader auto& input,
-//     int64_t starting_node,
-//     const_bytes key,
-//     traversal_state& state,
-//     utils::small_vector<trail_entry, 8>* trail
-// ) {
-//     int64_t pos = starting_node;
-//     while (input.cached(pos)) {
-//         // FIXME: consider a special-case optimization for long chains of SINGLE_NOPAYLOAD_4.
-//         // These arise in practice when there are groups of keys with a long common prefix.
-//         // 
-//         // For such workloads, traversing the trie node-by-node can be extremely expensive.
-//         // As an example special optimization, the code below can traverse 16 of these at once.
-//         //
-//         // const uint8_t* __restrict__ p = reinterpret_cast<const uint8_t* __restrict__>(_pages.back()->get_view().data() + _path.back().node.pos % cached_file::page_size);
-//         // if (*p == (SINGLE_NOPAYLOAD_4 << 4 | 2) & *(p + 1) == uint8_t(key[i])) {
-//         //     const uint8_t* start = p; 
-//         //     const uint8_t* beg = p - _path.back().node.pos % cached_file::page_size;
-//         //     const size_t keysize = key.size();
-//         //     while (p - 32 >= beg && i+16 <= keysize - 1) {
-//         //         typedef unsigned char  vector32b  __attribute__((__vector_size__(32)));
-//         //         typedef unsigned char  vector16b  __attribute__((__vector_size__(16)));
-//         //         vector32b a = {};
-//         //         memcpy(&a, p - 32, 32);
-//         //         auto z = uint8_t(SINGLE_NOPAYLOAD_4 << 4 | 2);
-//         //         vector16b b = {};
-//         //         memcpy(&b, &key[i], 16);
-//         //         vector16b c = {z, z, z, z, z, z, z, z, z, z, z, z, z, z, z, z};
-//         //         vector32b d = __builtin_shufflevector(c, b, 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31);
-//         //         if (!__builtin_reduce_and(a == d)) {
-//         //             break;
-//         //         }
-//         //         p -= 32;
-//         //         i += 16;
-//         //     }
-//         //     _path.back() = node_cursor{reader_node{_path.back().node.pos - (start - p), 1, (*p)&0xf, std::byte(*(p+1))}, -1};
-//         // }
-//         //
-//         auto payload_bits = input.read_payload_bits(pos);
-//         // The child index with which we should add the current node to the trail.
-//         // We only need to add nodes which are payloaded or which have more than one child.
-//         // The initial value of -2 is special and means "don't add to the trail".
-//         int add_to_trail = -2;
+        if (can_continue) {
+            state.next_pos = traverse_one.body_pos - traverse_one.child_offset;
+            state.edges_traversed += 1;
+        } else {
+            state.next_pos = -1;
+            add_to_trail = true;
+        }
 
-//         if (node.payload_bits) {
-//             add_to_trail = -1;
-//             state.payloaded_ancestor = pos;
-//         }
-    
-//         if (state.edges_traversed < key.size()) {
-//             a
-//             auto key_i = key[state.edges_traversed];
-//             lookup_result it = node.lookup(key_i, page);
-//             bool child_exists = it.byte == key_i;
+        if (add_to_trail) {
+            state.trail.push_back(trail_entry{
+                .pos = traverse_one.body_pos,
+                .n_children = traverse_one.n_children,
+                .child_idx = traverse_one.found_idx,
+                .payload_bits = traverse_one.payload_bits});
+        }
+    }
+}
 
-//             assert(it.idx <= node.n_children);
-//             expensive_log("follow, lookup query: (pos={} key={:x} n_children={}), lookup result: (offset={}, transition={:x} idx={})",
-//                 node.pos, uint8_t(key_i), node.n_children, it.offset, it.byte, it.idx);
+inline future<> traverse(
+    node_reader auto& input,
+    const_bytes key,
+    traversal_state& state
+) {
+    while (state.next_pos >= 0 && state.edges_traversed < int(key.size())) {
+        co_await input.load(state.next_pos);
+        traverse_single_page(input, key, state);
+    }
+    if (state.next_pos >= 0) {
+        co_await input.load(state.next_pos);
+        load_final_node_result final_node = input.read_final_node(state.next_pos);
+        state.trail.push_back(trail_entry{
+                .pos = state.next_pos,
+                .n_children = final_node.n_children,
+                .child_idx = -1,
+                .payload_bits = final_node.payload_bits});
+    }
+}
 
-//             if (it.idx > 0) {
-//                 state.left_continue = pos - node.get_child(it.idx - 1, false, page).offset;
-//             }
-//             if (it.idx + child_exists < node.n_children) {
-//                 if (child_exists) {
-//                     state.right_continue = pos - node.get_child(it.idx + 1, true, page).offset;
-//                 } else {
-//                     state.right_continue = pos - it.offset;
-//                 }
-//             }
-//             if (node.n_children > 0) {
-//                 add_to_trail = it.idx;
-//             }
-//             if (!child_exists || it.idx == int(node.n_children)) {
-//                 pos = -1;
-//             } else {
-//                 auto continue_pos = pos - it.offset;
-//                 pos = continue_pos;
-//                 state.edges_traversed += 1;
-//             }
-//         } else {
-//             auto payload_bits = input.read_payload_bits();
-//             assert(node.payload_bits);
-//             state.final = pos;
-//             pos = -1;
-//         }
-//         if (trail && add_to_trail > -2) {
-//             trail->push_back(trail_entry(pos, add_to_trail));
-//         }
-//     }
-//     return pos;
-// }
+inline void descend_leftmost_single_page(
+    node_reader auto& page,
+    traversal_state& state
+) {
+    while (page.cached(state.next_pos)) {
+        node_traverse_sidemost_result traverse_one = page.traverse_node_leftmost(state.next_pos);
+        if (traverse_one.payload_bits || traverse_one.n_children > 1) {
+            if (!(state.trail.back().payload_bits || state.trail.back().n_children > 1)) {
+                state.trail.pop_back();
+            }
+            state.trail.push_back(trail_entry{
+                .pos = traverse_one.body_pos,
+                .n_children = traverse_one.n_children,
+                .child_idx = 0,
+                .payload_bits = traverse_one.payload_bits});
+        }
+
+        if (traverse_one.payload_bits) {
+            state.next_pos = -1;
+            state.trail.back().child_idx = -1;
+        } else {
+            SCYLLA_ASSERT(traverse_one.n_children >= 1);
+            state.next_pos = traverse_one.body_pos - traverse_one.child_offset;
+        }
+    }
+}
+
+inline future<> descend_leftmost(
+    node_reader auto& input,
+    traversal_state& state
+) {
+    while (state.next_pos >= 0) {
+        co_await input.load(state.next_pos);
+        descend_leftmost_single_page(input, state);
+    }
+}
+
+inline bool ascend_to_right_edge(traversal_state& state) {
+    if (state.trail.back().child_idx != -1) {
+        state.trail.back().child_idx -= 1;
+    }
+    for (int i = state.trail.size() - 1; i >= 0; --i) {
+        if (state.trail[i].child_idx + 1 < state.trail[i].n_children) {
+            state.trail[i].child_idx += 1;
+            state.trail.resize(i + 1);
+            return true;
+        }
+    }
+    state.trail[0].child_idx = state.trail[0].n_children;
+    state.trail.resize(1);
+    return false;
+}
+
+inline future<> step(
+    node_reader auto& input,
+    traversal_state& state
+) {
+    if (ascend_to_right_edge(state)) {
+        co_await input.load(state.trail.back().pos);
+        get_child_result child = input.get_child(state.trail.back().pos, state.trail.back().child_idx, true);
+
+        state.trail.back().child_idx = child.idx;
+        state.next_pos = state.trail.back().pos - child.offset;
+        co_await descend_leftmost(input, state);
+    }
+    state.edges_traversed = -1;
+}
+
+inline void descend_rightmost_single_page(
+    node_reader auto& page,
+    traversal_state& state
+) {
+    while (page.cached(state.next_pos)) {
+        node_traverse_sidemost_result traverse_one = page.traverse_node_rightmost(state.next_pos);
+        if (traverse_one.payload_bits || traverse_one.n_children > 1) {
+            if (!(state.trail.back().payload_bits || state.trail.back().n_children > 1)) {
+                state.trail.pop_back();
+            }
+            state.trail.push_back(trail_entry{
+                .pos = traverse_one.body_pos,
+                .n_children = traverse_one.n_children,
+                .child_idx = traverse_one.n_children - 1,
+                .payload_bits = traverse_one.payload_bits});
+        }
+
+        if (traverse_one.n_children >= 1) {
+            state.next_pos = traverse_one.body_pos - traverse_one.child_offset;
+        } else {
+            state.next_pos = -1;
+            state.trail.back().child_idx = -1;
+        }
+    }
+}
+
+inline future<> descend_rightmost(
+    node_reader auto& input,
+    traversal_state& state
+) {
+    while (state.next_pos >= 0) {
+        co_await input.load(state.next_pos);
+        descend_rightmost_single_page(input, state);
+    }
+}
+
+inline bool ascend_to_left_edge(traversal_state& state) {
+    for (int i = state.trail.size() - 1; i >= 0; --i) {
+        if (state.trail[i].child_idx > 0 || (state.trail[i].child_idx == 0 && state.trail[i].payload_bits)) {
+            state.trail[i].child_idx -= 1;
+            state.trail.resize(i + 1);
+            return true;
+        }
+    }
+    state.trail[0].child_idx = state.trail[0].payload_bits ? -1 : 0;
+    state.trail.resize(1);
+    return false;
+}
+
+inline future<> step_back(
+    node_reader auto& input,
+    traversal_state& state
+) {
+    bool didnt_go_past_start = ascend_to_left_edge(state);
+    if (state.trail.back().child_idx >= 0 && state.trail.back().child_idx < state.trail.back().n_children) {
+        co_await input.load(state.trail.back().pos);
+        get_child_result child = input.get_child(state.trail.back().pos, state.trail.back().child_idx, false);
+
+        state.trail.back().child_idx = child.idx;
+        state.next_pos = state.trail.back().pos - child.offset;
+        if (didnt_go_past_start) {
+            co_await descend_rightmost(input, state);
+        } else {
+            co_await descend_leftmost(input, state);
+        }
+    }
+    state.edges_traversed = -1;
+}
 
 } // namespace trie
