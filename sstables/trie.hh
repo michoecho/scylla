@@ -67,15 +67,16 @@ public:
 };
 partition_trie_writer make_partition_trie_writer(bti_trie_sink&);
 
+class bti_node_reader;
+
 // Wraps a file into an interface that allows reading a trie node from a specified offset.
 struct bti_trie_source {
-    class impl;
-    std::unique_ptr<impl> _impl;
+    std::unique_ptr<bti_node_reader> _impl;
     bti_trie_source();
     ~bti_trie_source();
     bti_trie_source& operator=(bti_trie_source&&);
     bti_trie_source(bti_trie_source&&);
-    bti_trie_source(std::unique_ptr<impl>);
+    bti_trie_source(std::unique_ptr<bti_node_reader>);
 };
 bti_trie_source make_bti_trie_source(cached_file&, reader_permit);
 
