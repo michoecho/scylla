@@ -779,6 +779,18 @@ struct payload_result {
     const_bytes bytes;
 };
 
+} // namespace trie
+
+template <>
+struct fmt::formatter<trie::trail_entry> : fmt::formatter<string_view> {
+    auto format(const trie::trail_entry& r, fmt::format_context& ctx) const
+            -> decltype(ctx.out()) {
+        return fmt::format_to(ctx.out(), "trail_entry(id={} child_idx={} payload_bits={})", r.pos, r.child_idx, r.payload_bits);
+    }
+};
+
+namespace trie {
+
 template <node_reader Input>
 class trie_cursor {
     // Reference wrapper to allow copying the cursor.
@@ -792,6 +804,7 @@ class trie_cursor {
     // it this case maintaining the stack only adds overhead.
     // Consider adding a separate cursor type for single-partition reads,
     // or a special single-partititon variant of `set_before()` which won't bother maintaining the stack.
+public:
     decltype(traversal_state::trail) _trail;
     uint64_t _root = -1;
 
@@ -833,7 +846,8 @@ public:
     // Preconditions: none.
     // Postconditions: uninitialized.
     void reset();
-    bool points_at_key() const;
+    bool extends_key() const;
+    void snap_to_key();
 };
 
 // An index cursor which can be used to obtain the Data.db bounds
@@ -1047,8 +1061,13 @@ void trie_cursor<Input>::reset() {
 }
 
 template <node_reader Input>
-bool trie_cursor<Input>::points_at_key() const {
-    return _trail.back().child_idx == -1 && _trail.back().payload_bits;
+void trie_cursor<Input>::snap_to_key() {
+    _trail.back().child_idx = -1;
+}
+
+template <node_reader Input>
+bool trie_cursor<Input>::extends_key() const {
+    return (_trail.back().child_idx == -1 &&_trail.back().payload_bits) || (_trail.back().n_children == 0);
 }
 
 template <node_reader Input>
@@ -1117,7 +1136,7 @@ future<std::optional<uint64_t>> index_cursor<Input>::last_block_offset() const {
 
 template <node_reader Input>
 uint64_t index_cursor<Input>::data_file_pos(uint64_t file_size) const {
-    // expensive_log("index_cursor::data_file_pos this={}", fmt::ptr(this));
+    expensive_log("index_cursor::data_file_pos this={} initialized={}", fmt::ptr(this), _partition_cursor.initialized());
     expensive_assert(_partition_cursor.initialized());
     if (_partition_metadata) {
         if (!_row_cursor.initialized()) {
@@ -1187,10 +1206,13 @@ future<set_result> index_cursor<Input>::set_before_partition(const_bytes key) {
     _row_cursor.reset();
     _partition_metadata.reset();
     co_await _partition_cursor.set_to(key);
-    if (_partition_cursor.points_at_key()) {
+    if (_partition_cursor.extends_key()) {
+        _partition_cursor.snap_to_key();
+        expensive_log("index_cursor::set_before_partition, points at key, trail={}", fmt::join(_partition_cursor._trail, ", "));
         co_await maybe_read_metadata();
         co_return set_result::possible_match;
     } else {
+        expensive_log("index_cursor::set_before_partition, doesn't point at key, trail={}", fmt::join(_partition_cursor._trail, ", "));
         co_await _partition_cursor.step();
         co_await maybe_read_metadata();
         co_return _partition_cursor.eof() ? set_result::eof : set_result::definitely_not_a_match;
@@ -1225,7 +1247,7 @@ future<> index_cursor<Input>::set_before_row(const_bytes key) {
         co_await _row_cursor.init(_partition_metadata->trie_root);
     }
     co_await _row_cursor.set_to(key);
-    if (!_row_cursor.points_at_key()) {
+    if (!_row_cursor.extends_key()) {
         co_await _row_cursor.step_back();
     }
 }

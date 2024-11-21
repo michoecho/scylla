@@ -618,6 +618,8 @@ inline void traverse_single_page(
             state.next_pos = -1;
         }
         bool add_to_trail = traverse_one.payload_bits || traverse_one.n_children > 1 || !can_continue;
+        expensive_log("traversing pos={} add_to_trail={} found_byte={} can_continue={} body_pos={} child_offset={}",
+                state.next_pos, add_to_trail, traverse_one.found_byte, can_continue, traverse_one.body_pos, traverse_one.child_offset);
         if (add_to_trail) {
             state.trail.push_back(trail_entry{
                 .pos = traverse_one.body_pos,
