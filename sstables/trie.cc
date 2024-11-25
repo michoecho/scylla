@@ -17,6 +17,8 @@
 //
 // (The reader logic doesn't have much in the way of design -- the design of readers must follow the format).
 
+#pragma clang optimize off
+
 #include "trie.hh"
 #include <algorithm>
 #include <cassert>
@@ -121,7 +123,7 @@ void partition_index_writer_impl<Output>::add(const_bytes key, int64_t data_file
         memcpy(&payload_bytes[1], &pos_be, 8);
         // Pass the new node chain and its payload to the lower layer.
         // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
-        // (Even though currently they are always present, and the reader assumes so).
+        // (Even though currently they are always present).
         _wr.add(_last_key_mismatch, tail, trie_payload(payload_bits | 0x8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
         // Update _last_* variables with the new key.
         _last_key_mismatch = mismatch;
@@ -338,25 +340,38 @@ struct follow_result {
     int end_depth;
 };
 
+struct page_ptr : cached_file::ptr_type { 
+    using parent = cached_file::ptr_type; 
+    page_ptr() noexcept = default; 
+    page_ptr(parent&& x) noexcept : parent(std::move(x)) {} 
+    page_ptr(const page_ptr& other) noexcept : parent(other ? other->share() : nullptr) {} 
+    page_ptr(page_ptr&&) noexcept = default; 
+    page_ptr& operator=(page_ptr&&) noexcept = default; 
+    page_ptr& operator=(const page_ptr& other) noexcept { 
+        parent::operator=(other ? other->share() : nullptr); 
+        return *this; 
+    } 
+}; 
 
 struct bti_node_reader {
-    cached_file::ptr_type _cached_page;
-    cached_file& _file;
+    page_ptr _cached_page;
+    std::reference_wrapper<cached_file> _file;
 
     bti_node_reader(cached_file& f) : _file(f) {}
 
-    bool cached(int64_t pos) {
+    bool cached(int64_t pos) const {
         return _cached_page && _cached_page->pos() / cached_file::page_size == pos / cached_file::page_size;
     }
 
     future<> load(int64_t pos) {
-        return _file.get_page_view(pos, nullptr).then(
+        return _file.get().get_page_view(pos, nullptr).then(
             [this] (auto page) {
                 _cached_page = std::move(page.first);
         });
     }
 
     trie::load_final_node_result read_final_node(int64_t pos) {
+        SCYLLA_ASSERT(cached(pos));
         auto sp = _cached_page->get_view().subspan(pos % cached_file::page_size);
         auto type = uint8_t(sp[0]) >> 4;
         trie::load_final_node_result result;
@@ -416,6 +431,7 @@ struct bti_node_reader {
         abort();
     }
     trie::node_traverse_result traverse_node_by_key(int64_t pos, const_bytes key) {
+        SCYLLA_ASSERT(cached(pos));
         auto sp = _cached_page->get_view().subspan(pos % cached_file::page_size);
         auto type = uint8_t(sp[0]) >> 4;
         trie::node_traverse_result result;
@@ -513,6 +529,7 @@ struct bti_node_reader {
         abort();
     }
     trie::node_traverse_sidemost_result traverse_node_leftmost(int64_t pos) {
+        SCYLLA_ASSERT(cached(pos));
         auto sp = _cached_page->get_view().subspan(pos % cached_file::page_size);
         auto type = uint8_t(sp[0]) >> 4;
         trie::node_traverse_sidemost_result result;
@@ -579,6 +596,7 @@ struct bti_node_reader {
         abort();
     }
     trie::node_traverse_sidemost_result traverse_node_rightmost(int64_t pos) {
+        SCYLLA_ASSERT(cached(pos));
         auto sp = _cached_page->get_view().subspan(pos % cached_file::page_size);
         auto type = uint8_t(sp[0]) >> 4;
         trie::node_traverse_sidemost_result result;
@@ -645,6 +663,7 @@ struct bti_node_reader {
         abort();
     }
     trie::get_child_result get_child(int64_t pos, int child_idx, bool forward) {
+        SCYLLA_ASSERT(cached(pos));
         auto sp = _cached_page->get_view().subspan(pos % cached_file::page_size);
         auto type = uint8_t(sp[0]) >> 4;
         trie::get_child_result result;
@@ -710,7 +729,8 @@ struct bti_node_reader {
         }
         abort();
     }
-    const_bytes get_payload(int64_t pos) {
+    const_bytes get_payload(int64_t pos) const {
+        SCYLLA_ASSERT(cached(pos));
         auto sp = _cached_page->get_view().subspan(pos % cached_file::page_size);
         auto type = uint8_t(sp[0]) >> 4;
         switch (type) {
@@ -746,9 +766,9 @@ struct bti_node_reader {
     future<row_index_header> read_row_index_header(uint64_t pos, reader_permit rp) {
         auto ctx = row_index_header_parser(
             std::move(rp),
-            make_file_input_stream(file(make_shared<cached_file_impl>(_file)), pos, _file.size() - pos, {.buffer_size = 4096, .read_ahead = 0}),
+            make_file_input_stream(file(make_shared<cached_file_impl>(_file.get())), pos, _file.get().size() - pos, {.buffer_size = 4096, .read_ahead = 0}),
             pos,
-            _file.size() - pos);
+            _file.get().size() - pos);
         std::exception_ptr ex;
         try {
             co_await ctx.consume_input();
@@ -761,22 +781,6 @@ struct bti_node_reader {
         co_await ctx.close();
         std::rethrow_exception(ex);
     }
-};
-
-// Pimpl boilerplate
-bti_trie_source::bti_trie_source() = default;
-bti_trie_source::bti_trie_source(bti_trie_source&&) = default;
-bti_trie_source::~bti_trie_source() = default;
-bti_trie_source& bti_trie_source::operator=(bti_trie_source&&) = default;
-bti_trie_source::bti_trie_source(std::unique_ptr<bti_node_reader> x) : _impl(std::move(x)) {}
-
-bti_trie_source make_bti_trie_source(cached_file& f, reader_permit p) {
-    return std::make_unique<bti_node_reader>(f);
-}
-
-struct payload_result {
-    uint8_t bits;
-    const_bytes bytes;
 };
 
 } // namespace trie
@@ -794,7 +798,7 @@ namespace trie {
 template <node_reader Input>
 class trie_cursor {
     // Reference wrapper to allow copying the cursor.
-    std::reference_wrapper<Input> _in;
+    Input _in;
     // A stack holding the path from the root to the currently visited node.
     // When initialized, _path[0] is root.
     //
@@ -806,19 +810,14 @@ class trie_cursor {
     // or a special single-partititon variant of `set_before()` which won't bother maintaining the stack.
 public:
     decltype(traversal_state::trail) _trail;
-    uint64_t _root = -1;
-
 public:
-    trie_cursor(Input&);
+    trie_cursor(Input);
     ~trie_cursor() = default;
     trie_cursor& operator=(const trie_cursor&) = default;
-    // Preconditions: none.
-    // Postconditions: points at the root node.
-    future<void> init(uint64_t root_pos);
     // Checks whether the cursor is initialized.
     // Preconditions: none.
     bool initialized() const;
-    future<> set_to(const_bytes key);
+    future<> set_to(uint64_t root, const_bytes key);
     // Moves the cursor to the next key (or EOF).
     //
     // step() returns a set_result, but it can only return `eof` (when it steps beyond all keys),
@@ -837,7 +836,6 @@ public:
     // Postconditions: points at eof or a payloaded node.
     future<> step_back();
     // Preconditions: points at a payloaded node.
-
     payload_result payload() const;
     // Checks whether the cursor in the EOF position.
     // 
@@ -846,8 +844,9 @@ public:
     // Preconditions: none.
     // Postconditions: uninitialized.
     void reset();
-    bool extends_key() const;
-    void snap_to_key();
+    bool at_leaf() const;
+    bool at_key() const;
+    void snap_to_leaf();
 };
 
 // An index cursor which can be used to obtain the Data.db bounds
@@ -862,19 +861,19 @@ class index_cursor {
     std::optional<row_index_header> _partition_metadata;
     // _row_cursor reads the tries written in Rows.db.
     // Rerefence wrapper to allow for copying the cursor.
-    std::reference_wrapper<Input> _in_row;
+    Input _in_row;
     // Accounts the memory consumed by the cursor.
     // FIXME: it actually doesn't do that, yet.
     reader_permit _permit;
+    uint64_t _par_root;
 private:
     // If the current partition has a row index, reads its header.
     future<> maybe_read_metadata();
     // The colder part of set_after_row, just to hint at inlining the hotter part.
     future<> set_after_row_cold(const_bytes);
 public:
-    index_cursor(Input& par, Input& row, reader_permit);
+    index_cursor(uint64_t par_root, Input par, Input row, reader_permit);
     index_cursor& operator=(const index_cursor&) = default;
-    future<> init(uint64_t root_pos);
     // Returns the data file position of the cursor. Can only be called on a set cursor.
     //
     // If the row cursor is set, returns the position of the pointed-to clustering key block.
@@ -914,44 +913,30 @@ public:
     // Checks if the row cursor is set.
     bool row_cursor_set() const;
     future<std::optional<uint64_t>> last_block_offset() const;
+    std::optional<uint8_t> partition_hash() const;
 };
 
 class bti_index_reader : public sstables::index_reader {
-    // Trie sources for Partitions.db and Rows.db
-    //
-    // FIXME: should these be owned by the sstable object instead?
-    bti_trie_source _in_par;
-    bti_trie_source _in_row;
+    bti_node_reader _in_row;
     // We need the schema solely to parse the partition keys serialized in row index headers.
     schema_ptr _s;
     // Supposed to account the memory usage of the index reader.
     // FIXME: it doesn't actually do that yet.
-    // FIXME: it should probably also mark the permit as blocked on disk?
+    // FIXME: it should also mark the permit as blocked on disk?
     reader_permit _permit;
     // The index is, in essence, a pair of cursors.
     index_cursor<bti_node_reader> _lower;
     index_cursor<bti_node_reader> _upper;
-    // We don't need this for anything, only the cursors do.
-    // But they take it via the asynchronous init() function, not via constructor,
-    // so we need to temporarily hold on to it between the constructor and the init().
-    uint64_t _root;
     // Partitions.db doesn't store the size of Data.db, so the cursor doesn't know by itself
     // what Data.db position to return when its position is EOF. We need to pass the file size
     // from the above.
     uint64_t _total_file_size;
-    // Before any operation, we have to initialize the two cursors.
-    // It can't be done in constructor, since their init() is async.
-    // Our choice is to have an explicit init(), or a lazy init().
-    // We do the latter, by calling `maybe_init()` on every operation.
-    bool _initialized = false;
 
     // Helper which reads a row index header from the given position in Rows.db.
     future<row_index_header> read_row_index_header(uint64_t);
     // Helper which translates a ring_position_view to a BTI byte-comparable form.
     std::vector<std::byte> translate_key(dht::ring_position_view key);
-    // Initializes the reader, if it isn't initialized yet.
-    // We must call it before doing anything interesting with the cursors.
-    // 
+public:
     // FIXME: our semantics are different from the semantics of the old (BIG) index reader.
     //
     // This new index reader is *unset* after creation, and initially doesn't point at anything.
@@ -971,9 +956,7 @@ class bti_index_reader : public sstables::index_reader {
     // But it's not documented that it has to stay this way, and it's dangerous to rely on that.
     // We should harden the API, via better docs and/or asserts and/or changing the semantics of this index
     // reader to match the old index reader.
-    future<> maybe_init();
-public:
-    bti_index_reader(bti_trie_source in, bti_trie_source in_row, uint64_t root_pos, uint64_t total_file_size, schema_ptr s, reader_permit);
+    bti_index_reader(bti_node_reader partitions_db, bti_node_reader rows_db, uint64_t root_pos, uint64_t total_file_size, schema_ptr s, reader_permit);
     virtual future<> close() noexcept override;
     virtual sstables::data_file_positions_range data_file_positions() const override;
     virtual future<std::optional<uint64_t>> last_block_offset() override;
@@ -1000,23 +983,16 @@ public:
 };
 
 template <node_reader Input>
-trie_cursor<Input>::trie_cursor(Input& in)
-    : _in(in)
+trie_cursor<Input>::trie_cursor(Input in)
+    : _in(std::move(in))
 {
 }
 
 // Documented near the declaration.
 template <node_reader Input>
-future<void> trie_cursor<Input>::init(uint64_t root_pos) {
-    _root = root_pos;
-    return make_ready_future<>();
-}
-
-// Documented near the declaration.
-template <node_reader Input>
-future<> trie_cursor<Input>::set_to(const_bytes key) {
-    traversal_state ts{.next_pos = _root, .edges_traversed = 0};
-    co_await trie::traverse(_in.get(), key, ts);
+future<> trie_cursor<Input>::set_to(uint64_t root, const_bytes key) {
+    traversal_state ts{.next_pos = root, .edges_traversed = 0};
+    co_await trie::traverse(_in, key, ts);
     _trail = std::move(ts.trail);
 }
 
@@ -1024,7 +1000,7 @@ future<> trie_cursor<Input>::set_to(const_bytes key) {
 template <node_reader Input>
 future<> trie_cursor<Input>::step() {
     traversal_state ts{.trail = std::move(_trail)};
-    co_await trie::step(_in.get(), ts);
+    co_await trie::step(_in, ts);
     _trail = std::move(ts.trail);
 }
 
@@ -1032,7 +1008,7 @@ future<> trie_cursor<Input>::step() {
 template <node_reader Input>
 future<> trie_cursor<Input>::step_back() {
     traversal_state ts{.trail = std::move(_trail)};
-    co_await trie::step_back(_in.get(), ts);
+    co_await trie::step_back(_in, ts);
     _trail = std::move(ts.trail);
 }
 
@@ -1040,7 +1016,7 @@ template <node_reader Input>
 payload_result trie_cursor<Input>::payload() const {
     return payload_result{
         .bits = _trail.back().payload_bits,
-        .bytes = _in.get().get_payload(_trail.back().pos),
+        .bytes = _in.get_payload(_trail.back().pos),
     };
 }
 
@@ -1051,40 +1027,37 @@ bool trie_cursor<Input>::eof() const {
 
 template <node_reader Input>
 bool trie_cursor<Input>::initialized() const {
-    return _root != uint64_t(-1);
+    return !_trail.empty();
 }
 
 template <node_reader Input>
 void trie_cursor<Input>::reset() {
-    _root = -1;
     _trail.clear();
 }
 
 template <node_reader Input>
-void trie_cursor<Input>::snap_to_key() {
+void trie_cursor<Input>::snap_to_leaf() {
     _trail.back().child_idx = -1;
 }
 
 template <node_reader Input>
-bool trie_cursor<Input>::extends_key() const {
-    return (_trail.back().child_idx == -1 &&_trail.back().payload_bits) || (_trail.back().n_children == 0);
+bool trie_cursor<Input>::at_leaf() const {
+    return _trail.back().n_children == 0;
 }
 
 template <node_reader Input>
-index_cursor<Input>::index_cursor(Input& par, Input& row, reader_permit permit)
+bool trie_cursor<Input>::at_key() const {
+    return _trail.back().payload_bits && _trail.back().child_idx == -1;
+}
+
+template <node_reader Input>
+index_cursor<Input>::index_cursor(uint64_t par_root, Input par, Input row, reader_permit permit)
     : _partition_cursor(par)
     , _row_cursor(row)
     , _in_row(row)
     , _permit(permit)
+    , _par_root(par_root)
 {}
-
-template <node_reader Input>
-future<> index_cursor<Input>::init(uint64_t root_offset) {
-    expensive_log("index_cursor::init this={} root={}", fmt::ptr(this), root_offset);
-    _row_cursor.reset();
-    _partition_metadata.reset();
-    return _partition_cursor.init(root_offset);
-}
 
 template <node_reader Input>
 bool index_cursor<Input>::row_cursor_set() const {
@@ -1119,11 +1092,8 @@ future<std::optional<uint64_t>> index_cursor<Input>::last_block_offset() const {
 
     //abort();
     auto cur = _row_cursor;
-    if (!cur.initialized()) {
-        co_await cur.init(_partition_metadata->trie_root);
-    }
     const std::byte key[] = {std::byte(0x60)};
-    co_await cur.set_to(key);
+    co_await cur.set_to(_partition_metadata->trie_root, key);
     co_await cur.step_back();
     if (cur.eof()) {
         co_return std::nullopt; 
@@ -1132,6 +1102,15 @@ future<std::optional<uint64_t>> index_cursor<Input>::last_block_offset() const {
     auto result = row_payload_to_offset(cur.payload());
     expensive_log("last_block_offset: {}", result);
     co_return result;
+}
+
+template <node_reader Input>
+std::optional<uint8_t> index_cursor<Input>::partition_hash() const {
+    auto p = _partition_cursor.payload();
+    if (p.bits & 0x8) {
+        return static_cast<uint8_t>(p.bytes[0]);
+    }
+    return std::nullopt;
 }
 
 template <node_reader Input>
@@ -1194,7 +1173,7 @@ future<> index_cursor<Input>::maybe_read_metadata() {
         return make_ready_future<>();
     }
     if (auto res = partition_payload_to_pos(_partition_cursor.payload()); res < 0) {
-        return _in_row.get().read_row_index_header(-res, _permit).then([this] (auto result) {
+        return _in_row.read_row_index_header(-res, _permit).then([this] (auto result) {
             _partition_metadata = result;
         });
     }
@@ -1205,9 +1184,9 @@ future<set_result> index_cursor<Input>::set_before_partition(const_bytes key) {
     expensive_log("index_cursor::set_before_partition this={} key={}", fmt::ptr(this), fmt_hex(key));
     _row_cursor.reset();
     _partition_metadata.reset();
-    co_await _partition_cursor.set_to(key);
-    if (_partition_cursor.extends_key()) {
-        _partition_cursor.snap_to_key();
+    co_await _partition_cursor.set_to(_par_root, key);
+    if (_partition_cursor.at_leaf()) {
+        _partition_cursor.snap_to_leaf();
         expensive_log("index_cursor::set_before_partition, points at key, trail={}", fmt::join(_partition_cursor._trail, ", "));
         co_await maybe_read_metadata();
         co_return set_result::possible_match;
@@ -1224,7 +1203,7 @@ future<> index_cursor<Input>::set_after_partition(const_bytes key) {
     expensive_log("index_cursor::set_after_partition this={} key={}", fmt::ptr(this), fmt_hex(key));
     _row_cursor.reset();
     _partition_metadata.reset();
-    co_await _partition_cursor.set_to(key);
+    co_await _partition_cursor.set_to(_par_root, key);
     co_await _partition_cursor.step();
     co_await maybe_read_metadata();
 }
@@ -1243,19 +1222,16 @@ future<> index_cursor<Input>::set_before_row(const_bytes key) {
     if (!_partition_metadata) {
         co_return;
     }
-    if (!_row_cursor.initialized()) {
-        co_await _row_cursor.init(_partition_metadata->trie_root);
-    }
-    co_await _row_cursor.set_to(key);
-    if (!_row_cursor.extends_key()) {
+    _row_cursor.reset();
+    co_await _row_cursor.set_to(_partition_metadata->trie_root, key);
+    if (!_row_cursor.at_key()) {
         co_await _row_cursor.step_back();
     }
 }
 
 template <node_reader Input>
 future<> index_cursor<Input>::set_after_row_cold(const_bytes key) {
-    co_await _row_cursor.init(_partition_metadata->trie_root);
-    co_await _row_cursor.set_to(key);
+    co_await _row_cursor.set_to(_partition_metadata->trie_root, key);
     co_await _row_cursor.step();
     if (_row_cursor.eof()) {
         co_await next_partition();
@@ -1273,7 +1249,7 @@ future<> index_cursor<Input>::set_after_row(const_bytes key) {
 }
 
 future<row_index_header> bti_index_reader::read_row_index_header(uint64_t pos) {
-    auto hdr = co_await _in_row._impl->read_row_index_header(pos, _permit);
+    auto hdr = co_await _in_row.read_row_index_header(pos, _permit);
     expensive_log("bti_index_reader::read_row_index_header this={} pos={} result={}", fmt::ptr(this), pos, hdr.data_file_offset);
     co_return hdr;
 }
@@ -1314,32 +1290,24 @@ future<> bti_index_reader::close() noexcept {
     return make_ready_future<>();
 }
 bti_index_reader::bti_index_reader(
-    bti_trie_source in,
-    bti_trie_source row_in,
+    bti_node_reader partitions_db,
+    bti_node_reader rows_db,
     uint64_t root_offset,
     uint64_t total_file_size,
     schema_ptr s,
     reader_permit rp
 )
-    : _in_par(std::move(in))
-    , _in_row(std::move(row_in))
+    : _in_row(rows_db)
     , _s(s)
     , _permit(std::move(rp))
-    , _lower(*_in_par._impl, *_in_row._impl, _permit)
-    , _upper(*_in_par._impl, *_in_row._impl, _permit)
-    , _root(root_offset)
+    , _lower(root_offset, partitions_db, rows_db, _permit)
+    , _upper(root_offset, partitions_db, rows_db, _permit)
     , _total_file_size(total_file_size)
 {
     trie_logger.debug("bti_index_reader::constructor: this={} root_offset={} total_file_size={} table={}.{}",
         fmt::ptr(this), root_offset, total_file_size, _s->ks_name(), _s->cf_name());
 }
-future<> bti_index_reader::maybe_init() {
-    trie_logger.debug("bti_index_reader::constructor: this={} initialized={}", fmt::ptr(this), _initialized);
-    if (!_initialized) {
-        return when_all(_lower.init(_root)).then([this] (const auto&) { _upper = _lower; _initialized = true; });
-    }
-    return make_ready_future<>();
-}
+
 std::byte bound_weight_to_terminator(bound_weight b) {
     switch (b) {
         case bound_weight::after_all_prefixed: return std::byte(0x60);
@@ -1358,12 +1326,17 @@ std::vector<std::byte> byte_comparable(const schema& s, position_in_partition_vi
 }
 future<bool> bti_index_reader::advance_lower_and_check_if_present(dht::ring_position_view key, std::optional<position_in_partition_view> pos) {
     trie_logger.debug("bti_index_reader::advance_lower_and_check_if_present: this={} key={} pos={}", fmt::ptr(this), key, pos);
-    co_await maybe_init();
     auto trie_key = translate_key(key);
     auto res = co_await _lower.set_before_partition(trie_key);
     _upper = _lower;
     if (res != set_result::possible_match) {
         co_return false;
+    }
+    if (std::optional<uint8_t> hash_byte = _lower.partition_hash()) {
+        uint8_t expected = hash_bits_from_token(key.token());
+        if (*hash_byte != expected) {
+            co_return false;
+        }
     }
     if (!pos) {
         co_await _upper.next_partition();
@@ -1385,7 +1358,7 @@ future<> bti_index_reader::advance_to(dht::ring_position_view pos) {
     co_await _lower.set_before_partition(translate_key(pos));
 }
 future<> bti_index_reader::advance_after_existing(const dht::decorated_key& dk) {
-    trie_logger.debug("bti_index_reader::advance_to(partition) this={} pos={}", fmt::ptr(this), dk);
+    trie_logger.debug("bti_index_reader::advance_after_existing(partition) this={} pos={}", fmt::ptr(this), dk);
     co_await _lower.set_after_partition(translate_key(dht::ring_position_view(dk.token(), &dk.key(), 0)));
 }
 future<> bti_index_reader::advance_to(position_in_partition_view pos) {
@@ -1431,7 +1404,6 @@ future<> bti_index_reader::read_partition_data() {
 }
 future<> bti_index_reader::advance_to(const dht::partition_range& range) {
     trie_logger.debug("bti_index_reader::advance_to(range) this={} range={}", fmt::ptr(this), range);
-    co_await maybe_init();
     if (const auto s = range.start()) {
         co_await _lower.set_before_partition(translate_key(s.value().value()));
     } else {
@@ -1703,14 +1675,24 @@ finish:
 }
 
 std::unique_ptr<sstables::index_reader> make_bti_index_reader(
-    bti_trie_source in,
-    bti_trie_source in_row,
+    cached_file& in,
+    cached_file& in_row,
     uint64_t root_offset,
     uint64_t total_file_size,
     schema_ptr s,
     reader_permit rp
 ) {
-    return std::make_unique<bti_index_reader>(std::move(in), std::move(in_row), root_offset, total_file_size, std::move(s), std::move(rp));
+    return std::make_unique<bti_index_reader>(
+        bti_node_reader(in),
+        bti_node_reader(in_row),
+        root_offset,
+        total_file_size,
+        std::move(s),
+        std::move(rp));
+}
+
+uint8_t hash_bits_from_token(const dht::token& x) {
+    return x.unbias();
 }
 
 } // namespace trie

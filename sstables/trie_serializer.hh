@@ -548,6 +548,173 @@ inline uint64_t read_offset(const_bytes sp, int idx, int bits_per_pointer) {
     }
 }
 
+// Returned by methods of reader_node which return metadata about one of its children.
+struct lookup_result {
+    // Index of the queried child.
+    // An integer in range [0, n_children].
+    // (As is customary: when it's equal to n_children, it means that there is no child fitting the query).
+    int idx;
+    // The transition byte of the selected child. (Meaningless when idx == n_children).
+    std::byte byte;
+    // The offset of child with respect to its parent.
+    // (The position of the child is `parent's position` - `offset`.
+    // Children always positions lower than their parent).
+    uint64_t offset;
+};
+
+// We want to be always inlined so that bits_per_pointer is substituted with a constant,
+// and the read_offset can be simplified.
+[[gnu::always_inline]]
+inline lookup_result get_child_sparse(int type, const_bytes raw, int idx) {
+    auto bpp = bits_per_pointer_arr[type];
+    auto n_children = uint8_t(raw[1]);
+    expensive_assert(idx < n_children);
+    return {idx, raw[2 + idx], read_offset(raw.subspan(2+n_children), idx, bpp)};
+}
+
+// We want to be always inlined so that bits_per_pointer is substituted with a constant,
+// and the read_offset can be simplified.
+[[gnu::always_inline]]
+inline lookup_result get_child_dense(int type, const_bytes raw, int idx, bool forward) {
+    auto dense_span = uint64_t(raw[2]) + 1;
+    auto bpp = bits_per_pointer_arr[type];
+    expensive_assert(idx < int(dense_span));
+    while (idx < int(dense_span) && idx >= 0) {
+        if (auto off = read_offset(raw.subspan(3), idx, bpp)) {
+            auto transition = std::byte(uint8_t(raw[1]) + idx);
+            return {idx, transition, off};
+        } else {
+            idx += forward ? 1 : -1;
+        }
+    }
+    // Malformed index. We checked all child slots starting from the requested one, and they all were unused.
+    // But the last slot is supposed to be always used.
+    abort();
+}
+
+// Looks up the child with the given index.
+// If there is no child with such an index (can happen in DENSE nodes, which have unused indexes),
+// picks the closest child with idx greater (if `forward == true`) or smaller (if `forward == false`)
+// than the given. Such a child must exist.
+inline lookup_result get_child(const_bytes raw, int idx, bool forward) {
+    auto type = uint8_t(raw[0]) >> 4;
+    switch (type) {
+    case PAYLOAD_ONLY:
+        abort();
+    case SINGLE_NOPAYLOAD_4:
+        expensive_assert(idx == 0);
+        return {idx, raw[1], uint64_t(raw[0]) & 0xf};
+    case SINGLE_8:
+        expensive_assert(idx == 0);
+        return {idx, raw[1], uint64_t(raw[2])};
+    case SINGLE_NOPAYLOAD_12:
+        expensive_assert(idx == 0);
+        return {idx, raw[2], (uint64_t(raw[0]) & 0xf) << 8 | uint64_t(raw[1])};
+    case SINGLE_16:
+        expensive_assert(idx == 0);
+        return {idx, raw[1], uint64_t(raw[2]) << 8 | uint64_t(raw[3])};
+    // We copy-paste the code so that each case is separately inlined and simplified.
+    // TODO: verify that the compiler does what we expect.
+    case SPARSE_8:
+        return get_child_sparse(type, raw, idx);
+    case SPARSE_12:
+        return get_child_sparse(type, raw, idx);
+    case SPARSE_16:
+        return get_child_sparse(type, raw, idx);
+    case SPARSE_24:
+        return get_child_sparse(type, raw, idx);
+    case SPARSE_40:
+        return get_child_sparse(type, raw, idx);
+    case DENSE_12:
+        return get_child_dense(type, raw, idx, forward);
+    case DENSE_16:
+        return get_child_dense(type, raw, idx, forward);
+    case DENSE_24:
+        return get_child_dense(type, raw, idx, forward);
+    case DENSE_32:
+        return get_child_dense(type, raw, idx, forward);
+    case DENSE_40:
+        return get_child_dense(type, raw, idx, forward);
+    case LONG_DENSE:
+        return get_child_dense(type, raw, idx, forward);
+    default: abort();
+    }
+}
+
+struct payload_result {
+    uint8_t bits;
+    const_bytes bytes;
+};
+
+inline payload_result get_payload(const_bytes raw) {
+    auto type = uint8_t(raw[0]) >> 4;
+    auto bits = uint8_t(raw[0]) & 0xf;
+    uint64_t payload_offset;
+    switch (type) {
+    case PAYLOAD_ONLY:
+        payload_offset = 1;
+        break;
+    case SINGLE_NOPAYLOAD_4:
+    case SINGLE_NOPAYLOAD_12:
+        bits = 0;
+        payload_offset = 1 + div_ceil(bits_per_pointer_arr[type], 8);
+        break;
+    case SINGLE_8:
+    case SINGLE_16:
+        payload_offset = 2 + div_ceil(bits_per_pointer_arr[type], 8);
+        break;
+    case SPARSE_8:
+    case SPARSE_12:
+    case SPARSE_16:
+    case SPARSE_24:
+    case SPARSE_40: {
+        auto n_children = uint8_t(raw[1]);
+        payload_offset = 2 + div_ceil(n_children * (8 + bits_per_pointer_arr[type]), 8);
+        break;
+    }
+    case DENSE_12:
+    case DENSE_16:
+    case DENSE_24:
+    case DENSE_32:
+    case DENSE_40:
+    case LONG_DENSE: {
+        auto dense_span = uint8_t(raw[2]) + 1;
+        payload_offset = 3 + div_ceil(dense_span * bits_per_pointer_arr[type], 8);
+        break;
+    }
+    default: abort();
+    }
+    auto tail = raw.subspan(payload_offset);
+    return {bits, tail};
+}
+
+inline int get_n_children(const_bytes raw) {
+    auto type = uint8_t(raw[0]) >> 4;
+    switch (type) {
+    case PAYLOAD_ONLY:
+        return 0;
+    case SINGLE_NOPAYLOAD_4:
+    case SINGLE_NOPAYLOAD_12:
+    case SINGLE_8:
+    case SINGLE_16:
+        return 1;
+    case SPARSE_8:
+    case SPARSE_12:
+    case SPARSE_16:
+    case SPARSE_24:
+    case SPARSE_40:
+        return uint8_t(raw[1]);
+    case DENSE_12:
+    case DENSE_16:
+    case DENSE_24:
+    case DENSE_32:
+    case DENSE_40:
+    case LONG_DENSE:
+        return uint8_t(raw[2]) + 1;
+    default: abort();
+    }
+}
+
 struct trail_entry {
     uint64_t pos;
     uint16_t n_children;
@@ -648,6 +815,7 @@ inline future<> traverse(
                 .child_idx = -1,
                 .payload_bits = final_node.payload_bits});
     }
+    co_await input.load(state.trail.back().pos);
 }
 
 inline void descend_leftmost_single_page(
@@ -716,6 +884,7 @@ inline future<> step(
         co_await descend_leftmost(input, state);
     }
     state.edges_traversed = -1;
+    co_await input.load(state.trail.back().pos);
 }
 
 inline void descend_rightmost_single_page(
@@ -785,6 +954,7 @@ inline future<> step_back(
         }
     }
     state.edges_traversed = -1;
+    co_await input.load(state.trail.back().pos);
 }
 
 } // namespace trie

@@ -1610,10 +1610,9 @@ public:
     future<> advance_index_until_unseen_partition() {
         while (true) {
             auto [start, end] = _index_reader->data_file_positions();
-            if (start >= end) {
+            if (start >= _context->position()) {
                 co_return;
-            }
-            if (start < _context->position()) {
+            } else {
                 co_await _index_reader->advance_to_next_partition();
             }
         }
@@ -1647,9 +1646,12 @@ public:
                             _read_enabled = true;
                             return _context->fast_forward_to(_context->position(), *end);
                         } else {
-                            _read_enabled = true;
-                            _context->reset(indexable_element::partition);
-                            return _context->fast_forward_to(_context->position(), *end);
+                            return advance_index_until_unseen_partition().then([this] {
+                                auto [start, end] = _index_reader->data_file_positions();
+                                _read_enabled = true;
+                                _context->reset(indexable_element::partition);
+                                return _context->fast_forward_to(start, *end);
+                            });
                         }
                     }
                     sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), start={}, end={}", fmt::ptr(this), start, end);
