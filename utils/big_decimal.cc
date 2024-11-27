@@ -134,13 +134,38 @@ sstring big_decimal::to_string() const
     return str;
 }
 
-std::strong_ordering big_decimal::operator<=>(const big_decimal& other) const
-{
-    auto max_scale = std::max(_scale, other._scale);
-    boost::multiprecision::cpp_int rescale(10);
-    boost::multiprecision::cpp_int x = _unscaled_value * boost::multiprecision::pow(rescale, max_scale - _scale);
-    boost::multiprecision::cpp_int y = other._unscaled_value * boost::multiprecision::pow(rescale, max_scale - other._scale);
-    return x.compare(y) <=> 0;
+std::strong_ordering big_decimal::operator<=>(const big_decimal& other) const {
+    if (_scale == other._scale) {
+        return _unscaled_value.compare(other._unscaled_value) <=> 0;
+    }
+    auto sign_a = _unscaled_value.sign();
+    auto sign_b = other._unscaled_value.sign();
+    auto sign_cmp = sign_a <=> sign_b;
+    if (sign_cmp != 0) {
+        return sign_cmp;
+    }
+    static_assert(decltype(_unscaled_value)::backend_type::limb_bits == 64);
+    auto unscaled_a = _unscaled_value;
+    auto unscaled_b = other._unscaled_value;
+    auto scale_a = _scale;
+    auto scale_b = other._scale;
+    unscaled_a.backend().normalize();
+    unscaled_b.backend().normalize();
+    int64_t min_log10_a = static_cast<int64_t>(unscaled_a.backend().size() - 1) * 19 - scale_a;
+    int64_t max_log10_a = static_cast<int64_t>(unscaled_a.backend().size()) * 20 - scale_a;
+    int64_t min_log10_b = static_cast<int64_t>(unscaled_b.backend().size() - 1) * 19 - scale_b;
+    int64_t max_log10_b = static_cast<int64_t>(unscaled_b.backend().size()) * 20 - scale_b;
+    if (min_log10_a > max_log10_b) {
+        return sign_a <=> 0;
+    }
+    if (min_log10_b > max_log10_a) {
+        return 0 <=> sign_a;
+    }
+    int64_t max_scale = std::max(_scale, other._scale);
+    boost::multiprecision::cpp_int ten(10);
+    unscaled_a *= boost::multiprecision::pow(ten, max_scale - _scale);
+    unscaled_b *= boost::multiprecision::pow(ten, max_scale - other._scale);
+    return unscaled_a.compare(unscaled_b) <=> 0;
 }
 
 big_decimal& big_decimal::operator+=(const big_decimal& other)
