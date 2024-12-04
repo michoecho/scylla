@@ -3124,6 +3124,120 @@ future<foreign_ptr<lw_shared_ptr<query::result>>> query_data(
     }
 }
 
+static utils::chunked_vector<uint64_t> compute_random_sorted_ints(uint64_t max_value, uint64_t n_values) {
+    static thread_local std::default_random_engine rng{std::random_device{}()};
+    std::uniform_int_distribution<uint64_t> dist(0, max_value);
+    utils::chunked_vector<uint64_t> chosen;
+    chosen.reserve(n_values);
+    for (size_t i = 0; i < n_values; ++i) {
+        chosen.push_back(dist(rng));
+    }
+    std::ranges::sort(chosen);
+    return chosen;
+}
+
+struct sized_file {
+    uint64_t size;
+    seastar::file file;
+};
+
+static future<utils::chunked_vector<std::vector<std::byte>>> sample_files(
+    std::span<const foreign_ptr<std::unique_ptr<std::vector<sized_file>>>> files_sharded,
+    size_t chunk_size,
+    size_t n_chunks
+) {
+    utils::chunked_vector<std::vector<std::byte>> result;
+
+    std::vector<size_t> total_chunks_sharded;
+    total_chunks_sharded.resize(smp::count);
+    co_await smp::invoke_on_all(seastar::coroutine::lambda([&] () -> void {
+        size_t my_total_chunks = 0; 
+        for (const auto& sf : *files_sharded[this_shard_id()]) {
+            my_total_chunks += sf.size / chunk_size;
+        }
+        total_chunks_sharded[this_shard_id()] = my_total_chunks;
+    }));
+
+    std::partial_sum(total_chunks_sharded.cbegin(), total_chunks_sharded.cend(), total_chunks_sharded.begin());
+    if (!total_chunks_sharded.back()) {
+        throw std::runtime_error("sample_data_files: cannot create a sample because the dataset contains 0 chunks");
+    }
+    auto chosen_chunks = compute_random_sorted_ints(total_chunks_sharded.back(), n_chunks);
+
+    co_await smp::invoke_on_all(seastar::coroutine::lambda([&] () -> future<> {
+        auto my_id = this_shard_id();
+        size_t chunks_visited = my_id == 0 ? 0 : total_chunks_sharded[my_id - 1];
+        auto it = std::ranges::lower_bound(chosen_chunks, chunks_visited);
+
+        auto concurrency_limiter = semaphore(10);
+        std::exception_ptr ex;
+ 
+        for (const auto& sf : *files_sharded[this_shard_id()]) {
+            size_t chunks_available = sf.size / chunk_size;
+            while (chunks_visited + chunks_available > *it) {
+                auto permit = co_await get_units(concurrency_limiter, 1);
+                if (ex) {
+                    break;
+                }
+                result[it - chosen_chunks.begin()].resize(chunk_size);
+                auto out_slot = it - chosen_chunks.begin();
+                (void)seastar::file(sf.file).dma_read_exactly<char>(*it * chunk_size, chunk_size)
+                        .then_wrapped([&result, &ex, out_slot, permit = std::move(permit)] (future<temporary_buffer<char>> f) -> void {
+                    if (f.failed()) {
+                        ex = std::make_exception_ptr(std::runtime_error(fmt::format(
+                            "sample_data_files: read failed with {}", f.get_exception())));
+                    } else {
+                        temporary_buffer<char> buf = f.get();
+                        auto sp = std::as_bytes(std::span<const char>(buf.get(), buf.size()));
+                        result[out_slot] = std::vector<std::byte>(sp.begin(), sp.end());
+                    }
+                });
+            }
+            chunks_visited += chunks_available;
+        }
+        if (ex) {
+            throw std::runtime_error(fmt::format("sample_data_files: read failed: {}", ex));
+        }
+        assert(it == std::ranges::lower_bound(chosen_chunks, total_chunks_sharded[my_id]));
+    }));
+    co_return result;
+}
+
+// Returns a vector of file chunks randomly sampled from all Data.db files of this table.
+future<utils::chunked_vector<std::vector<std::byte>>> sample_data_files(
+    sharded<database>& db,
+    table_id id,
+    size_t chunk_size,
+    size_t n_chunks
+) {
+    std::vector<utils::chunked_vector<sstables::sstable_files_snapshot>> sstable_snapshots_sharded(smp::count);
+    std::vector<size_t> total_chunks_sharded(smp::count);
+    std::vector<foreign_ptr<std::unique_ptr<std::vector<sized_file>>>> sized_files_sharded(smp::count);
+
+    utils::chunked_vector<std::vector<std::byte>> result;
+
+    co_await db.invoke_on_all(seastar::coroutine::lambda([&] (auto& local_db) -> future<> {
+        auto my_sized_files = std::make_unique<std::vector<sized_file>>();
+        auto t = local_db.get_tables_metadata().get_table_if_exists(id);
+        if (!t) {
+            throw std::runtime_error(fmt::format("sample_data_files: table {} does not exist", id));
+        }
+        sstable_snapshots_sharded[this_shard_id()] = co_await t->take_storage_snapshot(dht::token_range::make_open_ended_both_sides());
+        for (const auto& sst : sstable_snapshots_sharded[this_shard_id()]) {
+            my_sized_files->push_back(sized_file{.size = sst.sst->data_size(), .file = sst.files.at(component_type::Data)});
+        }
+        sized_files_sharded[this_shard_id()] = make_foreign(std::move(my_sized_files));
+    }));
+
+    co_return co_await sample_files(sized_files_sharded, chunk_size, n_chunks);
+
+    std::partial_sum(total_chunks_sharded.cbegin(), total_chunks_sharded.cend(), total_chunks_sharded.begin());
+    if (!total_chunks_sharded.back()) {
+        throw std::runtime_error("sample_data_files: cannot create a sample because the dataset contains 0 chunks");
+    }
+    auto chosen_chunks = compute_random_sorted_ints(total_chunks_sharded.back(), n_chunks);
+}
+
 } // namespace replica
 
 namespace replica {

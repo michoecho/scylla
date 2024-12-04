@@ -1268,6 +1268,9 @@ public:
     // snapshot (list of sstables) will include all the data written up to the time it was taken.
     future<utils::chunked_vector<sstables::entry_descriptor>> clone_tablet_storage(locator::tablet_id tid);
 
+    // Returns a vector of file chunks randomly sampled from all Data.db files of this table.
+    future<utils::chunked_vector<std::vector<std::byte>>> sample_data_files(size_t chunk_size, size_t n_chunks);
+
     friend class compaction_group;
 };
 
