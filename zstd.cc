@@ -15,12 +15,11 @@
 
 #include "compress.hh"
 #include "exceptions/exceptions.hh"
-#include "utils/class_registrator.hh"
 #include "utils/reusable_buffer.hh"
 #include <concepts>
 
 static const sstring COMPRESSION_LEVEL = "compression_level";
-static const sstring COMPRESSOR_NAME = compressor::namespace_prefix + "ZstdCompressor";
+const sstring compressor::zstd_class_name = compressor::namespace_prefix + "ZstdCompressor";
 static const size_t DCTX_SIZE = ZSTD_estimateDCtxSize();
 
 class zstd_processor : public compressor {
@@ -86,7 +85,7 @@ public:
 };
 
 zstd_processor::zstd_processor(const opt_getter& opts)
-    : compressor(COMPRESSOR_NAME) {
+    : compressor(compressor::zstd_class_name) {
     auto level = opts(COMPRESSION_LEVEL);
     if (level) {
         try {
@@ -152,5 +151,6 @@ std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
 }
 
-static const class_registrator<compressor, zstd_processor, const compressor::opt_getter&>
-    registrator(COMPRESSOR_NAME);
+compressor::ptr_type make_zstd_compressor(const compressor::opt_getter& o) {
+    return seastar::make_shared<zstd_processor>(o);
+}

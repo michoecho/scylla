@@ -70,13 +70,11 @@ public:
     static thread_local const ptr_type deflate;
 
     static const sstring namespace_prefix;
+    const static sstring zstd_class_name;
 };
 
-template<typename BaseType, typename... Args>
-class class_registry;
-
 using compressor_ptr = compressor::ptr_type;
-using compressor_registry = class_registry<compressor, const typename compressor::opt_getter&>;
+compressor::ptr_type make_zstd_compressor(const compressor::opt_getter&);
 
 class compression_parameters {
 public:

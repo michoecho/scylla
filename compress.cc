@@ -73,8 +73,11 @@ compressor::ptr_type compressor::create(const sstring& name, const opt_getter& o
             return c;
         }
     }
+    if (compressor::zstd_class_name == static_cast<const sstring&>(qn)) {
+        return make_zstd_compressor(opts);
+    }
 
-    return compressor_registry::create(qn, opts);
+    return nullptr;
 }
 
 shared_ptr<compressor> compressor::create(const std::map<sstring, sstring>& options) {
