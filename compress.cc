@@ -77,7 +77,7 @@ compressor::ptr_type compressor::create(const sstring& name, const opt_getter& o
         return make_zstd_compressor(opts);
     }
 
-    return nullptr;
+    throw no_such_class(fmt::format("unable to find class '{}'", static_cast<const sstring&>(qn)));
 }
 
 shared_ptr<compressor> compressor::create(const std::map<sstring, sstring>& options) {
@@ -94,30 +94,35 @@ shared_ptr<compressor> compressor::create(const std::map<sstring, sstring>& opti
     return {};
 }
 
-thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>(namespace_prefix + "LZ4Compressor");
-thread_local const shared_ptr<compressor> compressor::snappy = ::make_shared<snappy_processor>(namespace_prefix + "SnappyCompressor");
-thread_local const shared_ptr<compressor> compressor::deflate = ::make_shared<deflate_processor>(namespace_prefix + "DeflateCompressor");
+thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>(sstring(compression_parameters::algorithm_names[int(compression_parameters::algorithm::lz4)]));
+thread_local const shared_ptr<compressor> compressor::snappy = ::make_shared<snappy_processor>(sstring(compression_parameters::algorithm_names[int(compression_parameters::algorithm::snappy)]));
+thread_local const shared_ptr<compressor> compressor::deflate = ::make_shared<deflate_processor>(sstring(compression_parameters::algorithm_names[int(compression_parameters::algorithm::deflate)]));
 
 const sstring compression_parameters::SSTABLE_COMPRESSION = "sstable_compression";
 const sstring compression_parameters::CHUNK_LENGTH_KB = "chunk_length_in_kb";
 const sstring compression_parameters::CHUNK_LENGTH_KB_ERR = "chunk_length_kb";
 const sstring compression_parameters::CRC_CHECK_CHANCE = "crc_check_chance";
+const sstring compression_parameters::DICTIONARY = "dictionary";
 
 compression_parameters::compression_parameters()
-    : compression_parameters(compressor::lz4)
+    : compression_parameters(algorithm::lz4)
+{}
+
+compression_parameters::compression_parameters(compression_parameters::algorithm algo)
+    : compression_parameters(
+        int(algo) < int(compression_parameters::algorithm::none)
+        ? std::map<sstring, sstring>{{SSTABLE_COMPRESSION, sstring(algorithm_names[int(algo)])}}
+        : std::map<sstring, sstring>{}
+    )
 {}
 
 compression_parameters::~compression_parameters()
 {}
 
-compression_parameters::compression_parameters(compressor_ptr c)
-    : _compressor(std::move(c))
-{}
-
 compression_parameters::compression_parameters(const std::map<sstring, sstring>& options) {
-    _compressor = compressor::create(options);
-
-    validate_options(options);
+    auto cmprsr = compressor::create(options);
+    validate_options(*cmprsr, options);
+    _raw_options = options;
 
     auto chunk_length = options.find(CHUNK_LENGTH_KB) != options.end() ?
         options.find(CHUNK_LENGTH_KB) : options.find(CHUNK_LENGTH_KB_ERR);
@@ -164,39 +169,30 @@ void compression_parameters::validate() {
 }
 
 std::map<sstring, sstring> compression_parameters::get_options() const {
-    if (!_compressor) {
+    if (_algorithm == algorithm::none) {
         return std::map<sstring, sstring>();
     }
-    auto opts = _compressor->options();
+    return _raw_options;
+}
 
-    opts.emplace(compression_parameters::SSTABLE_COMPRESSION, _compressor->name());
-    if (_chunk_length) {
-        opts.emplace(sstring(CHUNK_LENGTH_KB), std::to_string(_chunk_length.value() / 1024));
-    }
-    if (_crc_check_chance) {
-        opts.emplace(sstring(CRC_CHECK_CHANCE), std::to_string(_crc_check_chance.value()));
-    }
-    return opts;
+compressor_ptr compression_parameters::get_compressor() const {
+    return compressor::create(_raw_options);
 }
 
 bool compression_parameters::operator==(const compression_parameters& other) const {
-    return _compressor == other._compressor
-           && _chunk_length == other._chunk_length
-           && _crc_check_chance == other._crc_check_chance;
+    return std::ranges::equal(_raw_options, other._raw_options);
 }
 
-void compression_parameters::validate_options(const std::map<sstring, sstring>& options) {
+void compression_parameters::validate_options(const compressor& cmprsr, const std::map<sstring, sstring>& options) {
     // currently, there are no options specific to a particular compressor
     static std::set<sstring> keywords({
         sstring(SSTABLE_COMPRESSION),
         sstring(CHUNK_LENGTH_KB),
         sstring(CHUNK_LENGTH_KB_ERR),
         sstring(CRC_CHECK_CHANCE),
+        sstring(DICTIONARY),
     });
-    std::set<sstring> ckw;
-    if (_compressor) {
-        ckw = _compressor->option_names();
-    }
+    std::set<sstring> ckw = cmprsr.option_names();
     for (auto&& opt : options) {
         if (!keywords.contains(opt.first) && !ckw.contains(opt.first)) {
             throw exceptions::configuration_exception(format("Unknown compression option '{}'.", opt.first));

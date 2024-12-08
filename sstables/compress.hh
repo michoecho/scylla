@@ -33,6 +33,7 @@
 // are read using O_DIRECT), nor uncompressed data. We intend to cache high-
 // level Cassandra rows, not disk blocks.
 
+#include "seastar/core/sharded.hh"
 #include "utils/assert.hh"
 #include <vector>
 #include <cstdint>
@@ -48,6 +49,7 @@
 #include "sstables/types.hh"
 #include "checksum_utils.hh"
 #include "../compress.hh"
+#include "utils/shared_dict.hh"
 
 class reader_permit;
 
@@ -291,6 +293,8 @@ struct compression {
 
     disk_string<uint16_t> name;
     disk_array<uint32_t, option> options;
+    std::optional<disk_string<uint32_t>> dict_contents;
+    lw_shared_ptr<foreign_ptr<lw_shared_ptr<utils::shared_dict>>> parsed_dict;
     uint32_t chunk_len = 0;
     uint64_t data_len = 0;
     segmented_offsets offsets;

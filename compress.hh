@@ -78,6 +78,26 @@ compressor::ptr_type make_zstd_compressor(const compressor::opt_getter&);
 
 class compression_parameters {
 public:
+    enum class algorithm {
+        lz4,
+        zstd,
+        snappy,
+        deflate,
+        none,
+    };
+    static constexpr std::string_view algorithm_names[] = {
+        "org.apache.cassandra.io.compress.LZ4Compressor",
+        "org.apache.cassandra.io.compress.ZstdCompressor",
+        "org.apache.cassandra.io.compress.SnappyCompressor",
+        "org.apache.cassandra.io.compress.DeflateCompressor",
+    };
+    // The duplication here is unfortunate, but C++ can't really do better than this.
+    static_assert(std::size(algorithm_names) == int(algorithm::none));
+    static_assert(algorithm_names[int(algorithm::lz4)] == "org.apache.cassandra.io.compress.LZ4Compressor");
+    static_assert(algorithm_names[int(algorithm::zstd)] == "org.apache.cassandra.io.compress.ZstdCompressor");
+    static_assert(algorithm_names[int(algorithm::snappy)] == "org.apache.cassandra.io.compress.SnappyCompressor");
+    static_assert(algorithm_names[int(algorithm::deflate)] == "org.apache.cassandra.io.compress.DeflateCompressor");
+
     static constexpr int32_t DEFAULT_CHUNK_LENGTH = 4 * 1024;
     static constexpr double DEFAULT_CRC_CHECK_CHANCE = 1.0;
 
@@ -85,17 +105,22 @@ public:
     static const sstring CHUNK_LENGTH_KB;
     static const sstring CHUNK_LENGTH_KB_ERR;
     static const sstring CRC_CHECK_CHANCE;
+    static const sstring DICTIONARY;
 private:
-    compressor_ptr _compressor;
+    std::map<sstring, sstring> _raw_options;
+    algorithm _algorithm;
     std::optional<int> _chunk_length;
     std::optional<double> _crc_check_chance;
+    [[maybe_unused]]
+    bool _dictionary;
 public:
     compression_parameters();
-    compression_parameters(compressor_ptr);
+    compression_parameters(algorithm);
     compression_parameters(const std::map<sstring, sstring>& options);
     ~compression_parameters();
 
-    compressor_ptr get_compressor() const { return _compressor; }
+    compressor_ptr get_compressor() const;
+    algorithm get_algorithm() const { return _algorithm; }
     int32_t chunk_length() const { return _chunk_length.value_or(int(DEFAULT_CHUNK_LENGTH)); }
     double crc_check_chance() const { return _crc_check_chance.value_or(double(DEFAULT_CRC_CHECK_CHANCE)); }
 
@@ -104,8 +129,8 @@ public:
     bool operator==(const compression_parameters& other) const;
 
     static compression_parameters no_compression() {
-        return compression_parameters(nullptr);
+        return compression_parameters(algorithm::none);
     }
 private:
-    void validate_options(const std::map<sstring, sstring>&);
+    void validate_options(const compressor&, const std::map<sstring, sstring>&);
 };

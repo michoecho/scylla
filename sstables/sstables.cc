@@ -765,6 +765,14 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     c.set_uncompressed_chunk_length(chunk_len);
     c.set_uncompressed_file_length(data_len);
 
+    for (const auto& option : c.options.elements) {
+        const bytes::value_type dict_option[] = "DICTIONARY";
+        if (option.key.value == bytes_view(dict_option)) {
+            co_await parse(s, v, in, c.dict_contents);
+            break;
+        }
+    }
+
     uint32_t len = 0;
     compression::segmented_offsets::writer offsets = c.offsets.get_writer();
     co_await parse(s, v, in, len);
@@ -782,6 +790,15 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
 
 void write(sstable_version_types v, file_writer& out, const compression& c) {
     write(v, out, c.name, c.options, c.uncompressed_chunk_length(), c.uncompressed_file_length());
+
+    for (const auto& option : c.options.elements) {
+        SCYLLA_ASSERT(c.dict_contents);
+        const bytes::value_type dict_option[] = "DICTIONARY";
+        if (option.key.value == bytes_view(dict_option)) {
+            write(v, out, *c.dict_contents);
+            break;
+        }
+    }
 
     write(v, out, static_cast<uint32_t>(c.offsets.size()));
 
@@ -861,7 +878,7 @@ void sstable::generate_toc() {
     if (_schema->bloom_filter_fp_chance() != 1.0) {
         _recognized_components.insert(component_type::Filter);
     }
-    if (_schema->get_compressor_params().get_compressor() == nullptr) {
+    if (_schema->get_compressor_params().get_algorithm() == compression_parameters::algorithm::none) {
         _recognized_components.insert(component_type::CRC);
     } else {
         _recognized_components.insert(component_type::CompressionInfo);
