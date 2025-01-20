@@ -12,7 +12,9 @@
 
 #include "compress.hh"
 #include "exceptions/exceptions.hh"
+#include "seastar/core/sharded.hh"
 #include "utils/class_registrator.hh"
+#include "utils/shared_dict.hh"
 
 const sstring compressor::namespace_prefix = "org.apache.cassandra.io.compress.";
 
@@ -61,7 +63,7 @@ std::map<sstring, sstring> compressor::options() const {
     return {};
 }
 
-compressor::ptr_type compressor::create(const sstring& name, const opt_getter& opts) {
+compressor::ptr_type compressor::create(const sstring& name, dict_ptr dict, const opt_getter& opts) {
     if (name.empty()) {
         return {};
     }
@@ -80,10 +82,10 @@ compressor::ptr_type compressor::create(const sstring& name, const opt_getter& o
     throw no_such_class(fmt::format("unable to find class '{}'", static_cast<const sstring&>(qn)));
 }
 
-shared_ptr<compressor> compressor::create(const std::map<sstring, sstring>& options) {
+shared_ptr<compressor> compressor::create(dict_ptr dict, const std::map<sstring, sstring>& options) {
     auto i = options.find(compression_parameters::SSTABLE_COMPRESSION);
     if (i != options.end() && !i->second.empty()) {
-        return create(i->second, [&options](const sstring& key) -> opt_string {
+        return create(i->second, dict, [&options](const sstring& key) -> opt_string {
             auto i = options.find(key);
             if (i == options.end()) {
                 return std::nullopt;
@@ -120,7 +122,7 @@ compression_parameters::~compression_parameters()
 {}
 
 compression_parameters::compression_parameters(const std::map<sstring, sstring>& options) {
-    auto cmprsr = compressor::create(options);
+    auto cmprsr = compressor::create(nullptr, options);
     validate_options(*cmprsr, options);
     _raw_options = options;
 
@@ -175,8 +177,8 @@ std::map<sstring, sstring> compression_parameters::get_options() const {
     return _raw_options;
 }
 
-compressor_ptr compression_parameters::get_compressor() const {
-    return compressor::create(_raw_options);
+compressor_ptr compression_parameters::get_compressor(compressor::dict_ptr dict) const {
+    return compressor::create(dict, _raw_options);
 }
 
 bool compression_parameters::operator==(const compression_parameters& other) const {

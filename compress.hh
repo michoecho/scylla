@@ -15,7 +15,13 @@
 #include <seastar/core/future.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/sstring.hh>
+#include "seastar/core/sharded.hh"
+#include "sstables/shared_dict_registry.hh"
 #include "seastarx.hh"
+
+namespace utils {
+class shared_dict;
+};
 
 class compressor {
     sstring _name;
@@ -62,8 +68,10 @@ public:
     using opt_getter = std::function<opt_string(const sstring&)>;
     using ptr_type = shared_ptr<compressor>;
 
-    static ptr_type create(const sstring& name, const opt_getter&);
-    static ptr_type create(const std::map<sstring, sstring>&);
+    using dict_ptr = lw_shared_ptr<foreign_ptr<lw_shared_ptr<shared_dict_registry::entry>>>;
+
+    static ptr_type create(const sstring& name, dict_ptr, const opt_getter&);
+    static ptr_type create(dict_ptr, const std::map<sstring, sstring>&);
 
     static thread_local const ptr_type lz4;
     static thread_local const ptr_type snappy;
@@ -119,7 +127,7 @@ public:
     compression_parameters(const std::map<sstring, sstring>& options);
     ~compression_parameters();
 
-    compressor_ptr get_compressor() const;
+    compressor_ptr get_compressor(compressor::dict_ptr = nullptr) const;
     algorithm get_algorithm() const { return _algorithm; }
     int32_t chunk_length() const { return _chunk_length.value_or(int(DEFAULT_CHUNK_LENGTH)); }
     double crc_check_chance() const { return _crc_check_chance.value_or(double(DEFAULT_CRC_CHECK_CHANCE)); }

@@ -257,8 +257,9 @@ local_compression::local_compression(compressor_ptr p)
 
 local_compression::local_compression(const compression& c)
     : _compressor([&c] {
+        SCYLLA_ASSERT(bool(c.parsed_dict) == bool(c.dict_contents));
         sstring n(c.name.value.begin(), c.name.value.end());
-        return compressor::create(n, [&c, &n](const sstring& key) -> compressor::opt_string {
+        return compressor::create(n, c.parsed_dict, [&c, &n](const sstring& key) -> compressor::opt_string {
             if (key == compression_parameters::CHUNK_LENGTH_KB || key == compression_parameters::CHUNK_LENGTH_KB_ERR) {
                 return to_sstring(c.chunk_len / 1024);
             }

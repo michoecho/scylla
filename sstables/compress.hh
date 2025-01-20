@@ -50,6 +50,7 @@
 #include "checksum_utils.hh"
 #include "../compress.hh"
 #include "utils/shared_dict.hh"
+#include "shared_dict_registry.hh"
 
 class reader_permit;
 
@@ -294,7 +295,7 @@ struct compression {
     disk_string<uint16_t> name;
     disk_array<uint32_t, option> options;
     std::optional<disk_string<uint32_t>> dict_contents;
-    lw_shared_ptr<foreign_ptr<lw_shared_ptr<utils::shared_dict>>> parsed_dict;
+    lw_shared_ptr<foreign_ptr<lw_shared_ptr<shared_dict_registry::entry>>> parsed_dict;
     uint32_t chunk_len = 0;
     uint64_t data_len = 0;
     segmented_offsets offsets;

@@ -772,6 +772,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
     std::optional<utils::disk_space_monitor> disk_space_monitor_shard0;
     sharded<compaction_manager> cm;
     sharded<sstables::storage_manager> sstm;
+    sharded<shared_dict_registry> dict_registry;
     distributed<replica::database> db;
     seastar::sharded<service::cache_hitrate_calculator> cf_cache_hitrate_calculator;
     service::load_meter load_meter;

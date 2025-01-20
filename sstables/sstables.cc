@@ -79,6 +79,7 @@
 #include "readers/mutation_source.hh"
 #include "readers/reversing_v2.hh"
 #include "readers/forwardable_v2.hh"
+#include "shared_dict_registry.hh"
 
 #include "release.hh"
 #include "utils/build_id.hh"
@@ -765,12 +766,12 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     c.set_uncompressed_chunk_length(chunk_len);
     c.set_uncompressed_file_length(data_len);
 
-    for (const auto& option : c.options.elements) {
-        const bytes::value_type dict_option[] = "DICTIONARY";
-        if (option.key.value == bytes_view(dict_option)) {
-            co_await parse(s, v, in, c.dict_contents);
-            break;
-        }
+    const bytes::value_type dict_option_key[] = "DICTIONARY";
+    if (auto it = std::ranges::find(c.options.elements, bytes_view(dict_option_key), [] (const sstables::option& opt) {return opt.key.value;} );
+            it != c.options.elements.end()) {
+        co_await parse(s, v, in, c.dict_contents);
+        std::swap(*it, c.options.elements.back());
+        c.options.elements.pop_back();
     }
 
     uint32_t len = 0;
@@ -789,15 +790,18 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
 }
 
 void write(sstable_version_types v, file_writer& out, const compression& c) {
-    write(v, out, c.name, c.options, c.uncompressed_chunk_length(), c.uncompressed_file_length());
-
-    for (const auto& option : c.options.elements) {
-        SCYLLA_ASSERT(c.dict_contents);
-        const bytes::value_type dict_option[] = "DICTIONARY";
-        if (option.key.value == bytes_view(dict_option)) {
-            write(v, out, *c.dict_contents);
-            break;
-        }
+    auto options = c.options;
+    const bytes::value_type dict_option_key[] = "DICTIONARY";
+    const bytes::value_type dict_option_value[] = "INLINE";
+    if (c.dict_contents) {
+        options.elements.push_back(sstables::option(
+            disk_string<uint16_t>(bytes(bytes_view(dict_option_key))),
+            disk_string<uint16_t>(bytes(bytes_view(dict_option_value)))
+        ));
+    }
+    write(v, out, c.name, options, c.uncompressed_chunk_length(), c.uncompressed_file_length());
+    if (c.dict_contents) {
+        write(v, out, *c.dict_contents);
     }
 
     write(v, out, static_cast<uint32_t>(c.offsets.size()));
@@ -1591,6 +1595,11 @@ future<> sstable::load_metadata(sstable_open_config cfg, bool validate) noexcept
             [&] { return read_compression(); },
             [&] { return read_filter(cfg); },
             [&] { return read_summary(); });
+    if (_components->compression.dict_contents) {
+        auto dict_content_view = std::as_bytes(std::span(_components->compression.dict_contents->value));
+        auto shared_dict_foreign_ptr = co_await _manager._dict_registry.get_dict(dict_content_view);
+        _components->compression.parsed_dict = make_lw_shared(std::move(shared_dict_foreign_ptr));
+    }
     if (validate) {
         validate_min_max_metadata();
         validate_max_local_deletion_time();

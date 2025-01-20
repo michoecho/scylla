@@ -20,6 +20,7 @@
 namespace utils {
 
 using sha256_type = std::array<std::byte, 32>;
+sha256_type get_sha256(std::span<const std::byte>);
 
 // For performance reasons (cache pressure), it is desirable to have only
 // one instance of a particular dictionary on a node.
@@ -53,6 +54,7 @@ struct shared_dict {
     constexpr static size_t max_lz4_dict_size = 64 * 1024 - 1;
     shared_dict() = default;
     shared_dict(std::span<const std::byte> d, uint64_t timestamp, UUID origin_node, int zstd_compression_level = 1);
+    shared_dict(std::span<const std::byte> d, uint64_t timestamp, UUID origin_node, int zstd_compression_level, sha256_type sha);
 };
 
 } // namespace utils

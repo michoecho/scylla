@@ -167,7 +167,7 @@ seastar::future<> dict_training_loop::start(
     }
 }
 
-static sha256_type get_sha256(std::span<const std::byte> in) {
+sha256_type get_sha256(std::span<const std::byte> in) {
     sha256_hasher hasher;
     hasher.update(reinterpret_cast<const char*>(in.data()), in.size());
     auto b = hasher.finalize();
@@ -177,11 +177,11 @@ static sha256_type get_sha256(std::span<const std::byte> in) {
     return out;
 }
 
-shared_dict::shared_dict(std::span<const std::byte> d, uint64_t timestamp, UUID origin_node, int zstd_compression_level)
+shared_dict::shared_dict(std::span<const std::byte> d, uint64_t timestamp, UUID origin_node, int zstd_compression_level, sha256_type sha)
     : id{
         .timestamp = timestamp,
         .origin_node = origin_node,
-        .content_sha256 = get_sha256(d)
+        .content_sha256 = sha,
     }
     , data(d.begin(), d.end())
     , zstd_ddict(ZSTD_createDDict_byReference(data.data(), data.size()), ZSTD_freeDDict)
@@ -198,6 +198,9 @@ shared_dict::shared_dict(std::span<const std::byte> d, uint64_t timestamp, UUID 
     // So for lz4, which can only use dictionaries of size at most 64 kiB
     // we should take the last 64 kiB.
     lz4_ddict = std::span(data).last(lz4_dict_size);
+}
+shared_dict::shared_dict(std::span<const std::byte> d, uint64_t timestamp, UUID origin_node, int zstd_compression_level)
+    : shared_dict(d, timestamp, origin_node, zstd_compression_level, get_sha256(d)) {
 }
 
 } // namespace utils
