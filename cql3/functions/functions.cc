@@ -24,6 +24,7 @@
 #include "cql3/expr/expression.hh"
 #include "types/set.hh"
 #include "types/listlike_partial_deserializing_iterator.hh"
+#include <fmt/ranges.h>
 
 #include "error_injection_fcts.hh"
 
