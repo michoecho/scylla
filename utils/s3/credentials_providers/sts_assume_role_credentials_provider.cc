@@ -11,7 +11,11 @@
 #include "utils/UUID.hh"
 #include "utils/http.hh"
 #include "utils/s3/client.hh"
+#if __has_include(<rapidxml.h>)
 #include <rapidxml.h>
+#else
+#include <rapidxml/rapidxml.hpp>
+#endif
 #include <seastar/core/coroutine.hh>
 #include <seastar/http/request.hh>
 #include <seastar/util/short_streams.hh>

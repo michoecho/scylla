@@ -2107,7 +2107,7 @@ def kmiplib():
         if id in { 'centos', 'fedora', 'rhel' }:
             return 'rhel84'
     print('Could not resolve libkmip.a for platform {}'.format(os_ids))
-    sys.exit(1)
+    return None
 
 def target_cpu():
     cpu, _, _ = subprocess.check_output([cxx, '-dumpmachine']).decode('utf-8').partition('-')
@@ -2119,12 +2119,13 @@ def kmip_arch():
         return '64'
     return arch 
 
-kmipc_dir = f'kmipc/kmipc-2.1.0t-{kmiplib()}_{kmip_arch()}'
-kmipc_lib = f'{kmipc_dir}/lib/libkmip.a'
-libs += ' -lboost_filesystem'
-if os.path.exists(kmipc_lib):
-    libs += f' {kmipc_lib}'
-    user_cflags += f' -I{kmipc_dir}/include -DHAVE_KMIP'
+if kmiplib_id := kmiplib():
+    kmipc_dir = f'kmipc/kmipc-2.1.0t-{kmiplib()}_{kmip_arch()}'
+    kmipc_lib = f'{kmipc_dir}/lib/libkmip.a'
+    libs += ' -lboost_filesystem'
+    if os.path.exists(kmipc_lib):
+        libs += f' {kmipc_lib}'
+        user_cflags += f' -I{kmipc_dir}/include -DHAVE_KMIP'
 
 def get_extra_cxxflags(mode, mode_config, cxx, debuginfo):
     cxxflags = []
