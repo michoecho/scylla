@@ -21,7 +21,11 @@
 #include <seastar/http/url.hh>
 
 #include <boost/beast/http.hpp>
+#if __has_include(<rapidxml.h>)
 #include <rapidxml.h>
+#else
+#include <rapidxml/rapidxml.hpp>
+#endif
 
 #include <fmt/chrono.h>
 #include <fmt/ranges.h>

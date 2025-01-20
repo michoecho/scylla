@@ -1293,7 +1293,7 @@ class PythonTest(Test):
             "-o",
             "junit_suite_name={}".format(self.suite.name),
             "--junit-xml={}".format(self.xmlout),
-            "-rs",
+            "-rA",
             "--run_id={}".format(self.id),
             "--mode={}".format(self.mode)
         ]
