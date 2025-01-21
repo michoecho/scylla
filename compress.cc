@@ -66,34 +66,23 @@ std::map<sstring, sstring> compressor::options() const {
     return {};
 }
 
-compressor::ptr_type compressor::create(const sstring& name, const opt_getter& opts) {
-    if (name.empty()) {
-        return {};
+compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options);
+
+compressor::ptr_type compressor::create(const compression_parameters& cp) {
+    using algorithm = compression_parameters::algorithm;
+    switch (cp.get_algorithm()) {
+    case algorithm::lz4:
+        return lz4;
+    case algorithm::deflate:
+        return deflate;
+    case algorithm::snappy:
+        return snappy;
+    case algorithm::zstd:
+        return make_zstd_compressor(cp.get_options());
+    case algorithm::none:
+        return nullptr;
     }
-
-    qualified_name qn(namespace_prefix, name);
-
-    for (auto& c : { lz4, snappy, deflate }) {
-        if (c->name() == static_cast<const sstring&>(qn)) {
-            return c;
-        }
-    }
-
-    return compressor_registry::create(qn, opts);
-}
-
-shared_ptr<compressor> compressor::create(const std::map<sstring, sstring>& options) {
-    auto i = options.find(compression_parameters::SSTABLE_COMPRESSION);
-    if (i != options.end() && !i->second.empty()) {
-        return create(i->second, [&options](const sstring& key) -> opt_string {
-            auto i = options.find(key);
-            if (i == options.end()) {
-                return std::nullopt;
-            }
-            return { i->second };
-        });
-    }
-    return {};
+    abort();
 }
 
 thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>(namespace_prefix + "LZ4Compressor");

@@ -17,6 +17,8 @@
 #include <seastar/core/sstring.hh>
 #include "seastarx.hh"
 
+class compression_parameters;
+
 class compressor {
     sstring _name;
 public:
@@ -62,8 +64,7 @@ public:
     using opt_getter = std::function<opt_string(const sstring&)>;
     using ptr_type = shared_ptr<compressor>;
 
-    static ptr_type create(const sstring& name, const opt_getter&);
-    static ptr_type create(const std::map<sstring, sstring>&);
+    static ptr_type create(const compression_parameters&);
 
     static thread_local const ptr_type lz4;
     static thread_local const ptr_type snappy;
@@ -129,7 +130,7 @@ public:
     }
 
     compressor_ptr get_compressor() const {
-        return compressor::create(get_options());
+        return compressor::create(*this);
     }
     static compression_parameters no_compression() {
         return compression_parameters(algorithm::none);
