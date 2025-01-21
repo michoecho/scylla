@@ -76,7 +76,11 @@ compressor::ptr_type compressor::create(const sstring& name, dict_ptr dict, cons
         }
     }
     if (compressor::zstd_class_name == static_cast<const sstring&>(qn)) {
-        return make_zstd_compressor(opts);
+        if (dict) {
+            return make_zstd_compressor_with_dict(dict);
+        } else {
+            return make_zstd_compressor_no_dict(opts);
+        }
     }
 
     throw no_such_class(fmt::format("unable to find class '{}'", static_cast<const sstring&>(qn)));
@@ -146,6 +150,11 @@ compression_parameters::compression_parameters(const std::map<sstring, sstring>&
     }
 }
 
+compression_parameters::compression_parameters(const compressor& c) {
+    auto m = c.options();
+    m.emplace(SSTABLE_COMPRESSION, c.name());
+}
+
 void compression_parameters::validate() {
     if (_chunk_length) {
         auto chunk_length = _chunk_length.value();
@@ -171,10 +180,14 @@ void compression_parameters::validate() {
 }
 
 std::map<sstring, sstring> compression_parameters::get_options() const {
-    if (_algorithm == algorithm::none) {
-        return std::map<sstring, sstring>();
-    }
     return _raw_options;
+}
+
+auto compression_parameters::get_algorithm() const -> algorithm {
+    auto n = qualified_name(compressor::namespace_prefix, _raw_options.at(SSTABLE_COMPRESSION));
+    auto it = std::ranges::find(algorithm_names, sstring(n));
+    SCYLLA_ASSERT(it != std::end(algorithm_names));
+    return algorithm(it - std::begin(algorithm_names));
 }
 
 compressor_ptr compression_parameters::get_compressor(compressor::dict_ptr dict) const {

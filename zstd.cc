@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+#include "utils/stream_compressor.hh"
 #include <seastar/core/aligned_buffer.hh>
 
 // We need to use experimental features of the zstd library (to allocate compression/decompression context),
@@ -151,6 +152,106 @@ std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
 }
 
-compressor::ptr_type make_zstd_compressor(const compressor::opt_getter& o) {
+compressor::ptr_type make_zstd_compressor_no_dict(const compressor::opt_getter& o) {
     return seastar::make_shared<zstd_processor>(o);
+}
+
+// Throw if ret is an ZSTD error code.
+static void check_zstd(size_t ret, const char* text) {
+    if (ZSTD_isError(ret)) {
+        throw std::runtime_error(fmt::format("{} error: {}", text, ZSTD_getErrorName(ret)));
+    }
+}
+
+class zstd_processor_with_dict : public compressor {
+    class dctx {
+        struct deleter {
+            void operator()(ZSTD_DCtx* ctx) const noexcept {
+                ZSTD_freeDCtx(ctx);
+            }
+        };
+        std::unique_ptr<ZSTD_DCtx, deleter> _ctx;
+    public:
+        dctx() {
+            _ctx.reset(ZSTD_createDCtx());
+            if (!_ctx) {
+                throw std::bad_alloc();
+            }
+        }
+        ZSTD_DCtx* get() {
+            return _ctx.get();
+        }
+    };
+
+    class cctx {
+        struct deleter {
+            void operator()(ZSTD_CCtx* ctx) const noexcept {
+                ZSTD_freeCCtx(ctx);
+            }
+        };
+        std::unique_ptr<ZSTD_CCtx, deleter> _ctx;
+    public:
+        cctx() {
+            _ctx.reset(ZSTD_createCCtx());
+            if (!_ctx) {
+                throw std::bad_alloc();
+            }
+        }
+        ZSTD_CCtx* get() {
+            return _ctx.get();
+        }
+    };
+
+    static ZSTD_CCtx* get_cctx() {
+        static thread_local cctx shared_cctx;
+        return shared_cctx.get();
+    }
+    static ZSTD_DCtx* get_dctx() {
+        static thread_local dctx shared_dctx;
+        return shared_dctx.get();
+    }
+    compressor::dict_ptr _dict;
+
+public:
+    zstd_processor_with_dict(compressor::dict_ptr d)
+        : compressor(compressor::zstd_class_name)
+        , _dict(std::move(d)) {    
+    }
+
+    size_t uncompress(const char* input, size_t input_len, char* output, size_t output_len) const override {
+        auto dctx = get_dctx();
+        try {
+            size_t ret = ZSTD_decompress_usingDDict(dctx, output, output_len, input, input_len, _dict->get()->dict().zstd_ddict.get());
+            check_zstd(ret, "ZSTD_decompress_usingDDict");
+            return ret;
+        } catch(...) {
+            ZSTD_DCtx_reset(get_dctx(), ZSTD_reset_session_only);
+            throw;
+        }
+    }
+    size_t compress(const char* input, size_t input_len, char* output, size_t output_len) const override {
+        auto cctx = get_cctx();
+        try {
+            size_t ret = ZSTD_compress_usingCDict(cctx, output, output_len, input, input_len, _dict->get()->dict().zstd_cdict.get());
+            check_zstd(ret, "ZSTD_decompress_usingCDict");
+            return ret;
+        } catch (...) {
+            ZSTD_CCtx_reset(cctx, ZSTD_reset_session_only);
+            throw;
+        }
+    }
+    size_t compress_max_size(size_t input_len) const override {
+        return ZSTD_compressBound(input_len);
+    }
+
+    std::set<sstring> option_names() const override {
+        return {};
+    }
+    std::map<sstring, sstring> options() const override {
+        return {};
+    }
+};
+
+compressor::ptr_type make_zstd_compressor_with_dict(compressor::dict_ptr d) {
+    return seastar::make_shared<zstd_processor_with_dict>(d);
 }

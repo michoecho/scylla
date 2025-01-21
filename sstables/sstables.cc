@@ -769,7 +769,9 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     const bytes::value_type dict_option_key[] = "DICTIONARY";
     if (auto it = std::ranges::find(c.options.elements, bytes_view(dict_option_key), [] (const sstables::option& opt) {return opt.key.value;} );
             it != c.options.elements.end()) {
-        co_await parse(s, v, in, c.dict_contents);
+        disk_string<uint32_t> dict_contents;
+        co_await parse(s, v, in, dict_contents);
+        c.dict = std::move(dict_contents);
         std::swap(*it, c.options.elements.back());
         c.options.elements.pop_back();
     }
@@ -793,15 +795,19 @@ void write(sstable_version_types v, file_writer& out, const compression& c) {
     auto options = c.options;
     const bytes::value_type dict_option_key[] = "DICTIONARY";
     const bytes::value_type dict_option_value[] = "INLINE";
-    if (c.dict_contents) {
+    const auto& dict = std::get<compression::shared_dict_ptr>(c.dict);
+    if (dict) {
         options.elements.push_back(sstables::option(
             disk_string<uint16_t>(bytes(bytes_view(dict_option_key))),
             disk_string<uint16_t>(bytes(bytes_view(dict_option_value)))
         ));
     }
     write(v, out, c.name, options, c.uncompressed_chunk_length(), c.uncompressed_file_length());
-    if (c.dict_contents) {
-        write(v, out, *c.dict_contents);
+    if (dict) {
+        const auto& dict_data = dict->get()->dict().data;
+        auto b = bytes(reinterpret_cast<const bytes::value_type*>(dict_data.data()), dict_data.size());
+        auto ds = disk_string<uint32_t>(std::move(b));
+        write(v, out, ds);
     }
 
     write(v, out, static_cast<uint32_t>(c.offsets.size()));
@@ -1595,10 +1601,11 @@ future<> sstable::load_metadata(sstable_open_config cfg, bool validate) noexcept
             [&] { return read_compression(); },
             [&] { return read_filter(cfg); },
             [&] { return read_summary(); });
-    if (_components->compression.dict_contents) {
-        auto dict_content_view = std::as_bytes(std::span(_components->compression.dict_contents->value));
-        auto shared_dict_foreign_ptr = co_await _manager._dict_registry.get_dict(dict_content_view);
-        _components->compression.parsed_dict = make_lw_shared(std::move(shared_dict_foreign_ptr));
+    if (auto raw_dict = std::get_if<disk_string<uint32_t>>(&_components->compression.dict)) {
+        sstlog.info("Detected dict of size {}", raw_dict->value.size());
+        auto dict_content_view = std::as_bytes(std::span(raw_dict->value));
+        auto shared_dict_foreign_ptr = co_await _manager._dict_registry.get_dict_by_content(dict_content_view);
+        _components->compression.dict = make_lw_shared(std::move(shared_dict_foreign_ptr));
     }
     if (validate) {
         validate_min_max_metadata();

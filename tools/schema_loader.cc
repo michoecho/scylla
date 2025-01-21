@@ -496,9 +496,10 @@ schema_ptr do_load_schema_from_sstable(const db::config& dbcfg, std::filesystem:
     cache_tracker tracker;
     sstables::directory_semaphore dir_sem(1);
     abort_source abort;
+    mock_shared_dict_registry dict_registry;
     sstables::sstables_manager sst_man("tools::load_schema_from_sstable", large_data_handler, dbcfg, feature_service, tracker,
         memory::stats().total_memory(), dir_sem,
-        [host_id = locator::host_id::create_random_id()] { return host_id; }, abort);
+        [host_id = locator::host_id::create_random_id()] { return host_id; }, abort, dict_registry);
     auto close_sst_man = deferred_close(sst_man);
 
     schema_ptr bootstrap_schema = schema_builder(keyspace, table).with_column("pk", int32_type, column_kind::partition_key).build();
@@ -562,7 +563,7 @@ schema_ptr do_load_schema_from_sstable(const db::config& dbcfg, std::filesystem:
     }
 
     // compression options
-    builder.set_compressor_params(sstables::get_sstable_compressor(compression));
+    builder.set_compressor_params(compression_parameters(*sstables::get_sstable_compressor(compression)));
 
     return builder.build();
 }

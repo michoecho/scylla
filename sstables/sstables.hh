@@ -599,6 +599,8 @@ private:
     std::optional<scylla_metadata::ext_timestamp_stats> _ext_timestamp_stats;
     optimized_optional<sstable_id> _sstable_identifier;
 
+    lw_shared_ptr<shared_dict_registry::foreign_entry_ptr> _recommended_dict;
+
     // Total reclaimable memory from all the components of the SSTable.
     // It is initialized to 0 to prevent the sstables manager from reclaiming memory
     // from the components before the SSTable has been fully loaded.

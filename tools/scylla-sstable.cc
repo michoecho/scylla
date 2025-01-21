@@ -3249,9 +3249,10 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
         cache_tracker tracker;
         sstables::directory_semaphore dir_sem(1);
         abort_source abort;
+        mock_shared_dict_registry dict_registry;
         sstables::sstables_manager sst_man("scylla_sstable", large_data_handler, dbcfg, feature_service, tracker,
             memory::stats().total_memory(), dir_sem,
-            [host_id = locator::host_id::create_random_id()] { return host_id; }, abort);
+            [host_id = locator::host_id::create_random_id()] { return host_id; }, abort, dict_registry);
         auto close_sst_man = deferred_close(sst_man);
 
         std::vector<sstables::shared_sstable> sstables;

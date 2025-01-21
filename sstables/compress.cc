@@ -257,9 +257,9 @@ local_compression::local_compression(compressor_ptr p)
 
 local_compression::local_compression(const compression& c)
     : _compressor([&c] {
-        SCYLLA_ASSERT(bool(c.parsed_dict) == bool(c.dict_contents));
+        SCYLLA_ASSERT(std::holds_alternative<compression::shared_dict_ptr>(c.dict));
         sstring n(c.name.value.begin(), c.name.value.end());
-        return compressor::create(n, c.parsed_dict, [&c, &n](const sstring& key) -> compressor::opt_string {
+        return compressor::create(n, std::get<compression::shared_dict_ptr>(c.dict), [&c, &n](const sstring& key) -> compressor::opt_string {
             if (key == compression_parameters::CHUNK_LENGTH_KB || key == compression_parameters::CHUNK_LENGTH_KB_ERR) {
                 return to_sstring(c.chunk_len / 1024);
             }
@@ -611,17 +611,20 @@ template <typename ChecksumType, compressed_checksum_mode mode>
 requires ChecksumUtils<ChecksumType>
 inline output_stream<char> make_compressed_file_output_stream(output_stream<char> out,
          sstables::compression* cm,
-         const compression_parameters& cp) {
+         const compression_parameters& cp,
+         lw_shared_ptr<shared_dict_registry::foreign_entry_ptr> dict
+         ) {
     // buffer of output stream is set to chunk length, because flush must
     // happen every time a chunk was filled up.
 
-    auto p = cp.get_compressor();
+    auto p = cp.get_compressor(dict);
     cm->set_compressor(p);
     cm->set_uncompressed_chunk_length(cp.chunk_length());
     // FIXME: crc_check_chance can be configured by the user.
     // probability to verify the checksum of a compressed chunk we read.
     // defaults to 1.0.
     cm->options.elements.push_back({{"crc_check_chance"}, {"1.0"}});
+    cm->dict = dict;
 
     return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm, p));
 }
@@ -645,8 +648,9 @@ input_stream<char> sstables::make_compressed_file_m_format_input_stream(file f,
 
 output_stream<char> sstables::make_compressed_file_m_format_output_stream(output_stream<char> out,
         sstables::compression* cm,
-        const compression_parameters& cp) {
+        const compression_parameters& cp,
+        lw_shared_ptr<shared_dict_registry::foreign_entry_ptr> dict) {
     return make_compressed_file_output_stream<crc32_utils, compressed_checksum_mode::checksum_all>(
-            std::move(out), cm, cp);
+            std::move(out), cm, cp, dict);
 }
 

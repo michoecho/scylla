@@ -294,8 +294,11 @@ struct compression {
 
     disk_string<uint16_t> name;
     disk_array<uint32_t, option> options;
-    std::optional<disk_string<uint32_t>> dict_contents;
-    lw_shared_ptr<foreign_ptr<lw_shared_ptr<shared_dict_registry::entry>>> parsed_dict;
+    using shared_dict_ptr = lw_shared_ptr<shared_dict_registry::foreign_entry_ptr>;
+    std::variant<
+        shared_dict_ptr,
+        disk_string<uint32_t>
+    > dict;
     uint32_t chunk_len = 0;
     uint64_t data_len = 0;
     segmented_offsets offsets;
@@ -384,7 +387,8 @@ input_stream<char> make_compressed_file_m_format_input_stream(file f,
 
 output_stream<char> make_compressed_file_m_format_output_stream(output_stream<char> out,
                 sstables::compression* cm,
-                const compression_parameters& cp);
+                const compression_parameters& cp,
+                compressor::dict_ptr dict);
 
 }
 

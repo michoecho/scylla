@@ -1665,7 +1665,7 @@ SEASTAR_TEST_CASE(time_window_strategy_time_window_tests) {
 }
 
 SEASTAR_TEST_CASE(time_window_strategy_ts_resolution_check) {
-  return test_env::do_with([] (test_env& env) {
+  return test_env::do_with_async([] (test_env& env) {
     auto ts = 1451001601000L; // 2015-12-25 @ 00:00:01, in milliseconds
     auto ts_in_ms = std::chrono::milliseconds(ts);
     auto ts_in_us = std::chrono::duration_cast<std::chrono::microseconds>(ts_in_ms);

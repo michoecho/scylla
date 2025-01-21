@@ -466,7 +466,7 @@ static shared_sstable sstable_for_overlapping_test(test_env& env, const schema_p
 }
 
 SEASTAR_TEST_CASE(check_read_indexes) {
-    return test_env::do_with([] (test_env& env) {
+    return test_env::do_with_async([] (test_env& env) {
         return for_each_sstable_version([&env] (const sstables::sstable::version_types version) {
             return seastar::async([&env, version] {
                 auto builder = schema_builder("test", "summary_test")
@@ -499,7 +499,7 @@ SEASTAR_TEST_CASE(check_multi_schema) {
     //        d int,
     //        e blob
     //);
-    return test_env::do_with([] (test_env& env) {
+    return test_env::do_with_async([] (test_env& env) {
         return for_each_sstable_version([&env] (const sstables::sstable::version_types version) {
             return seastar::async([&env, version] {
                 auto set_of_ints_type = set_type_impl::get_instance(int32_type, true);
@@ -1836,7 +1836,7 @@ SEASTAR_TEST_CASE(test_unknown_component) {
 }
 
 SEASTAR_TEST_CASE(sstable_set_incremental_selector) {
-  return test_env::do_with([] (test_env& env) {
+  return test_env::do_with_async([] (test_env& env) {
     auto s = schema_builder(some_keyspace, some_column_family).with_column("p1", utf8_type, column_kind::partition_key).build();
     auto cs = sstables::make_compaction_strategy(sstables::compaction_strategy_type::leveled, s->compaction_strategy_options());
     const auto decorated_keys = tests::generate_partition_keys(8, s);
@@ -1911,7 +1911,7 @@ SEASTAR_TEST_CASE(sstable_set_incremental_selector) {
 }
 
 SEASTAR_TEST_CASE(sstable_set_erase) {
-  return test_env::do_with([] (test_env& env) {
+  return test_env::do_with_async([] (test_env& env) {
     auto s = schema_builder(some_keyspace, some_column_family).with_column("p1", utf8_type, column_kind::partition_key).build();
     const auto key = tests::generate_partition_key(s).key();
 
@@ -2417,7 +2417,7 @@ SEASTAR_TEST_CASE(sstable_run_identifier_correctness) {
 }
 
 SEASTAR_TEST_CASE(sstable_run_disjoint_invariant_test) {
-    return test_env::do_with([] (test_env& env) {
+    return test_env::do_with_async([] (test_env& env) {
         simple_schema ss;
         auto s = ss.schema();
 
@@ -2706,7 +2706,7 @@ SEASTAR_TEST_CASE(test_sstable_origin) {
 }
 
 SEASTAR_TEST_CASE(compound_sstable_set_basic_test) {
-    return test_env::do_with([] (test_env& env) {
+    return test_env::do_with_async([] (test_env& env) {
         auto s = schema_builder(some_keyspace, some_column_family).with_column("p1", utf8_type, column_kind::partition_key).build();
         auto cs = sstables::make_compaction_strategy(sstables::compaction_strategy_type::size_tiered, s->compaction_strategy_options());
 

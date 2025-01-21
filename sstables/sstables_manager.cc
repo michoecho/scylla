@@ -26,7 +26,7 @@ logging::logger smlogger("sstables_manager");
 
 sstables_manager::sstables_manager(
     sstring name, db::large_data_handler& large_data_handler, const db::config& dbcfg, gms::feature_service& feat, cache_tracker& ct, size_t available_memory, directory_semaphore& dir_sem,
-    noncopyable_function<locator::host_id()>&& resolve_host_id, const abort_source& abort, shared_dict_registry& dict_registry, scheduling_group maintenance_sg, storage_manager* shared)
+    noncopyable_function<locator::host_id()>&& resolve_host_id, const abort_source& abort, abstract_shared_dict_registry& dict_registry, scheduling_group maintenance_sg, storage_manager* shared)
     : _storage(shared)
     , _available_memory(available_memory)
     , _large_data_handler(large_data_handler), _db_config(dbcfg), _features(feat), _cache_tracker(ct)
@@ -132,7 +132,11 @@ shared_sstable sstables_manager::make_sstable(schema_ptr schema,
         gc_clock::time_point now,
         io_error_handler_gen error_handler_gen,
         size_t buffer_size) {
-    return make_lw_shared<sstable>(std::move(schema), storage, generation, state, v, f, get_large_data_handler(), *this, now, std::move(error_handler_gen), buffer_size);
+    auto sst = make_lw_shared<sstable>(schema, storage, generation, state, v, f, get_large_data_handler(), *this, now, std::move(error_handler_gen), buffer_size);
+    if (schema) {
+        sst->_recommended_dict = _dict_registry.get_recommended_dict_by_table(schema->id());
+    }
+    return sst;
 }
 
 sstable_writer_config sstables_manager::configure_writer(sstring origin) const {

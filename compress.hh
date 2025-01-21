@@ -68,7 +68,7 @@ public:
     using opt_getter = std::function<opt_string(const sstring&)>;
     using ptr_type = shared_ptr<compressor>;
 
-    using dict_ptr = lw_shared_ptr<foreign_ptr<lw_shared_ptr<shared_dict_registry::entry>>>;
+    using dict_ptr = lw_shared_ptr<shared_dict_registry::foreign_entry_ptr>;
 
     static ptr_type create(const sstring& name, dict_ptr, const opt_getter&);
     static ptr_type create(dict_ptr, const std::map<sstring, sstring>&);
@@ -79,20 +79,23 @@ public:
 
     static const sstring namespace_prefix;
     const static sstring zstd_class_name;
-};
 
-using compressor_ptr = compressor::ptr_type;
-compressor::ptr_type make_zstd_compressor(const compressor::opt_getter&);
-
-class compression_parameters {
-public:
     enum class algorithm {
         lz4,
         zstd,
         snappy,
         deflate,
         none,
+};
     };
+
+using compressor_ptr = compressor::ptr_type;
+compressor::ptr_type make_zstd_compressor_no_dict(const compressor::opt_getter&);
+compressor::ptr_type make_zstd_compressor_with_dict(compressor::dict_ptr d);
+
+class compression_parameters {
+public:
+    using algorithm = compressor::algorithm;
     static constexpr std::string_view algorithm_names[] = {
         "org.apache.cassandra.io.compress.LZ4Compressor",
         "org.apache.cassandra.io.compress.ZstdCompressor",
@@ -116,7 +119,6 @@ public:
     static const sstring DICTIONARY;
 private:
     std::map<sstring, sstring> _raw_options;
-    algorithm _algorithm;
     std::optional<int> _chunk_length;
     std::optional<double> _crc_check_chance;
     [[maybe_unused]]
@@ -125,10 +127,11 @@ public:
     compression_parameters();
     compression_parameters(algorithm);
     compression_parameters(const std::map<sstring, sstring>& options);
+    compression_parameters(const compressor&);
     ~compression_parameters();
 
     compressor_ptr get_compressor(compressor::dict_ptr = nullptr) const;
-    algorithm get_algorithm() const { return _algorithm; }
+    algorithm get_algorithm() const;
     int32_t chunk_length() const { return _chunk_length.value_or(int(DEFAULT_CHUNK_LENGTH)); }
     double crc_check_chance() const { return _crc_check_chance.value_or(double(DEFAULT_CRC_CHECK_CHANCE)); }
 

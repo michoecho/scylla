@@ -168,6 +168,7 @@ private:
     sharded<gms::gossip_address_map> _gossip_address_map;
     sharded<service::direct_fd_pinger> _fd_pinger;
     sharded<cdc::cdc_service> _cdc;
+    sharded<shared_dict_registry> _dict_registry;
 
     service::raft_group0_client* _group0_client;
 
@@ -633,8 +634,10 @@ private:
             auto stop_lang_manager = defer([this] { _lang_manager.stop().get(); });
             _lang_manager.invoke_on_all(&lang::manager::start).get();
 
-
-            _db.start(std::ref(*cfg), dbcfg, std::ref(_mnotifier), std::ref(_feature_service), std::ref(_token_metadata), std::ref(_cm), std::ref(_sstm), std::ref(_lang_manager), std::ref(_sst_dir_semaphore), std::ref(abort_sources), utils::cross_shard_barrier()).get();
+            _dict_registry.start().get();
+            auto stop_dict_registry = defer([this] { _dict_registry.stop().get(); });
+            
+            _db.start(std::ref(*cfg), dbcfg, std::ref(_mnotifier), std::ref(_feature_service), std::ref(_token_metadata), std::ref(_cm), std::ref(_sstm), std::ref(_lang_manager), std::ref(_sst_dir_semaphore), std::ref(abort_sources), std::ref(_dict_registry), utils::cross_shard_barrier()).get();
             auto stop_db = defer([this] {
                 _db.stop().get();
             });

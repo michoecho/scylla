@@ -212,7 +212,7 @@ struct test_env::impl {
     data_dictionary::storage_options storage;
     abort_source abort;
 
-    impl(test_env_config cfg, sstables::storage_manager* sstm, tmpdir* tdir);
+    impl(abstract_shared_dict_registry& dict_registry, test_env_config cfg, sstables::storage_manager* sstm, tmpdir* tdir);
     impl(impl&&) = delete;
     impl(const impl&) = delete;
 
@@ -221,7 +221,7 @@ struct test_env::impl {
     }
 };
 
-test_env::impl::impl(test_env_config cfg, sstables::storage_manager* sstm, tmpdir* tdir)
+test_env::impl::impl(abstract_shared_dict_registry& dict_registry, test_env_config cfg, sstables::storage_manager* sstm, tmpdir* tdir)
     : local_dir(tdir == nullptr ? std::optional<tmpdir>(std::in_place) : std::optional<tmpdir>(std::nullopt))
     , dir(tdir == nullptr ? local_dir.value() : *tdir)
     , db_config(make_db_config(dir.path().native(), cfg.storage))
@@ -229,7 +229,7 @@ test_env::impl::impl(test_env_config cfg, sstables::storage_manager* sstm, tmpdi
     , feature_service(gms::feature_config_from_db_config(*db_config))
     , mgr("test_env", cfg.large_data_handler == nullptr ? nop_ld_handler : *cfg.large_data_handler, *db_config,
         feature_service, cache_tracker, cfg.available_memory, dir_sem,
-        [host_id = locator::host_id::create_random_id()]{ return host_id; }, abort, current_scheduling_group(), sstm)
+        [host_id = locator::host_id::create_random_id()]{ return host_id; }, abort, dict_registry, current_scheduling_group(), sstm)
     , semaphore(reader_concurrency_semaphore::no_limits{}, "sstables::test_env", reader_concurrency_semaphore::register_metrics::no)
     , use_uuid(cfg.use_uuid)
     , storage(std::move(cfg.storage))
@@ -243,8 +243,8 @@ test_env::impl::impl(test_env_config cfg, sstables::storage_manager* sstm, tmpdi
     }
 }
 
-test_env::test_env(test_env_config cfg, sstables::storage_manager* sstm, tmpdir* tmp)
-        : _impl(std::make_unique<impl>(std::move(cfg), sstm, tmp))
+test_env::test_env(abstract_shared_dict_registry& dict_registry, test_env_config cfg, sstables::storage_manager* sstm, tmpdir* tmp)
+        : _impl(std::make_unique<impl>(dict_registry, std::move(cfg), sstm, tmp))
 {
 }
 
@@ -326,7 +326,10 @@ future<> test_env::do_with_async(noncopyable_function<void (test_env&)> func, te
             sharded<sstables::storage_manager> sstm;
             sstm.start(std::ref(*db_cfg), sstables::storage_manager::config{}).get();
             auto stop_sstm = defer([&] { sstm.stop().get(); });
-            test_env env(std::move(cfg), &sstm.local());
+            sharded<shared_dict_registry> dict_registry;
+            dict_registry.start().get();
+            auto stop_dict_registry = defer([&] { dict_registry.stop().get(); });
+            test_env env(dict_registry.local(), std::move(cfg), &sstm.local());
             auto close_env = defer([&] { env.stop().get(); });
             env.manager().plug_sstables_registry(std::make_unique<mock_sstables_registry>());
             auto unplu = defer([&env] { env.manager().unplug_sstables_registry(); });
@@ -335,7 +338,10 @@ future<> test_env::do_with_async(noncopyable_function<void (test_env&)> func, te
     }
 
     return seastar::async([func = std::move(func), cfg = std::move(cfg)] () mutable {
-        test_env env(std::move(cfg));
+        sharded<shared_dict_registry> dict_registry;
+        dict_registry.start().get();
+        auto stop_dict_registry = defer([&] { dict_registry.stop().get(); });
+        test_env env(dict_registry.local(), std::move(cfg));
         auto close_env = defer([&] { env.stop().get(); });
         func(env);
     });
@@ -476,8 +482,11 @@ future<>
 test_env::do_with_sharded_async(noncopyable_function<void (sharded<test_env>&)> func) {
     return seastar::async([func = std::move(func)] {
         tmpdir tdir;
+        sharded<shared_dict_registry> dict_registry;
+        dict_registry.start().get();
+        auto stop_dr = defer([&] { dict_registry.stop().get(); });
         sharded<test_env> env;
-        env.start(test_env_config{}, nullptr, &tdir).get();
+        env.start(std::ref(dict_registry), test_env_config{}, nullptr, &tdir).get();
         auto stop = defer([&] { env.stop().get(); });
         func(env);
     });

@@ -33,12 +33,13 @@ struct sstable_manager_service {
     cache_tracker tracker;
     sstables::directory_semaphore dir_sem;
     sstables::sstables_manager sst_man;
+    shared_dict_registry dummy_dict_registry;
     abort_source abort;
 
     explicit sstable_manager_service(const db::config& dbcfg)
         : feature_service(gms::feature_config_from_db_config(dbcfg))
         , dir_sem(1)
-        , sst_man("schema_loader", large_data_handler, dbcfg, feature_service, tracker, memory::stats().total_memory(), dir_sem, []{ return locator::host_id{}; }, abort) {
+        , sst_man("schema_loader", large_data_handler, dbcfg, feature_service, tracker, memory::stats().total_memory(), dir_sem, []{ return locator::host_id{}; }, abort, dummy_dict_registry) {
     }
 
     future<> stop() {

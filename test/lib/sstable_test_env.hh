@@ -109,7 +109,7 @@ public:
 
     void maybe_start_compaction_manager(bool enable = true);
 
-    explicit test_env(test_env_config cfg = {}, sstables::storage_manager* sstm = nullptr, tmpdir* tmp = nullptr);
+    explicit test_env(abstract_shared_dict_registry& dict_registry, test_env_config cfg = {}, sstables::storage_manager* sstm = nullptr, tmpdir* tmp = nullptr);
     ~test_env();
     test_env(test_env&&) noexcept;
 
@@ -176,26 +176,17 @@ public:
 
     replica::table::config make_table_config();
 
-    template <typename Func>
-    static inline auto do_with(Func&& func, test_env_config cfg = {}) {
-        return seastar::do_with(test_env(std::move(cfg)), [func = std::move(func)] (test_env& env) mutable {
-            return futurize_invoke(func, env).finally([&env] {
-                return env.stop();
-            });
-        });
-    }
-
     static future<> do_with_async(noncopyable_function<void (test_env&)> func, test_env_config cfg = {});
 
     static future<> do_with_sharded_async(noncopyable_function<void (sharded<test_env>&)> func);
 
     template <typename T>
     static future<T> do_with_async_returning(noncopyable_function<T (test_env&)> func) {
-        return seastar::async([func = std::move(func)] {
-            test_env env;
-            auto stop = defer([&] { env.stop().get(); });
-            return func(env);
+        std::optional<T> result;
+        co_await do_with_async([&] (test_env& env) {
+            result = func(env);
         });
+        co_return std::move(*result);
     }
 
     table_for_tests make_table_for_tests(schema_ptr s, sstring dir);

@@ -87,6 +87,7 @@ public:
 };
 
 class perf_sstable_test_env {
+    mock_shared_dict_registry _dict_registry;
     test_env _env;
 
 public:
@@ -194,7 +195,9 @@ private:
     }
 
 public:
-    perf_sstable_test_env(conf cfg) : _cfg(std::move(cfg))
+    perf_sstable_test_env(conf cfg)
+           : _env(_dict_registry)
+           , _cfg(std::move(cfg))
            , s(create_schema(cfg.compaction_strategy))
            , _distribution('@', '~')
            , _mt(make_lw_shared<replica::memtable>(s))
