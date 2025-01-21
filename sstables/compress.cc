@@ -335,7 +335,17 @@ compression::locate(uint64_t position, const compression::segmented_offsets::acc
     return { chunk_start, chunk_end - chunk_start, chunk_offset };
 }
 
+std::map<sstring, sstring> options_from_compression(const compression& c) {
+    std::map<sstring, sstring> result;
+    result.emplace(compression_parameters::SSTABLE_COMPRESSION, sstring(c.name.value.begin(), c.name.value.end()));
+    result.emplace(compression_parameters::CHUNK_LENGTH_KB, to_sstring(c.chunk_len / 1024));
+    for (auto& o : c.options.elements) {
+        result.emplace(sstring(o.key.value.begin(), o.key.value.end()), sstring(o.value.value.begin(), o.value.value.end()));
+    }
+    return result;
 }
+
+} // namespace sstables
 
 // For SSTables 2.x (formats 'ka' and 'la'), the full checksum is a combination of checksums of compressed chunks.
 // For SSTables 3.x (format 'mc'), however, it is supposed to contain the full checksum of the file written so
