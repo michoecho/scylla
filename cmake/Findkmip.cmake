@@ -12,6 +12,8 @@ cmake_host_system_information(
   RESULT distrib_id QUERY DISTRIB_ID)
 if(distrib_id MATCHES "centos|fedora|rhel")
   set(kmip_distrib "rhel84")
+elseif(distrib_id MATCHES "nixos")
+  set(kmip_distrib "nixos")
 else()
   message(FATAL_ERROR "Could not locate kmipc library for ${distrib_id}")
 endif()
