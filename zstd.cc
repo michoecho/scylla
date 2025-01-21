@@ -15,7 +15,6 @@
 
 #include "compress.hh"
 #include "exceptions/exceptions.hh"
-#include "utils/class_registrator.hh"
 #include "utils/reusable_buffer.hh"
 #include <concepts>
 
@@ -152,5 +151,12 @@ std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
 }
 
-static const class_registrator<compressor, zstd_processor, const compressor::opt_getter&>
-    registrator(COMPRESSOR_NAME);
+compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options) {
+    return make_shared<zstd_processor>([&] (const sstring& opt) -> std::optional<sstring> {
+        if (auto it = options.find(opt); it != options.end()) {
+            return it->second;
+        } else {
+            return std::nullopt;
+        }
+    });
+}
