@@ -167,7 +167,7 @@ seastar::future<> dict_training_loop::start(
     }
 }
 
-static sha256_type get_sha256(std::span<const std::byte> in) {
+sha256_type get_sha256(std::span<const std::byte> in) {
     sha256_hasher hasher;
     hasher.update(reinterpret_cast<const char*>(in.data()), in.size());
     auto b = hasher.finalize();
