@@ -19,7 +19,6 @@
 #include <concepts>
 
 static const sstring COMPRESSION_LEVEL = "compression_level";
-static const sstring COMPRESSOR_NAME = compressor::make_name("ZstdCompressor");
 static const size_t DCTX_SIZE = ZSTD_estimateDCtxSize();
 
 class zstd_processor : public compressor {
@@ -82,10 +81,13 @@ public:
 
     std::set<sstring> option_names() const override;
     std::map<sstring, sstring> options() const override;
+    const char* name() const override {
+        static const sstring COMPRESSOR_NAME = compressor::make_name("ZstdCompressor");
+        return COMPRESSOR_NAME.c_str();
+    }
 };
 
-zstd_processor::zstd_processor(const opt_getter& opts)
-    : compressor(COMPRESSOR_NAME) {
+zstd_processor::zstd_processor(const opt_getter& opts) {
     auto level = opts(COMPRESSION_LEVEL);
     if (level) {
         try {

@@ -32,6 +32,7 @@ public:
     size_t compress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
     size_t compress_max_size(size_t input_len) const override;
+    const char* name() const override;
 };
 
 class snappy_processor: public compressor {
@@ -43,6 +44,7 @@ public:
     size_t compress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
     size_t compress_max_size(size_t input_len) const override;
+    const char* name() const override;
 };
 
 class deflate_processor: public compressor {
@@ -54,11 +56,9 @@ public:
     size_t compress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
     size_t compress_max_size(size_t input_len) const override;
+    const char* name() const override;
 };
 
-compressor::compressor(sstring name)
-    : _name(std::move(name))
-{}
 
 std::set<sstring> compressor::option_names() const {
     return {};
@@ -87,9 +87,9 @@ compressor::ptr_type compressor::create(const compression_parameters& cp) {
     abort();
 }
 
-thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>(make_name("LZ4Compressor"));
-thread_local const shared_ptr<compressor> compressor::snappy = ::make_shared<snappy_processor>(make_name("SnappyCompressor"));
-thread_local const shared_ptr<compressor> compressor::deflate = ::make_shared<deflate_processor>(make_name("DeflateCompressor"));
+thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>();
+thread_local const shared_ptr<compressor> compressor::snappy = ::make_shared<snappy_processor>();
+thread_local const shared_ptr<compressor> compressor::deflate = ::make_shared<deflate_processor>();
 
 const sstring compression_parameters::SSTABLE_COMPRESSION = "sstable_compression";
 const sstring compression_parameters::CHUNK_LENGTH_KB = "chunk_length_in_kb";
@@ -263,6 +263,11 @@ size_t lz4_processor::compress_max_size(size_t input_len) const {
     return LZ4_COMPRESSBOUND(input_len) + 4;
 }
 
+const char* lz4_processor::name() const {
+    const static std::string name = make_name("LZ4Compressor");
+    return name.c_str();
+}
+
 size_t deflate_processor::uncompress(const char* input,
                 size_t input_len, char* output, size_t output_len) const {
     z_stream zs;
@@ -327,6 +332,11 @@ size_t deflate_processor::compress_max_size(size_t input_len) const {
     return res;
 }
 
+const char* deflate_processor::name() const {
+    const static std::string name = make_name("DeflateCompressor");
+    return name.c_str();
+}
+
 size_t snappy_processor::uncompress(const char* input, size_t input_len,
                 char* output, size_t output_len) const {
     if (snappy_uncompress(input, input_len, output, &output_len)
@@ -350,3 +360,7 @@ size_t snappy_processor::compress_max_size(size_t input_len) const {
     return snappy_max_compressed_length(input_len);
 }
 
+const char* snappy_processor::name() const {
+    const static std::string name = make_name("SnappyCompressor");
+    return name.c_str();
+}

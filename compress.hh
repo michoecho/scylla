@@ -20,10 +20,7 @@
 class compression_parameters;
 
 class compressor {
-    sstring _name;
 public:
-    compressor(sstring);
-
     virtual ~compressor() {}
 
     /**
@@ -55,9 +52,7 @@ public:
     /**
      * Compressor class name.
      */
-    const sstring& name() const {
-        return _name;
-    }
+    virtual const char* name() const = 0;
 
     // to cheaply bridge sstable compression options / maps
     using opt_string = std::optional<sstring>;
