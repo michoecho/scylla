@@ -251,6 +251,10 @@ static const size_t ZSTD_DCTX_SIZE = ZSTD_estimateDCtxSize();
 class zstd_processor : public compressor {
     int _compression_level = 3;
     size_t _cctx_size;
+    using cdict_ptr = foreign_ptr<lw_shared_ptr<const zstd_cdict>>;
+    using ddict_ptr = foreign_ptr<lw_shared_ptr<const zstd_ddict>>;
+    cdict_ptr _cdict;
+    ddict_ptr _ddict;
 
     static auto with_dctx(std::invocable<ZSTD_DCtx*> auto f) {
         // The decompression context has a fixed size of ~128 KiB,
@@ -298,8 +302,8 @@ class zstd_processor : public compressor {
     }
 
 public:
-    zstd_processor(const opt_getter&);
-    zstd_processor(const std::map<sstring, sstring>& options);
+    zstd_processor(const opt_getter&, cdict_ptr cdict = nullptr, ddict_ptr ddict = nullptr);
+    zstd_processor(const std::map<sstring, sstring>& options, cdict_ptr cdict = nullptr, ddict_ptr ddict = nullptr);
 
     size_t uncompress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
@@ -315,7 +319,9 @@ public:
     }
 };
 
-zstd_processor::zstd_processor(const opt_getter& opts) {
+zstd_processor::zstd_processor(const opt_getter& opts, cdict_ptr cdict, ddict_ptr ddict) {
+    _cdict = std::move(cdict);
+    _ddict = std::move(ddict);
     auto level = opts(COMPRESSION_LEVEL);
     if (level) {
         try {
@@ -350,7 +356,11 @@ zstd_processor::zstd_processor(const opt_getter& opts) {
 
 size_t zstd_processor::uncompress(const char* input, size_t input_len, char* output, size_t output_len) const {
     auto ret = with_dctx([&] (ZSTD_DCtx* dctx) {
-        return ZSTD_decompressDCtx(dctx, output, output_len, input, input_len);
+        if (_cdict) {
+            return ZSTD_decompress_usingDDict(dctx, output, output_len, input, input_len, _ddict->dict());
+        } else {
+            return ZSTD_decompressDCtx(dctx, output, output_len, input, input_len);
+        }
     });
     if (ZSTD_isError(ret)) {
         throw std::runtime_error( format("ZSTD decompression failure: {}", ZSTD_getErrorName(ret)));
@@ -361,7 +371,11 @@ size_t zstd_processor::uncompress(const char* input, size_t input_len, char* out
 
 size_t zstd_processor::compress(const char* input, size_t input_len, char* output, size_t output_len) const {
     auto ret = with_cctx(_cctx_size, [&] (ZSTD_CCtx* cctx) {
-        return ZSTD_compressCCtx(cctx, output, output_len, input, input_len, _compression_level);
+        if (_cdict) {
+            return ZSTD_compress_usingCDict(cctx, output, output_len, input, input_len, _cdict->dict());
+        } else {
+            return ZSTD_compressCCtx(cctx, output, output_len, input, input_len, _compression_level);
+        }
     });
     if (ZSTD_isError(ret)) {
         throw std::runtime_error( format("ZSTD compression failure: {}", ZSTD_getErrorName(ret)));
@@ -381,14 +395,14 @@ std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
 }
 
-zstd_processor::zstd_processor(const std::map<sstring, sstring>& options)
+zstd_processor::zstd_processor(const std::map<sstring, sstring>& options, cdict_ptr cdict, ddict_ptr ddict)
     : zstd_processor([&] (const sstring& opt) -> std::optional<sstring> {
         if (auto it = options.find(opt); it != options.end()) {
             return it->second;
         } else {
             return std::nullopt;
         }
-    })
+    }, std::move(cdict), std::move(ddict))
 {}
 
 std::unique_ptr<compressor> make_unique_zstd_compressor(const std::map<sstring, sstring>& options) {
