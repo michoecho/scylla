@@ -72,6 +72,7 @@ class zstd_processor : public compressor {
 
 public:
     zstd_processor(const opt_getter&);
+    zstd_processor(const std::map<sstring, sstring>& options);
 
     size_t uncompress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
@@ -153,12 +154,20 @@ std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
 }
 
-compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options) {
-    return make_shared<zstd_processor>([&] (const sstring& opt) -> std::optional<sstring> {
+zstd_processor::zstd_processor(const std::map<sstring, sstring>& options)
+    : zstd_processor([&] (const sstring& opt) -> std::optional<sstring> {
         if (auto it = options.find(opt); it != options.end()) {
             return it->second;
         } else {
             return std::nullopt;
         }
-    });
+    })
+{}
+
+std::unique_ptr<compressor> make_unique_zstd_compressor(const std::map<sstring, sstring>& options) {
+    return std::make_unique<zstd_processor>(options);
+}
+
+compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options) {
+    return seastar::make_shared<zstd_processor>(options);
 }
