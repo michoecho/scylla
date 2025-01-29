@@ -14,10 +14,194 @@
 #include <zlib.h>
 #include <snappy-c.h>
 #include <seastar/util/log.hh>
+#include <seastar/core/sharded.hh>
 
 #include "compress.hh"
 #include "exceptions/exceptions.hh"
 #include "utils/class_registrator.hh"
+#include "sstables/compressor_registry.hh"
+
+class compressor_registry;
+
+// SHA256
+using dict_id = std::array<std::byte, 32>;
+class compressor_registry_impl;
+
+namespace utils {
+    dict_id get_sha256(std::span<const std::byte> in);
+};
+
+class raw_dict : public enable_lw_shared_from_this<raw_dict> {
+    compressor_registry_impl& _owner;
+    dict_id _id;
+    std::vector<std::byte> _dict;
+public:
+    raw_dict(compressor_registry_impl& owner, dict_id key, std::span<const std::byte> dict)
+        : _owner(owner)
+        , _id(key)
+        , _dict(dict.begin(), dict.end())
+    {}
+    ~raw_dict();
+    const std::span<const std::byte> raw() const {
+        return _dict;
+    }
+    dict_id id() const {
+        return _id;
+    }
+};
+
+class zstd_ddict : public enable_lw_shared_from_this<zstd_ddict> {
+    compressor_registry_impl& _owner;
+    lw_shared_ptr<const raw_dict> _raw;
+    std::unique_ptr<ZSTD_DDict, decltype(&ZSTD_freeDDict)> _dict;
+public:
+    zstd_ddict(compressor_registry_impl& owner, lw_shared_ptr<const raw_dict> raw)
+        : _owner(owner)
+        , _raw(raw)
+        , _dict(ZSTD_createDDict_byReference(_raw->raw().data(), _raw->raw().size()), ZSTD_freeDDict)
+    {
+        if (!_dict) {
+            throw std::bad_alloc();
+        }
+    }
+    ~zstd_ddict();
+    auto dict() const {
+        return _dict.get();
+    }
+};
+
+class zstd_cdict : public enable_lw_shared_from_this<zstd_cdict> {
+    compressor_registry_impl& _owner;
+    lw_shared_ptr<const raw_dict> _raw;
+    int _level;
+    std::unique_ptr<ZSTD_CDict, decltype(&ZSTD_freeCDict)> _dict;
+public:
+    zstd_cdict(compressor_registry_impl& owner, lw_shared_ptr<const raw_dict> raw, int level)
+        : _owner(owner)
+        , _raw(raw)
+        , _level(level)
+        , _dict(ZSTD_createCDict_byReference(_raw->raw().data(), _raw->raw().size(), level), ZSTD_freeCDict)
+    {
+        if (!_dict) {
+            throw std::bad_alloc();
+        }
+    }
+    ~zstd_cdict();
+    auto dict() const {
+        return _dict.get();
+    }
+};
+
+class raw_dict;
+class zstd_ddict;
+class zstd_cdict;
+
+template <typename T>
+std::vector<foreign_ptr<T>> make_foreign_ptrs(T a_shared_ptr) {
+    std::vector<foreign_ptr<T>> result(smp::count);
+    std::ranges::generate(result, [&] () { return make_foreign(a_shared_ptr); });
+    return result;
+}
+
+class compressor_registry_impl : public compressor_registry {
+    struct zstd_cdict_id {
+        dict_id id;
+        int level;
+        std::strong_ordering operator<=>(const zstd_cdict_id&) const = default;
+    };
+    std::map<dict_id, const raw_dict*> _raw_dicts;
+    std::map<zstd_cdict_id, const zstd_cdict*> _zstd_cdicts;
+    std::map<dict_id, const zstd_ddict*> _zstd_ddicts;
+    std::map<table_id, lw_shared_ptr<const raw_dict>> _recommended;
+
+    lw_shared_ptr<const raw_dict> get_canonical_ptr(std::span<const std::byte> dict) {
+        SCYLLA_ASSERT(this_shard_id() == 0);
+        auto id = utils::get_sha256(dict);
+        if (auto it = _raw_dicts.find(id); it != _raw_dicts.end()) {
+            return it->second->shared_from_this();
+        } else {
+            auto p = make_lw_shared<const raw_dict>(*this, id, dict);
+            _raw_dicts.emplace(id, p.get());
+            return p;
+        }
+    }
+    using zstd_dicts = std::pair<
+        foreign_ptr<lw_shared_ptr<const zstd_ddict>>,
+        foreign_ptr<lw_shared_ptr<const zstd_cdict>>
+    >;
+    zstd_dicts get_zstd_dicts(lw_shared_ptr<const raw_dict> raw, int level) {
+        SCYLLA_ASSERT(this_shard_id() == 0);
+        lw_shared_ptr<const zstd_ddict> ddict;
+        lw_shared_ptr<const zstd_cdict> cdict;
+        if (auto it = _zstd_ddicts.find(raw->id()); it != _zstd_ddicts.end()) {
+            ddict = it->second->shared_from_this();
+        } else {
+            ddict = make_lw_shared<zstd_ddict>(*this, raw);
+            _zstd_ddicts.emplace(raw->id(), ddict.get());
+        }
+        if (auto it = _zstd_cdicts.find({raw->id(), level}); it != _zstd_cdicts.end()) {
+            cdict = it->second->shared_from_this();
+        } else {
+            cdict = make_lw_shared<zstd_cdict>(*this, raw, level);
+            _zstd_cdicts.emplace(zstd_cdict_id{raw->id(), level}, cdict.get());
+        }
+        return {make_foreign(std::move(ddict)), make_foreign(std::move(cdict))};
+    }
+    future<zstd_dicts> get_zstd_dicts(std::span<const std::byte> dict, int level) {
+        return smp::submit_to(0, [this, dict, level] -> zstd_dicts {
+            auto raw = get_canonical_ptr(dict);
+            return get_zstd_dicts(raw, level);
+        });
+    }
+    future<zstd_dicts> get_zstd_dicts(table_id t, int level) {
+        return smp::submit_to(0, [this, t, level] -> zstd_dicts {
+            auto rec_it = _recommended.find(t);
+            if (rec_it == _recommended.end()) {
+                return {};
+            }
+            return get_zstd_dicts(rec_it->second, level);
+        });
+    }
+    
+public:
+    compressor_registry_impl() {
+        SCYLLA_ASSERT(this_shard_id() == 0);
+    }
+    compressor_registry_impl(compressor_registry_impl&&) = delete;
+    ~compressor_registry_impl() = default;
+    void invalidate_raw_dict(dict_id id) {
+        SCYLLA_ASSERT(this_shard_id() == 0);
+        _raw_dicts.erase(id);
+    }
+    void invalidate_zstd_cdict(dict_id id, int level) {
+        SCYLLA_ASSERT(this_shard_id() == 0);
+        _zstd_cdicts.erase({id, level});
+    }
+    void invalidate_zstd_ddict(dict_id id) {
+        SCYLLA_ASSERT(this_shard_id() == 0);
+        _zstd_ddicts.erase(id);
+    }
+    virtual future<> set_recommended_dict(table_id t, std::span<const std::byte> dict) {
+        return smp::submit_to(0, [this, t, dict] {
+            auto canonical_ptr = get_canonical_ptr(dict);
+            _recommended.emplace(t, canonical_ptr);
+        });
+    }
+    virtual future<std::unique_ptr<compressor>> make_compressor_for_schema(schema_ptr s);
+    virtual future<> make_compressor_for_reading(sstables::compression&);
+};
+
+raw_dict::~raw_dict() {
+    _owner.invalidate_raw_dict(_id);
+}
+
+zstd_cdict::~zstd_cdict() {
+    _owner.invalidate_zstd_cdict(_raw->id(), _level);
+}
+
+zstd_ddict::~zstd_ddict() {
+    _owner.invalidate_zstd_ddict(_raw->id());
+}
 
 sstring compressor::make_name(std::string_view short_name) {
     return seastar::format("org.apache.cassandra.io.compress.{}", short_name);
@@ -59,6 +243,31 @@ public:
     const char* name() const override;
 };
 
+std::unique_ptr<compressor> make_unique_zstd_compressor(const std::map<sstring, sstring>& options);
+compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options);
+
+future<std::unique_ptr<compressor>> compressor_registry_impl::make_compressor_for_schema(schema_ptr s) {
+    // FIXME: use recommended dictionaries.
+    auto params = s->get_compressor_params();
+    using algorithm = compression_parameters::algorithm;
+    switch (params.get_algorithm()) {
+    case algorithm::lz4:
+        co_return std::make_unique<lz4_processor>();
+    case algorithm::deflate:
+        co_return std::make_unique<deflate_processor>();
+    case algorithm::snappy:
+        co_return std::make_unique<snappy_processor>();
+    case algorithm::zstd:
+        co_return make_unique_zstd_compressor(s->get_compressor_params().get_options());
+    case algorithm::none:
+        co_return nullptr;
+    }
+    abort();
+}
+
+future<> compressor_registry_impl::make_compressor_for_reading(sstables::compression& c) {
+    abort();
+}
 
 std::set<sstring> compressor::option_names() const {
     return {};
@@ -67,8 +276,6 @@ std::set<sstring> compressor::option_names() const {
 std::map<sstring, sstring> compressor::options() const {
     return {};
 }
-
-compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options);
 
 compressor::ptr_type compressor::create(const compression_parameters& cp) {
     using algorithm = compression_parameters::algorithm;
