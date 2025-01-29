@@ -24,6 +24,7 @@
 #include "reader_concurrency_semaphore.hh"
 #include "utils/s3/creds.hh"
 #include <boost/intrusive/list.hpp>
+#include "compressor_registry.hh"
 
 namespace db {
 
@@ -128,6 +129,8 @@ private:
 
     const abort_source& _abort;
 
+    compressor_registry* _compressor_registry = nullptr;
+
 public:
     explicit sstables_manager(sstring name, db::large_data_handler& large_data_handler, const db::config& dbcfg, gms::feature_service& feat, cache_tracker&, size_t available_memory, directory_semaphore& dir_sem,
                               noncopyable_function<locator::host_id()>&& resolve_host_id, const abort_source& abort, scheduling_group maintenance_sg = current_scheduling_group(), storage_manager* shared = nullptr);
@@ -198,6 +201,10 @@ public:
     void on_unlink(sstable* sst);
 
     std::vector<std::filesystem::path> get_local_directories(const data_dictionary::storage_options::local& so) const;
+
+    void plug_compressor_registry(compressor_registry* cr) {
+        _compressor_registry = cr;
+    }
 
 private:
     void add(sstable* sst);
