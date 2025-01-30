@@ -405,16 +405,11 @@ zstd_processor::zstd_processor(const std::map<sstring, sstring>& options, cdict_
     }, std::move(cdict), std::move(ddict))
 {}
 
-std::unique_ptr<compressor> make_unique_zstd_compressor(const std::map<sstring, sstring>& options) {
-    return std::make_unique<zstd_processor>(options);
-}
-
 compressor_ptr make_zstd_compressor(const std::map<sstring, sstring>& options) {
     return seastar::make_shared<zstd_processor>(options);
 }
 
 future<std::unique_ptr<compressor>> compressor_registry_impl::make_compressor_for_schema(schema_ptr s) {
-    // FIXME: use recommended dictionaries.
     auto params = s->get_compressor_params();
     using algorithm = compression_parameters::algorithm;
     switch (params.get_algorithm()) {
@@ -424,8 +419,10 @@ future<std::unique_ptr<compressor>> compressor_registry_impl::make_compressor_fo
         co_return std::make_unique<deflate_processor>();
     case algorithm::snappy:
         co_return std::make_unique<snappy_processor>();
-    case algorithm::zstd:
-        co_return make_unique_zstd_compressor(s->get_compressor_params().get_options());
+    case algorithm::zstd: {
+        auto [ddict, cdict] = co_await get_zstd_dicts(s->id(), params.zstd_compression_level().value_or(ZSTD_defaultCLevel()));
+        co_return std::make_unique<zstd_processor>(s->get_compressor_params().get_options(), std::move(cdict), std::move(ddict));
+    }
     case algorithm::none:
         co_return nullptr;
     }
