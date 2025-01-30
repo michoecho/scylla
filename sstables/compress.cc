@@ -284,10 +284,7 @@ void compression::set_compressor(compressor_ptr c) {
         name.value = bytes(cn.begin(), cn.end());
         for (auto& [k, v] : c->options()) {
             if (k != compression_parameters::SSTABLE_COMPRESSION) {
-                options.elements.push_back({
-                    {bytes(k.begin(), k.end())},
-                    {bytes(v.begin(), v.end())}
-                });
+                options.emplace_back(bytes(k.begin(), k.end()), bytes(v.begin(), v.end()));
             }
         }
     }
@@ -323,8 +320,8 @@ std::map<sstring, sstring> options_from_compression(const compression& c) {
     std::map<sstring, sstring> result;
     result.emplace(compression_parameters::SSTABLE_COMPRESSION, sstring(c.name.value.begin(), c.name.value.end()));
     result.emplace(compression_parameters::CHUNK_LENGTH_KB, to_sstring(c.chunk_len / 1024));
-    for (auto& o : c.options.elements) {
-        result.emplace(sstring(o.key.value.begin(), o.key.value.end()), sstring(o.value.value.begin(), o.value.value.end()));
+    for (const auto& [k, v] : c.options) {
+        result.emplace(sstring(k.begin(), k.end()), sstring(v.begin(), v.end()));
     }
     return result;
 }
@@ -614,7 +611,7 @@ inline output_stream<char> make_compressed_file_output_stream(output_stream<char
     // FIXME: crc_check_chance can be configured by the user.
     // probability to verify the checksum of a compressed chunk we read.
     // defaults to 1.0.
-    cm->options.elements.push_back({{"crc_check_chance"}, {"1.0"}});
+    cm->options.push_back({{"crc_check_chance"}, {"1.0"}});
 
     return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm, p));
 }

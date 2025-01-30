@@ -3258,7 +3258,7 @@
             "version":{
                "type":"string",
                "enum":[
-                  "ka", "la", "mc", "md", "me"
+                  "ka", "la", "mc", "md", "me", "mf"
                ],
                "description":"SSTable version"
             },

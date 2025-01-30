@@ -182,6 +182,7 @@ const std::unordered_map<sstable_version_types, sstring, enum_hash<sstable_versi
     { sstable_version_types::mc , "mc" },
     { sstable_version_types::md , "md" },
     { sstable_version_types::me , "me" },
+    { sstable_version_types::mf , "mf" },
 };
 
 const std::unordered_map<sstable_format_types, sstring, enum_hash<sstable_format_types>> format_string = {
@@ -756,11 +757,40 @@ void write(sstable_version_types v, file_writer& out, const commitlog_interval& 
     write(v, out, ci.end);
 }
 
+bool should_use_32_bit_len_for_compression_opts(sstable_version_types v) {
+    return v >= sstable_version_types::mf;
+}
+
+template <typename OptionLenSize>
+struct compression_option {
+    disk_string<OptionLenSize> key;
+    disk_string<OptionLenSize> value;
+
+    template <typename Describer>
+    auto describe_type(sstable_version_types v, Describer f) { return f(key, value); }
+};
+
+template <typename OptionLenSize>
+future<> parse_compression_options(const schema& s, sstable_version_types v, random_access_reader& in, compression& c) {
+    disk_array<uint32_t, compression_option<OptionLenSize>> opts;
+    co_await parse(s, v, in, opts);
+    c.options.reserve(opts.elements.size());
+    for (auto& o : opts.elements) {
+        c.options.emplace_back(std::move(o.key.value), std::move(o.value.value));
+    }
+}
+
 future<> parse(const schema& s, sstable_version_types v, random_access_reader& in, compression& c) {
     uint64_t data_len = 0;
     uint32_t chunk_len = 0;
 
-    co_await parse(s, v, in, c.name, c.options, chunk_len, data_len);
+    co_await parse(s, v, in, c.name);
+    if (should_use_32_bit_len_for_compression_opts(v)) {
+        co_await parse_compression_options<uint32_t>(s, v, in, c);
+    } else {
+        co_await parse_compression_options<uint16_t>(s, v, in, c);
+    }
+    co_await parse(s, v, in, chunk_len, data_len);
     if (chunk_len == 0) {
         throw malformed_sstable_exception("CompressionInfo is malformed: zero chunk_len");
     }
@@ -782,8 +812,24 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     }
 }
 
+template <typename OptionLenSize>
+void write_compression_options(sstable_version_types v, file_writer& out, const compression& c) {
+    disk_array<uint32_t, compression_option<OptionLenSize>> opts;
+    opts.elements.reserve(c.options.size());
+    for (const auto& o : c.options) {
+        opts.elements.emplace_back(compression_option<OptionLenSize>{.key = {o.first}, .value = {o.second}});
+    }
+    write(v, out, opts);
+}
+
 void write(sstable_version_types v, file_writer& out, const compression& c) {
-    write(v, out, c.name, c.options, c.uncompressed_chunk_length(), c.uncompressed_file_length());
+    write(v, out, c.name);
+    if (should_use_32_bit_len_for_compression_opts(v)) {
+        write_compression_options<uint32_t>(v, out, c);
+    } else {
+        write_compression_options<uint16_t>(v, out, c);
+    }
+    write(v, out, c.uncompressed_chunk_length(), c.uncompressed_file_length());
 
     write(v, out, static_cast<uint32_t>(c.offsets.size()));
 
@@ -2257,6 +2303,7 @@ sstring sstable::component_basename(const sstring& ks, const sstring& cf, versio
     case sstable::version_types::mc:
     case sstable::version_types::md:
     case sstable::version_types::me:
+    case sstable::version_types::mf:
         return v + "-" + g + "-" + f + "-" + component;
     }
     SCYLLA_ASSERT(0 && "invalid version");
@@ -2376,7 +2423,7 @@ static std::tuple<entry_descriptor, sstring, sstring> make_entry_descriptor(cons
     //   la-42-big-Data.db
     //   ka-42-big-Data.db
     //   me-3g8w_00qf_4pbog2i7h2c7am0uoe-big-Data.db
-    static boost::regex la_mx("(la|m[cde])-([^-]+)-(\\w+)-(.*)");
+    static boost::regex la_mx("(la|m[cdef])-([^-]+)-(\\w+)-(.*)");
     static boost::regex ka("(\\w+)-(\\w+)-ka-(\\d+)-(.*)");
 
     static boost::regex dir(format(".*/([^/]*)/([^/]+)-[\\da-fA-F]+(?:/({}|{}|{}|{})(?:/[^/]+)?)?/?",

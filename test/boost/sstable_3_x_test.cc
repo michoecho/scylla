@@ -3248,10 +3248,11 @@ static sstable_assertions validate_read(test_env& env, shared_sstable input_sst,
     return sst;
 }
 
-constexpr std::array<sstable_version_types, 3> test_sstable_versions = {
+constexpr std::array<sstable_version_types, 4> test_sstable_versions = {
     sstable_version_types::mc,
     sstable_version_types::md,
     sstable_version_types::me,
+    sstable_version_types::mf,
 };
 
 static void write_mut_and_compare_sstables_version(test_env& env, schema_ptr s, mutation& mut, const sstring& table_name,

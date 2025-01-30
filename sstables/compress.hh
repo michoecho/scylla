@@ -290,7 +290,7 @@ struct compression {
     };
 
     disk_string<uint16_t> name;
-    disk_array<uint32_t, option> options;
+    std::vector<std::pair<bytes, bytes>> options;
     uint32_t chunk_len = 0;
     uint64_t data_len = 0;
     segmented_offsets offsets;

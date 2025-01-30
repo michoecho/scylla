@@ -1098,9 +1098,9 @@ void dump_compression_info_operation(schema_ptr schema, reader_permit permit, co
         writer.String(disk_string_to_string(compression.name));
         writer.Key("options");
         writer.StartObject();
-        for (const auto& opt : compression.options.elements) {
-            writer.Key(disk_string_to_string(opt.key));
-            writer.String(disk_string_to_string(opt.value));
+        for (const auto& opt : compression.options) {
+            writer.Key(sstring(opt.first.begin(), opt.first.end()));
+            writer.String(sstring(opt.second.begin(), opt.second.end()));
         }
         writer.EndObject();
         writer.Key("chunk_len");

@@ -226,7 +226,7 @@ def test_scylla_sstable_write(cql, test_keyspace, scylla_path, scylla_data_dir, 
 
             subprocess.check_call([scylla_path, "sstable", "write", "--schema-file", schema_file, "--input-file", input_file, "--output-dir", tmp_dir, "--generation", str(generation), '--logger-log-level', 'scylla-sstable=trace'])
 
-            sstable_file = os.path.join(tmp_dir, f"me-{generation}-big-Data.db")
+            sstable_file = os.path.join(tmp_dir, f"mf-{generation}-big-Data.db")
 
             actual_out = subprocess.check_output(dump_common_args + [sstable_file])
             actual_json = json.loads(actual_out)["sstables"]["anonymous"]
