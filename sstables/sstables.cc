@@ -1121,6 +1121,9 @@ future<> sstable::read_compression() {
     if (!has_component(component_type::CompressionInfo)) {
         co_return;
     }
+    if (_components->compression._compressor) {
+        co_return;
+    }
 
     co_await read_simple<component_type::CompressionInfo>(_components->compression);
     if (_manager._compressor_registry) {
