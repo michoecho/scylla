@@ -59,7 +59,7 @@ public:
     using opt_getter = std::function<opt_string(const sstring&)>;
     using ptr_type = shared_ptr<compressor>;
 
-    static ptr_type create(const compression_parameters&);
+    static std::unique_ptr<compressor> create(const compression_parameters&);
 
     static thread_local const ptr_type lz4;
     static thread_local const ptr_type snappy;
@@ -121,7 +121,7 @@ public:
         return _raw_options;
     }
 
-    compressor_ptr get_compressor() const {
+    std::unique_ptr<compressor> get_compressor() const {
         return compressor::create(*this);
     }
     static compression_parameters no_compression() {

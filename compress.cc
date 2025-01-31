@@ -445,21 +445,20 @@ std::map<sstring, sstring> compressor::options() const {
     return {};
 }
 
-compressor::ptr_type compressor::create(const compression_parameters& cp) {
+std::unique_ptr<compressor> compressor::create(const compression_parameters& params) {
     using algorithm = compression_parameters::algorithm;
-    switch (cp.get_algorithm()) {
+    switch (params.get_algorithm()) {
     case algorithm::lz4:
-        return lz4;
+        return std::make_unique<lz4_processor>();
     case algorithm::deflate:
-        return deflate;
+        return std::make_unique<deflate_processor>();
     case algorithm::snappy:
-        return snappy;
+        return std::make_unique<snappy_processor>();
     case algorithm::zstd:
-        return make_zstd_compressor(cp.get_options());
+        return std::make_unique<zstd_processor>(params.get_options(), nullptr, nullptr);
     case algorithm::none:
         return nullptr;
     }
-    abort();
 }
 
 thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>();

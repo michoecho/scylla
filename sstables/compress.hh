@@ -299,9 +299,11 @@ private:
     // Variables *not* found in the "Compression Info" file (added by update()):
     uint64_t _compressed_file_length = 0;
     uint32_t _full_checksum = 0;
+    std::unique_ptr<compressor> _compressor;
 public:
     // Set the compressor algorithm, please check the definition of enum compressor.
-    void set_compressor(compressor_ptr c);
+    void set_compressor(std::unique_ptr<compressor> c);
+    compressor& get_compressor() const;
     // After changing _compression, update() must be called to update
     // additional variables depending on it.    
     void update(uint64_t compressed_file_length);
@@ -360,7 +362,7 @@ public:
 };
 
 // for API query only. Free function just to distinguish it from an accessor in compression
-compressor_ptr get_sstable_compressor(const compression&);
+std::unique_ptr<compressor> get_sstable_compressor(const compression&);
 
 // Note: compression_metadata is passed by reference; The caller is
 // responsible for keeping the compression_metadata alive as long as there
@@ -379,7 +381,8 @@ input_stream<char> make_compressed_file_m_format_input_stream(file f,
 
 output_stream<char> make_compressed_file_m_format_output_stream(output_stream<char> out,
                 sstables::compression* cm,
-                const compression_parameters& cp);
+                const compression_parameters& cp,
+                std::unique_ptr<compressor>);
 
 
 std::map<sstring, sstring> options_from_compression(const compression& c);
