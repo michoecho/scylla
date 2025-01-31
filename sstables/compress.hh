@@ -302,7 +302,8 @@ private:
     std::unique_ptr<compressor> _compressor;
 public:
     // Set the compressor algorithm, please check the definition of enum compressor.
-    void set_compressor(std::unique_ptr<compressor> c);
+    void set_compressor_for_reading(std::unique_ptr<compressor> c);
+    void set_compressor_for_writing(std::unique_ptr<compressor> c);
     compressor& get_compressor() const;
     // After changing _compression, update() must be called to update
     // additional variables depending on it.    

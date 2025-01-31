@@ -208,6 +208,9 @@ public:
     void unplug_compressor_registry() noexcept {
         _compressor_registry = nullptr;
     }
+    compressor_registry* get_compressor_registry() const noexcept {
+        return _compressor_registry;
+    }
 
 private:
     void add(sstable* sst);

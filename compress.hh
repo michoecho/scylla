@@ -60,6 +60,7 @@ public:
     using ptr_type = shared_ptr<compressor>;
 
     static std::unique_ptr<compressor> create(const compression_parameters&);
+    virtual std::span<const std::byte> dict() const;
 
     static thread_local const ptr_type lz4;
     static thread_local const ptr_type snappy;

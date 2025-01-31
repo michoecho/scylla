@@ -93,6 +93,9 @@ public:
     auto dict() const {
         return _dict.get();
     }
+    auto raw() const {
+        return _raw->raw();
+    }
 };
 
 class raw_dict;
@@ -321,6 +324,12 @@ public:
         static const sstring COMPRESSOR_NAME = make_name("ZstdCompressor");
         return COMPRESSOR_NAME.c_str();
     }
+    std::span<const std::byte> dict() const override {
+        if (_cdict) {
+            return _cdict->raw();
+        }
+        return {};
+    }
 };
 
 zstd_processor::zstd_processor(const opt_getter& opts, cdict_ptr cdict, ddict_ptr ddict) {
@@ -434,7 +443,42 @@ future<std::unique_ptr<compressor>> compressor_registry_impl::make_compressor_fo
 }
 
 future<> compressor_registry_impl::make_compressor_for_reading(sstables::compression& c) {
-    abort();
+    std::optional<bytes> dict_blob;
+    for (auto it = c.options.begin(); it < c.options.end(); ++it) {
+        if (it->first == "dictionary") {
+            dict_blob = std::move(it->second);
+            c.options.erase(it);
+            break;
+        }
+    }
+    auto params = compression_parameters(sstables::options_from_compression(c));
+    using algorithm = compression_parameters::algorithm;
+    std::unique_ptr<compressor> p;
+    switch (params.get_algorithm()) {
+    case algorithm::lz4:
+        p = std::make_unique<lz4_processor>();
+        break;
+    case algorithm::deflate:
+        p = std::make_unique<deflate_processor>();
+        break;
+    case algorithm::snappy:
+        p = std::make_unique<snappy_processor>();
+        break;
+    case algorithm::zstd: {
+        if (dict_blob) {
+            auto level = params.zstd_compression_level().value_or(ZSTD_defaultCLevel());
+            auto [ddict, cdict] = co_await get_zstd_dicts(std::as_bytes(std::span(*dict_blob)), level);
+            p = std::make_unique<zstd_processor>(params.get_options(), std::move(cdict), std::move(ddict));
+        } else {
+            p = std::make_unique<zstd_processor>(params.get_options(), nullptr, nullptr);
+        }
+        break;
+    }
+    case algorithm::none:
+        p = nullptr;
+        break;
+    }
+    c.set_compressor_for_reading(std::move(p));
 }
 
 std::set<sstring> compressor::option_names() const {
@@ -442,6 +486,10 @@ std::set<sstring> compressor::option_names() const {
 }
 
 std::map<sstring, sstring> compressor::options() const {
+    return {};
+}
+
+std::span<const std::byte> compressor::dict() const {
     return {};
 }
 

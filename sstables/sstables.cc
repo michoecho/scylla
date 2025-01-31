@@ -815,9 +815,19 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
 template <typename OptionLenSize>
 void write_compression_options(sstable_version_types v, file_writer& out, const compression& c) {
     disk_array<uint32_t, compression_option<OptionLenSize>> opts;
-    opts.elements.reserve(c.options.size());
+    opts.elements.reserve(c.options.size() + 1);
     for (const auto& o : c.options) {
         opts.elements.emplace_back(compression_option<OptionLenSize>{.key = {o.first}, .value = {o.second}});
+    }
+    auto d = c.get_compressor().dict();
+    if (!d.empty()) {
+        opts.elements.emplace_back(compression_option<OptionLenSize>{
+            .key = {"dictionary"},
+            .value = {bytes(
+                reinterpret_cast<const bytes::value_type*>(d.data()),
+                reinterpret_cast<const bytes::value_type*>(d.data()) + d.size()
+            )}
+        });
     }
     write(v, out, opts);
 }
@@ -1113,7 +1123,11 @@ future<> sstable::read_compression() {
     }
 
     co_await read_simple<component_type::CompressionInfo>(_components->compression);
-    _components->compression.set_compressor(compressor::create(options_from_compression(_components->compression)));
+    if (_manager._compressor_registry) {
+        co_await _manager.get_compressor_registry()->make_compressor_for_reading(_components->compression);
+    } else {
+        _components->compression.set_compressor_for_reading(compressor::create(options_from_compression(_components->compression)));
+    }
 }
 
 void sstable::write_compression() {

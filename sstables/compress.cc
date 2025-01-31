@@ -219,7 +219,9 @@ void compression::segmented_offsets::push_back(uint64_t offset, compression::seg
     ++_size;
 }
 
-void compression::set_compressor(std::unique_ptr<compressor> c) {
+void compression::set_compressor_for_writing(std::unique_ptr<compressor> c) {
+    SCYLLA_ASSERT(name.value.empty());
+    SCYLLA_ASSERT(!_compressor);
     if (c) {
         unqualified_name uqn(compressor::make_name(""), c->name());
         const sstring& cn = uqn;
@@ -230,6 +232,11 @@ void compression::set_compressor(std::unique_ptr<compressor> c) {
             }
         }
     }
+    _compressor = std::move(c);
+}
+
+void compression::set_compressor_for_reading(std::unique_ptr<compressor> c) {
+    SCYLLA_ASSERT(!_compressor);
     _compressor = std::move(c);
 }
 
@@ -547,7 +554,7 @@ inline output_stream<char> make_compressed_file_output_stream(output_stream<char
          sstables::compression* cm,
          const compression_parameters& cp,
          std::unique_ptr<compressor> p) {
-    cm->set_compressor(std::move(p));
+    cm->set_compressor_for_writing(std::move(p));
     cm->set_uncompressed_chunk_length(cp.chunk_length());
     // FIXME: crc_check_chance can be configured by the user.
     // probability to verify the checksum of a compressed chunk we read.
