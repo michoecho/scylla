@@ -202,8 +202,11 @@ public:
 
     std::vector<std::filesystem::path> get_local_directories(const data_dictionary::storage_options::local& so) const;
 
-    void plug_compressor_registry(compressor_registry* cr) {
+    void plug_compressor_registry(compressor_registry* cr) noexcept {
         _compressor_registry = cr;
+    }
+    void unplug_compressor_registry() noexcept {
+        _compressor_registry = nullptr;
     }
 
 private:

@@ -1490,6 +1490,16 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
               return make_ready_future<>();
           }).get();
 
+            std::unique_ptr<compressor_registry> compressor_registry = make_compressor_registry();
+            db.invoke_on_all([&] (auto& local) {
+                local.get_user_sstables_manager().plug_compressor_registry(compressor_registry.get());
+            }).get();
+            auto unplug_compressor_registry = defer([&] {
+                db.invoke_on_all([&] (auto& local) {
+                    local.get_user_sstables_manager().unplug_compressor_registry();
+                }).get();
+            });
+
             utils::dict_sampler dict_sampler;
             auto arct_cfg = [&] {
                 return utils::advanced_rpc_compressor::tracker::config{

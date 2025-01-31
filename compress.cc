@@ -194,6 +194,10 @@ public:
     virtual future<> make_compressor_for_reading(sstables::compression&);
 };
 
+std::unique_ptr<compressor_registry> make_compressor_registry() {
+    return std::make_unique<compressor_registry_impl>();
+}
+
 raw_dict::~raw_dict() {
     _owner.invalidate_raw_dict(_id);
 }
