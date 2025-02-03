@@ -67,7 +67,7 @@ sstables_format_listener::sstables_format_listener(gms::gossiper& g, sharded<gms
     : _gossiper(g)
     , _features(f)
     , _selector(selector)
-    , _me_feature_listener(*this, sstables::sstable_version_types::me)
+    , _mf_feature_listener(*this, sstables::sstable_version_types::mf)
 { }
 
 future<> sstables_format_listener::maybe_select_format(sstables::sstable_version_types new_format) {
@@ -86,7 +86,7 @@ future<> sstables_format_listener::start() {
     SCYLLA_ASSERT(this_shard_id() == 0);
     // The listener may fire immediately, create a thread for that case.
     co_await seastar::async([this] {
-        _me_feature_listener.on_enabled();
+        _features.local().mf_sstable.when_enabled(_mf_feature_listener);
     });
 }
 

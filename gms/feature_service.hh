@@ -85,6 +85,7 @@ public:
 
 public:
     gms::feature user_defined_functions { *this, "UDF"sv };
+    gms::feature mf_sstable { *this, "MF_SSTABLE_FORMAT"sv };
     gms::feature alternator_streams { *this, "ALTERNATOR_STREAMS"sv };
     gms::feature alternator_ttl { *this, "ALTERNATOR_TTL"sv };
     gms::feature range_scan_data_variant { *this, "RANGE_SCAN_DATA_VARIANT"sv };
