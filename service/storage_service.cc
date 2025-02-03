@@ -7229,6 +7229,9 @@ void storage_service::init_messaging_service() {
             return ss.load_stats_for_tablet_based_tables();
         });
     });
+    ser::storage_service_rpc_verbs::register_sample_sstables(&_messaging.local(), [] (table_id table, size_t chunk_size, size_t n_chunks) -> future<std::vector<bytes>> {
+        throw;
+    });
     ser::join_node_rpc_verbs::register_join_node_request(&_messaging.local(), [handle_raft_rpc] (raft::server_id dst_id, service::join_node_request_params params) {
         return handle_raft_rpc(dst_id, [params = std::move(params)] (auto& ss) mutable {
             return ss.join_node_request_handler(std::move(params));

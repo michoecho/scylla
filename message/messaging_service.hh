@@ -212,7 +212,8 @@ enum class messaging_verb : int32_t {
     TASKS_GET_CHILDREN = 74,
     TABLET_REPAIR = 75,
     TRUNCATE_WITH_TABLETS = 76,
-    LAST = 77,
+    SAMPLE_SSTABLES = 77,
+    LAST = 78,
 };
 
 } // namespace netw

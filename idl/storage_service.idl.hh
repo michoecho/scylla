@@ -71,4 +71,6 @@ verb [[cancellable]] tablet_stream_data (raft::server_id dst_id, locator::global
 verb [[cancellable]] tablet_cleanup (raft::server_id dst_id, locator::global_tablet_id);
 verb [[cancellable]] table_load_stats (raft::server_id dst_id) -> locator::load_stats;
 verb [[cancellable]] tablet_repair(raft::server_id dst_id, locator::global_tablet_id) -> service::tablet_operation_repair_result;
+verb [[]] sample_sstables(table_id table, uint64_t block_size, uint64_t n_blocks) -> std::vector<bytes>;
+
 }
