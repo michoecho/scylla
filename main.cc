@@ -20,6 +20,7 @@
 #include <seastar/core/future.hh>
 #include <seastar/core/signal.hh>
 #include <seastar/core/timer.hh>
+#include "seastar/util/file.hh"
 #include "service/qos/raft_service_level_distributed_data_accessor.hh"
 #include "tasks/task_manager.hh"
 #include "utils/assert.hh"
@@ -1491,6 +1492,11 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
           }).get();
 
             std::unique_ptr<compressor_registry> compressor_registry = make_compressor_registry();
+            auto default_sstable_dict = util::read_entire_file_contiguous("/home/michal/scylla/scylladb3/sstables/default_dict.bin").get();
+            compressor_registry->set_default_dict(std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(default_sstable_dict.data()),
+                default_sstable_dict.size()
+            )).get();
             db.invoke_on_all([&] (auto& local) {
                 local.get_user_sstables_manager().plug_compressor_registry(compressor_registry.get());
             }).get();

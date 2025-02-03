@@ -14,6 +14,7 @@
 struct compressor_registry {  
     virtual ~compressor_registry() {}
     virtual future<> set_recommended_dict(table_id t, std::span<const std::byte> dict) = 0;
+    virtual future<> set_default_dict(std::span<const std::byte> dict) = 0;
     virtual future<std::unique_ptr<compressor>> make_compressor_for_schema(schema_ptr) = 0;
     virtual future<> make_compressor_for_reading(sstables::compression&) = 0;
 };

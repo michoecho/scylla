@@ -119,6 +119,7 @@ class compressor_registry_impl : public compressor_registry {
     std::map<zstd_cdict_id, const zstd_cdict*> _zstd_cdicts;
     std::map<dict_id, const zstd_ddict*> _zstd_ddicts;
     std::map<table_id, lw_shared_ptr<const raw_dict>> _recommended;
+    lw_shared_ptr<const raw_dict> _default;
 
     lw_shared_ptr<const raw_dict> get_canonical_ptr(std::span<const std::byte> dict) {
         SCYLLA_ASSERT(this_shard_id() == 0);
@@ -162,10 +163,13 @@ class compressor_registry_impl : public compressor_registry {
     future<zstd_dicts> get_zstd_dicts(table_id t, int level) {
         return smp::submit_to(0, [this, t, level] -> zstd_dicts {
             auto rec_it = _recommended.find(t);
-            if (rec_it == _recommended.end()) {
+            if (rec_it != _recommended.end()) {
+                return get_zstd_dicts(rec_it->second, level);
+            } else if (_default) {
+                return get_zstd_dicts(_default, level);
+            } else {
                 return {};
             }
-            return get_zstd_dicts(rec_it->second, level);
         });
     }
     
@@ -186,6 +190,12 @@ public:
     void invalidate_zstd_ddict(dict_id id) {
         SCYLLA_ASSERT(this_shard_id() == 0);
         _zstd_ddicts.erase(id);
+    }
+    virtual future<> set_default_dict(std::span<const std::byte> dict) {
+        return smp::submit_to(0, [this, dict] {
+            auto canonical_ptr = get_canonical_ptr(dict);
+            _default = canonical_ptr;
+        });
     }
     virtual future<> set_recommended_dict(table_id t, std::span<const std::byte> dict) {
         return smp::submit_to(0, [this, t, dict] {
