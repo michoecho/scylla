@@ -1318,6 +1318,13 @@ void set_storage_service(http_context& ctx, routes& r, sharded<service::storage_
         });
     });
 
+    ss::retrain_dict.set(r, [&ctx] (std::unique_ptr<http::request> req) {
+        auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
+        auto cf = api::req_param<sstring>(*req, "cf", {}).value;
+        auto t = ctx.db.local().find_column_family(ks, cf);
+        auto sample = ctx.db.local().sample_data_files(t, 4096, 4096);
+    });
+
     ss::sstable_info.set(r, [&ctx] (std::unique_ptr<http::request> req) {
         auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
         auto cf = api::req_param<sstring>(*req, "cf", {}).value;

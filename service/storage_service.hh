@@ -954,6 +954,7 @@ public:
     future<sstring> wait_for_topology_request_completion(utils::UUID id, bool require_entry = true);
     future<> wait_for_topology_not_busy();
 
+    future<utils::chunked_vector<bytes>> do_sample_sstables(table_id, uint64_t chunk_size, uint64_t n_chunks);
 private:
     future<std::vector<canonical_mutation>> get_system_mutations(schema_ptr schema);
     future<std::vector<canonical_mutation>> get_system_mutations(const sstring& ks_name, const sstring& cf_name);

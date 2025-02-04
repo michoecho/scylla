@@ -3181,4 +3181,110 @@ database::on_effective_service_levels_cache_reloaded() {
     co_return;
 }
 
+utils::chunked_vector<uint64_t> compute_random_sorted_ints(uint64_t max_value, uint64_t n_values) {
+    static thread_local std::default_random_engine rng{std::random_device{}()};
+    std::uniform_int_distribution<uint64_t> dist(0, max_value);
+    utils::chunked_vector<uint64_t> chosen;
+    chosen.reserve(n_values);
+    for (size_t i = 0; i < n_values; ++i) {
+        chosen.push_back(dist(rng));
+    }
+    std::ranges::sort(chosen);
+    return chosen;
+}
+
+future<> with_limited_concurrency(uint64_t concurrency, uint64_t n, std::invocable<uint64_t> auto&& f) {
+    SCYLLA_ASSERT(n == 0 || concurrency != 0);
+    std::exception_ptr ex;
+    auto concurrency_limiter = semaphore(concurrency);
+    for (size_t i = 0; i < n; ++i) {
+        auto permit = co_await get_units(concurrency_limiter, 1);
+        if (ex) {
+            break;
+        }
+        // FIXME: discarded future
+        (void)futurize_invoke(f, i).handle_exception([&ex, permit = std::move(permit)] (auto ep) {
+            if (!ex) {
+                ex = std::move(ep);
+            }
+        });
+    }
+    co_await get_units(concurrency_limiter, concurrency);
+    if (ex) {
+        co_return coroutine::exception(std::move(ex));
+    }
+}
+
+// Returns a vector of file chunks randomly sampled from all Data.db files of this table.
+future<utils::chunked_vector<bytes>> database::sample_data_files(
+    table_id id,
+    uint64_t chunk_size,
+    uint64_t n_chunks
+) {
+    struct state_by_shard {
+        utils::chunked_vector<sstables::sstable_files_snapshot> snapshot;
+        schema_ptr schema;
+        uint64_t chunks;
+    };
+    std::vector<foreign_ptr<std::unique_ptr<state_by_shard>>> state;
+
+    co_await container().invoke_on_all(coroutine::lambda([&] (auto& local_db) -> future<> {
+        auto& local_state = state[this_shard_id()];
+        local_state = make_foreign(std::make_unique<state_by_shard>());
+        auto t = local_db.get_tables_metadata().get_table_if_exists(id);
+        if (!t) {
+            throw std::runtime_error(fmt::format("sample_data_files: table {} does not exist", id));
+        }
+        local_state->schema = t->schema();
+        local_state->snapshot = co_await t->take_storage_snapshot(dht::token_range::make_open_ended_both_sides());
+        size_t my_total_chunks = 0;
+        for (const auto& sst : local_state->snapshot) {
+            my_total_chunks += sst.sst->data_size() / chunk_size;
+        }
+        local_state->chunks = my_total_chunks;
+    }));
+
+    uint64_t total_chunks = 0;
+    for (const auto& x : state) {
+        total_chunks += x->chunks;
+        x->chunks = total_chunks;
+    }
+    auto chosen_chunks = compute_random_sorted_ints(total_chunks, n_chunks);
+
+    co_return co_await container().map_reduce0(
+        coroutine::lambda([&] (auto& local_db) -> future<utils::chunked_vector<bytes>> {
+            auto& local_state = state[this_shard_id()];
+            
+            size_t chunks_visited = this_shard_id() == 0 ? 0 : state[this_shard_id() - 1]->chunks;
+            SCYLLA_ASSERT(local_state->chunks > chunks_visited);
+            auto chosen_it = std::ranges::lower_bound(chosen_chunks, chunks_visited);
+            const auto chosen_end = std::ranges::lower_bound(chosen_chunks, local_state->chunks);
+            auto sst_it = local_state->snapshot.begin();
+
+            utils::chunked_vector<bytes> result;
+            result.reserve(chosen_end - chosen_it);
+            co_await with_limited_concurrency(10, chosen_end - chosen_it, [&] {
+                auto permit = co_await local_db._system_read_concurrency_sem.obtain_permit(
+                    local_state->schema, "sample_data_files", chunk_size, no_timeout, nullptr);            
+                SCYLLA_ASSERT(sst_it != local_state->snapshot.end());
+                while (*chosen_it - chunks_visited >= sst_it->sst->data_size() / chunk_size) {
+                    chunks_visited += sst_it->sst->data_size() / chunk_size;
+                    ++sst_it;
+                    SCYLLA_ASSERT(sst_it != local_state->snapshot.end());
+                }
+                SCYLLA_ASSERT(chosen_it != chosen_end);
+                auto c = *chosen_it++;
+                auto buf = co_await sst_it->sst->data_read((c - chunks_visited) * chunk_size, chunk_size, permit);
+                result.push_back(bytes(reinterpret_cast<const bytes::value_type*>(buf.get()), buf.size()));
+            });
+            co_return result;
+        }),
+        utils::chunked_vector<bytes>(),
+        [] (auto v, auto partial) {
+            std::ranges::move(partial, std::back_inserter(v));
+            return v;
+        }
+    );
+}
+
 }

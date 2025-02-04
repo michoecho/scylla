@@ -3004,6 +3004,38 @@
          ]
       },
       {
+         "path":"/storage_service/retrain_dict",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Retrain compression dictionary",
+               "type":"void",
+               "nickname":"retrain_dict",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"keyspace",
+                     "description":"The keyspace",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"cf",
+                     "description":"column family name",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  }
+               ]
+            }
+         ]
+      },
+      {
          "path":"/storage_service/raft_topology/reload",
          "operations":[
             {
