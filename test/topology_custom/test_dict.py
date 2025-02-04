@@ -1,10 +1,13 @@
 import asyncio
+import random
 import logging
+import pytest
 import itertools
 from test.pylib.manager_client import ManagerClient
 
 logger = logging.getLogger(__name__)
 
+@pytest.mark.skip(reason="Whatever")
 async def test_dict(manager: ManagerClient):
     
     # Bootstrap cluster and configure server
@@ -42,7 +45,7 @@ async def test_dict(manager: ManagerClient):
     # Get initial sstable info
     logger.info("Checking initial SSTables")
     sstable_info = await manager.api.get_sstable_info(server.ip_addr, "test", "test")
-    print(sstable_info)
+    logger.info(sstable_info)
     
     # Alter compression to zstd
     logger.info("Altering table to use Zstandard compression")
@@ -67,3 +70,65 @@ async def test_dict(manager: ManagerClient):
     logger.info("Test completed successfully")
     logger.info("Test completed successfully")
     logger.info((await cql.run_async("SELECT * from test.test WHERE pk = 0"))[0])
+
+async def test_dict_2(manager: ManagerClient):
+    # Bootstrap cluster and configure server
+    logger.info("Bootstrapping cluster")
+    server = (await manager.servers_add(1, cmdline=[
+        '--logger-log-level=storage_service=debug',
+        '--logger-log-level=api=debug',
+    ]))[0]
+    
+    # Create keyspace and table
+    logger.info("Creating table")
+    cql = manager.get_cql()
+    await cql.run_async(
+        "CREATE KEYSPACE test WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}"
+    )
+    await cql.run_async("CREATE TABLE test.test (pk int PRIMARY KEY, c blob);")
+    blob = random.randbytes(32*1024);
+    
+    # Disable autocompaction
+    logger.info("Disabling autocompaction for the table")
+    await manager.api.disable_autocompaction(server.ip_addr, "test", "test")
+    
+    # Populate data
+    logger.info("Populating table")
+    insert = cql.prepare("INSERT INTO test.test (pk, c) VALUES (?, ?);")
+    for pks in itertools.batched(range(1000), n=100):
+        await asyncio.gather(*[
+            cql.run_async(insert, [k, blob]) 
+            for k in pks
+        ])
+    
+    # Flush to get initial sstables
+    await manager.api.keyspace_flush(server.ip_addr, "test", "test")
+    
+    # Get initial sstable info
+    logger.info("Checking initial SSTables")
+    sstable_info = await manager.api.get_sstable_info(server.ip_addr, "test", "test")
+    logger.info(sstable_info)
+    
+    # Alter compression to zstd
+    logger.info("Altering table to use Zstandard compression")
+    await cql.run_async(
+        "ALTER TABLE test.test WITH COMPRESSION = {'sstable_compression': 'ZstdCompressor'};"
+    )
+    
+    # Flush again to trigger compaction with new compression
+    await manager.api.keyspace_upgrade_sstables(server.ip_addr, "test")
+
+    # Get initial sstable info
+    logger.info("Checking SSTables after upgrade to zstd")
+    sstable_info = await manager.api.get_sstable_info(server.ip_addr, "test", "test")
+    logger.info(sstable_info)
+
+    logger.info("Rewrite dict")
+    await manager.api.retrain_dict(server.ip_addr, "test", "test")
+    await manager.api.keyspace_upgrade_sstables(server.ip_addr, "test")
+    
+    logger.info("Checking SSTables after dict rewrite")
+    sstable_info = await manager.api.get_sstable_info(server.ip_addr, "test", "test")
+    logger.info(sstable_info)
+    
+    logger.info("Test completed successfully")

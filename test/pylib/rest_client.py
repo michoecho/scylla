@@ -438,6 +438,18 @@ class ScyllaRESTAPIClient():
         """Disable autocompaction for the given keyspace/table"""
         await self.client.delete(self.__get_autocompaction_url(keyspace, table), host=node_ip)
 
+    async def retrain_dict(self, node_ip: str, keyspace: Optional[str] = None, table: Optional[str] = None):
+        url = "/storage_service/retrain_dict"
+        params = []
+        if keyspace:
+            params.append(f"keyspace={keyspace}")
+        if table:
+            params.append(f"cf={table}")
+        if params:
+            url += f"?{'&'.join(params)}"
+
+        await self.client.post_json(url, host=node_ip)
+
     async def get_sstable_info(self, node_ip: str, keyspace: Optional[str] = None, table: Optional[str] = None):
         url = "/storage_service/sstable_info"
         params = []

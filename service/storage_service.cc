@@ -7280,7 +7280,7 @@ void storage_service::init_messaging_service() {
         });
     });
     ser::storage_service_rpc_verbs::register_estimate_sstable_volume(&_messaging.local(), [this] (table_id t_id) -> future<uint64_t> {
-        co_await _db.map_reduce(seastar::coroutine::lambda([&] (replica::database& local_db) -> future<uint64_t> {
+        co_return co_await _db.map_reduce0(seastar::coroutine::lambda([&] (replica::database& local_db) -> future<uint64_t> {
             uint64_t result = 0;
             auto& t = local_db.get_tables_metadata().get_table(t_id);
             auto snap = co_await t.take_storage_snapshot(dht::token_range::make_open_ended_both_sides());

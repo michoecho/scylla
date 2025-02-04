@@ -3193,7 +3193,7 @@ utils::chunked_vector<uint64_t> compute_random_sorted_ints(uint64_t max_value, u
     return chosen;
 }
 
-future<> with_limited_concurrency(uint64_t concurrency, uint64_t n, std::invocable<uint64_t> auto&& f) {
+future<> with_limited_concurrency(uint64_t concurrency, uint64_t n, std::invocable<> auto&& f) {
     SCYLLA_ASSERT(n == 0 || concurrency != 0);
     std::exception_ptr ex;
     auto concurrency_limiter = semaphore(concurrency);
@@ -3203,7 +3203,7 @@ future<> with_limited_concurrency(uint64_t concurrency, uint64_t n, std::invocab
             break;
         }
         // FIXME: discarded future
-        (void)futurize_invoke(f, i).handle_exception([&ex, permit = std::move(permit)] (auto ep) {
+        (void)futurize_invoke(f).handle_exception([&ex, permit = std::move(permit)] (auto ep) {
             if (!ex) {
                 ex = std::move(ep);
             }
@@ -3211,7 +3211,7 @@ future<> with_limited_concurrency(uint64_t concurrency, uint64_t n, std::invocab
     }
     co_await get_units(concurrency_limiter, concurrency);
     if (ex) {
-        co_return coroutine::exception(std::move(ex));
+        co_await coroutine::exception(std::move(ex));
     }
 }
 
@@ -3226,7 +3226,7 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
         schema_ptr schema;
         uint64_t chunks;
     };
-    std::vector<foreign_ptr<std::unique_ptr<state_by_shard>>> state;
+    std::vector<foreign_ptr<std::unique_ptr<state_by_shard>>> state(smp::count);
 
     co_await container().invoke_on_all(coroutine::lambda([&] (auto& local_db) -> future<> {
         auto& local_state = state[this_shard_id()];
@@ -3254,7 +3254,7 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
     co_return co_await container().map_reduce0(
         coroutine::lambda([&] (auto& local_db) -> future<utils::chunked_vector<bytes>> {
             auto& local_state = state[this_shard_id()];
-            
+
             size_t chunks_visited = this_shard_id() == 0 ? 0 : state[this_shard_id() - 1]->chunks;
             SCYLLA_ASSERT(local_state->chunks > chunks_visited);
             auto chosen_it = std::ranges::lower_bound(chosen_chunks, chunks_visited);
@@ -3263,7 +3263,7 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
 
             utils::chunked_vector<bytes> result;
             result.reserve(chosen_end - chosen_it);
-            co_await with_limited_concurrency(10, chosen_end - chosen_it, [&] {
+            co_await with_limited_concurrency(10, chosen_end - chosen_it, coroutine::lambda([&] () -> future<> {
                 auto permit = co_await local_db._system_read_concurrency_sem.obtain_permit(
                     local_state->schema, "sample_data_files", chunk_size, no_timeout, nullptr);            
                 SCYLLA_ASSERT(sst_it != local_state->snapshot.end());
@@ -3276,7 +3276,7 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
                 auto c = *chosen_it++;
                 auto buf = co_await sst_it->sst->data_read((c - chunks_visited) * chunk_size, chunk_size, permit);
                 result.push_back(bytes(reinterpret_cast<const bytes::value_type*>(buf.get()), buf.size()));
-            });
+            }));
             co_return result;
         }),
         utils::chunked_vector<bytes>(),

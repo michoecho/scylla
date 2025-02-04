@@ -14,6 +14,7 @@
 #include "api/scrub_status.hh"
 #include "db/config.hh"
 #include "db/schema_tables.hh"
+#include "sstables/sstables_manager.hh"
 #include "utils/hash.hh"
 #include <optional>
 #include <sstream>
@@ -1318,13 +1319,28 @@ void set_storage_service(http_context& ctx, routes& r, sharded<service::storage_
         });
     });
 
-    ss::retrain_dict.set(r, [&ctx] (std::unique_ptr<http::request> req) {
+    ss::retrain_dict.set(r, [&ctx, &ss] (std::unique_ptr<http::request> req) -> future<json_return_type> {
         auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
         auto cf = api::req_param<sstring>(*req, "cf", {}).value;
-        auto t = ctx.db.local().find_column_family(ks, cf);
-        auto sample = ctx.db.local().sample_data_files(t, 4096, 4096);
+        apilog.debug("retrain_dict: called with ks={} cf={}", ks, cf);
+        const auto& t = ctx.db.local().find_column_family(ks, cf);
+        auto sample = co_await ctx.db.local().sample_data_files(t.schema()->id(), 4096, 4096);
+        apilog.debug("retrain_dict: got sample with {} blocks", sample.size());
+        auto dict = co_await ss.invoke_on(0, coroutine::lambda([&sample] (auto& local) -> future<std::vector<std::byte>> {
+            std::vector<std::vector<std::byte>> tmp;
+            for (const auto& s : sample) {
+                auto v = std::as_bytes(std::span(s));
+                tmp.push_back(std::vector<std::byte>(v.begin(), v.end()));
+            }
+            if (!local._train_dict) {
+                on_internal_error(apilog, "retrain_dict: _train_dict not plugged");
+            }
+            return local._train_dict(std::move(tmp));
+        }));
+        apilog.debug("retrain_dict: got dict of size", dict.size());
+        co_await ctx.db.local().get_user_sstables_manager().get_compressor_registry()->set_recommended_dict(t.schema()->id(), dict);
+        co_return json_void();
     });
-
     ss::sstable_info.set(r, [&ctx] (std::unique_ptr<http::request> req) {
         auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
         auto cf = api::req_param<sstring>(*req, "cf", {}).value;

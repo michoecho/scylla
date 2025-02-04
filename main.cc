@@ -1492,11 +1492,11 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
           }).get();
 
             std::unique_ptr<compressor_registry> compressor_registry = make_compressor_registry();
-            auto default_sstable_dict = util::read_entire_file_contiguous("/home/michal/scylla/scylladb3/sstables/default_dict.bin").get();
-            compressor_registry->set_default_dict(std::span<const std::byte>(
-                reinterpret_cast<const std::byte*>(default_sstable_dict.data()),
-                default_sstable_dict.size()
-            )).get();
+            // auto default_sstable_dict = util::read_entire_file_contiguous("/home/michal/scylla/scylladb3/sstables/default_dict.bin").get();
+            // compressor_registry->set_default_dict(std::span<const std::byte>(
+            //     reinterpret_cast<const std::byte*>(default_sstable_dict.data()),
+            //     default_sstable_dict.size()
+            // )).get();
             db.invoke_on_all([&] (auto& local) {
                 local.get_user_sstables_manager().plug_compressor_registry(compressor_registry.get());
             }).get();
@@ -1749,6 +1749,12 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
                 std::ref(tsm), std::ref(task_manager), std::ref(gossip_address_map),
                 compression_dict_updated_callback
             ).get();
+
+            ss.local()._train_dict = [&rpc_dict_training_worker] (std::vector<std::vector<std::byte>> sample) {
+                return rpc_dict_training_worker.submit<std::vector<std::byte>>([sample = std::move(sample)] {
+                    return utils::zdict_train(sample, {});
+                });
+            };
 
             auto stop_storage_service = defer_verbose_shutdown("storage_service", [&] {
                 ss.stop().get();

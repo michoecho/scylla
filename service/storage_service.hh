@@ -237,7 +237,8 @@ public:
         topology_state_machine& topology_state_machine,
         tasks::task_manager& tm,
         gms::gossip_address_map& address_map,
-        std::function<future<void>()> compression_dictionary_updated_callback);
+        std::function<future<void>()> compression_dictionary_updated_callback
+    );
     ~storage_service();
 
     node_ops::task_manager_module& get_node_ops_module() noexcept;
@@ -997,6 +998,8 @@ private:
     abort_source _group0_as;
 
     std::function<future<void>()> _compression_dictionary_updated_callback;
+public:
+    std::function<future<std::vector<std::byte>>(std::vector<std::vector<std::byte>>)> _train_dict;
 
     friend class join_node_rpc_handshaker;
     friend class node_ops::node_ops_virtual_task;
