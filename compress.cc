@@ -18,14 +18,8 @@
 #include "exceptions/exceptions.hh"
 #include "utils/class_registrator.hh"
 
-sstring compressor::make_name(std::string_view short_name) {
-    return seastar::format("org.apache.cassandra.io.compress.{}", short_name);
-}
-
 class lz4_processor: public compressor {
 public:
-    using compressor::compressor;
-
     size_t uncompress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
     size_t compress(const char* input, size_t input_len, char* output,
@@ -36,8 +30,6 @@ public:
 
 class snappy_processor: public compressor {
 public:
-    using compressor::compressor;
-
     size_t uncompress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
     size_t compress(const char* input, size_t input_len, char* output,
@@ -48,8 +40,6 @@ public:
 
 class deflate_processor: public compressor {
 public:
-    using compressor::compressor;
-
     size_t uncompress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
     size_t compress(const char* input, size_t input_len, char* output,
@@ -111,7 +101,7 @@ class zstd_processor : public compressor {
     }
 
 public:
-    zstd_processor(const opt_getter&);
+    zstd_processor(const compression_parameters&);
 
     size_t uncompress(const char* input, size_t input_len, char* output,
                     size_t output_len) const override;
@@ -124,37 +114,12 @@ public:
     std::map<sstring, sstring> options() const override;
 };
 
-static sstring zstd_compressor_name() {
-    return sstring(compression_parameters::algorithm_names[int(compression_parameters::algorithm::zstd)]);
-}
-
-zstd_processor::zstd_processor(const opt_getter& opts)
-    : compressor(zstd_compressor_name()) {
-    auto level = opts(COMPRESSION_LEVEL);
-    if (level) {
-        try {
-            _compression_level = std::stoi(*level);
-        } catch (const std::exception& e) {
-            throw exceptions::syntax_exception(
-                format("Invalid integer value {} for {}", *level, COMPRESSION_LEVEL));
-        }
-
-        auto min_level = ZSTD_minCLevel();
-        auto max_level = ZSTD_maxCLevel();
-        if (min_level > _compression_level || _compression_level > max_level) {
-            throw exceptions::configuration_exception(
-                format("{} must be between {} and {}, got {}", COMPRESSION_LEVEL, min_level, max_level, _compression_level));
-        }
+zstd_processor::zstd_processor(const compression_parameters& opts) {
+    if (auto level = opts.zstd_compression_level()) {
+        _compression_level = *level;
     }
 
-    auto chunk_len_kb = opts(compression_parameters::CHUNK_LENGTH_KB);
-    if (!chunk_len_kb) {
-        chunk_len_kb = opts(compression_parameters::CHUNK_LENGTH_KB_ERR);
-    }
-    auto chunk_len = chunk_len_kb
-       // This parameter has already been validated.
-       ? std::stoi(*chunk_len_kb) * 1024
-       : compression_parameters::DEFAULT_CHUNK_LENGTH;
+    auto chunk_len = opts.chunk_length();
 
     // We assume that the uncompressed input length is always <= chunk_len.
     auto cparams = ZSTD_getCParams(_compression_level, chunk_len, 0);
@@ -200,16 +165,17 @@ std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
 }
 
-compressor::compressor(sstring name)
-    : _name(std::move(name))
-{}
-
 std::set<sstring> compressor::option_names() const {
     return {};
 }
 
 std::map<sstring, sstring> compressor::options() const {
     return {};
+}
+
+
+std::string_view compressor::name() const {
+    return compression_parameters::algorithm_to_name(get_algorithm());
 }
 
 compressor_ptr compressor::create(const compression_parameters& params) {
@@ -222,24 +188,16 @@ compressor_ptr compressor::create(const compression_parameters& params) {
     case algorithm::snappy:
         return snappy;
     case algorithm::zstd: {
-        auto opts = params.get_options();
-        auto qn = sstring(compression_parameters::algorithm_to_name(algorithm::zstd));
-        return seastar::make_shared<zstd_processor>([&] (const sstring& key) -> opt_string {
-            if (auto it = opts.find(key); it != opts.end()) {
-                return it->second;
-            } else {
-                return std::nullopt;
-            }
-        });
+        return seastar::make_shared<zstd_processor>(params);
     }
     case algorithm::none:
         return nullptr;
     }
 }
 
-thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>(make_name("LZ4Compressor"));
-thread_local const shared_ptr<compressor> compressor::snappy = ::make_shared<snappy_processor>(make_name("SnappyCompressor"));
-thread_local const shared_ptr<compressor> compressor::deflate = ::make_shared<deflate_processor>(make_name("DeflateCompressor"));
+thread_local const shared_ptr<compressor> compressor::lz4 = ::make_shared<lz4_processor>();
+thread_local const shared_ptr<compressor> compressor::snappy = ::make_shared<snappy_processor>();
+thread_local const shared_ptr<compressor> compressor::deflate = ::make_shared<deflate_processor>();
 
 const sstring compression_parameters::SSTABLE_COMPRESSION = "sstable_compression";
 const sstring compression_parameters::CHUNK_LENGTH_KB = "chunk_length_in_kb";

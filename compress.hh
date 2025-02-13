@@ -20,9 +20,7 @@
 class compression_parameters;
 
 class compressor {
-    sstring _name;
 public:
-    compressor(sstring);
     enum class algorithm {
         lz4,
         zstd,
@@ -59,17 +57,7 @@ public:
      */
     virtual std::map<sstring, sstring> options() const;
 
-    /**
-     * Compressor class name.
-     */
-    const sstring& name() const {
-        return _name;
-    }
-
-    // to cheaply bridge sstable compression options / maps
-    using opt_string = std::optional<sstring>;
-    using opt_getter = std::function<opt_string(const sstring&)>;
-    using ptr_type = shared_ptr<compressor>;
+    std::string_view name() const;
 
     virtual algorithm get_algorithm() const = 0;
 
@@ -78,8 +66,6 @@ public:
     static thread_local const ptr_type lz4;
     static thread_local const ptr_type snappy;
     static thread_local const ptr_type deflate;
-
-    static sstring make_name(std::string_view short_name);
 };
 
 using compressor_ptr = compressor::ptr_type;
