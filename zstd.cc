@@ -83,6 +83,7 @@ public:
 
     std::set<sstring> option_names() const override;
     std::map<sstring, sstring> options() const override;
+    algorithm get_algorithm() const override;
 };
 
 zstd_processor::zstd_processor(const opt_getter& opts)
@@ -150,6 +151,10 @@ std::set<sstring> zstd_processor::option_names() const {
 
 std::map<sstring, sstring> zstd_processor::options() const {
     return {{COMPRESSION_LEVEL, std::to_string(_compression_level)}};
+}
+
+auto zstd_processor::get_algorithm() const -> algorithm {
+    return algorithm::zstd;
 }
 
 static const class_registrator<compressor, zstd_processor, const compressor::opt_getter&>
