@@ -396,6 +396,8 @@ public:
     named_value<bool> enable_sstables_mc_format;
     named_value<bool> enable_sstables_md_format;
     named_value<sstring> sstable_format;
+    named_value<bool> enable_sstable_compression_with_dictionaries;
+    named_value<float> sstable_compression_with_dictionaries_memory_budget_fraction;
     named_value<bool> uuid_sstable_identifiers_enabled;
     named_value<bool> table_digest_insensitive_to_expiry;
     named_value<bool> enable_dangerous_direct_import_of_cassandra_counters;
