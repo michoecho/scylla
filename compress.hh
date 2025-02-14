@@ -62,8 +62,6 @@ public:
 
     virtual algorithm get_algorithm() const = 0;
 
-    static ptr_type create(const compression_parameters& params);
-
     static thread_local const ptr_type lz4;
     static thread_local const ptr_type snappy;
     static thread_local const ptr_type deflate;
