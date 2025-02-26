@@ -35,3 +35,10 @@ compile_commands.json
 .envrc
 clang_build
 .idea/
+rust/target
+*.swp
+.gdb_history
+custom
+*.orig
+workdir_*
+coreprob
