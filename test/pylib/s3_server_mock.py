@@ -251,6 +251,14 @@ class InjectingHandler(BaseHTTPRequestHandler):
                 case _:
                     raise ValueError("Unknown policy")
 
+class MyHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        """Override server_bind to store the server name."""
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = "localhost"
+        self.server_port = port
 
 # Mock server to setup `ThreadingHTTPServer` instance with custom request handler (see above), managing requests state
 # in the `self.req_states`, adding custom logger, etc. This server will be started automatically from `test.py` once the
@@ -260,7 +268,7 @@ class MockS3Server:
     def __init__(self, host, port, logger):
         self.req_states = LRUCache(10000)
         handler = partial(InjectingHandler, self.req_states, logger)
-        self.server = ThreadingHTTPServer((host, port), handler)
+        self.server = MyHTTPServer((host, port), handler)
         self.server_thread = None
         self.server.request_queue_size = 1000
         self.server.timeout = 10000
