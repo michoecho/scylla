@@ -21,7 +21,7 @@ import tempfile
 import time
 import traceback
 from typing import Any, Optional, Dict, List, Set, Tuple, Callable, AsyncIterator, NamedTuple, Union, NoReturn, \
-    Awaitable
+    Awaitable, Sequence
 import uuid
 from io import BufferedWriter
 from test.pylib.host_registry import Host, HostRegistry
@@ -66,8 +66,8 @@ class ReplaceConfig(NamedTuple):
     wait_replaced_dead: bool = True
 
 
-def make_scylla_conf(mode: str, workdir: pathlib.Path, host_addr: str, seed_addrs: List[str], cluster_name: str,
-                     socket_path: str, server_encryption: str) -> dict[str, object]:
+def make_scylla_conf(mode: str, workdir: pathlib.Path, host_addr: str, seed_addrs: Sequence[str], cluster_name: str,
+                     socket_path: str, server_encryption: str) -> dict[str, Any]:
     # We significantly increase default timeouts to allow running tests on a very slow
     # setup (but without network losses). These timeouts can impact the running time of
     # topology tests. For example, the barrier_and_drain topology command waits until
@@ -283,7 +283,7 @@ class ScyllaServer:
         self.cmdline_options = merge_cmdline_options(SCYLLA_CMDLINE_OPTIONS, cmdline_options)
         self.cluster_name = cluster_name
         self.ip_addr = IPAddress(ip_addr)
-        self.seeds = seeds
+        self.seeds = [IPAddress(s) for s in seeds]
         self.cmd: Optional[Process] = None
         self.start_stop_lock = asyncio.Lock()
         self.stop_event = asyncio.Event()
@@ -331,7 +331,7 @@ class ScyllaServer:
         self.config["alternator_address"] = ip_addr
         self._write_config_file()
 
-    def change_seeds(self, seeds: List[str]):
+    def change_seeds(self, seeds: List[IPAddress]):
         """Change seeds of the current server. Pre: the server is stopped"""
         if self.is_running:
             raise RuntimeError(f"Can't change seeds of a running server {self.ip_addr}.")
@@ -341,7 +341,9 @@ class ScyllaServer:
 
     @property
     def rpc_address(self) -> IPAddress:
-        return self.config["rpc_address"]
+        ret = self.config["rpc_address"]
+        assert isinstance(ret, str)
+        return IPAddress(ret)
 
     @property
     def datacenter(self) -> str:
@@ -376,8 +378,7 @@ class ScyllaServer:
         size = 0
 
         if self.cmd is not None:
-            deleted_sstable_re = rf"^.*/{keyspace}/{table}-[0-9a-f]{{32}}/.* \(deleted\)$"
-            deleted_sstable_re = re.compile(deleted_sstable_re)
+            deleted_sstable_re = re.compile(rf"^.*/{keyspace}/{table}-[0-9a-f]{{32}}/.* \(deleted\)$")
             for f in pathlib.Path(f"/proc/{self.cmd.pid}/fd/").iterdir():
                 try:
                     link = f.readlink()
@@ -497,11 +498,12 @@ class ScyllaServer:
 
     def in_maintenance_mode(self) -> bool:
         """Return True if the server is in maintenance mode"""
-        return self.config.get("maintenance_mode", False)
+        return bool(self.config.get("maintenance_mode", False))
 
     def maintenance_socket(self) -> Optional[str]:
         """Return the maintenance socket path"""
         maintenance_socket_option = self.config["maintenance_socket"]
+        assert maintenance_socket_option is None or isinstance(maintenance_socket_option, str)
         if maintenance_socket_option == "workdir":
             return (self.workdir / "cql.m").absolute().as_posix()
         elif maintenance_socket_option == "ignore":
@@ -819,7 +821,7 @@ class ScyllaCluster:
         logger: Union[logging.Logger, logging.LoggerAdapter]
         cluster_name: str
         ip_addr: IPAddress
-        seeds: List[str]
+        seeds: List[IPAddress]
         property_file: dict[str, Any] | None
         config_from_test: dict[str, Any]
         cmdline_from_test: List[str]
@@ -1176,6 +1178,7 @@ class ScyllaCluster:
         self.logger.info("Cluster %s get process status for server %s", self.name, server_id)
         server = self.running[server_id]
         try:
+            assert server.cmd
             process = psutil.Process(server.cmd.pid)
             status = process.status()
         except psutil.NoSuchProcess:
@@ -1269,8 +1272,8 @@ class ScyllaClusterManager:
        Parallel requests are not supported.
     """
     # pylint: disable=too-many-instance-attributes
-    cluster: ScyllaCluster
-    site: aiohttp.web.UnixSite
+    cluster: ScyllaCluster | None
+    site: aiohttp.web.UnixSite | None
     is_after_test_ok: bool
 
     def __init__(self, test_uname: str, clusters: Pool[ScyllaCluster], base_dir: str) -> None:
@@ -1296,7 +1299,7 @@ class ScyllaClusterManager:
         app = aiohttp.web.Application()
         self._setup_routes(app)
         self.runner = aiohttp.web.AppRunner(app)
-        self.tasks_history = dict()
+        self.tasks_history : dict = dict()
         self.server_broken_event = asyncio.Event()
         self.server_broken_reason = ""
 
@@ -1320,6 +1323,7 @@ class ScyllaClusterManager:
         self.is_running = True
 
     async def _before_test(self, test_case_name: str) -> str:
+        assert self.cluster
         self.current_test_case_full_name = f'{self.test_uname}::{test_case_name}'
         root_logger = logging.getLogger()
         # file handler file name should be consistent with topology/conftest.py:manager test_py_log_test variable
@@ -1449,21 +1453,25 @@ class ScyllaClusterManager:
         assert self.cluster
         return self.cluster.replicas
 
-    async def _cluster_running_servers(self, _request) -> list[tuple[ServerNum, IPAddress, IPAddress]]:
+    async def _cluster_running_servers(self, _request) -> list[ServerInfo]:
         """Return a dict of running server ids to IPs"""
+        assert self.cluster
         return self.cluster.running_servers()
 
-    async def _cluster_all_servers(self, _request) -> list[tuple[ServerNum, IPAddress, IPAddress]]:
+    async def _cluster_all_servers(self, _request) -> list[ServerInfo]:
         """Return a dict of all server ids to IPs"""
+        assert self.cluster
         return self.cluster.all_servers()
 
     async def _cluster_server_ip_addr(self, request) -> IPAddress:
         """IP address of a server"""
+        assert self.cluster
         server_id = ServerNum(int(request.match_info["server_id"]))
         return self.cluster.servers[server_id].ip_addr
 
     async def _cluster_host_id(self, request) -> HostID:
         """IP address of a server"""
+        assert self.cluster
         server_id = ServerNum(int(request.match_info["server_id"]))
         return self.cluster.servers[server_id].host_id
 
@@ -1755,11 +1763,13 @@ class ScyllaClusterManager:
         return str(await self._server_get_attribute(request, "exe"))
 
     async def _cluster_server_wipe_sstables(self, request: aiohttp.web.Request):
+        assert self.cluster
         data = await request.json()
         server_id = ServerNum(int(request.match_info["server_id"]))
         return self.cluster.wipe_sstables(server_id, data["keyspace"], data["table"])
 
     async def _server_get_sstables_disk_usage(self, request: aiohttp.web.Request) -> int:
+        assert self.cluster
         data = request.query
         server_id = ServerNum(int(request.match_info["server_id"]))
         return self.cluster.get_sstables_disk_usage(server_id, data["keyspace"], data["table"])
