@@ -547,9 +547,10 @@ class PythonTestSuite(TestSuite):
                              self.cfg.get("extra_scylla_config_options", {}) | \
                              create_cfg.config_from_test
 
+            create_cfg.logger.info(f"Exe is {create_cfg.executable}")
             server = ScyllaServer(
                 mode=self.mode,
-                exe=self.scylla_exe,
+                exe=(create_cfg.executable or self.scylla_exe),
                 vardir=os.path.join(self.options.tmpdir, self.mode),
                 logger=create_cfg.logger,
                 cluster_name=create_cfg.cluster_name,
@@ -1211,7 +1212,7 @@ class TopologyTest(PythonTest):
             try:
                 # Note: start manager here so cluster (and its logs) is available in case of failure
                 await manager.start()
-                self.success = await run_test(self, options)
+                self.success = await run_test(self, options, env=self.suite.scylla_env)
             except Exception as e:
                 self.server_log = manager.cluster.read_server_log()
                 self.server_log_filename = manager.cluster.server_log_filename()
