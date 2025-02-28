@@ -284,7 +284,7 @@ size_t zstd_processor::compress_max_size(size_t input_len) const {
 }
 
 auto zstd_processor::get_algorithm() const -> algorithm {
-    return algorithm::zstd;
+    return (_cdict || _ddict) ? algorithm::zstd_with_dicts : algorithm::zstd;
 }
 
 const std::string_view DICTIONARY_OPTION = ".dictionary.";
@@ -393,9 +393,11 @@ auto compression_parameters::name_to_algorithm(std::string_view name) -> algorit
 std::string_view compression_parameters::algorithm_to_name(algorithm alg) {
     switch (alg) {
         case algorithm::lz4: return "LZ4Compressor";
+        case algorithm::lz4_with_dicts: return "LZ4WithDictsCompressor";
         case algorithm::deflate: return "DeflateCompressor";
         case algorithm::snappy: return "SnappyCompressor";
         case algorithm::zstd: return "ZstdCompressor";
+        case algorithm::zstd_with_dicts: return "ZstdWithDictsCompressor";
         case algorithm::none: abort();
     }
 }
@@ -440,6 +442,7 @@ compression_parameters::compression_parameters(const std::map<sstring, sstring>&
     }
 
     switch (_algorithm) {
+    case algorithm::zstd_with_dicts:
     case algorithm::zstd:
         if (auto v = get_option(COMPRESSION_LEVEL)) {
             try {
@@ -459,7 +462,14 @@ compression_parameters::compression_parameters(const std::map<sstring, sstring>&
     }
 }
 
-void compression_parameters::validate() {
+void compression_parameters::validate(const gms::feature_service& fs) {
+    if (!fs.sstable_compression_dicts) {
+        if (_algorithm == algorithm::zstd_with_dicts || _algorithm == algorithm::lz4_with_dicts) {
+            throw std::runtime_error(std::format("sstable_compression {} can't be used before "
+                                                 "all nodes are upgraded to a versions which supports it",
+                                                 algorithm_to_name(_algorithm)));
+        }
+    }
     if (_chunk_length) {
         auto chunk_length = _chunk_length.value();
         if (chunk_length <= 0) {
@@ -577,7 +587,7 @@ size_t lz4_processor::compress_max_size(size_t input_len) const {
 }
 
 auto lz4_processor::get_algorithm() const -> algorithm {
-    return algorithm::lz4;
+    return (_cdict || _ddict) ? algorithm::lz4_with_dicts : algorithm::lz4;
 }
 
 std::map<sstring, sstring> lz4_processor::options() const {
@@ -902,12 +912,20 @@ future<compressor_ptr> sstable_compressor_factory_impl::make_compressor_for_writ
     switch (params.get_algorithm()) {
     case algorithm::lz4:
         co_return std::make_unique<lz4_processor>(nullptr, nullptr);
+    case algorithm::lz4_with_dicts: {
+        auto cdict = co_await get_lz4_dicts_for_writing(s->id());
+        co_return std::make_unique<lz4_processor>(std::move(cdict), nullptr);
+    }
     case algorithm::deflate:
         co_return std::make_unique<deflate_processor>();
     case algorithm::snappy:
         co_return std::make_unique<snappy_processor>();
     case algorithm::zstd:
         co_return std::make_unique<zstd_processor>(params, nullptr, nullptr);
+    case algorithm::zstd_with_dicts: {
+        auto cdict = co_await get_zstd_dict_for_writing(s->id(), params.zstd_compression_level().value_or(ZSTD_defaultCLevel()));
+        co_return std::make_unique<zstd_processor>(params, std::move(cdict), nullptr);
+    }
     case algorithm::none:
         co_return nullptr;
     }
@@ -920,12 +938,23 @@ future<compressor_ptr> sstable_compressor_factory_impl::make_compressor_for_read
     switch (params.get_algorithm()) {
     case algorithm::lz4:
         co_return std::make_unique<lz4_processor>(nullptr, nullptr);
+    case algorithm::lz4_with_dicts: {
+        auto dict = dict_from_options(c);
+        auto ddict = co_await get_lz4_dicts_for_reading(std::as_bytes(std::span(*dict)));
+        co_return std::make_unique<lz4_processor>(nullptr, std::move(ddict));
+    }
     case algorithm::deflate:
         co_return std::make_unique<deflate_processor>();
     case algorithm::snappy:
         co_return std::make_unique<snappy_processor>();
     case algorithm::zstd: {
         co_return std::make_unique<zstd_processor>(params, nullptr, nullptr);
+    }
+    case algorithm::zstd_with_dicts: {
+        auto level = params.zstd_compression_level().value_or(ZSTD_defaultCLevel());
+        auto dict = dict_from_options(c);
+        auto ddict = co_await get_zstd_dict_for_reading(std::as_bytes(std::span(*dict)), level);
+        co_return std::make_unique<zstd_processor>(params, nullptr, std::move(ddict));
     }
     case algorithm::none:
         co_return nullptr;
