@@ -3204,6 +3204,8 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
     uint64_t chunk_size,
     uint64_t n_chunks
 ) {
+    auto ticket = get_units(_sample_data_files_sharded_concurrency_limiter, 1);
+
     struct state_by_shard {
         utils::chunked_vector<sstables::sstable_files_snapshot> snapshot;
         schema_ptr schema;
@@ -3245,6 +3247,8 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
         &chosen_chunks = std::as_const(chosen_chunks),
         chunk_size
     ] (database& local_db) -> future<utils::chunked_vector<bytes>> {
+        auto ticket = get_units(local_db._sample_data_files_local_concurrency_limiter, 1);
+
         auto& local_state = state[this_shard_id()];
 
         size_t offset = this_shard_id() == 0 ? 0 : state[this_shard_id() - 1]->cross_shard_offset;

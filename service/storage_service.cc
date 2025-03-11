@@ -4756,6 +4756,10 @@ future<> storage_service::wait_for_topology_not_busy() {
     }
 }
 
+semaphore& storage_service::get_do_sample_sstables_concurrency_limiter() {
+    return _do_sample_sstables_concurrency_limiter;
+}
+
 future<utils::chunked_vector<bytes>> storage_service::do_sample_sstables(table_id t, uint64_t chunk_size, uint64_t n_chunks) {
     uint64_t max_chunks_per_round = 16 * 1024 * 1024 / chunk_size;
     uint64_t chunks_done = 0;

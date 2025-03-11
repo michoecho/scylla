@@ -1938,6 +1938,10 @@ public:
     virtual future<> on_before_service_level_change(qos::service_level_options slo_before, qos::service_level_options slo_after, qos::service_level_info sl_info) override;
     virtual future<> on_effective_service_levels_cache_reloaded() override;
 
+private:
+    semaphore _sample_data_files_sharded_concurrency_limiter{1};
+    semaphore _sample_data_files_local_concurrency_limiter{1};
+public:
     // Returns a vector of file chunks randomly sampled from all Data.db files of this table.
     future<utils::chunked_vector<bytes>> sample_data_files(
         table_id id,
