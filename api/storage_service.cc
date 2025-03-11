@@ -58,6 +58,7 @@
 #include "db/view/view_builder.hh"
 #include "utils/rjson.hh"
 #include "utils/user_provided_param.hh"
+#include "dict_autotrainer.hh"
 
 using namespace seastar::httpd;
 using namespace std::chrono_literals;
@@ -1453,46 +1454,6 @@ rest_get_effective_ownership(http_context& ctx, sharded<service::storage_service
         });
 }
 
-static future<float> try_one_compression_config(
-    sstable_compressor_factory& factory,
-    schema_ptr initial_schema,
-    const compression_parameters& params,
-    const utils::chunked_vector<bytes>& validation_samples
-) {
-    auto modified_schema = schema_builder(initial_schema).set_compressor_params(params).build();
-    auto compressor = co_await factory.make_compressor_for_writing(modified_schema);
-    size_t raw_size = 0;
-    size_t compressed_size = 0;
-    std::vector<char> tmp;
-    for (const auto& s : validation_samples) {
-        auto chunk_len = params.chunk_length();
-        for (size_t offset = 0; offset < s.size(); offset += chunk_len) {
-            auto frag = std::string_view(reinterpret_cast<const char*>(s.data()), s.size()).substr(offset);
-            frag = frag.substr(0, std::min<size_t>(chunk_len, frag.size()));
-            raw_size += frag.size();
-            tmp.resize(compressor->compress_max_size(frag.size()));
-            apilog.trace("try_one_compression_config: in_size={}, out_size={}", frag.size(), tmp.size());
-            compressed_size += compressor->compress(frag.data(), frag.size(), tmp.data(), tmp.size());
-        }
-    }
-    if (raw_size == 0) {
-        co_return 0.0f;
-    }
-    co_return float(compressed_size) / raw_size;
-}
-
-static future<float> try_one_compression_config(
-    gms::feature_service& feat,
-    std::span<std::byte> dict,
-    schema_ptr initial_schema,
-    const compression_parameters& params,
-    const utils::chunked_vector<bytes>& validation_samples
-) {
-    auto factory = make_sstable_compressor_factory();
-    co_await factory->set_recommended_dict(initial_schema->id(), dict);
-    co_return co_await try_one_compression_config(*factory, initial_schema, params, validation_samples);
-}
-
 static
 future<json::json_return_type>
 rest_estimate_compression_ratios(http_context& ctx, sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
@@ -1559,45 +1520,16 @@ rest_retrain_dict(http_context& ctx, sharded<service::storage_service>& ss, serv
         apilog.warn("retrain_dict: called before the cluster feature was enabled");
         throw std::runtime_error("retrain_dict requires all nodes to support the SSTABLE_COMPRESSION_DICTS cluster feature");
     }
+    auto ticket = get_units(ss.local().get_do_sample_sstables_concurrency_limiter(), 1);
     auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
     auto cf = api::req_param<sstring>(*req, "cf", {}).value;
     apilog.debug("retrain_dict: called with ks={} cf={}", ks, cf);
-    const auto& t = ctx.db.local().find_column_family(ks, cf);
-    const auto t_id = t.schema()->id();
+    const auto t_id = ctx.db.local().find_column_family(ks, cf).schema()->id();
     auto sample = co_await ss.local().do_sample_sstables(t_id, 4096, 4096);
     apilog.debug("retrain_dict: got sample with {} blocks", sample.size());
-    co_await ss.invoke_on(0, coroutine::lambda([&sample, &sys_ks, &group0_client, &ctx, t_id] (auto& ss_local) -> future<> {
-        std::vector<std::vector<std::byte>> tmp;
-        for (const auto& s : sample) {
-            auto v = std::as_bytes(std::span(s));
-            tmp.push_back(std::vector<std::byte>(v.begin(), v.end()));
-        }
-        if (!ss_local._train_dict) {
-            on_internal_error(apilog, "retrain_dict: _train_dict not plugged");
-        }
-        auto dict = co_await ss_local._train_dict(std::move(tmp));
-        apilog.debug("retrain_dict: got dict of size {}", dict.size());
-        // Publish the dict to system.dicts.
-        while (true) {
-            try {
-                auto name = fmt::format("sstables/{}", t_id);
-                utils::dict_trainer_logger.debug("retrain_dict: trying to publish the dict as {}", name);
-                auto batch = service::group0_batch(co_await group0_client.start_operation(ss_local.get_abort_source()));
-                auto write_ts = batch.write_timestamp();
-                auto new_dict_ts = db_clock::now();
-                auto data = bytes(reinterpret_cast<const bytes::value_type*>(dict.data()), dict.size());
-                auto this_host_id = ctx.db.local().get_token_metadata().get_topology().get_config().this_host_id;
-                mutation publish_new_dict = co_await sys_ks.local().get_insert_dict_mutation(name, std::move(data), this_host_id, new_dict_ts, write_ts);
-                batch.add_mutation(std::move(publish_new_dict), "publish new SSTable compression dictionary");
-                utils::dict_trainer_logger.debug("retrain_dict: committing");
-                co_await std::move(batch).commit(group0_client, ss_local.get_abort_source(), {});
-                utils::dict_trainer_logger.debug("retrain_dict: finished");
-                break;
-            } catch (const service::group0_concurrent_modification&) {
-                utils::dict_trainer_logger.debug("group0_concurrent_modification in retrain_dict, retrying");
-            }
-        }
-    }));
+    auto dict = co_await ss.local().train_dict(std::move(sample));
+    apilog.debug("retrain_dict: got dict of size {}", dict.size());
+    co_await ss.local().publish_new_sstable_dict(t_id, dict, group0_client);
     co_return json_void();
 }
 

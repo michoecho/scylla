@@ -330,6 +330,16 @@ public:
         return _feature_service;
     }
 
+    replica::database& get_database() noexcept {
+        return _db.local();
+    }
+
+    db::system_keyspace& get_system_keyspace() noexcept {
+        return _sys_ks.local();
+    }
+
+    bool is_raft_leader() const noexcept;
+
 private:
     inet_address get_broadcast_address() const noexcept {
         return get_token_metadata_ptr()->get_topology().my_address();
@@ -1011,6 +1021,11 @@ private:
     abort_source _group0_as;
 
     std::function<future<void>(std::string_view)> _compression_dictionary_updated_callback;
+public:
+    future<uint64_t> estimate_total_sstable_volume(table_id);
+    future<std::vector<std::byte>> train_dict(utils::chunked_vector<bytes> sample);
+    future<> publish_new_sstable_dict(table_id, std::span<const std::byte>, service::raft_group0_client&);
+
 public:
     std::function<future<std::vector<std::byte>>(std::vector<std::vector<std::byte>>)> _train_dict;
 

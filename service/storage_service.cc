@@ -4760,6 +4760,53 @@ semaphore& storage_service::get_do_sample_sstables_concurrency_limiter() {
     return _do_sample_sstables_concurrency_limiter;
 }
 
+future<uint64_t> storage_service::estimate_total_sstable_volume(table_id t) {
+    co_return co_await seastar::map_reduce(
+        _db.local().get_token_metadata().get_host_ids(),
+        [&] (auto h) -> future<uint64_t> {
+            return ser::storage_service_rpc_verbs::send_estimate_sstable_volume(&_messaging.local(), h, t);
+        },
+        uint64_t(0),
+        std::plus<uint64_t>()
+    );
+}
+
+future<std::vector<std::byte>> storage_service::train_dict(utils::chunked_vector<bytes> sample) {
+    std::vector<std::vector<std::byte>> tmp;
+    for (const auto& s : sample) {
+        auto v = std::as_bytes(std::span(s));
+        tmp.push_back(std::vector<std::byte>(v.begin(), v.end()));
+    }
+    co_return co_await container().invoke_on(0, [tmp = std::move(tmp)] (auto& local) {
+        if (!local._train_dict) {
+            on_internal_error(slogger, "retrain_dict: _train_dict not plugged");
+        }
+        return local._train_dict(std::move(tmp));
+    });
+}
+
+future<> storage_service::publish_new_sstable_dict(table_id t_id, std::span<const std::byte> dict, service::raft_group0_client& group0_client) {
+    while (true) {
+        try {
+            auto name = fmt::format("sstables/{}", t_id);
+            slogger.debug("publish_new_sstable_dict: trying to publish the dict as {}", name);
+            auto batch = service::group0_batch(co_await group0_client.start_operation(get_abort_source()));
+            auto write_ts = batch.write_timestamp();
+            auto new_dict_ts = db_clock::now();
+            auto data = bytes(reinterpret_cast<const bytes::value_type*>(dict.data()), dict.size());
+            auto this_host_id = _db.local().get_token_metadata().get_topology().get_config().this_host_id;
+            mutation publish_new_dict = co_await _sys_ks.local().get_insert_dict_mutation(name, std::move(data), this_host_id, new_dict_ts, write_ts);
+            batch.add_mutation(std::move(publish_new_dict), "publish new SSTable compression dictionary");
+            slogger.debug("publish_new_sstable_dict: committing");
+            co_await std::move(batch).commit(group0_client, get_abort_source(), {});
+            slogger.debug("publish_new_sstable_dict: finished");
+            break;
+        } catch (const service::group0_concurrent_modification&) {
+            slogger.debug("group0_concurrent_modification in publish_new_sstable_dict, retrying");
+        }
+    }
+}
+
 future<utils::chunked_vector<bytes>> storage_service::do_sample_sstables(table_id t, uint64_t chunk_size, uint64_t n_chunks) {
     uint64_t max_chunks_per_round = 16 * 1024 * 1024 / chunk_size;
     uint64_t chunks_done = 0;
@@ -5237,6 +5284,10 @@ void storage_service::add_expire_time_if_found(inet_address endpoint, int64_t ex
         auto time = clk::time_point(clk::duration(expire_time));
         _gossiper.add_expire_time_for_endpoint(endpoint, time);
     }
+}
+
+bool storage_service::is_raft_leader() const noexcept {
+    return _group0->group0_server().is_leader();
 }
 
 future<> storage_service::shutdown_protocol_servers() {
