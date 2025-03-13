@@ -13,6 +13,7 @@
 
 #include <seastar/util/closeable.hh>
 #include <seastar/core/abort_source.hh>
+#include "dict_autotrainer.hh"
 #include "gms/inet_address.hh"
 #include "auth/allow_all_authenticator.hh"
 #include "auth/allow_all_authorizer.hh"
@@ -1783,6 +1784,12 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
                     return utils::zdict_train(sample, {});
                 });
             };
+
+            auto sst_dict_autotrainer = sstable_dict_autotrainer(ss.local(), group0_client);
+            auto sst_dict_autotrainer_fiber = sst_dict_autotrainer.run();
+            auto stop_sst_dict_autotrainer = defer_verbose_shutdown("sstable_dict_autotrainer", [&] {
+                sst_dict_autotrainer_fiber.get();
+            });
 
             auto stop_storage_service = defer_verbose_shutdown("storage_service", [&] {
                 ss.stop().get();
