@@ -1494,19 +1494,33 @@ rest_estimate_compression_ratios(http_context& ctx, sharded<service::storage_ser
     };
 
     using algorithm = compression_parameters::algorithm;
-    for (const auto& algo : {algorithm::lz4, algorithm::zstd}) {
+    for (const auto& algo : {algorithm::lz4_with_dicts, algorithm::zstd_with_dicts}) {
         for (const auto& chunk_size_kb : {1, 4, 16}) {
-            auto algo_name = compression_parameters::algorithm_to_name(algo);
-            auto params = compression_parameters{std::map<sstring, sstring>{
-                {compression_parameters::CHUNK_LENGTH_KB, std::to_string(chunk_size_kb)},
-                {compression_parameters::SSTABLE_COMPRESSION, sstring(algo_name)},
-            }};
-            auto with_no_dict = co_await try_one_compression_config(ss.local().get_feature_service(), {}, s, params, validation_sample);
-            auto with_past_dict = co_await try_one_compression_config(ctx.db.local().get_user_sstables_manager().get_compressor_factory(), s, params, validation_sample);
-            auto with_future_dict = co_await try_one_compression_config(ss.local().get_feature_service(), dict, s, params, validation_sample);
-            res.push_back(make_result(fmt::format("sstable_compression={}:chunk_length_kb={}:dict=none", algo_name, chunk_size_kb), with_no_dict));
-            res.push_back(make_result(fmt::format("sstable_compression={}:chunk_length_kb={}:dict=past", algo_name, chunk_size_kb), with_past_dict));
-            res.push_back(make_result(fmt::format("sstable_compression={}:chunk_length_kb={}:dict=future", algo_name, chunk_size_kb), with_future_dict));
+            std::vector<int> levels;
+            if (algo == compressor::algorithm::zstd_with_dicts) {
+                for (int i = 1; i < 10; ++i) {
+                    levels.push_back(i);
+                }
+            } else {
+                levels.push_back(0);
+            }
+            for (auto level : levels) {
+                auto algo_name = compression_parameters::algorithm_to_name(algo);
+                auto m = std::map<sstring, sstring>{
+                    {compression_parameters::CHUNK_LENGTH_KB, std::to_string(chunk_size_kb)},
+                    {compression_parameters::SSTABLE_COMPRESSION, sstring(algo_name)},
+                };
+                if (algo == compressor::algorithm::zstd_with_dicts) {
+                    m.insert(decltype(m)::value_type{sstring("compression_level"), sstring(std::to_string(level))});
+                }
+                auto params = compression_parameters(std::move(m));
+                auto with_no_dict = co_await try_one_compression_config({}, s, params, validation_sample);
+                auto with_past_dict = co_await try_one_compression_config(ctx.db.local().get_user_sstables_manager().get_compressor_factory(), s, params, validation_sample);
+                auto with_future_dict = co_await try_one_compression_config(dict, s, params, validation_sample);
+                res.push_back(make_result(fmt::format("sstable_compression={}:chunk_length_kb={}:dict=none,level={}", algo_name, chunk_size_kb, level), with_no_dict));
+                res.push_back(make_result(fmt::format("sstable_compression={}:chunk_length_kb={}:dict=past,level={}", algo_name, chunk_size_kb, level), with_past_dict));
+                res.push_back(make_result(fmt::format("sstable_compression={}:chunk_length_kb={}:dict=future,level={}", algo_name, chunk_size_kb, level), with_future_dict));
+            }
         }
     }
 
