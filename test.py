@@ -1242,6 +1242,7 @@ class ToolTest(Test):
             "-s",  # don't capture print() output inside pytest
             "--log-level=DEBUG",   # Capture logs
             "-o",
+            "--log-cli-level=DEBUG",
             "junit_family=xunit2",
             "--junit-xml={}".format(self.xmlout),
             "--mode={}".format(self.mode),
