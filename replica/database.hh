@@ -1958,11 +1958,12 @@ private:
     // for which this shard is the coordinator.
     // The `local` semaphore serializes the number of SSTable sampling operations
     // in which this shard is a participant.
-    semaphore _sample_data_files_sharded_concurrency_limiter{1};
+    size_t _memory_for_data_file_samples = 16*1024*1024;
+    semaphore _sample_data_files_memory_limiter{_memory_for_data_file_samples};
     semaphore _sample_data_files_local_concurrency_limiter{1};
 public:
     // Returns a vector of file chunks randomly sampled from all Data.db files of this table.
-    future<utils::chunked_vector<bytes>> sample_data_files(
+    future<utils::chunked_vector<temporary_buffer<char>>> sample_data_files(
         table_id id,
         uint64_t chunk_size,
         uint64_t n_chunks

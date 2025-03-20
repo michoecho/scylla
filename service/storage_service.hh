@@ -978,7 +978,7 @@ private:
     semaphore _do_sample_sstables_concurrency_limiter{1};
     // To avoid overly-large RPC messages, `do_sample_sstables` is broken up into several rounds.
     // This implements a single round.
-    future<utils::chunked_vector<bytes>> do_sample_sstables_oneshot(table_id, uint64_t chunk_size, uint64_t n_chunks);
+    future<utils::chunked_vector<temporary_buffer<char>>> do_sample_sstables_oneshot(table_id, uint64_t chunk_size, uint64_t n_chunks);
 public:
     // SSTable sampling results can occupy a considerable amount of memory.
     // Callers of `do_sample_sstables` should hold this semaphore until they are done with the sample,
@@ -986,7 +986,7 @@ public:
     semaphore& get_do_sample_sstables_concurrency_limiter();
     // Gathers a randomly-selected sample of chunks of (decompressed) Data files for the given table,
     // from across the entire cluster.
-    future<utils::chunked_vector<bytes>> do_sample_sstables(table_id, uint64_t chunk_size, uint64_t n_chunks);
+    future<utils::chunked_vector<temporary_buffer<char>>> do_sample_sstables(table_id, uint64_t chunk_size, uint64_t n_chunks);
 private:
     future<std::vector<canonical_mutation>> get_system_mutations(schema_ptr schema);
     future<std::vector<canonical_mutation>> get_system_mutations(const sstring& ks_name, const sstring& cf_name);
@@ -1035,7 +1035,7 @@ private:
     std::function<future<byte_vector>(std::vector<byte_vector>)> _train_dict;
 public:
     future<uint64_t> estimate_total_sstable_volume(table_id);
-    future<std::vector<std::byte>> train_dict(utils::chunked_vector<bytes> sample);
+    future<std::vector<std::byte>> train_dict(utils::chunked_vector<temporary_buffer<char>> sample);
     future<> publish_new_sstable_dict(table_id, std::span<const std::byte>, service::raft_group0_client&);
     void set_train_dict_callback(decltype(_train_dict));
 

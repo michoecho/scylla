@@ -51,7 +51,7 @@ future<float> try_one_compression_config(
     sstable_compressor_factory& factory,
     schema_ptr initial_schema,
     const compression_parameters& params,
-    const utils::chunked_vector<bytes>& validation_samples
+    const utils::chunked_vector<temporary_buffer<char>>& validation_samples
 );
 
 // Computes the compression ratio of the given compressor
@@ -62,5 +62,5 @@ future<float> try_one_compression_config(
     std::span<std::byte> dict,
     schema_ptr initial_schema,
     const compression_parameters& params,
-    const utils::chunked_vector<bytes>& validation_samples
+    const utils::chunked_vector<temporary_buffer<char>>& validation_samples
 );

@@ -160,7 +160,7 @@ future<float> try_one_compression_config(
     sstable_compressor_factory& factory,
     schema_ptr initial_schema,
     const compression_parameters& params,
-    const utils::chunked_vector<bytes>& validation_samples
+    const utils::chunked_vector<temporary_buffer<char>>& validation_samples
 ) {
     auto modified_schema = schema_builder(initial_schema).set_compressor_params(params).build();
     auto compressor = co_await factory.make_compressor_for_writing(modified_schema);
@@ -170,7 +170,7 @@ future<float> try_one_compression_config(
     for (const auto& s : validation_samples) {
         auto chunk_len = params.chunk_length();
         for (size_t offset = 0; offset < s.size(); offset += chunk_len) {
-            auto frag = std::string_view(reinterpret_cast<const char*>(s.data()), s.size()).substr(offset);
+            auto frag = std::string_view(s.get(), s.size()).substr(offset);
             frag = frag.substr(0, std::min<size_t>(chunk_len, frag.size()));
             raw_size += frag.size();
             tmp.resize(compressor->compress_max_size(frag.size()));
@@ -188,7 +188,7 @@ future<float> try_one_compression_config(
     std::span<std::byte> dict,
     schema_ptr initial_schema,
     const compression_parameters& params,
-    const utils::chunked_vector<bytes>& validation_samples
+    const utils::chunked_vector<temporary_buffer<char>>& validation_samples
 ) {
     auto factory = make_sstable_compressor_factory();
     co_await factory->set_recommended_dict(initial_schema->id(), dict);

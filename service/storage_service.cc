@@ -4795,7 +4795,7 @@ future<uint64_t> storage_service::estimate_total_sstable_volume(table_id t) {
     );
 }
 
-future<std::vector<std::byte>> storage_service::train_dict(utils::chunked_vector<bytes> sample) {
+future<std::vector<std::byte>> storage_service::train_dict(utils::chunked_vector<temporary_buffer<char>> sample) {
     std::vector<std::vector<std::byte>> tmp;
     tmp.reserve(sample.size());
     for (const auto& s : sample) {
@@ -4838,10 +4838,10 @@ void storage_service::set_train_dict_callback(decltype(_train_dict) cb) {
     _train_dict = std::move(cb);
 }
 
-future<utils::chunked_vector<bytes>> storage_service::do_sample_sstables(table_id t, uint64_t chunk_size, uint64_t n_chunks) {
+future<utils::chunked_vector<temporary_buffer<char>>> storage_service::do_sample_sstables(table_id t, uint64_t chunk_size, uint64_t n_chunks) {
     uint64_t max_chunks_per_round = 16 * 1024 * 1024 / chunk_size;
     uint64_t chunks_done = 0;
-    auto result = utils::chunked_vector<bytes>();
+    auto result = utils::chunked_vector<temporary_buffer<char>>();
     result.reserve(n_chunks);
     while (chunks_done < n_chunks) {
         auto chunks_this_round = std::min(max_chunks_per_round, n_chunks - chunks_done);
@@ -4855,7 +4855,7 @@ future<utils::chunked_vector<bytes>> storage_service::do_sample_sstables(table_i
     co_return result;
 }
 
-future<utils::chunked_vector<bytes>> storage_service::do_sample_sstables_oneshot(table_id t, uint64_t chunk_size, uint64_t n_chunks) {
+future<utils::chunked_vector<temporary_buffer<char>>> storage_service::do_sample_sstables_oneshot(table_id t, uint64_t chunk_size, uint64_t n_chunks) {
     slogger.debug("do_sample_sstables(): called with table_id={} chunk_size={} n_chunks={}", t, chunk_size, n_chunks);
     auto& db = _db.local();
     auto& ms = _messaging.local();
@@ -4891,11 +4891,11 @@ future<utils::chunked_vector<bytes>> storage_service::do_sample_sstables_oneshot
     slogger.debug("do_sample_sstables(): sending out send_sample_sstables with proportions {}", chunks_per_host);
     auto samples = co_await seastar::map_reduce(
         chunks_per_host,
-        [&] (std::pair<locator::host_id, uint64_t> h_s) -> future<utils::chunked_vector<bytes>> {
+        [&] (std::pair<locator::host_id, uint64_t> h_s) -> future<utils::chunked_vector<temporary_buffer<char>>> {
             const auto& [h, sz] = h_s;
             return ser::storage_service_rpc_verbs::send_sample_sstables(&ms, h, t, chunk_size, sz);
         },
-        utils::chunked_vector<bytes>(),
+        utils::chunked_vector<temporary_buffer<char>>(),
         [] (auto v, auto some_samples) {
             std::ranges::move(some_samples, std::back_inserter(v));
             return v;
@@ -7373,7 +7373,7 @@ void storage_service::init_messaging_service() {
             co_return result;
         }), uint64_t(0), std::plus());
     });
-    ser::storage_service_rpc_verbs::register_sample_sstables(&_messaging.local(), [this] (table_id table, uint64_t chunk_size, uint64_t n_chunks) -> future<utils::chunked_vector<bytes>> {
+    ser::storage_service_rpc_verbs::register_sample_sstables(&_messaging.local(), [this] (table_id table, uint64_t chunk_size, uint64_t n_chunks) -> future<utils::chunked_vector<temporary_buffer<char>>> {
         return _db.local().sample_data_files(table, chunk_size, n_chunks);
     });
     ser::join_node_rpc_verbs::register_join_node_request(&_messaging.local(), [handle_raft_rpc] (raft::server_id dst_id, service::join_node_request_params params) {

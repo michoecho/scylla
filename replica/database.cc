@@ -3196,19 +3196,26 @@ utils::chunked_vector<uint64_t> compute_random_sorted_ints(uint64_t max_value, u
     return chosen;
 }
 
-future<utils::chunked_vector<bytes>> database::sample_data_files(
+future<utils::chunked_vector<temporary_buffer<char>>> database::sample_data_files(
     table_id id,
     uint64_t chunk_size,
     uint64_t n_chunks
 ) {
-    auto ticket = get_units(_sample_data_files_sharded_concurrency_limiter, 1);
+    // If the volume of samples is bigger than the semaphore allows,
+    // we still want to let the request in, so we clip the number of units to the semaphore's capacity.
+    auto memory_consumption = std::min(chunk_size * n_chunks, _memory_for_data_file_samples);
+    auto memory_units = co_await get_units(_sample_data_files_memory_limiter, memory_consumption);
 
     struct state_by_shard {
         utils::chunked_vector<sstables::shared_sstable> snapshot;
         schema_ptr schema;
+        // Number of chunks present on this shard.
         uint64_t local_chunks;
-        uint64_t cross_shard_offset;
+        // Start of this shard's range in the global (conceptual) list
+        // of all chunks on the node.
+        uint64_t global_offset_in_chunks;
     };
+    // Each shard owns its own sstable set snapshot, so we need foreign_ptrs.
     std::vector<foreign_ptr<std::unique_ptr<state_by_shard>>> state(smp::count);
 
     co_await container().invoke_on_all(coroutine::lambda([&] (replica::database& local_db) -> future<> {
@@ -3227,31 +3234,48 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
         local_state->local_chunks = my_total_chunks;
     }));
 
+    // Fill in `global_offset_in_chunks`.
     uint64_t total_chunks = 0;
     for (const auto& x : state) {
         total_chunks += x->local_chunks;
-        x->cross_shard_offset = total_chunks;
+        x->global_offset_in_chunks = total_chunks;
     }
 
+    // We can't generate random non-negative integers smaller than 0,
+    // so just deal with the `total_chunks == 0` case with an early return.
     if (total_chunks == 0) {
-        co_return utils::chunked_vector<bytes>{};
+        co_return utils::chunked_vector<temporary_buffer<char>>{};
     }
 
+    // Note: this shard owns the buffers. Other shards only write to them.
+    //
+    // The returned buffers will hold the semaphore units until they are freed.
     const auto chosen_chunks = compute_random_sorted_ints(total_chunks - 1, n_chunks);
+    auto result = utils::chunked_vector<temporary_buffer<char>>{};
+    result.reserve(chosen_chunks.size());
+    for (size_t i = 0; i < chosen_chunks.size(); ++i) {
+        // Attach semaphore units to each sample.
+        auto buf = temporary_buffer<char>(chunk_size);
+        buf = temporary_buffer<char>(buf.get_write(), buf.size(),
+                                     make_object_deleter(buf.release(), memory_units.split(chunk_size)));
+        result.push_back(std::move(buf));
+    }
 
     auto sample_one_shard = [
         &state = std::as_const(state),
         &chosen_chunks = std::as_const(chosen_chunks),
+        &result,
         chunk_size
-    ] (database& local_db) -> future<utils::chunked_vector<bytes>> {
+    ] (database& local_db) -> future<> {
         auto ticket = get_units(local_db._sample_data_files_local_concurrency_limiter, 1);
 
         auto& local_state = state[this_shard_id()];
 
-        size_t offset = this_shard_id() == 0 ? 0 : state[this_shard_id() - 1]->cross_shard_offset;
-        SCYLLA_ASSERT(local_state->cross_shard_offset >= offset);
+        size_t offset = this_shard_id() == 0 ? 0 : state[this_shard_id() - 1]->global_offset_in_chunks;
+        SCYLLA_ASSERT(local_state->global_offset_in_chunks >= offset);
         auto chosen_it = std::ranges::lower_bound(chosen_chunks, offset);
-        const auto chosen_end = std::ranges::lower_bound(chosen_chunks, local_state->cross_shard_offset);
+        auto results_offset = chosen_it - std::begin(chosen_chunks);
+        const auto chosen_end = std::ranges::lower_bound(chosen_chunks, local_state->global_offset_in_chunks);
         auto sst_it = local_state->snapshot.begin();
         uint64_t local_chosen_chunks = chosen_end - chosen_it;
 
@@ -3267,29 +3291,18 @@ future<utils::chunked_vector<bytes>> database::sample_data_files(
             return {*sst_it, (offset_in_chunks - offset) * chunk_size};
         };
 
-        utils::chunked_vector<bytes> result;
-        result.reserve(local_chosen_chunks);
         int concurrency_limit = 10;
         co_await max_concurrent_for_each(std::views::iota(uint64_t(0), local_chosen_chunks), concurrency_limit, coroutine::lambda([&] (int) -> future<> {
             auto permit = co_await local_db._system_read_concurrency_sem.obtain_permit(
                 local_state->schema, "sample_data_files", chunk_size, no_timeout, nullptr);
             auto [sst, offset] = get_next_chunk();
             auto buf = co_await sst->data_read(offset, chunk_size, permit);
-            result.push_back(bytes(reinterpret_cast<const bytes::value_type*>(buf.get()), buf.size()));
+            std::copy(buf.begin(), buf.end(), result[results_offset++].get_write());
         }));
-        co_return result;
     };
-
-    auto result = co_await container().map_reduce0(
-        sample_one_shard,
-        utils::chunked_vector<bytes>(),
-        [] (auto v, auto partial) {
-            std::ranges::move(partial, std::back_inserter(v));
-            return v;
-        }
-    );
+    co_await container().invoke_on_all(sample_one_shard);
 
     co_return result;
 }
 
-}
+} // namespace replica
