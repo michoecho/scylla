@@ -129,19 +129,18 @@ def start_ldap(host: Host, port: int, instance_root: Path, toxyproxy_byte_limit:
     # This will always fail because it lacks the permissions to read the default slapd data
     # folder but it does create the instance folder so we don't want to fail here.
     try:
-        subprocess.check_output(['slaptest', '-f', TOP_SRC_DIR / LDAP_SERVER_CONFIGURATION_FILE, '-F', instance_path],
-                                stderr=subprocess.DEVNULL)
+        subprocess.check_output(['slaptest', '-f', TOP_SRC_DIR / LDAP_SERVER_CONFIGURATION_FILE, '-F', instance_path])
     except:
         pass
     # Set up failure injection.
     try:
         proxy_name = f'p{port}'
         subprocess.check_output(
-            ['toxiproxy-cli', '-h', f'{host}:{tp_port}', 'c', proxy_name, '--listen', f'{host}:{port + 2}', '--upstream',
-             f'{host}:{port}'], stderr=subprocess.STDOUT)
+            ['toxiproxy-cli', '--host', f'{host}:{tp_port}', 'create', '--listen', f'{host}:{port + 2}', '--upstream',
+             f'{host}:{port}', proxy_name], stderr=subprocess.STDOUT)
         subprocess.check_output(
-            ['toxiproxy-cli', '-h', f'{host}:{tp_port}', 't', 'a', proxy_name, '-t', 'limit_data', '-n', 'limiter', '-a',
-             f'bytes={toxyproxy_byte_limit}'], stderr=subprocess.STDOUT)
+            ['toxiproxy-cli', '--host', f'{host}:{tp_port}', 'toxic', 'add', '--type', 'limit_data', '--toxicName', 'limiter', '-a',
+             f'bytes={toxyproxy_byte_limit}', proxy_name], stderr=subprocess.STDOUT)
         # Change the data folder in the default config.
         replace_expression = f"s/olcDbDirectory:.*/olcDbDirectory: {str(instance_path).replace('/', r'\/')}/g"
         subprocess.check_output(
@@ -154,11 +153,16 @@ def start_ldap(host: Host, port: int, instance_root: Path, toxyproxy_byte_limit:
             ['find', instance_path, '-type', 'f', '-exec', 'sed', '-i', replace_expression, '{}', ';'],
             stderr=subprocess.STDOUT
         )
+        replace_expression = f"s| /openldap-data.*||g"
+        subprocess.check_output(
+            ['find', instance_path, '-type', 'f', '-exec', 'sed', '-i', replace_expression, '{}', ';'],
+            stderr=subprocess.STDOUT
+        )
         # Put the test data in.
         cmd = ['slapadd', '-F', instance_path]
         subprocess.check_output(cmd, input='\n\n'.join(DEFAULT_ENTRIES).encode('ascii'), stderr=subprocess.STDOUT)
     except CalledProcessError as e:
-        logging.critical("toxiproxy-cli failed: %s: s%", e, e.stdout)
+        logging.critical("toxiproxy-cli failed: %s: %s", e, e.stdout)
         raise 
     # Set up the server.
     SLAPD_URLS = f'ldap://:{port}/ ldaps://:{port + 1}/'
@@ -178,7 +182,7 @@ def start_ldap(host: Host, port: int, instance_root: Path, toxyproxy_byte_limit:
 
     saslauthd_proc = subprocess.Popen(
         ['saslauthd', '-d', '-n', '1', '-a', 'ldap', '-O', saslauthd_conf_path, '-m', saslauthd_socket_path.name],
-        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        stderr=subprocess.STDOUT)
 
     def finalize():
         slapd_proc.terminate()
