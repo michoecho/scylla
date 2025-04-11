@@ -1285,11 +1285,13 @@ public:
                             streamed_mutation::forwarding fwd,
                             mutation_reader::forwarding fwd_mr,
                             read_monitor& mon,
-                            integrity_check integrity)
+                            integrity_check integrity,
+                            std::unique_ptr<index_reader> ir = nullptr)
             : mp_row_consumer_reader_mx(std::move(schema), permit, std::move(sst))
             , _slice_holder(std::move(slice))
             , _slice(_slice_holder.get())
             , _consumer(this, _schema, std::move(permit), _slice, std::move(trace_state), fwd, _sst)
+            , _index_reader(std::move(ir))
             // FIXME: I want to add `&& fwd_mr == mutation_reader::forwarding::no` below
             // but can't because many call sites use the default value for
             // `mutation_reader::forwarding` which is `yes`.
@@ -1814,10 +1816,11 @@ static mutation_reader make_reader(
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
         read_monitor& monitor,
-        integrity_check integrity) {
+        integrity_check integrity,
+        std::unique_ptr<index_reader> ir = nullptr) {
     return make_mutation_reader<mx_sstable_mutation_reader>(
         std::move(sstable), std::move(schema), std::move(permit), range,
-        std::move(slice), std::move(trace_state), fwd, fwd_mr, monitor, integrity);
+        std::move(slice), std::move(trace_state), fwd, fwd_mr, monitor, integrity, std::move(ir));
 }
 
 mutation_reader make_reader(
@@ -1848,6 +1851,22 @@ mutation_reader make_reader(
         integrity_check integrity) {
     return make_reader(std::move(sstable), std::move(schema), std::move(permit), range,
             value_or_reference(std::move(slice)), std::move(trace_state), fwd, fwd_mr, monitor, integrity);
+}
+
+mutation_reader make_reader_with_index_reader(
+        shared_sstable sstable,
+        schema_ptr schema,
+        reader_permit permit,
+        const dht::partition_range& range,
+        const query::partition_slice& slice,
+        tracing::trace_state_ptr trace_state,
+        streamed_mutation::forwarding fwd,
+        mutation_reader::forwarding fwd_mr,
+        read_monitor& monitor,
+        integrity_check integrity,
+        std::unique_ptr<index_reader> ir) {
+    return make_reader(std::move(sstable), std::move(schema), std::move(permit), range,
+            value_or_reference(slice), std::move(trace_state), fwd, fwd_mr, monitor, integrity, std::move(ir));
 }
 
 /// a reader which does not support seeking to given position.
