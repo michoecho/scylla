@@ -78,7 +78,7 @@ class index_evictable : public evictable {
 
 // Implements LRU cache replacement for row cache and sstable index cache.
 class lru {
-private:
+public:
     using lru_type = boost::intrusive::list<evictable,
         boost::intrusive::member_hook<evictable, evictable::lru_link_type, &evictable::_lru_link>,
         boost::intrusive::constant_time_size<false>>; // we need this to have bi::auto_unlink on hooks.
@@ -92,7 +92,6 @@ private:
 
     using reclaiming_result = seastar::memory::reclaiming_result;
 
-public:
     ~lru() {
         while (!_list.empty()) {
             evictable& e = _list.front();

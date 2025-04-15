@@ -28,6 +28,7 @@
 #include "clustering_key_filter.hh"
 #include "utils/assert.hh"
 #include "utils/updateable_value.hh"
+#include <seastar/util/tracer.hh>
 
 namespace cache {
 
@@ -115,7 +116,16 @@ cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fractio
             size_t index_cache_space = _partition_index_cache_stats.used_bytes + _index_cached_file_stats.cached_bytes;
             bool should_evict_index = index_cache_space > total_cache_space * _index_cache_fraction.get();
 
-            return _lru.evict(should_evict_index);
+            auto result = _lru.evict(should_evict_index);
+            if (result == memory::reclaiming_result::reclaimed_nothing) {
+                TRACEPOINT(tracer::event_level::INFO, "make_evictable:failure",
+                           "index", bool(should_evict_index),
+                           "index_empty", _lru._index_list.empty(),
+                           "main_empty", _lru._list.empty(),
+                           "total_cache_space", total_cache_space,
+                           "index_cache_space", index_cache_space);
+            }
+            return result;
         });
     });
 }

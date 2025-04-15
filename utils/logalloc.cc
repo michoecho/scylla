@@ -1244,6 +1244,7 @@ tracker::stats tracker::statistics() const {
 size_t segment_pool::reclaim_segments(size_t target, is_preemptible preempt) {
     // Reclaimer tries to release segments occupying lower parts of the address
     // space.
+    TRACEPOINT(tracer::event_level::INFO, "reclaim_segments:entry", "target", target, "preempt", bool(preempt));
     llogger.debug("Trying to reclaim {} segments", target);
 
     // Reclamation. Migrate segments to higher addresses and shrink segment pool.
@@ -1290,6 +1291,7 @@ size_t segment_pool::reclaim_segments(size_t target, is_preemptible preempt) {
         }
     }
 
+    TRACEPOINT(tracer::event_level::INFO, "reclaim_segments:entry", "reclaimed", reclaimed_segments);
     llogger.debug("Reclaimed {} segments (requested {})", reclaimed_segments, target);
     timing_guard.set_memory_released(reclaimed_segments * segment::size);
     return reclaimed_segments;
@@ -2604,8 +2606,20 @@ static void reclaim_from_evictable(region::impl& r, size_t target_mem_in_use, is
     auto used = r.occupancy().used_space();
     auto used_target = used - std::min(used, deficit + segment::size);
 
+    TRACEPOINT(tracer::event_level::INFO, "reclaim_from_evictable:entry",
+        "used", used,
+        "used_target", used_target,
+        "target_mem_in_use", target_mem_in_use,
+        "total_memory_in_use", r.segment_pool().total_memory_in_use(),
+        "preempt", bool(preempt)
+    );
+
     while (r.segment_pool().total_memory_in_use() > target_mem_in_use) {
         used = r.occupancy().used_space();
+        TRACEPOINT(tracer::event_level::DEBUG, "reclaim_from_evictable:loop",
+            "total_memory_in_use", r.segment_pool().total_memory_in_use(),
+            "used", used
+        );
         if (used > used_target) {
             llogger.debug("Evicting {} bytes from region {}, occupancy={} in advance",
                     used - used_target, r.id(), r.occupancy());
@@ -2613,18 +2627,27 @@ static void reclaim_from_evictable(region::impl& r, size_t target_mem_in_use, is
             llogger.debug("Evicting from region {}, occupancy={} until it's compactible", r.id(), r.occupancy());
         }
         while (r.occupancy().used_space() > used_target || !r.is_compactible()) {
-            if (r.evict_some() == memory::reclaiming_result::reclaimed_nothing) {
+            auto res = r.evict_some();
+            TRACEPOINT(tracer::event_level::DEBUG, "reclaim_from_evictable:evict_some()",
+                       "evicted", res == memory::reclaiming_result::reclaimed_something);
+            if (res == memory::reclaiming_result::reclaimed_nothing) {
                 if (r.is_compactible()) { // Need to make forward progress in case there is nothing to evict.
+                    TRACEPOINT(tracer::event_level::DEBUG, "reclaim_from_evictable:nothing_to_evict_but_can_compact");
                     break;
                 }
+                TRACEPOINT(tracer::event_level::INFO, "reclaim_from_evictable:nothing_to_evict", "used",
+                           r.occupancy().used_space());
                 llogger.debug("Unable to evict more, evicted {} bytes", used - r.occupancy().used_space());
                 return;
             }
             if (r.segment_pool().total_memory_in_use() <= target_mem_in_use) {
+                TRACEPOINT(tracer::event_level::INFO, "reclaim_from_evictable:target_met_by_eviction", "used",
+                           r.occupancy().used_space());
                 llogger.debug("Target met after evicting {} bytes", used - r.occupancy().used_space());
                 return;
             }
             if (preempt && need_preempt()) {
+                TRACEPOINT(tracer::event_level::INFO, "reclaim_from_evictable:preempted");
                 llogger.debug("reclaim_from_evictable preempted");
                 return;
             }
@@ -2639,12 +2662,18 @@ static void reclaim_from_evictable(region::impl& r, size_t target_mem_in_use, is
         // preempted without doing any useful work, then eventually memory will be
         // exhausted and reclaim will be called synchronously, without preemption.
         if (preempt && need_preempt()) {
+            TRACEPOINT(tracer::event_level::INFO, "reclaim_from_evictable:preempted");
             llogger.debug("reclaim_from_evictable preempted");
             return;
         }
+        TRACEPOINT(tracer::event_level::DEBUG, "reclaim_from_evictable:compact");
         llogger.debug("Compacting after evicting {} bytes", used - r.occupancy().used_space());
         r.compact();
     }
+
+    TRACEPOINT(tracer::event_level::INFO, "reclaim_from_evictable:exit",
+        "total_memory_in_use", r.segment_pool().total_memory_in_use()
+    );
 }
 
 idle_cpu_handler_result tracker::impl::compact_on_idle(work_waiting_on_reactor check_for_work) {
@@ -2682,6 +2711,7 @@ idle_cpu_handler_result tracker::impl::compact_on_idle(work_waiting_on_reactor c
 }
 
 size_t tracker::impl::reclaim(size_t memory_to_release, is_preemptible preempt) {
+    TRACEPOINT(tracer::event_level::INFO, "reclaim:entry", "preempt", bool(preempt));
     if (_reclaiming_disabled_depth) {
         return 0;
     }
@@ -2691,6 +2721,7 @@ size_t tracker::impl::reclaim(size_t memory_to_release, is_preemptible preempt) 
 }
 
 size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible preempt) {
+    TRACEPOINT(tracer::event_level::INFO, "reclaim_locked:entry", "memory_to_release", memory_to_release, "preempt", bool(preempt));
     llogger.debug("reclaim_locked({}, preempt={})", memory_to_release, int(bool(preempt)));
     // Reclamation steps:
     // 1. Try to release free segments from segment pool and emergency reserve.
@@ -2701,10 +2732,12 @@ size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible pr
     size_t mem_released = nr_released * segment::size;
     if (mem_released >= memory_to_release) {
         llogger.debug("reclaim_locked() = {}", memory_to_release);
+        TRACEPOINT(tracer::event_level::INFO, "reclaim_locked:exit", "mem_released", mem_released);
         return memory_to_release;
     }
     if (preempt && need_preempt()) {
         llogger.debug("reclaim_locked() = {}", mem_released);
+        TRACEPOINT(tracer::event_level::INFO, "reclaim_locked:exit", "mem_released", mem_released);
         return mem_released;
     }
 
@@ -2712,6 +2745,7 @@ size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible pr
 
     if (compacted == 0) {
         llogger.debug("reclaim_locked() = {}", mem_released);
+        TRACEPOINT(tracer::event_level::INFO, "reclaim_locked:exit", "mem_released", mem_released);
         return mem_released;
     }
 
@@ -2721,10 +2755,12 @@ size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible pr
     mem_released += nr_released * segment::size;
 
     llogger.debug("reclaim_locked() = {}", mem_released);
+    TRACEPOINT(tracer::event_level::INFO, "reclaim_locked:exit", "mem_released", mem_released);
     return mem_released;
 }
 
 size_t tracker::impl::compact_and_evict(size_t reserve_segments, size_t memory_to_release, is_preemptible preempt) {
+    TRACEPOINT(tracer::event_level::INFO, "compact_and_evict");
     if (_reclaiming_disabled_depth) {
         return 0;
     }
@@ -2759,6 +2795,17 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
     memory_to_release += (reserve_segments - std::min(reserve_segments, _segment_pool->free_segments())) * segment::size;
     auto target_mem = mem_in_use - std::min(mem_in_use, memory_to_release - mem_released);
 
+    TRACEPOINT(tracer::event_level::INFO, "compact_and_evict_locked:entry",
+                "mem_in_use", mem_in_use,
+                "reserve_segments", reserve_segments,
+                "memory_to_release", memory_to_release,
+                "is_preemptible", bool(preempt),
+                "free_segments", _segment_pool->free_segments(),
+                "current_emergency_reserve_goal", _segment_pool->current_emergency_reserve_goal(),
+                "emergency_reserve_max", _segment_pool->emergency_reserve_max(),
+                "target_mem", target_mem
+    );
+
     llogger.debug("Compacting, requested {} bytes, {} bytes in use, target is {}",
         memory_to_release, mem_in_use, target_mem);
 
@@ -2791,6 +2838,13 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
             std::ranges::pop_heap(_regions, cmp);
             region::impl* r = _regions.back();
 
+            TRACEPOINT(tracer::event_level::DEBUG, "compact_and_evict_locked:first_loop",
+                "region", fmt::ptr(r),
+                "compactible", r->is_compactible(),
+                "evictable", r->is_evictable(),
+                "used_space", r->occupancy().used_space(),
+                "total_space", r->occupancy().total_space()
+            );
             if (!r->is_compactible()) {
                 llogger.trace("Unable to release segments, no compactible pools.");
                 break;
@@ -2805,6 +2859,7 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
                 reclaim_from_evictable(*r, target_mem, preempt);
                 ++evictable_regions;
             } else {
+                TRACEPOINT(tracer::event_level::DEBUG, "compact_and_evict_locked:compact");
                 r->compact();
             }
 
@@ -2817,6 +2872,10 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
     }
 
     auto released_during_compaction = mem_in_use - _segment_pool->total_memory_in_use();
+
+    TRACEPOINT(tracer::event_level::INFO, "compact_and_evict_locked:phase2",
+               "total_memory_in_use", _segment_pool->total_memory_in_use()
+    );
 
     if (_segment_pool->total_memory_in_use() > target_mem) {
         int regions = 0, evictable_regions = 0;
@@ -2844,6 +2903,10 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
 
     llogger.debug("Released {} bytes (wanted {}), {} during compaction",
         mem_released, memory_to_release, released_during_compaction);
+
+    TRACEPOINT(tracer::event_level::INFO, "compact_and_evict_locked:exit",
+               "total_memory_in_use", _segment_pool->total_memory_in_use()
+    );
 
     return mem_released;
 }
