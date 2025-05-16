@@ -1586,6 +1586,8 @@ void writer::consume_end_of_stream() {
         }
     }
     if (_trie_index_writer) {
+        uint32_t magic = seastar::cpu_to_be(0x13371337);
+        _trie_row_index_writer->write((const char*)&magic, sizeof(magic));
         close_writer(_trie_index_writer);
         close_writer(_trie_row_index_writer);
     }
