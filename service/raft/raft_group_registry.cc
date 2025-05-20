@@ -43,7 +43,11 @@ public:
 
         // The listener should be registered on every shard.
         // Write the message on INFO level only on shard 0 so we don't spam the logs.
-        LOGMACRO(rslog, this_shard_id() == 0 ? log_level::info : log_level::debug, "marking Raft server {} as alive for raft groups", raft_id);
+        if (this_shard_id() == 0) {
+            LOGMACRO(rslog, log_level::info, "marking Raft server {} as alive for raft groups", raft_id);
+        } else {
+            LOGMACRO(rslog, log_level::debug, "marking Raft server {} as alive for raft groups", raft_id);
+        }
 
         co_return;
     }
@@ -53,7 +57,11 @@ public:
         auto raft_id = raft::server_id{id};
         _alive_set.erase(raft_id);
 
-        LOGMACRO(rslog, this_shard_id() == 0 ? log_level::info : log_level::debug, "marking Raft server {} as alive for raft groups", raft_id);
+        if (this_shard_id() == 0) {
+            LOGMACRO(rslog, log_level::info, "marking Raft server {} as alive for raft groups", raft_id);
+        } else {
+            LOGMACRO(rslog, log_level::debug, "marking Raft server {} as alive for raft groups", raft_id);
+        }
 
         co_return;
     }
