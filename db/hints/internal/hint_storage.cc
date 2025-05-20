@@ -81,17 +81,17 @@ future<hints_segments_map> get_current_hints_segments(const fs::path& hint_direc
     // Shard level.
     co_await scan_shard_hint_directories(hint_directory,
             [&current_hint_segments] (fs::path dir, directory_entry de, unsigned shard_id) {
-        manager_logger.trace("shard_id = {}", shard_id);
+        LOGMACRO(manager_logger, log_level::trace, "shard_id = {}", shard_id);
 
         // IP level.
         return lister::scan_dir(dir / de.name, lister::dir_entry_types::of<directory_entry_type::directory>(),
                 [&current_hint_segments, shard_id] (fs::path dir, directory_entry de) {
-            manager_logger.trace("\tIP: {}", de.name);
+            LOGMACRO(manager_logger, log_level::trace, "\tIP: {}", de.name);
 
             // Hint files.
             return lister::scan_dir(dir / de.name, lister::dir_entry_types::of<directory_entry_type::regular>(),
                     [&current_hint_segments, shard_id, ep = de.name] (fs::path dir, directory_entry de) {
-                manager_logger.trace("\t\tfile: {}", de.name);
+                LOGMACRO(manager_logger, log_level::trace, "\t\tfile: {}", de.name);
 
                 current_hint_segments[ep][shard_id].emplace_back(dir / de.name);
 
@@ -125,7 +125,7 @@ future<> rebalance_segments_for(const sstring& ep, size_t segments_per_shard,
         const fs::path& hint_directory, hints_ep_segments_map& ep_segments,
         segment_list& segments_to_move)
 {
-    manager_logger.trace("{}: segments_per_shard: {}, total number of segments to move: {}",
+    LOGMACRO(manager_logger, log_level::trace, "{}: segments_per_shard: {}, total number of segments to move: {}",
             ep, segments_per_shard, segments_to_move.size());
 
     // Sanity check.
@@ -148,10 +148,10 @@ future<> rebalance_segments_for(const sstring& ep, size_t segments_per_shard,
 
             // Don't move the file to the same location. It's pointless.
             if (*seg_path_it != seg_new_path) {
-                manager_logger.trace("going to move: {} -> {}", *seg_path_it, seg_new_path);
+                LOGMACRO(manager_logger, log_level::trace, "going to move: {} -> {}", *seg_path_it, seg_new_path);
                 co_await io_check(rename_file, seg_path_it->native(), seg_new_path.native());
             } else {
-                manager_logger.trace("skipping: {}", *seg_path_it);
+                LOGMACRO(manager_logger, log_level::trace, "skipping: {}", *seg_path_it);
             }
 
             current_shard_segments.splice(current_shard_segments.end(), segments_to_move,
@@ -178,7 +178,7 @@ future<> rebalance_segments(const fs::path& hint_directory, hints_segments_map& 
                 | std::views::values
                 | std::views::transform(std::mem_fn(&segment_list::size)),
                 size_t(0), std::plus());
-        manager_logger.trace("{}: total files: {}", ep, per_ep_hints[ep]);
+        LOGMACRO(manager_logger, log_level::trace, "{}: total files: {}", ep, per_ep_hints[ep]);
     }
 
     // Create a map of lists of segments that we will move (for each destination endpoint):

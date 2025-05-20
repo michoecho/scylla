@@ -196,7 +196,7 @@ trace_state::~trace_state() {
     stop_foreground_and_write();
     _local_tracing_ptr->end_session();
 
-    trace_state_logger.trace("{}: destructing", session_id());
+    LOGMACRO(trace_state_logger, log_level::trace, "{}: destructing", session_id());
 }
 
 void trace_state::stop_foreground_and_write() noexcept {
@@ -243,7 +243,7 @@ void trace_state::stop_foreground_and_write() noexcept {
         set_state(state::background);
     }
 
-    trace_state_logger.trace("{}: Current records count is {}",  session_id(), _records->size());
+    LOGMACRO(trace_state_logger, log_level::trace, "{}: Current records count is {}",  session_id(), _records->size());
 
     if (should_write_records()) {
         _local_tracing_ptr->write_session_records(_records, write_on_close());
@@ -268,7 +268,7 @@ sstring trace_state::raw_value_to_sstring(const cql3::raw_value_view& v, bool is
         if (t) {
             str_rep = t->to_string(to_bytes(val));
         } else {
-            trace_state_logger.trace("{}: data types are unavailable - tracing a raw value", session_id());
+            LOGMACRO(trace_state_logger, log_level::trace, "{}: data types are unavailable - tracing a raw value", session_id());
             str_rep = to_hex(val);
         }
 

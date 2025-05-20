@@ -96,32 +96,32 @@ struct table {
 
     // Must not be called concurrently
     void flush() {
-        testlog.trace("flushing");
+        LOGMACRO(testlog, log_level::trace, "flushing");
         prev_mt = std::exchange(mt, make_lw_shared<replica::memtable>(s.schema()));
         auto flushed = make_lw_shared<replica::memtable>(s.schema());
         flushed->apply(*prev_mt, make_permit()).get();
         prev_mt->mark_flushed(flushed->as_data_source());
-        testlog.trace("updating cache");
+        LOGMACRO(testlog, log_level::trace, "updating cache");
         cache.update(row_cache::external_updater([&] {
             underlying.apply(flushed);
         }), *prev_mt).get();
-        testlog.trace("flush done");
+        LOGMACRO(testlog, log_level::trace, "flush done");
         prev_mt = {};
     }
 
     void mutate_next_phase() {
-        testlog.trace("mutating, phase={}", mutation_phase);
+        LOGMACRO(testlog, log_level::trace, "mutating, phase={}", mutation_phase);
         for (auto i : std::views::iota(0u, p_keys.size())) {
             auto t = s.new_timestamp();
             auto tag = value_tag(i, mutation_phase);
             auto m = get_mutation(i, t, tag);
             mt->apply(std::move(m));
             p_writetime[i] = t;
-            testlog.trace("updated key {}, {} @{}", i, tag, t);
+            LOGMACRO(testlog, log_level::trace, "updated key {}, {} @{}", i, tag, t);
             ++mutations;
             yield().get();
         }
-        testlog.trace("mutated whole ring");
+        LOGMACRO(testlog, log_level::trace, "mutated whole ring");
         ++mutation_phase;
         // FIXME: mutate concurrently with flush
         flush();
@@ -146,12 +146,12 @@ struct table {
         auto new_s = schema_builder(s.schema())
             .with_column(to_bytes(format("_a{}", col_id++)), byte_type)
             .build();
-        testlog.trace("changing schema to {}", *new_s);
+        LOGMACRO(testlog, log_level::trace, "changing schema to {}", *new_s);
         set_schema(new_s);
     }
 
     std::unique_ptr<reader> make_reader(dht::partition_range pr, query::partition_slice slice) {
-        testlog.trace("making reader, pk={} ck={}", pr, slice);
+        LOGMACRO(testlog, log_level::trace, "making reader, pk={} ck={}", pr, slice);
         auto r = std::make_unique<reader>(std::move(pr), std::move(slice));
         std::vector<mutation_reader> rd;
         auto permit = make_permit();
@@ -214,7 +214,7 @@ public:
     { }
 
     void consume_new_partition(const dht::decorated_key& key) {
-        testlog.trace("reader {}: enters partition {}", _id, key);
+        LOGMACRO(testlog, log_level::trace, "reader {}: enters partition {}", _id, key);
         _value = {};
         _key = _t.index_of_key(key);
     }
@@ -229,7 +229,7 @@ public:
         sstring value;
         api::timestamp_type t;
         std::tie(value, t) = _t.s.get_value(*_s, row);
-        testlog.trace("reader {}: {} @{}, {}", _id, value, t, clustering_row::printer(*_s, row));
+        LOGMACRO(testlog, log_level::trace, "reader {}: {} @{}, {}", _id, value, t, clustering_row::printer(*_s, row));
         if (_value && value != _value) {
             throw std::runtime_error(fmt::format("Saw values from two different writes in partition {:d}: {} and {}", _key, _value, value));
         }
@@ -242,7 +242,7 @@ public:
     }
 
     size_t consume_end_of_stream() {
-        testlog.trace("reader {}: done, {} rows", _id, _row_count);
+        LOGMACRO(testlog, log_level::trace, "reader {}: done, {} rows", _id, _row_count);
         return _row_count;
     }
 };
@@ -341,7 +341,7 @@ int main(int argc, char** argv) {
                 int pk = t.p_keys.size() / 2; // FIXME: spread over 3 consecutive partitions
                 testlog.info("{} is using pk={} ck={}", id, pk, ck_range);
                 while (!cancelled) {
-                    testlog.trace("{}: starting read", id);
+                    LOGMACRO(testlog, log_level::trace, "{}: starting read", id);
                     auto rd = t.make_single_key_reader(pk, ck_range);
                     auto row_count = rd->rd->consume(validating_consumer(t, id, t.s.schema())).get();
                     if (row_count != len) {
@@ -353,7 +353,7 @@ int main(int argc, char** argv) {
             auto scanning_reader = [&] (reader_id id) {
                 auto expected_row_count = t.p_keys.size() * t.c_keys.size();
                 while (!cancelled) {
-                    testlog.trace("{}: starting read", id);
+                    LOGMACRO(testlog, log_level::trace, "{}: starting read", id);
                     auto rd = t.make_scanning_reader();
                     auto row_count = rd->rd->consume(validating_consumer(t, id, t.s.schema())).get();
                     if (row_count != expected_row_count) {
@@ -385,7 +385,7 @@ int main(int argc, char** argv) {
 
             timer<> evictor;
             evictor.set_callback([&] {
-                testlog.trace("evicting");
+                LOGMACRO(testlog, log_level::trace, "evicting");
                 t.cache.evict();
             });
             evictor.arm_periodic(3s);

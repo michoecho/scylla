@@ -854,7 +854,7 @@ private:
             }
             on_internal_error(tablet_logger, format("Invalid replica selector", static_cast<int>(info->writes)));
         });
-        tablet_logger.trace("get_replicas_for_write({}): table={}, tablet={}, replicas={}", search_token, _table, tablet, replicas);
+        LOGMACRO(tablet_logger, log_level::trace, "get_replicas_for_write({}): table={}, tablet={}, replicas={}", search_token, _table, tablet, replicas);
         return replicas;
     }
 
@@ -872,7 +872,7 @@ private:
                 if (!info->pending_replica) {
                     return {};
                 }
-                tablet_logger.trace("get_pending_endpoints({}): table={}, tablet={}, replica={}",
+                LOGMACRO(tablet_logger, log_level::trace, "get_pending_endpoints({}): table={}, tablet={}, replica={}",
                                     search_token, _table, tablet, *info->pending_replica);
                 return {info->pending_replica->host};
             }
@@ -899,7 +899,7 @@ private:
             }
             on_internal_error(tablet_logger, format("Invalid replica selector", static_cast<int>(info->reads)));
         });
-        tablet_logger.trace("get_endpoints_for_reading({}): table={}, tablet={}, replicas={}", search_token, _table, tablet, replicas);
+        LOGMACRO(tablet_logger, log_level::trace, "get_endpoints_for_reading({}): table={}, tablet={}, replicas={}", search_token, _table, tablet, replicas);
         return to_host_set(replicas);
     }
 

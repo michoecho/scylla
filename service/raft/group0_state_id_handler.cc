@@ -43,7 +43,7 @@ void group0_state_id_handler::refresh() {
         return;
     }
 
-    slogger.trace("Current node count: {}", group0_members.size());
+    LOGMACRO(slogger, log_level::trace, "Current node count: {}", group0_members.size());
 
     std::vector<raft::server_id> group0_members_missing_endpoint;
     std::vector<raft::server_id> group0_members_missing_state_id;

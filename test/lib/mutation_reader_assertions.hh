@@ -55,7 +55,7 @@ private:
             // While readers that emit spurious empty rows may be wasteful, it is not
             // incorrect to do so, so let's ignore them.
             if (next->is_clustering_row() && next->as_clustering_row().empty()) {
-                testlog.trace("Received empty clustered row: {}", mutation_fragment_v2::printer(*_reader.schema(), *next));
+                LOGMACRO(testlog, log_level::trace, "Received empty clustered row: {}", mutation_fragment_v2::printer(*_reader.schema(), *next));
                 _reader().get();
                 continue;
             }
@@ -67,7 +67,7 @@ private:
                 // squash rtcs with the same pos
                 while (auto next_maybe_rtc = _reader.peek().get()) {
                     if (next_maybe_rtc->is_range_tombstone_change() && cmp(next_maybe_rtc->position(), rtc_mf.position()) == 0) {
-                        testlog.trace("Squashing {} with {}", next_maybe_rtc->as_range_tombstone_change().tombstone(), tomb);
+                        LOGMACRO(testlog, log_level::trace, "Squashing {} with {}", next_maybe_rtc->as_range_tombstone_change().tombstone(), tomb);
                         tomb = next_maybe_rtc->as_range_tombstone_change().tombstone();
                         _reader().get();
                     } else {
@@ -76,7 +76,7 @@ private:
                 }
                 rtc_mf.mutate_as_range_tombstone_change(*_reader.schema(), [tomb] (range_tombstone_change& rtc) { rtc.set_tombstone(tomb); });
                 if (tomb == _rt) {
-                    testlog.trace("Received spurious rtcs, equivalent to: {}", mutation_fragment_v2::printer(*_reader.schema(), rtc_mf));
+                    LOGMACRO(testlog, log_level::trace, "Received spurious rtcs, equivalent to: {}", mutation_fragment_v2::printer(*_reader.schema(), rtc_mf));
                     continue;
                 }
                 _reader.unpop_mutation_fragment(std::move(rtc_mf));
@@ -92,9 +92,9 @@ private:
         }
         auto next = _reader().get();
         if (next) {
-            testlog.trace("read_next(): {}", mutation_fragment_v2::printer(*_reader.schema(), *next));
+            LOGMACRO(testlog, log_level::trace, "read_next(): {}", mutation_fragment_v2::printer(*_reader.schema(), *next));
         } else {
-            testlog.trace("read_next(): null");
+            LOGMACRO(testlog, log_level::trace, "read_next(): null");
         }
         return next;
     }
@@ -146,7 +146,7 @@ public:
 
     mutation_reader_assertions& produces_partition_start(const dht::decorated_key& dk,
                                                      std::optional<tombstone> tomb = std::nullopt) {
-        testlog.trace("Expecting partition start with key {}", dk);
+        LOGMACRO(testlog, log_level::trace, "Expecting partition start with key {}", dk);
         auto mfopt = read_next();
         if (!mfopt) {
             BOOST_FAIL(format("Expected: partition start with key {}, got end of stream", dk));
@@ -165,7 +165,7 @@ public:
     }
 
     mutation_reader_assertions& produces_static_row() {
-        testlog.trace("Expecting static row");
+        LOGMACRO(testlog, log_level::trace, "Expecting static row");
         auto mfopt = read_next();
         if (!mfopt) {
             BOOST_FAIL("Expected static row, got end of stream");
@@ -177,9 +177,9 @@ public:
     }
 
     mutation_reader_assertions& produces_row_with_key(const clustering_key& ck, std::optional<tombstone> active_range_tombstone = std::nullopt) {
-        testlog.trace("Expect {}", ck);
+        LOGMACRO(testlog, log_level::trace, "Expect {}", ck);
         if (active_range_tombstone) {
-            testlog.trace("(with active range tombstone: {})", *active_range_tombstone);
+            LOGMACRO(testlog, log_level::trace, "(with active range tombstone: {})", *active_range_tombstone);
         }
         auto mfopt = read_next();
         if (!mfopt) {
@@ -210,7 +210,7 @@ public:
     };
 
     mutation_reader_assertions& produces_static_row(const std::vector<expected_column>& columns) {
-        testlog.trace("Expecting static row");
+        LOGMACRO(testlog, log_level::trace, "Expecting static row");
         auto mfopt = read_next();
         if (!mfopt) {
             BOOST_FAIL("Expected static row, got end of stream");
@@ -240,7 +240,7 @@ public:
     }
 
     mutation_reader_assertions& produces_row(const clustering_key& ck, const std::vector<expected_column>& columns) {
-        testlog.trace("Expect {}", ck);
+        LOGMACRO(testlog, log_level::trace, "Expect {}", ck);
         auto mfopt = read_next();
         if (!mfopt) {
             BOOST_FAIL(format("Expected row with key {}, but got end of stream", ck));
@@ -279,7 +279,7 @@ public:
     mutation_reader_assertions& produces_row(const clustering_key& ck,
                                          const std::vector<column_id>& column_ids,
                                          const std::vector<assert_function>& column_assert) {
-        testlog.trace("Expect {}", ck);
+        LOGMACRO(testlog, log_level::trace, "Expect {}", ck);
         auto mfopt = read_next();
         if (!mfopt) {
             BOOST_FAIL(format("Expected row with key {}, but got end of stream", ck));
@@ -307,17 +307,17 @@ public:
     }
 
     mutation_reader_assertions& may_produce_tombstones(position_range range) {
-        testlog.trace("Expect possible range tombstone changes in {}", range);
+        LOGMACRO(testlog, log_level::trace, "Expect possible range tombstone changes in {}", range);
         while (auto next = peek_next()) {
             if (!next->is_range_tombstone_change()) {
                 break;
             }
             auto rtc = maybe_drop_deletion_time(next->as_range_tombstone_change());
             if (!interval<position_in_partition>{range.start(), range.end()}.contains(rtc.position(), position_in_partition::tri_compare{*_reader.schema()})) {
-                testlog.trace("{} is out of range {}", mutation_fragment_v2::printer(*_reader.schema(), *next), range);
+                LOGMACRO(testlog, log_level::trace, "{} is out of range {}", mutation_fragment_v2::printer(*_reader.schema(), *next), range);
                 break;
             }
-            testlog.trace("Received: {}", rtc);
+            LOGMACRO(testlog, log_level::trace, "Received: {}", rtc);
             apply_rtc(rtc);
             _reader().get();
         }
@@ -326,7 +326,7 @@ public:
 
     mutation_reader_assertions& produces_range_tombstone_change(const range_tombstone_change& rtc_) {
         auto rtc = maybe_drop_deletion_time(rtc_);
-        testlog.trace("Expect {}", rtc);
+        LOGMACRO(testlog, log_level::trace, "Expect {}", rtc);
         auto mfopt = read_next();
         if (!mfopt) {
             BOOST_FAIL(format("Expected {}, but got end of stream", rtc));
@@ -343,7 +343,7 @@ public:
     }
 
     mutation_reader_assertions& produces_partition_end() {
-        testlog.trace("Expecting partition end");
+        LOGMACRO(testlog, log_level::trace, "Expecting partition end");
         BOOST_REQUIRE(!_rt);
         auto mfopt = read_next();
         if (!mfopt) {
@@ -371,7 +371,7 @@ public:
     }
 
     mutation_reader_assertions& produces_end_of_stream() {
-        testlog.trace("Expecting end of stream");
+        LOGMACRO(testlog, log_level::trace, "Expecting end of stream");
         auto mfopt = read_next();
         if (bool(mfopt)) {
             BOOST_FAIL(format("Expected end of stream, got {}", mutation_fragment_v2::printer(*_reader.schema(), *mfopt)));
@@ -381,7 +381,7 @@ public:
     }
 
     mutation_reader_assertions& produces(mutation_fragment_v2::kind k, std::vector<int> ck_elements, bool make_full_key = false) {
-        testlog.trace("Expect {} {{{}}}", k, fmt::join(ck_elements, ", "));
+        LOGMACRO(testlog, log_level::trace, "Expect {} {{{}}}", k, fmt::join(ck_elements, ", "));
         std::vector<bytes> ck_bytes;
         for (auto&& e : ck_elements) {
             ck_bytes.emplace_back(int32_type->decompose(e));
@@ -405,7 +405,7 @@ public:
         if (mfopt->is_range_tombstone_change()) {
             apply_rtc(maybe_drop_deletion_time(mfopt->as_range_tombstone_change()));
         }
-        testlog.trace("Received {}", mutation_fragment_v2::printer(*_reader.schema(), *mfopt));
+        LOGMACRO(testlog, log_level::trace, "Received {}", mutation_fragment_v2::printer(*_reader.schema(), *mfopt));
         return *this;
     }
 
@@ -438,7 +438,7 @@ public:
     }
 
     mutation_reader_assertions& produces_eos_or_empty_mutation() {
-        testlog.trace("Expecting eos or empty mutation");
+        LOGMACRO(testlog, log_level::trace, "Expecting eos or empty mutation");
         auto mo = read_mutation_from_mutation_reader(_reader).get();
         if (mo) {
             if (!mo->partition().empty()) {
@@ -486,27 +486,27 @@ public:
     }
 
     mutation_reader_assertions& fast_forward_to(const dht::partition_range& pr) {
-        testlog.trace("Fast forward to partition range: {}", pr);
+        LOGMACRO(testlog, log_level::trace, "Fast forward to partition range: {}", pr);
         _pr = pr;
         _reader.fast_forward_to(_pr).get();
         return *this;
     }
 
     mutation_reader_assertions& next_partition() {
-        testlog.trace("Skip to next partition");
+        LOGMACRO(testlog, log_level::trace, "Skip to next partition");
         _reader.next_partition().get();
         reset_rt();
         return *this;
     }
 
     mutation_reader_assertions& fast_forward_to(position_range pr) {
-        testlog.trace("Fast forward to clustering range: {}", pr);
+        LOGMACRO(testlog, log_level::trace, "Fast forward to clustering range: {}", pr);
         _reader.fast_forward_to(std::move(pr)).get();
         return *this;
     }
 
     mutation_reader_assertions& fast_forward_to(const clustering_key& ck1, const clustering_key& ck2) {
-        testlog.trace("Fast forward to clustering range: [{}, {})", ck1, ck2);
+        LOGMACRO(testlog, log_level::trace, "Fast forward to clustering range: [{}, {})", ck1, ck2);
         return fast_forward_to(position_range{
                 position_in_partition(position_in_partition::clustering_row_tag_t(), ck1),
                 position_in_partition(position_in_partition::clustering_row_tag_t(), ck2)

@@ -196,11 +196,11 @@ public:
         switch (_state) {
         // START comes first, to make the handling of the 0-quantity case simpler
         case state::START:
-            sstlog.trace("{}: pos {} state {} - data.size()={}", fmt::ptr(this), current_pos(), state::START, data.size());
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {} - data.size()={}", fmt::ptr(this), current_pos(), state::START, data.size());
             _state = state::KEY_SIZE;
             break;
         case state::KEY_SIZE:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::KEY_SIZE);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::KEY_SIZE);
             _entry_offset = current_pos();
             if (this->read_16(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::KEY_BYTES;
@@ -208,21 +208,21 @@ public:
             }
             [[fallthrough]];
         case state::KEY_BYTES:
-            sstlog.trace("{}: pos {} state {} - size={}", fmt::ptr(this), current_pos(), state::KEY_BYTES, this->_u16);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {} - size={}", fmt::ptr(this), current_pos(), state::KEY_BYTES, this->_u16);
             if (this->read_bytes_contiguous(data, this->_u16, _key) != continuous_data_consumer::read_status::ready) {
                 _state = state::POSITION;
                 break;
             }
             [[fallthrough]];
         case state::POSITION:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::POSITION);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::POSITION);
             if (read_vint_or_uint64(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::PROMOTED_SIZE;
                 break;
             }
             [[fallthrough]];
         case state::PROMOTED_SIZE:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::PROMOTED_SIZE);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::PROMOTED_SIZE);
             _position = this->_u64;
             if (read_vint_or_uint32(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::PARTITION_HEADER_LENGTH_1;
@@ -230,7 +230,7 @@ public:
             }
             [[fallthrough]];
         case state::PARTITION_HEADER_LENGTH_1: {
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::PARTITION_HEADER_LENGTH_1);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::PARTITION_HEADER_LENGTH_1);
             auto promoted_index_size_with_header = get_uint32();
             _promoted_index_end = current_pos() + promoted_index_size_with_header;
             if (promoted_index_size_with_header == 0) {
@@ -249,12 +249,12 @@ public:
         }
             [[fallthrough]];
         case state::PARTITION_HEADER_LENGTH_2:
-            sstlog.trace("{}: pos {} state {} {}", fmt::ptr(this), current_pos(), state::PARTITION_HEADER_LENGTH_2, this->_u64);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {} {}", fmt::ptr(this), current_pos(), state::PARTITION_HEADER_LENGTH_2, this->_u64);
             _partition_header_length = this->_u64;
         state_LOCAL_DELETION_TIME:
             [[fallthrough]];
         case state::LOCAL_DELETION_TIME:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
             _deletion_time.emplace();
             if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::MARKED_FOR_DELETE_AT;
@@ -262,7 +262,7 @@ public:
             }
             [[fallthrough]];
         case state::MARKED_FOR_DELETE_AT:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
             _deletion_time->local_deletion_time = this->_u32;
             if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::NUM_PROMOTED_INDEX_BLOCKS;
@@ -270,7 +270,7 @@ public:
             }
             [[fallthrough]];
         case state::NUM_PROMOTED_INDEX_BLOCKS:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::NUM_PROMOTED_INDEX_BLOCKS);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {}", fmt::ptr(this), current_pos(), state::NUM_PROMOTED_INDEX_BLOCKS);
             _deletion_time->marked_for_delete_at = this->_u64;
             if (read_vint_or_uint32(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::CONSUME_ENTRY;
@@ -281,7 +281,7 @@ public:
         case state::CONSUME_ENTRY: {
             auto promoted_index_start = current_pos();
             auto promoted_index_size = _promoted_index_end - promoted_index_start;
-            sstlog.trace("{}: pos {} state {} size {}", fmt::ptr(this), current_pos(), state::CONSUME_ENTRY, promoted_index_size);
+            LOGMACRO(sstlog, log_level::trace, "{}: pos {} state {} size {}", fmt::ptr(this), current_pos(), state::CONSUME_ENTRY, promoted_index_size);
             std::optional<parsed_promoted_index_entry> pi;
             if (_deletion_time && (_trust_pi == trust_promoted_index::yes) && (promoted_index_size > 0)) {
                 pi.emplace();
@@ -303,13 +303,13 @@ public:
                 data.trim_front(promoted_index_size);
             } else {
                 data.trim(0);
-                sstlog.trace("{}: skip {} pos {} state {}", fmt::ptr(this), promoted_index_size - data_size, current_pos(), _state);
+                LOGMACRO(sstlog, log_level::trace, "{}: skip {} pos {} state {}", fmt::ptr(this), promoted_index_size - data_size, current_pos(), _state);
                 return skip_bytes{promoted_index_size - data_size};
             }
         }
             break;
         }
-        sstlog.trace("{}: exit pos {} state {}", fmt::ptr(this), current_pos(), _state);
+        LOGMACRO(sstlog, log_level::trace, "{}: exit pos {} state {}", fmt::ptr(this), current_pos(), _state);
         return proceed::yes;
     }
 
@@ -496,7 +496,7 @@ private:
     }
 
     future<> advance_to_end(index_bound& bound) {
-        sstlog.trace("index {}: advance_to_end() bound {}", fmt::ptr(this), fmt::ptr(&bound));
+        LOGMACRO(sstlog, log_level::trace, "index {}: advance_to_end() bound {}", fmt::ptr(this), fmt::ptr(&bound));
         bound.data_file_position = data_file_end();
         bound.element = indexable_element::partition;
         bound.current_list = {};
@@ -506,16 +506,16 @@ private:
 
     // Must be called for non-decreasing summary_idx.
     future<> advance_to_page(index_bound& bound, uint64_t summary_idx) {
-        sstlog.trace("index {}: advance_to_page({}), bound {}", fmt::ptr(this), summary_idx, fmt::ptr(&bound));
+        LOGMACRO(sstlog, log_level::trace, "index {}: advance_to_page({}), bound {}", fmt::ptr(this), summary_idx, fmt::ptr(&bound));
         SCYLLA_ASSERT(!bound.current_list || bound.current_summary_idx <= summary_idx);
         if (bound.current_list && bound.current_summary_idx == summary_idx) {
-            sstlog.trace("index {}: same page", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: same page", fmt::ptr(this));
             return make_ready_future<>();
         }
 
         auto& summary = _sstable->get_summary();
         if (summary_idx >= summary.header.size) {
-            sstlog.trace("index {}: eof", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: eof", fmt::ptr(this));
             return advance_to_end(bound);
         }
         auto loader = [this, &bound] (uint64_t summary_idx) -> future<index_list> {
@@ -559,12 +559,12 @@ private:
             bound.end_open_marker.reset();
 
             if (sstlog.is_enabled(seastar::log_level::trace)) {
-                sstlog.trace("index {} bound {}: page:", fmt::ptr(this), fmt::ptr(&bound));
+                LOGMACRO(sstlog, log_level::trace, "index {} bound {}: page:", fmt::ptr(this), fmt::ptr(&bound));
                 logalloc::reclaim_lock rl(_region);
                 for (auto&& e : bound.current_list->_entries) {
                     auto dk = dht::decorate_key(*_sstable->_schema,
                         e->get_key().to_partition_key(*_sstable->_schema));
-                    sstlog.trace("  {} -> {}", dk, e->position());
+                    LOGMACRO(sstlog, log_level::trace, "  {} -> {}", dk, e->position());
                 }
             }
 
@@ -612,7 +612,7 @@ private:
     }
 
     future<> advance_to_next_partition(index_bound& bound) {
-        sstlog.trace("index {} bound {}: advance_to_next_partition()", fmt::ptr(&bound), fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "index {} bound {}: advance_to_next_partition()", fmt::ptr(&bound), fmt::ptr(this));
         if (!partition_data_ready(bound)) {
             return advance_to_page(bound, 0).then([this, &bound] {
                 return advance_to_next_partition(bound);
@@ -634,17 +634,17 @@ private:
     }
 
     future<> advance_to(index_bound& bound, dht::ring_position_view pos) {
-        sstlog.trace("index {} bound {}: advance_to({}), _previous_summary_idx={}, _current_summary_idx={}",
+        LOGMACRO(sstlog, log_level::trace, "index {} bound {}: advance_to({}), _previous_summary_idx={}, _current_summary_idx={}",
             fmt::ptr(this), fmt::ptr(&bound), pos, bound.previous_summary_idx, bound.current_summary_idx);
 
         if (pos.is_min()) {
-            sstlog.trace("index {}: first entry", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: first entry", fmt::ptr(this));
             return make_ready_future<>();
         } else if (pos.is_max()) {
             return advance_to_end(bound);
         }
         if (bound_eof(bound)) {
-            sstlog.trace("index {}: eof", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: eof", fmt::ptr(this));
             return make_ready_future<>();
         }
 
@@ -653,13 +653,13 @@ private:
             std::upper_bound(summary.entries.begin() + bound.previous_summary_idx, summary.entries.end(), pos, index_comparator(*_sstable->_schema)));
 
         if (bound.previous_summary_idx == 0) {
-            sstlog.trace("index {}: first entry", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: first entry", fmt::ptr(this));
             return make_ready_future<>();
         }
 
         auto summary_idx = bound.previous_summary_idx - 1;
 
-        sstlog.trace("index {}: summary_idx={}", fmt::ptr(this), summary_idx);
+        LOGMACRO(sstlog, log_level::trace, "index {}: summary_idx={}", fmt::ptr(this), summary_idx);
 
         // Despite the requirement that the values of 'pos' in subsequent calls
         // are increasing we still may encounter a situation when we try to read
@@ -682,7 +682,7 @@ private:
         }
 
         return advance_to_page(bound, summary_idx).then([this, &bound, pos, summary_idx] {
-            sstlog.trace("index {}: old page index = {}", fmt::ptr(this), bound.current_index_idx);
+            LOGMACRO(sstlog, log_level::trace, "index {}: old page index = {}", fmt::ptr(this), bound.current_index_idx);
             auto i = _alloc_section(_region, [&] {
                 auto& entries = bound.current_list->_entries;
                 return std::lower_bound(std::begin(entries) + bound.current_index_idx, std::end(entries), pos,
@@ -692,10 +692,10 @@ private:
             auto& entries = bound.current_list->_entries;
             if (i == std::end(entries)) {
                 if (_single_page_read) {
-                    sstlog.trace("index {}: not found in index page {}, returning eof because this is a single-partition read", summary_idx, fmt::ptr(this));
+                    LOGMACRO(sstlog, log_level::trace, "index {}: not found in index page {}, returning eof because this is a single-partition read", summary_idx, fmt::ptr(this));
                     return advance_to_end(bound);
                 } else {
-                    sstlog.trace("index {}: not found in index page {}, trying next index page", summary_idx, fmt::ptr(this));
+                    LOGMACRO(sstlog, log_level::trace, "index {}: not found in index page {}, trying next index page", summary_idx, fmt::ptr(this));
                     return advance_to_page(bound, summary_idx + 1);
                 }
             }
@@ -704,7 +704,7 @@ private:
             bound.data_file_position = (*i)->position();
             bound.element = indexable_element::partition;
             bound.end_open_marker.reset();
-            sstlog.trace("index {}: new page index = {}, pos={}", fmt::ptr(this), bound.current_index_idx, bound.data_file_position);
+            LOGMACRO(sstlog, log_level::trace, "index {}: new page index = {}, pos={}", fmt::ptr(this), bound.current_index_idx, bound.data_file_position);
             return reset_clustered_cursor(bound);
         });
     }
@@ -720,7 +720,7 @@ public:
     //
     // Must be called only when !eof().
     future<> advance_upper_past(position_in_partition_view pos) {
-        sstlog.trace("index {}: advance_upper_past({})", fmt::ptr(this), pos);
+        LOGMACRO(sstlog, log_level::trace, "index {}: advance_upper_past({})", fmt::ptr(this), pos);
 
         // We advance cursor within the current lower bound partition
         // So need to make sure first that it is read
@@ -740,7 +740,7 @@ public:
         clustered_index_cursor* cur = current_clustered_cursor();
 
         if (!cur) {
-            sstlog.trace("index {}: no promoted index", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: no promoted index", fmt::ptr(this));
             return advance_to_next_partition(*_upper_bound);
         }
 
@@ -750,7 +750,7 @@ public:
             }
             _upper_bound->data_file_position = e_pos + *off;
             _upper_bound->element = indexable_element::cell;
-            sstlog.trace("index {} upper bound: skipped to cell, _data_file_position={}", fmt::ptr(this), _upper_bound->data_file_position);
+            LOGMACRO(sstlog, log_level::trace, "index {} upper bound: skipped to cell, _data_file_position={}", fmt::ptr(this), _upper_bound->data_file_position);
             return make_ready_future<>();
         });
     }
@@ -797,7 +797,7 @@ public:
         , _single_page_read(single_partition_read) // all entries for a given partition are within a single page
     {
         if (sstlog.is_enabled(logging::log_level::trace)) {
-            sstlog.trace("index {}: index_reader for {}", fmt::ptr(this), _sstable->get_filename());
+            LOGMACRO(sstlog, log_level::trace, "index {}: index_reader for {}", fmt::ptr(this), _sstable->get_filename());
         }
     }
 
@@ -901,7 +901,7 @@ public:
     // Must be called for non-decreasing positions.
     // Must be called only after advanced to some partition and !eof().
     future<> advance_to(position_in_partition_view pos) {
-        sstlog.trace("index {}: advance_to({}), current data_file_pos={}",
+        LOGMACRO(sstlog, log_level::trace, "index {}: advance_to({}), current data_file_pos={}",
                  fmt::ptr(this), pos, _lower_bound.data_file_position);
 
         const schema& s = *_sstable->_schema;
@@ -911,7 +911,7 @@ public:
 
         if (!partition_data_ready()) {
             return read_partition_data().then([this, pos] {
-                sstlog.trace("index {}: page done", fmt::ptr(this));
+                LOGMACRO(sstlog, log_level::trace, "index {}: page done", fmt::ptr(this));
                 SCYLLA_ASSERT(partition_data_ready(_lower_bound));
                 return advance_to(pos);
             });
@@ -922,13 +922,13 @@ public:
         clustered_index_cursor* cur = current_clustered_cursor(_lower_bound);
 
         if (!cur) {
-            sstlog.trace("index {}: no promoted index", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: no promoted index", fmt::ptr(this));
             return make_ready_future<>();
         }
 
         return cur->advance_to(pos).then([this, cur, e_pos] (std::optional<clustered_index_cursor::skip_info> si) {
             if (!si) {
-                sstlog.trace("index {}: position in the same block", fmt::ptr(this));
+                LOGMACRO(sstlog, log_level::trace, "index {}: position in the same block", fmt::ptr(this));
                 si = cur->current_block();
             }
             if (!si->active_tombstone) {
@@ -939,7 +939,7 @@ public:
             }
             _lower_bound.data_file_position = e_pos + si->offset;
             _lower_bound.element = indexable_element::cell;
-            sstlog.trace("index {}: skipped to cell, _data_file_position={}", fmt::ptr(this), _lower_bound.data_file_position);
+            LOGMACRO(sstlog, log_level::trace, "index {}: skipped to cell, _data_file_position={}", fmt::ptr(this), _lower_bound.data_file_position);
         });
     }
 
@@ -1002,7 +1002,7 @@ public:
 
         auto cur = current_clustered_cursor(*_upper_bound);
         if (!cur) {
-            sstlog.trace("index {}: no promoted index", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "index {}: no promoted index", fmt::ptr(this));
             return advance_to_next_partition(*_upper_bound);
         }
 
@@ -1028,7 +1028,7 @@ public:
             }
             _upper_bound->data_file_position = partition_start_pos + si->offset;
             _upper_bound->element = indexable_element::cell;
-            sstlog.trace("index {}: advanced end after cell, _data_file_position={}", fmt::ptr(this), _upper_bound->data_file_position);
+            LOGMACRO(sstlog, log_level::trace, "index {}: advanced end after cell, _data_file_position={}", fmt::ptr(this), _upper_bound->data_file_position);
             return make_ready_future<>();
         });
     }

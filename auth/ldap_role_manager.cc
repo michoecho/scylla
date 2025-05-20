@@ -154,7 +154,7 @@ future<conn_ptr> ldap_role_manager::reconnect() {
         if (!retries_left) {
             co_return conn_ptr{};
         }
-        mylog.trace("reconnect() retrying ({} attempts left)", retries_left);
+        LOGMACRO(mylog, log_level::trace, "reconnect() retrying ({} attempts left)", retries_left);
         --retries_left;
         try {
             co_return co_await connect();
@@ -164,7 +164,7 @@ future<conn_ptr> ldap_role_manager::reconnect() {
         co_return std::nullopt;
     });
 
-    mylog.trace("reconnect() finished backoff, conn={}", reinterpret_cast<void*>(conn.get()));
+    LOGMACRO(mylog, log_level::trace, "reconnect() finished backoff, conn={}", reinterpret_cast<void*>(conn.get()));
     if (conn) {
         co_return std::move(conn);
     }
@@ -208,7 +208,7 @@ future<role_set> ldap_role_manager::query_granted(std::string_view grantee_name,
         ldap_msg_ptr res = co_await conn.search(desc->lud_dn, desc->lud_scope, desc->lud_filter, desc->lud_attrs,
                            /*attrsonly=*/0, /*serverctrls=*/nullptr, /*clientctrls=*/nullptr,
                            /*timeout=*/nullptr, /*sizelimit=*/0);
-        mylog.trace("query_granted: got search results");
+        LOGMACRO(mylog, log_level::trace, "query_granted: got search results");
         const auto mtype = ldap_msgtype(res.get());
         if (mtype != LDAP_RES_SEARCH_ENTRY && mtype != LDAP_RES_SEARCH_RESULT && mtype != LDAP_RES_SEARCH_REFERENCE) {
             mylog.error("ldap search yielded result {} of type {}", static_cast<const void*>(res.get()), mtype);

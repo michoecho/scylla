@@ -325,7 +325,7 @@ public:
         }).then([this, k] (timestamped_val_ptr ts_val_ptr) {
             // check again since it could have already been inserted and initialized
             if (!ts_val_ptr->ready() && !ts_val_ptr.orphaned()) {
-                _logger.trace("{}: storing the value for the first time", k);
+                LOGMACRO(_logger, log_level::trace, "{}: storing the value for the first time", k);
 
                 if (ts_val_ptr->size() > _cfg.max_size) {
                     return make_exception_future<value_ptr>(entry_is_too_big());
@@ -505,11 +505,11 @@ private:
         }
 
         if (lru_entry.touch_count() < SectionHitThreshold) {
-            _logger.trace("Putting key {} into the unprivileged section", lru_entry.key());
+            LOGMACRO(_logger, log_level::trace, "Putting key {} into the unprivileged section", lru_entry.key());
             _unprivileged_lru_list.push_front(lru_entry);
             lru_entry.inc_touch_count();
         } else {
-            _logger.trace("Putting key {} into the privileged section", lru_entry.key());
+            LOGMACRO(_logger, log_level::trace, "Putting key {} into the privileged section", lru_entry.key());
             _lru_list.push_front(lru_entry);
 
             // Bump it up only once to avoid a wrap around
@@ -531,14 +531,14 @@ private:
         // Do nothing if the entry has been dropped before we got here (e.g. by the _load() call on another key that is
         // also being reloaded).
         if (!ts_value_ptr->lru_entry_ptr()) {
-            _logger.trace("{}: entry was dropped before the reload", key);
+            LOGMACRO(_logger, log_level::trace, "{}: entry was dropped before the reload", key);
             return make_ready_future<>();
         }
 
         return _load(key).then_wrapped([this, ts_value_ptr = std::move(ts_value_ptr), &key] (auto&& f) mutable {
             // if the entry has been evicted by now - simply end here
             if (!ts_value_ptr->lru_entry_ptr()) {
-                _logger.trace("{}: entry was dropped during the reload", key);
+                LOGMACRO(_logger, log_level::trace, "{}: entry was dropped during the reload", key);
                 return make_ready_future<>();
             }
 
@@ -569,7 +569,7 @@ private:
             auto since_last_read = now - v.last_read();
             auto since_loaded = now - v.loaded();
             if (_cfg.expiry < since_last_read || (ReloadEnabled == loading_cache_reload_enabled::yes && _cfg.expiry < since_loaded)) {
-                _logger.trace("drop_expired(): {}: dropping the entry: expiry {},  ms passed since: loaded {} last_read {}", lru_entry.key(), _cfg.expiry.count(), duration_cast<milliseconds>(since_loaded).count(), duration_cast<milliseconds>(since_last_read).count());
+                LOGMACRO(_logger, log_level::trace, "drop_expired(): {}: dropping the entry: expiry {},  ms passed since: loaded {} last_read {}", lru_entry.key(), _cfg.expiry.count(), duration_cast<milliseconds>(since_loaded).count(), duration_cast<milliseconds>(since_last_read).count());
                 return true;
             }
             return false;
@@ -589,14 +589,14 @@ private:
 
         auto drop_privileged_entry = [&] {
             ts_value_lru_entry& lru_entry = *_lru_list.rbegin();
-            _logger.trace("shrink(): {}: dropping the entry: ms since last_read {}", lru_entry.key(), duration_cast<milliseconds>(loading_cache_clock_type::now() - lru_entry.timestamped_value().last_read()).count());
+            LOGMACRO(_logger, log_level::trace, "shrink(): {}: dropping the entry: ms since last_read {}", lru_entry.key(), duration_cast<milliseconds>(loading_cache_clock_type::now() - lru_entry.timestamped_value().last_read()).count());
             loading_cache::destroy_ts_value(&lru_entry);
             LoadingCacheStats::inc_privileged_on_cache_size_eviction();
         };
 
         auto drop_unprivileged_entry = [&] {
             ts_value_lru_entry& lru_entry = *_unprivileged_lru_list.rbegin();
-            _logger.trace("shrink(): {}: dropping the unprivileged entry: ms since last_read {}", lru_entry.key(), duration_cast<milliseconds>(loading_cache_clock_type::now() - lru_entry.timestamped_value().last_read()).count());
+            LOGMACRO(_logger, log_level::trace, "shrink(): {}: dropping the unprivileged entry: ms since last_read {}", lru_entry.key(), duration_cast<milliseconds>(loading_cache_clock_type::now() - lru_entry.timestamped_value().last_read()).count());
             loading_cache::destroy_ts_value(&lru_entry);
             LoadingCacheStats::inc_unprivileged_on_cache_size_eviction();
         };
@@ -645,7 +645,7 @@ private:
             return;
         }
 
-        _logger.trace("on_timer(): start");
+        LOGMACRO(_logger, log_level::trace, "on_timer(): start");
 
         if (_updated_cfg) {
             _cfg = *_updated_cfg;
@@ -666,7 +666,7 @@ private:
         periodic_rehash();
 
         if constexpr (ReloadEnabled == loading_cache_reload_enabled::no) {
-            _logger.trace("on_timer(): rearming");
+            LOGMACRO(_logger, log_level::trace, "on_timer(): rearming");
             _timer.arm(loading_cache_clock_type::now() + _timer_period);
             return;
         }
@@ -688,10 +688,10 @@ private:
                     | std::ranges::to<utils::chunked_vector<timestamped_val_ptr>>();
 
             return parallel_for_each(std::move(to_reload), [this] (timestamped_val_ptr ts_value_ptr) {
-                _logger.trace("on_timer(): {}: reloading the value", loading_values_type::to_key(ts_value_ptr));
+                LOGMACRO(_logger, log_level::trace, "on_timer(): {}: reloading the value", loading_values_type::to_key(ts_value_ptr));
                 return this->reload(std::move(ts_value_ptr));
             }).finally([this] {
-                _logger.trace("on_timer(): rearming");
+                LOGMACRO(_logger, log_level::trace, "on_timer(): rearming");
 
                 // If the config was updated after on_timer and before this continuation finished
                 // it's necessary to run on_timer again to make sure that everything will be reloaded correctly

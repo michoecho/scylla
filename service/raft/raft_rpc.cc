@@ -72,7 +72,7 @@ raft_rpc::two_way_rpc(sloc loc, raft::server_id id,
     return verb(&_messaging, locator::host_id{id.uuid()}, db::no_timeout, _group_id, _my_id, id, std::forward<Args>(args)...)
         .handle_exception_type([loc= std::move(loc), id] (const seastar::rpc::closed_error& e) {;
             const auto msg = fmt::format("Failed to execute {}, destination {}: {}", loc.function_name(), id, e);
-            rlogger.trace("{}", msg);
+            LOGMACRO(rlogger, log_level::trace, "{}", msg);
             return make_exception_future<Ret>(raft::transport_error(msg));
     });
 }

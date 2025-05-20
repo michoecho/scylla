@@ -1041,11 +1041,11 @@ SEASTAR_THREAD_TEST_CASE(read_max_size) {
                         if (should_throw) {
                             BOOST_FAIL("Expected exception, but none was thrown.");
                         } else {
-                            testlog.trace("No exception thrown, as expected.");
+                            LOGMACRO(testlog, log_level::trace, "No exception thrown, as expected.");
                         }
                     } catch (std::runtime_error& e) {
                         if (should_throw) {
-                            testlog.trace("Exception thrown, as expected: {}", e.what());
+                            LOGMACRO(testlog, log_level::trace, "Exception thrown, as expected: {}", e.what());
                         } else {
                             BOOST_FAIL(fmt::format("Expected no exception, but caught: {}", e.what()));
                         }
@@ -1117,7 +1117,7 @@ SEASTAR_THREAD_TEST_CASE(unpaged_mutation_read_global_limit) {
                 BOOST_REQUIRE(size != 0);
                 BOOST_FAIL("Expected exception, but none was thrown.");
             } catch (std::runtime_error& e) {
-                testlog.trace("Exception thrown, as expected: {}", e.what());
+                LOGMACRO(testlog, log_level::trace, "Exception thrown, as expected: {}", e.what());
             }
         }
     }, std::move(cfg)).get();

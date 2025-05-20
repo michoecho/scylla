@@ -244,7 +244,7 @@ void trace_keyspace_helper::write_one_session_records(lw_shared_ptr<one_session_
 }
 
 void trace_keyspace_helper::write_records_bulk(records_bulk& bulk) {
-    tlogger.trace("Writing {} sessions", bulk.size());
+    LOGMACRO(tlogger, log_level::trace, "Writing {} sessions", bulk.size());
     std::for_each(bulk.begin(), bulk.end(), [this] (records_bulk::value_type& one_session_records_ptr) {
         write_one_session_records(std::move(one_session_records_ptr));
     });
@@ -315,7 +315,7 @@ cql3::query_options trace_keyspace_helper::make_slow_query_mutation_data(gms::in
     // query command is stored on a parameters map with a 'query' key
     const auto query_str_it = record.parameters.find("query");
     if (query_str_it == record.parameters.end()) {
-        tlogger.trace("No \"query\" parameter set for a session requesting a slow_query_log record");
+        LOGMACRO(tlogger, log_level::trace, "No \"query\" parameter set for a session requesting a slow_query_log record");
     }
 
     // parameters map
@@ -396,7 +396,7 @@ future<> trace_keyspace_helper::apply_events_mutation(cql3::query_processor& qp,
     }
 
     return _events.cache_table_info(qp, mm, _dummy_query_state).then([this, &qp, records, &events_records] {
-        tlogger.trace("{}: storing {} events records: parent_id {} span_id {}", records->session_id, events_records.size(), records->parent_id, records->my_span_id);
+        LOGMACRO(tlogger, log_level::trace, "{}: storing {} events records: parent_id {} span_id {}", records->session_id, events_records.size(), records->parent_id, records->my_span_id);
 
         std::vector<cql3::statements::batch_statement::single_statement> modifications(events_records.size(), cql3::statements::batch_statement::single_statement(_events.insert_stmt(), false));
         std::vector<cql3::raw_value_vector_with_unset> values;
@@ -445,9 +445,9 @@ future<> trace_keyspace_helper::flush_one_session_mutations(lw_shared_ptr<one_se
                 if (session_record_is_ready) {
 
                     // if session is finished - store a session and a session time index entries
-                    tlogger.trace("{}: going to store a session event", records->session_id);
+                    LOGMACRO(tlogger, log_level::trace, "{}: going to store a session event", records->session_id);
                     return _sessions.insert(qp, mm, _dummy_query_state, make_session_mutation_data, my_address(), std::ref(*records)).then([this, &qp, &mm, records] {
-                        tlogger.trace("{}: going to store a {} entry", records->session_id, _sessions_time_idx.name());
+                        LOGMACRO(tlogger, log_level::trace, "{}: going to store a {} entry", records->session_id, _sessions_time_idx.name());
                         return _sessions_time_idx.insert(qp, mm, _dummy_query_state, make_session_time_idx_mutation_data, my_address(), std::ref(*records));
                     }).then([this, &qp, &mm, records] {
                         if (!records->do_log_slow_query) {
@@ -456,9 +456,9 @@ future<> trace_keyspace_helper::flush_one_session_mutations(lw_shared_ptr<one_se
 
                         // if slow query log is requested - store a slow query log and a slow query log time index entries
                         auto start_time_id = utils::UUID_gen::get_time_UUID(table_helper::make_monotonic_UUID_tp(_slow_query_last_nanos, records->session_rec.started_at));
-                        tlogger.trace("{}: going to store a slow query event", records->session_id);
+                        LOGMACRO(tlogger, log_level::trace, "{}: going to store a slow query event", records->session_id);
                         return _slow_query_log.insert(qp, mm, _dummy_query_state, make_slow_query_mutation_data, my_address(), std::ref(*records), start_time_id).then([this, &qp, &mm, records, start_time_id] {
-                            tlogger.trace("{}: going to store a {} entry", records->session_id, _slow_query_log_time_idx.name());
+                            LOGMACRO(tlogger, log_level::trace, "{}: going to store a {} entry", records->session_id, _slow_query_log_time_idx.name());
                             return _slow_query_log_time_idx.insert(qp, mm, _dummy_query_state, make_slow_query_time_idx_mutation_data, my_address(), std::ref(*records), start_time_id);
                         });
                     });

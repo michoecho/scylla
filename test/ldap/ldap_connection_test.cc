@@ -87,12 +87,12 @@ future<ldap_msg_ptr> bind(ldap_connection& conn) {
 /// Creates an ldap_connection, invokes a function on it, then waits for its closing.  Must be
 /// invoked from Seastar thread.
 void with_ldap_connection(seastar::connected_socket&& socket, std::function<void(ldap_connection&)> f) {
-    mylog.trace("with_ldap_connection");
+    LOGMACRO(mylog, log_level::trace, "with_ldap_connection");
     ldap_connection c(std::move(socket));
     auto do_close = defer([&] { c.close().get(); });
-    mylog.trace("with_ldap_connection: invoking f");
+    LOGMACRO(mylog, log_level::trace, "with_ldap_connection: invoking f");
     f(c);
-    mylog.trace("with_ldap_connection done");
+    LOGMACRO(mylog, log_level::trace, "with_ldap_connection done");
 }
 
 /// Connects to an address, then invokes with_ldap_connection on the resulting socket.  Must be
@@ -120,52 +120,52 @@ SEASTAR_THREAD_TEST_CASE(bind_with_default_io) {
 
 SEASTAR_THREAD_TEST_CASE(bind_with_custom_sockbuf_io) {
     set_defbase();
-    mylog.trace("bind_with_custom_sockbuf_io");
+    LOGMACRO(mylog, log_level::trace, "bind_with_custom_sockbuf_io");
     with_ldap_connection(local_ldap_address, [] (ldap_connection& c) {
-        mylog.trace("bind_with_custom_sockbuf_io invoking bind");
+        LOGMACRO(mylog, log_level::trace, "bind_with_custom_sockbuf_io invoking bind");
         const auto res = bind(c).get();
         BOOST_REQUIRE_EQUAL(LDAP_RES_BIND, ldap_msgtype(res.get()));
     });
-    mylog.trace("bind_with_custom_sockbuf_io done");
+    LOGMACRO(mylog, log_level::trace, "bind_with_custom_sockbuf_io done");
 }
 
 SEASTAR_THREAD_TEST_CASE(search_with_custom_sockbuf_io) {
     set_defbase();
-    mylog.trace("search_with_custom_sockbuf_io");
+    LOGMACRO(mylog, log_level::trace, "search_with_custom_sockbuf_io");
     with_ldap_connection(local_ldap_address, [] (ldap_connection& c) {
-        mylog.trace("search_with_custom_sockbuf_io: invoking search");
+        LOGMACRO(mylog, log_level::trace, "search_with_custom_sockbuf_io: invoking search");
         const auto res = search(c, base_dn).get();
-        mylog.trace("search_with_custom_sockbuf_io: got result");
+        LOGMACRO(mylog, log_level::trace, "search_with_custom_sockbuf_io: got result");
         const auto actual = entries(c.get_ldap(), res.get());
         const std::set<std::string>& expected = results_expected_from_search_base_dn;
         BOOST_REQUIRE_EQUAL_COLLECTIONS(actual.cbegin(), actual.cend(), expected.cbegin(), expected.cend());
     });
-    mylog.trace("search_with_custom_sockbuf_io done");
+    LOGMACRO(mylog, log_level::trace, "search_with_custom_sockbuf_io done");
 }
 
 SEASTAR_THREAD_TEST_CASE(multiple_outstanding_operations) {
     set_defbase();
-    mylog.trace("multiple_outstanding_operations");
+    LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations");
     with_ldap_connection(local_ldap_address, [] (ldap_connection& c) {
-        mylog.trace("multiple_outstanding_operations: bind");
+        LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: bind");
         BOOST_REQUIRE_EQUAL(LDAP_RES_BIND, ldap_msgtype(bind(c).get().get()));
 
         std::vector<future<ldap_msg_ptr>> results_base;
         for (size_t i = 0; i < 30; ++i) {
-            mylog.trace("multiple_outstanding_operations: invoking search base #{}", i);
+            LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: invoking search base #{}", i);
             results_base.push_back(search(c, base_dn));
-            mylog.trace("multiple_outstanding_operations: search base #{} got future {}", i, static_cast<const void*>(&results_base.back()));
+            LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: search base #{} got future {}", i, static_cast<const void*>(&results_base.back()));
         }
 
         std::vector<future<ldap_msg_ptr>> results_jsmith;
         for (size_t i = 0; i < 30; ++i) {
-            mylog.trace("multiple_outstanding_operations: invoking search jsmith #{}", i);
+            LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: invoking search jsmith #{}", i);
             results_jsmith.push_back(search(c, "uid=jsmith,ou=People,dc=example,dc=com"));
-            mylog.trace("multiple_outstanding_operations: search jsmith #{} got future {}", i, static_cast<const void*>(&results_jsmith.back()));
+            LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: search jsmith #{} got future {}", i, static_cast<const void*>(&results_jsmith.back()));
         }
 
         using boost::test_tools::per_element;
-        mylog.trace("multiple_outstanding_operations: check base results");
+        LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: check base results");
         future<> base_result_fut = parallel_for_each(results_base, [&c] (future<ldap_msg_ptr>& res) {
             const auto actual_base = entries(c.get_ldap(), res.get().get());
             BOOST_TEST_INFO("result for " << &res);
@@ -173,7 +173,7 @@ SEASTAR_THREAD_TEST_CASE(multiple_outstanding_operations) {
             return make_ready_future();
         });
 
-        mylog.trace("multiple_outstanding_operations: check jsmith result");
+        LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations: check jsmith result");
         static const std::set<std::string> expected_jsmith{"uid=jsmith,ou=People,dc=example,dc=com"};
         future<> jsmith_result_fut = parallel_for_each(results_jsmith, [&c] (future<ldap_msg_ptr>& res) {
             const auto actual_jsmith = entries(c.get_ldap(), res.get().get());
@@ -184,77 +184,77 @@ SEASTAR_THREAD_TEST_CASE(multiple_outstanding_operations) {
 
         when_all(std::move(base_result_fut), std::move(jsmith_result_fut)).get();
     });
-    mylog.trace("multiple_outstanding_operations done");
+    LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations done");
 }
 
 SEASTAR_THREAD_TEST_CASE(early_shutdown) {
     set_defbase();
-    mylog.trace("early_shutdown: noop");
+    LOGMACRO(mylog, log_level::trace, "early_shutdown: noop");
     with_ldap_connection(local_ldap_address, [] (ldap_connection&) {});
-    mylog.trace("early_shutdown: bind");
+    LOGMACRO(mylog, log_level::trace, "early_shutdown: bind");
     with_ldap_connection(local_ldap_address, [] (ldap_connection& c) { bind(c).handle_exception(&ignore).get(); });
-    mylog.trace("early_shutdown: search");
+    LOGMACRO(mylog, log_level::trace, "early_shutdown: search");
     with_ldap_connection(
             local_ldap_address, [] (ldap_connection& c) { search(c, base_dn).handle_exception(&ignore).get(); });
 }
 
 SEASTAR_THREAD_TEST_CASE(bind_after_fail) {
     set_defbase();
-    mylog.trace("bind_after_fail: wonky connection");
+    LOGMACRO(mylog, log_level::trace, "bind_after_fail: wonky connection");
     with_ldap_connection(local_fail_inject_address, [] (ldap_connection& wonky_conn) {
         bind(wonky_conn).handle_exception(&ignore).get();
     });
-    mylog.trace("bind_after_fail: solid connection");
+    LOGMACRO(mylog, log_level::trace, "bind_after_fail: solid connection");
     with_ldap_connection(local_ldap_address, [] (ldap_connection& c) {
         const auto res = bind(c).get();
         BOOST_REQUIRE_EQUAL(LDAP_RES_BIND, ldap_msgtype(res.get()));
     });
-    mylog.trace("bind_after_fail done");
+    LOGMACRO(mylog, log_level::trace, "bind_after_fail done");
 }
 
 SEASTAR_THREAD_TEST_CASE(search_after_fail) {
     set_defbase();
-    mylog.trace("search_after_fail: wonky connection");
+    LOGMACRO(mylog, log_level::trace, "search_after_fail: wonky connection");
     with_ldap_connection(local_fail_inject_address, [] (ldap_connection& wonky_conn) {
         search(wonky_conn, base_dn).handle_exception(&ignore).get();
     });
-    mylog.trace("search_after_fail: solid connection");
+    LOGMACRO(mylog, log_level::trace, "search_after_fail: solid connection");
     with_ldap_connection(local_ldap_address, [] (ldap_connection& c) {
         const auto res = search(c, base_dn).get();
-        mylog.trace("search_after_fail: got search result");
+        LOGMACRO(mylog, log_level::trace, "search_after_fail: got search result");
         const auto actual = entries(c.get_ldap(), res.get());
         BOOST_REQUIRE_EQUAL_COLLECTIONS(
                 actual.cbegin(), actual.cend(),
                 results_expected_from_search_base_dn.cbegin(), results_expected_from_search_base_dn.cend());
     });
-    mylog.trace("search_after_fail done");
+    LOGMACRO(mylog, log_level::trace, "search_after_fail done");
 }
 
 SEASTAR_THREAD_TEST_CASE(multiple_outstanding_operations_on_failing_connection) {
     set_defbase();
-    mylog.trace("multiple_outstanding_operations_on_failing_connection");
+    LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection");
     with_ldap_connection(local_fail_inject_address, [] (ldap_connection& c) {
-        mylog.trace("multiple_outstanding_operations_on_failing_connection: invoking bind");
+        LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection: invoking bind");
         bind(c).handle_exception(&ignore).get();;
 
         std::vector<future<ldap_msg_ptr>> results_base;
         for (size_t i = 0; i < 10; ++i) {
-            mylog.trace("multiple_outstanding_operations_on_failing_connection: invoking search base");
+            LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection: invoking search base");
             results_base.push_back(search(c, base_dn).handle_exception(&ignore));
         }
 
         std::vector<future<ldap_msg_ptr>> results_jsmith;
         for (size_t i = 0; i < 10; ++i) {
-            mylog.trace("multiple_outstanding_operations_on_failing_connection: invoking search jsmith");
+            LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection: invoking search jsmith");
             results_jsmith.push_back(search(c, "uid=jsmith,ou=People,dc=example,dc=com").handle_exception(&ignore));
         }
 
-        mylog.trace("multiple_outstanding_operations_on_failing_connection: getting base results");
+        LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection: getting base results");
         when_all_succeed(results_base.begin(), results_base.end()).get();
-        mylog.trace("multiple_outstanding_operations_on_failing_connection: getting jsmith results");
+        LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection: getting jsmith results");
         when_all_succeed(results_jsmith.begin(), results_jsmith.end()).get();
     });
-    mylog.trace("multiple_outstanding_operations_on_failing_connection done");
+    LOGMACRO(mylog, log_level::trace, "multiple_outstanding_operations_on_failing_connection done");
 }
 
 using exception_predicate::message_contains;

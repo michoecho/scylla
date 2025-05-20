@@ -112,7 +112,7 @@ topology::topology(config cfg)
         , _sort_by_proximity(!cfg.disable_proximity_sorting)
         , _random_engine(std::random_device{}())
 {
-    tlogger.trace("topology[{}]: constructing using config: endpoint={} id={} dc={} rack={}", fmt::ptr(this),
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: constructing using config: endpoint={} id={} dc={} rack={}", fmt::ptr(this),
             cfg.this_endpoint, cfg.this_host_id, cfg.local_dc_rack.dc, cfg.local_dc_rack.rack);
     add_node(cfg.this_host_id, cfg.local_dc_rack, node::state::none);
 }
@@ -132,7 +132,7 @@ topology::topology(topology&& o) noexcept
     , _random_engine(std::move(o._random_engine))
 {
     SCYLLA_ASSERT(_shard == this_shard_id());
-    tlogger.trace("topology[{}]: move from [{}]", fmt::ptr(this), fmt::ptr(&o));
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: move from [{}]", fmt::ptr(this), fmt::ptr(&o));
 
     for (auto& n : _nodes) {
         if (n) {
@@ -165,7 +165,7 @@ void topology::set_host_id_cfg(host_id this_host_id) {
 
     remove_node(*_this_node);
 
-    tlogger.trace("topology[{}]: set host id to {}", fmt::ptr(this), this_host_id);
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: set host id to {}", fmt::ptr(this), this_host_id);
 
     _cfg.this_host_id = this_host_id;
     add_or_update_endpoint(this_host_id);
@@ -322,7 +322,7 @@ void topology::remove_node(const node& node) {
 }
 
 void topology::index_node(const node& node) {
-    tlogger.trace("topology[{}]: index_node: {}, at {}", fmt::ptr(this), node_printer(&node), lazy_backtrace());
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: index_node: {}, at {}", fmt::ptr(this), node_printer(&node), lazy_backtrace());
 
     if (node.idx() < 0) {
         on_internal_error(tlogger, seastar::format("topology[{}]: {}: must already have a valid idx", fmt::ptr(this), node_printer(&node)));
@@ -359,7 +359,7 @@ void topology::index_node(const node& node) {
 }
 
 void topology::unindex_node(const node& node) {
-    tlogger.trace("topology[{}]: unindex_node: {}, at {}", fmt::ptr(this), node_printer(&node), lazy_backtrace());
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: unindex_node: {}, at {}", fmt::ptr(this), node_printer(&node), lazy_backtrace());
 
     const auto& dc = node.dc_rack().dc;
     const auto& rack = node.dc_rack().rack;
@@ -399,7 +399,7 @@ void topology::unindex_node(const node& node) {
 }
 
 node_holder topology::pop_node(const node& node) {
-    tlogger.trace("topology[{}]: pop_node: {}, at {}", fmt::ptr(this), node_printer(&node), lazy_backtrace());
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: pop_node: {}, at {}", fmt::ptr(this), node_printer(&node), lazy_backtrace());
 
     unindex_node(node);
 
@@ -421,7 +421,7 @@ const node* topology::find_node(host_id id) const noexcept {
     if (it != _nodes_by_host_id.end()) {
         return &it->second.get();
     }
-    tlogger.trace("topology[{}]: find_node did not find {}", fmt::ptr(this), id);
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: find_node did not find {}", fmt::ptr(this), id);
     return nullptr;
 }
 
@@ -442,7 +442,7 @@ const node* topology::find_node(node::idx_type idx) const noexcept {
 
 const node& topology::add_or_update_endpoint(host_id id, std::optional<endpoint_dc_rack> opt_dr, std::optional<node::state> opt_st, std::optional<shard_id> shard_count)
 {
-    tlogger.trace("topology[{}]: add_or_update_endpoint: host_id={} dc={} rack={} state={} shards={}, at {}", fmt::ptr(this),
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: add_or_update_endpoint: host_id={} dc={} rack={} state={} shards={}, at {}", fmt::ptr(this),
         id, opt_dr.value_or(endpoint_dc_rack{}).dc, opt_dr.value_or(endpoint_dc_rack{}).rack, opt_st.value_or(node::state::none), shard_count,
         lazy_backtrace());
 
@@ -473,7 +473,7 @@ bool topology::remove_endpoint(locator::host_id host_id)
 
 bool topology::has_node(host_id id) const noexcept {
     auto node = find_node(id);
-    tlogger.trace("topology[{}]: has_node: host_id={}: {}", fmt::ptr(this), id, node_printer(node));
+    LOGMACRO(tlogger, log_level::trace, "topology[{}]: has_node: host_id={}: {}", fmt::ptr(this), id, node_printer(node));
     return bool(node);
 }
 

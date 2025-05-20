@@ -1611,7 +1611,7 @@ entry_descriptor sstable::get_descriptor(component_type c) const {
 future<>
 sstable::load_owner_shards(const dht::sharder& sharder) {
     if (!_shards.empty()) {
-        sstlog.trace("{}: shards={}", get_filename(), _shards);
+        LOGMACRO(sstlog, log_level::trace, "{}: shards={}", get_filename(), _shards);
         co_return;
     }
     co_await read_scylla_metadata();
@@ -1639,7 +1639,7 @@ sstable::load_owner_shards(const dht::sharder& sharder) {
     }
 
     _shards = compute_shards_for_this_sstable(sharder);
-    sstlog.trace("{}: shards={}", get_filename(), _shards);
+    LOGMACRO(sstlog, log_level::trace, "{}: shards={}", get_filename(), _shards);
 }
 
 void prepare_summary(summary& s, uint64_t expected_partition_count, uint32_t min_index_interval) {
@@ -2210,7 +2210,7 @@ void sstable::validate_originating_host_id() const {
         // there, if that's not the case, it's a sign of bug.
         auto msg = format("Unknown local host id while validating SSTable: {}", get_filename());
         if (is_system_keyspace(_schema->ks_name())) {
-            sstlog.trace("{}", msg);
+            LOGMACRO(sstlog, log_level::trace, "{}", msg);
         } else {
             on_internal_error(sstlog, msg);
         }
@@ -2994,7 +2994,7 @@ sstable::compute_shards_for_this_sstable(const dht::sharder& sharder_) const {
                 | std::views::transform(disk_token_range_to_ring_position_range)
                 | std::ranges::to<dht::partition_range_vector>();
     }
-    sstlog.trace("{}: token_ranges={}", get_filename(), token_ranges);
+    LOGMACRO(sstlog, log_level::trace, "{}: token_ranges={}", get_filename(), token_ranges);
     auto sharder = dht::ring_position_range_vector_sharder(sharder_, std::move(token_ranges));
     auto rpras = sharder.next(*_schema);
     while (rpras) {
@@ -3279,7 +3279,7 @@ gc_clock::time_point sstable::get_gc_before_for_drop_estimation(const gc_clock::
     auto start = get_first_decorated_key().token();
     auto end = get_last_decorated_key().token();
     auto range = dht::token_range(dht::token_range::bound(start, true), dht::token_range::bound(end, true));
-    sstlog.trace("sstable={}, ks={}, cf={}, range={}, gc_state={}, estimate", get_filename(), s->ks_name(), s->cf_name(), range, bool(gc_state));
+    LOGMACRO(sstlog, log_level::trace, "sstable={}, ks={}, cf={}, range={}, gc_state={}, estimate", get_filename(), s->ks_name(), s->cf_name(), range, bool(gc_state));
     return gc_state.get_gc_before_for_range(s, range, compaction_time).max_gc_before;
 }
 
@@ -3295,14 +3295,14 @@ gc_clock::time_point sstable::get_gc_before_for_fully_expire(const gc_clock::tim
     auto deletion_time = get_max_local_deletion_time();
     // No need to query gc_before for the sstable if the max_deletion_time is max()
     if (deletion_time == gc_clock::time_point(gc_clock::duration(std::numeric_limits<int>::max()))) {
-        sstlog.trace("sstable={}, ks={}, cf={}, get_max_local_deletion_time={}, min_timestamp={}, gc_grace_seconds={}, shortcut",
+        LOGMACRO(sstlog, log_level::trace, "sstable={}, ks={}, cf={}, get_max_local_deletion_time={}, min_timestamp={}, gc_grace_seconds={}, shortcut",
                 get_filename(), s->ks_name(), s->cf_name(), deletion_time, seastar::value_of([this] { return get_stats_metadata().min_timestamp; }), s->gc_grace_seconds().count());
         return gc_clock::time_point::min();
     }
     auto start = get_first_decorated_key().token();
     auto end = get_last_decorated_key().token();
     auto range = dht::token_range(dht::token_range::bound(start, true), dht::token_range::bound(end, true));
-    sstlog.trace("sstable={}, ks={}, cf={}, range={}, get_max_local_deletion_time={}, min_timestamp={}, gc_grace_seconds={}, gc_state={}, query",
+    LOGMACRO(sstlog, log_level::trace, "sstable={}, ks={}, cf={}, range={}, get_max_local_deletion_time={}, min_timestamp={}, gc_grace_seconds={}, gc_state={}, query",
             get_filename(), s->ks_name(), s->cf_name(), range, deletion_time, get_stats_metadata().min_timestamp, s->gc_grace_seconds().count(), bool(gc_state));
     auto res = gc_state.get_gc_before_for_range(s, range, compaction_time);
     return res.knows_entire_range ? res.min_gc_before : gc_clock::time_point::min();

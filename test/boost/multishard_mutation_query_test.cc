@@ -535,7 +535,7 @@ void check_results_are_equal(std::vector<mutation>& results1, std::vector<mutati
     std::ranges::sort(results1, mut_less);
     std::ranges::sort(results2, mut_less);
     for (unsigned i = 0; i < results1.size(); ++i) {
-        testlog.trace("Comparing mutation #{:d}", i);
+        LOGMACRO(testlog, log_level::trace, "Comparing mutation #{:d}", i);
         assert_that(results2[i]).is_equal_to(results1[i]);
     }
 }
@@ -1090,7 +1090,7 @@ run_fuzzy_test_scan(size_t i, fuzzy_test_config cfg, distributed<replica::databa
         thread::maybe_yield();
     }
 
-    testlog.trace("[scan#{}]: validated all partitions, both the expected and actual partition list should be exhausted now", i);
+    LOGMACRO(testlog, log_level::trace, "[scan#{}]: validated all partitions, both the expected and actual partition list should be exhausted now", i);
     tests::require(res_it == results.cend() && exp_it == expected_partitions.cend());
 }
 
@@ -1102,10 +1102,10 @@ future<> run_concurrently(size_t count, size_t concurrency, noncopyable_function
             (void)with_gate(gate, [&func, &sem, &error, i] {
                 return with_semaphore(sem, 1, [&func, &error, i] {
                     if (error) {
-                        testlog.trace("Skipping func({}) due to previous func() returning with error", i);
+                        LOGMACRO(testlog, log_level::trace, "Skipping func({}) due to previous func() returning with error", i);
                         return make_ready_future<>();
                     }
-                    testlog.trace("Invoking func({})", i);
+                    LOGMACRO(testlog, log_level::trace, "Invoking func({})", i);
                     auto f = func(i).handle_exception([&error, i] (std::exception_ptr e) {
                         testlog.debug("func({}) invocation returned with error: {}", i, e);
                         error = std::move(e);
@@ -1116,10 +1116,10 @@ future<> run_concurrently(size_t count, size_t concurrency, noncopyable_function
         }
         return gate.close().then([&error] {
             if (error) {
-                testlog.trace("Run failed, returning with error: {}", error);
+                LOGMACRO(testlog, log_level::trace, "Run failed, returning with error: {}", error);
                 return make_exception_future<>(std::move(error));
             }
-            testlog.trace("Run succeeded");
+            LOGMACRO(testlog, log_level::trace, "Run succeeded");
             return make_ready_future<>();
         });
     });

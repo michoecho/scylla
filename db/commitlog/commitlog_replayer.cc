@@ -123,7 +123,7 @@ future<> db::commitlog_replayer::impl::init() {
     co_await _db.local().get_tables_metadata().parallel_for_each_table([this] (table_id uuid, lw_shared_ptr<replica::table>) -> future<> {
         const auto rps = co_await _sys_ks.local().get_truncated_positions(uuid);
         for (const auto& p: rps) {
-            rlogger.trace("CF {} truncated at {}", uuid, p);
+            LOGMACRO(rlogger, log_level::trace, "CF {} truncated at {}", uuid, p);
             auto &pp = _rpm[p.shard_id()][uuid];
             pp = std::max(pp, p);
             const auto i = _min_pos.find(p.shard_id());
@@ -221,7 +221,7 @@ future<> db::commitlog_replayer::impl::process(stats* s, commitlog::buffer_and_r
 
         auto shard_id = rp.shard_id();
         if (rp < min_pos(shard_id)) {
-            rlogger.trace("entry {} is less than global min position. skipping", rp);
+            LOGMACRO(rlogger, log_level::trace, "entry {} is less than global min position. skipping", rp);
             s->skipped_mutations++;
             co_return;
         }
@@ -233,14 +233,14 @@ future<> db::commitlog_replayer::impl::process(stats* s, commitlog::buffer_and_r
 
         auto cf_rp = cf_min_pos(uuid, shard_id);
         if (rp <= cf_rp) {
-            rlogger.trace("entry {} at {} is younger than recorded replay position {}. skipping", fm.column_family_id(), rp, cf_rp);
+            LOGMACRO(rlogger, log_level::trace, "entry {} at {} is younger than recorded replay position {}. skipping", fm.column_family_id(), rp, cf_rp);
             s->skipped_mutations++;
             co_return;
         }
 
         auto token_range_rp = token_min_pos(uuid, shard_id, token);
         if (rp <= token_range_rp) {
-            rlogger.trace("entry {}, token {} in table {}, is younger than recorded replay position {} for its token range. skipping",
+            LOGMACRO(rlogger, log_level::trace, "entry {}, token {} in table {}, is younger than recorded replay position {} for its token range. skipping",
                           rp, token, fm.column_family_id(), token_range_rp);
             s->skipped_mutations++;
             co_return;

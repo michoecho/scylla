@@ -27,7 +27,7 @@ private:
             for (const element& right_e : right) {
                 seastar::visit(left_e, [&] (auto&& a) {
                     seastar::visit(right_e, [&] (auto&& b) {
-                        testlog.trace("cmp({}, {}) == {}", a, b, order);
+                        LOGMACRO(testlog, log_level::trace, "cmp({}, {}) == {}", a, b, order);
                         auto r = _cmp(a, b);
                         auto actual = r;
                         if (actual != order) {

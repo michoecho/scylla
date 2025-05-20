@@ -491,11 +491,11 @@ class fake_proxy {
                             while (_go_on && _do_proxy && !sin.eof()) {
                                 auto buf = co_await sin.read();
                                 auto n = buf.size();
-                                testlog.trace("Read {} bytes: {}->{}:{}", n, addr, dst_addr, port);
+                                LOGMACRO(testlog, log_level::trace, "Read {} bytes: {}->{}:{}", n, addr, dst_addr, port);
                                 if (_do_proxy) {
                                     co_await dout.write(std::move(buf));
                                     co_await dout.flush();
-                                    testlog.trace("Wrote {} bytes: {}->{}:{}", n, addr, dst_addr, port);
+                                    LOGMACRO(testlog, log_level::trace, "Wrote {} bytes: {}->{}:{}", n, addr, dst_addr, port);
                                 }
                             }
                             co_await dout.close();

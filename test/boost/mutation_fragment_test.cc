@@ -441,7 +441,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
                 need_inject_ps = !std::is_same_v<std::remove_reference_t<decltype(first_mf)>, partition_start>;
             }
             if (need_inject_ps) {
-                testlog.trace("Injecting partition start");
+                LOGMACRO(testlog, log_level::trace, "Injecting partition start");
                 mfs.emplace_back(*ss.schema(), permit, partition_start(dk_, {}));
                 if (at != std::numeric_limits<unsigned>::max()) {
                     ++at;
@@ -457,7 +457,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
             mutation_fragment_stream_validator validator(*ss.schema());
             bool valid = true;
             for (const auto& mf : mfs) {
-                testlog.trace("validate fragment [{}] {} @ {}", i, mf.mutation_fragment_kind(), mf.position());
+                LOGMACRO(testlog, log_level::trace, "validate fragment [{}] {} @ {}", i, mf.mutation_fragment_kind(), mf.position());
                 valid &= bool(validator(mf));
                 if (expect_valid) {
                     if (!valid) {
@@ -481,7 +481,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
             unsigned i = 0;
             mutation_fragment_stream_validating_filter validator(get_name(), *ss.schema(), mutation_fragment_stream_validation_level::clustering_key);
             for (const auto& mf : mfs) {
-                testlog.trace("validate fragment [{}] {} @ {}", i, mf.mutation_fragment_kind(), mf.position());
+                LOGMACRO(testlog, log_level::trace, "validate fragment [{}] {} @ {}", i, mf.mutation_fragment_kind(), mf.position());
                 try {
                     validator(mf);
                     if (!expect_valid && i == at) {
@@ -491,7 +491,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
                     if (expect_valid || i < at) {
                         BOOST_FAIL(fmt::format("Unexpected invalid fragment {} @ {}: {}", mf.mutation_fragment_kind(), mf.position(), e));
                     } else {
-                        testlog.trace("Got expected exception for fragment {} @ {}: {}", mf.mutation_fragment_kind(), mf.position(), e);
+                        LOGMACRO(testlog, log_level::trace, "Got expected exception for fragment {} @ {}: {}", mf.mutation_fragment_kind(), mf.position(), e);
                     }
                 }
                 ++i;
@@ -506,7 +506,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
                     if (expect_valid) {
                         BOOST_FAIL(fmt::format("Unexpected invalid EOS: {}", e));
                     } else {
-                        testlog.trace("Got expected exception at EOS: {}", e);
+                        LOGMACRO(testlog, log_level::trace, "Got expected exception at EOS: {}", e);
                     }
                 }
             }

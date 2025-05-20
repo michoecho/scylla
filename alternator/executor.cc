@@ -688,7 +688,7 @@ sstring executor::table_name(const schema& s) {
 
 future<executor::request_return_type> executor::describe_table(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.describe_table++;
-    elogger.trace("Describing table {}", request);
+    LOGMACRO(elogger, log_level::trace, "Describing table {}", request);
 
     schema_ptr schema = get_table(_proxy, request);
 
@@ -697,7 +697,7 @@ future<executor::request_return_type> executor::describe_table(client_state& cli
     rjson::value table_description = co_await fill_table_description(schema, table_status::active, _proxy, client_state, trace_state, permit);
     rjson::value response = rjson::empty_object();
     rjson::add(response, "Table", std::move(table_description));
-    elogger.trace("returning {}", response);
+    LOGMACRO(elogger, log_level::trace, "returning {}", response);
     co_return make_jsonable(std::move(response));
 }
 
@@ -747,7 +747,7 @@ future<> verify_create_permission(bool enforce_authorization, const service::cli
 
 future<executor::request_return_type> executor::delete_table(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.delete_table++;
-    elogger.trace("Deleting table {}", request);
+    LOGMACRO(elogger, log_level::trace, "Deleting table {}", request);
 
     std::string table_name = get_table_name(request);
     // DynamoDB returns validation error even when table does not exist
@@ -814,7 +814,7 @@ future<executor::request_return_type> executor::delete_table(client_state& clien
 
     rjson::value response = rjson::empty_object();
     rjson::add(response, "TableDescription", std::move(table_description));
-    elogger.trace("returning {}", response);
+    LOGMACRO(elogger, log_level::trace, "returning {}", response);
     co_return make_jsonable(std::move(response));
 }
 
@@ -1346,7 +1346,7 @@ static future<executor::request_return_type> create_table_on_shard0(service::cli
                 co_return api_error::validation(fmt::format("Duplicate IndexName '{}', ", index_name));
             }
             std::string vname(lsi_name(table_name, index_name));
-            elogger.trace("Adding LSI {}", index_name);
+            LOGMACRO(elogger, log_level::trace, "Adding LSI {}", index_name);
             if (range_key.empty()) {
                 co_return api_error::validation("LocalSecondaryIndex requires that the base table have a range key");
             }
@@ -1406,7 +1406,7 @@ static future<executor::request_return_type> create_table_on_shard0(service::cli
                 co_return api_error::validation(fmt::format("Duplicate IndexName '{}', ", index_name));
             }
             std::string vname(view_name(table_name, index_name));
-            elogger.trace("Adding GSI {}", index_name);
+            LOGMACRO(elogger, log_level::trace, "Adding GSI {}", index_name);
             // FIXME: read and handle "Projection" parameter. This will
             // require the MV code to copy just parts of the attrs map.
             schema_builder view_builder(keyspace_name, vname);
@@ -1589,7 +1589,7 @@ static future<executor::request_return_type> create_table_on_shard0(service::cli
 
 future<executor::request_return_type> executor::create_table(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.create_table++;
-    elogger.trace("Creating table {}", request);
+    LOGMACRO(elogger, log_level::trace, "Creating table {}", request);
 
     co_return co_await _mm.container().invoke_on(0, [&, tr = tracing::global_trace_state_ptr(trace_state), request = std::move(request), &sp = _proxy.container(), &g = _gossiper.container(), client_state_other_shard = client_state.move_to_other_shard(), enforce_authorization = bool(_enforce_authorization)]
                                         (service::migration_manager& mm) mutable -> future<executor::request_return_type> {
@@ -1625,7 +1625,7 @@ future<executor::request_return_type> executor::create_table(client_state& clien
 
 future<executor::request_return_type> executor::update_table(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.update_table++;
-    elogger.trace("Updating table {}", request);
+    LOGMACRO(elogger, log_level::trace, "Updating table {}", request);
 
     static const std::vector<sstring> unsupported = {
         "ProvisionedThroughput",
@@ -1743,7 +1743,7 @@ future<executor::request_return_type> executor::update_table(client_state& clien
                                 "LSI {} already exists in table {}, can't use same name for GSI", index_name, table_name));
                         }
 
-                        elogger.trace("Adding GSI {}", index_name);
+                        LOGMACRO(elogger, log_level::trace, "Adding GSI {}", index_name);
                         // FIXME: read and handle "Projection" parameter. This will
                         // require the MV code to copy just parts of the attrs map.
                         schema_builder view_builder(keyspace_name, vname);
@@ -1798,7 +1798,7 @@ future<executor::request_return_type> executor::update_table(client_state& clien
                         view_builder.with_view_info(schema, include_all_columns, ""/*where clause*/);
                         new_views.emplace_back(view_builder.build());
                     } else if (op == "Delete") {
-                        elogger.trace("Deleting GSI {}", index_name);
+                        LOGMACRO(elogger, log_level::trace, "Deleting GSI {}", index_name);
                         if (!p.local().data_dictionary().has_schema(keyspace_name, vname)) {
                             co_return api_error::resource_not_found(fmt::format("No GSI {} in table {}", index_name, table_name));
                         }
@@ -2512,7 +2512,7 @@ public:
 future<executor::request_return_type> executor::put_item(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.put_item++;
     auto start_time = std::chrono::steady_clock::now();
-    elogger.trace("put_item {}", request);
+    LOGMACRO(elogger, log_level::trace, "put_item {}", request);
 
     auto op = make_shared<put_item_operation>(_proxy, std::move(request));
     tracing::add_table_name(trace_state, op->schema()->ks_name(), op->schema()->cf_name());
@@ -2607,7 +2607,7 @@ public:
 future<executor::request_return_type> executor::delete_item(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.delete_item++;
     auto start_time = std::chrono::steady_clock::now();
-    elogger.trace("delete_item {}", request);
+    LOGMACRO(elogger, log_level::trace, "delete_item {}", request);
 
     auto op = make_shared<delete_item_operation>(_proxy, std::move(request));
     tracing::add_table_name(trace_state, op->schema()->ks_name(), op->schema()->cf_name());
@@ -4008,7 +4008,7 @@ update_item_operation::apply(std::unique_ptr<rjson::value> previous_item, api::t
 future<executor::request_return_type> executor::update_item(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.update_item++;
     auto start_time = std::chrono::steady_clock::now();
-    elogger.trace("update_item {}", request);
+    LOGMACRO(elogger, log_level::trace, "update_item {}", request);
 
     auto op = make_shared<update_item_operation>(_proxy, std::move(request));
     tracing::add_table_name(trace_state, op->schema()->ks_name(), op->schema()->cf_name());
@@ -4079,7 +4079,7 @@ static rjson::value describe_item(schema_ptr schema,
 future<executor::request_return_type> executor::get_item(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.get_item++;
     auto start_time = std::chrono::steady_clock::now();
-    elogger.trace("Getting item {}", request);
+    LOGMACRO(elogger, log_level::trace, "Getting item {}", request);
 
     schema_ptr schema = get_table(_proxy, request);
 
@@ -4357,7 +4357,7 @@ future<executor::request_return_type> executor::batch_get_item(client_state& cli
     if (should_add_rcu) {
         rjson::add(response, "ConsumedCapacity", std::move(consumed_capacity));
     }
-    elogger.trace("Unprocessed keys: {}", response["UnprocessedKeys"]);
+    LOGMACRO(elogger, log_level::trace, "Unprocessed keys: {}", response["UnprocessedKeys"]);
     if (!some_succeeded && eptr) {
         co_await coroutine::return_exception_ptr(std::move(eptr));
     }
@@ -4726,7 +4726,7 @@ static future<executor::request_return_type> do_query(service::storage_proxy& pr
     auto command = ::make_lw_shared<query::read_command>(query_schema->id(), query_schema->version(), partition_slice, proxy.get_max_result_size(partition_slice),
         query::tombstone_limit(proxy.get_tombstone_limit()));
 
-    elogger.trace("Executing read query (reversed {}): table schema {}, query schema {}", partition_slice.is_reversed(), table_schema->version(), query_schema->version());
+    LOGMACRO(elogger, log_level::trace, "Executing read query (reversed {}): table schema {}, query schema {}", partition_slice.is_reversed(), table_schema->version(), query_schema->version());
 
     auto query_state_ptr = std::make_unique<service::query_state>(client_state, trace_state, std::move(permit));
 
@@ -4787,7 +4787,7 @@ static dht::partition_range get_range_for_segment(int segment, int total_segment
 
 future<executor::request_return_type> executor::scan(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.scan++;
-    elogger.trace("Scanning {}", request);
+    LOGMACRO(elogger, log_level::trace, "Scanning {}", request);
 
     auto [schema, table_type] = get_table_or_view(_proxy, request);
 
@@ -5264,7 +5264,7 @@ calculate_bounds_condition_expression(schema_ptr schema,
 
 future<executor::request_return_type> executor::query(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request) {
     _stats.api_operations.query++;
-    elogger.trace("Querying {}", request);
+    LOGMACRO(elogger, log_level::trace, "Querying {}", request);
 
     auto [schema, table_type] = get_table_or_view(_proxy, request);
 
@@ -5342,7 +5342,7 @@ future<executor::request_return_type> executor::query(client_state& client_state
 
 future<executor::request_return_type> executor::list_tables(client_state& client_state, service_permit permit, rjson::value request) {
     _stats.api_operations.list_tables++;
-    elogger.trace("Listing tables {}", request);
+    LOGMACRO(elogger, log_level::trace, "Listing tables {}", request);
 
     rjson::value* exclusive_start_json = rjson::find(request, "ExclusiveStartTableName");
     rjson::value* limit_json = rjson::find(request, "Limit");

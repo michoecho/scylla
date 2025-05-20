@@ -342,7 +342,7 @@ future<> filesystem_storage::check_create_links_replay(const sstable& sst, const
 /// \param generation - the generation of the destination sstable
 /// \param mark_for_removal - mark the sstable for removal after linking it to the destination dst_dir
 future<> filesystem_storage::create_links_common(const sstable& sst, sstring dst_dir, generation_type generation, mark_for_removal mark_for_removal) const {
-    sstlog.trace("create_links: {} -> {} generation={} mark_for_removal={}", sst.get_filename(), dst_dir, generation, mark_for_removal);
+    LOGMACRO(sstlog, log_level::trace, "create_links: {} -> {} generation={} mark_for_removal={}", sst.get_filename(), dst_dir, generation, mark_for_removal);
     auto comps = sst.all_components();
     co_await check_create_links_replay(sst, dst_dir, generation, comps);
     // TemporaryTOC is always first, TOC is always last
@@ -370,7 +370,7 @@ future<> filesystem_storage::create_links_common(const sstable& sst, sstring dst
     }
     co_await dir.sync(sst._write_error_handler);
     co_await dir.close();
-    sstlog.trace("create_links: {} -> {} generation={}: done", sst.get_filename(), dst_dir, generation);
+    LOGMACRO(sstlog, log_level::trace, "create_links: {} -> {} generation={}: done", sst.get_filename(), dst_dir, generation);
 }
 
 future<> filesystem_storage::create_links_common(const sstable& sst, const std::filesystem::path& dir, std::optional<generation_type> gen) const {

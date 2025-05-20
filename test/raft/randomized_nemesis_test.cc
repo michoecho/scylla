@@ -161,7 +161,7 @@ public:
     future<raft::snapshot_id> take_snapshot() override {
         auto id = raft::snapshot_id::create_random_id();
         SCYLLA_ASSERT(_snapshots.emplace(id, _val).second);
-        tlogger.trace("{}: took snapshot id {} val {}", _id, id, _val);
+        LOGMACRO(tlogger, log_level::trace, "{}: took snapshot id {} val {}", _id, id, _val);
         co_return id;
     }
 
@@ -172,7 +172,7 @@ public:
     future<> load_snapshot(raft::snapshot_id id) override {
         auto it = _snapshots.find(id);
         SCYLLA_ASSERT(it != _snapshots.end()); // dunno if the snapshot can actually be missing
-        tlogger.trace("{}: loading snapshot id {} prev val {} new val {}", _id, id, _val, it->second);
+        LOGMACRO(tlogger, log_level::trace, "{}: loading snapshot id {} prev val {} new val {}", _id, id, _val, it->second);
         _val = it->second;
         co_return;
     }
@@ -1140,14 +1140,14 @@ public:
 
     future<> mark_alive(direct_failure_detector::pinger::endpoint_id ep) override {
         auto id = raft::server_id{ep};
-        tlogger.trace("failure detector ({}): mark {} alive", _id, id);
+        LOGMACRO(tlogger, log_level::trace, "failure detector ({}): mark {} alive", _id, id);
         _alive_set.insert(id);
         return make_ready_future<>();
     }
 
     future<> mark_dead(direct_failure_detector::pinger::endpoint_id ep) override {
         auto id = raft::server_id{ep};
-        tlogger.trace("failure detector ({}): mark {} dead", _id, id);
+        LOGMACRO(tlogger, log_level::trace, "failure detector ({}): mark {} dead", _id, id);
         _alive_set.erase(id);
         return make_ready_future<>();
     }
@@ -1802,9 +1802,9 @@ public:
         _crashing_servers.insert(srv.get());
 
         auto f = std::bind_front([] (environment<M>& self, std::unique_ptr<raft_server<M>> srv) -> future<> {
-            tlogger.trace("crash fiber: aborting {}", srv->id());
+            LOGMACRO(tlogger, log_level::trace, "crash fiber: aborting {}", srv->id());
             co_await srv->abort();
-            tlogger.trace("crash fiber: finished aborting {}", srv->id());
+            LOGMACRO(tlogger, log_level::trace, "crash fiber: finished aborting {}", srv->id());
             self._crashing_servers.erase(srv.get());
             // abort() ensures there are no in-progress calls on the server, so we can destroy it.
         }, std::ref(*this), std::move(srv));
@@ -2306,7 +2306,7 @@ SEASTAR_TEST_CASE(snapshot_uses_correct_term_test) {
         SCYLLA_ASSERT(env.is_leader(id1));
 
         // Force a term increase by partitioning the network and waiting for the leader to step down
-        tlogger.trace("add grudge");
+        LOGMACRO(tlogger, log_level::trace, "add grudge");
         env.get_network().add_grudge(id2, id1);
         env.get_network().add_grudge(id1, id2);
 
@@ -2314,12 +2314,12 @@ SEASTAR_TEST_CASE(snapshot_uses_correct_term_test) {
             co_await seastar::yield();
         }
 
-        tlogger.trace("remove grudge");
+        LOGMACRO(tlogger, log_level::trace, "remove grudge");
         env.get_network().remove_grudge(id2, id1);
         env.get_network().remove_grudge(id1, id2);
 
         auto l = co_await wait_for_leader<ExReg>{}(env, {id1, id2}, timer, timer.now() + 1000_t);
-        tlogger.trace("last leader: {}", l);
+        LOGMACRO(tlogger, log_level::trace, "last leader: {}", l);
 
         // Now the current term is greater than the term of the first couple of entries.
         // Join another server with a small snapshot_threshold.
@@ -2387,7 +2387,7 @@ SEASTAR_TEST_CASE(snapshotting_preserves_config_test) {
         SCYLLA_ASSERT(env.is_leader(id1));
 
         // Partition the network, forcing the leader to step down.
-        tlogger.trace("add grudge");
+        LOGMACRO(tlogger, log_level::trace, "add grudge");
         env.get_network().add_grudge(id2, id1);
         env.get_network().add_grudge(id1, id2);
 
@@ -2395,13 +2395,13 @@ SEASTAR_TEST_CASE(snapshotting_preserves_config_test) {
             co_await seastar::yield();
         }
 
-        tlogger.trace("remove grudge");
+        LOGMACRO(tlogger, log_level::trace, "remove grudge");
         env.get_network().remove_grudge(id2, id1);
         env.get_network().remove_grudge(id1, id2);
 
         // With the bug this would timeout, the cluster is unable to elect a leader without the configuration.
         auto l = co_await wait_for_leader<ExReg>{}(env, {id1, id2}, timer, timer.now() + 1000_t);
-        tlogger.trace("last leader: {}", l);
+        LOGMACRO(tlogger, log_level::trace, "last leader: {}", l);
     });
 }
 
@@ -2519,7 +2519,7 @@ struct bouncing {
             raft::logical_clock::duration known_leader_delay,
             raft::logical_clock::duration unknown_leader_delay
             ) {
-        tlogger.trace("bouncing call: starting with {}", srv_id);
+        LOGMACRO(tlogger, log_level::trace, "bouncing call: starting with {}", srv_id);
         std::unordered_set<raft::server_id> tried;
         while (true) {
             auto res = co_await _f(srv_id);
@@ -2532,7 +2532,7 @@ struct bouncing {
                 if (n_a_l->leader) {
                     if (n_a_l->leader == srv_id || !tried.contains(n_a_l->leader)) {
                         co_await timer.sleep(known_leader_delay);
-                        tlogger.trace("bouncing call: got `not_a_leader` from {}, rerouting to {}", srv_id, n_a_l->leader);
+                        LOGMACRO(tlogger, log_level::trace, "bouncing call: got `not_a_leader` from {}, rerouting to {}", srv_id, n_a_l->leader);
                         srv_id = n_a_l->leader;
                         continue;
                     }
@@ -2542,10 +2542,10 @@ struct bouncing {
                     auto prev = srv_id;
                     srv_id = *known.begin();
                     if (n_a_l->leader) {
-                        tlogger.trace("bouncing call: got `not_a_leader` from {}, rerouted to {}, but already tried it; trying {}",
+                        LOGMACRO(tlogger, log_level::trace, "bouncing call: got `not_a_leader` from {}, rerouted to {}, but already tried it; trying {}",
                                 prev, n_a_l->leader, srv_id);
                     } else {
-                        tlogger.trace("bouncing call: got `not_a_leader` from {}, no reroute, trying {}", prev, srv_id);
+                        LOGMACRO(tlogger, log_level::trace, "bouncing call: got `not_a_leader` from {}, no reroute, trying {}", prev, srv_id);
                     }
                     continue;
                 }

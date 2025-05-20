@@ -337,7 +337,7 @@ private:
             _out_of_range |= _ck_ranges_walker->out_of_range();
         }
 
-        sstlog.trace("mp_row_consumer_k_l {}: advance_to({}) => out_of_range={}, skip_in_progress={}", fmt::ptr(this), pos, _out_of_range, _skip_in_progress);
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: advance_to({}) => out_of_range={}, skip_in_progress={}", fmt::ptr(this), pos, _out_of_range, _skip_in_progress);
     }
 
     // Assumes that this and other advance_to() overloads are called with monotonic positions.
@@ -354,7 +354,7 @@ private:
             _out_of_range |= _ck_ranges_walker->out_of_range();
         }
 
-        sstlog.trace("mp_row_consumer_k_l {}: advance_to({}) => out_of_range={}, skip_in_progress={}", fmt::ptr(this), rt, _out_of_range, _skip_in_progress);
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: advance_to({}) => out_of_range={}, skip_in_progress={}", fmt::ptr(this), rt, _out_of_range, _skip_in_progress);
     }
 
     void advance_to(const mutation_fragment& mf) {
@@ -366,7 +366,7 @@ private:
     }
 
     void set_up_ck_ranges(const partition_key& pk) {
-        sstlog.trace("mp_row_consumer_k_l {}: set_up_ck_ranges({})", fmt::ptr(this), pk);
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: set_up_ck_ranges({})", fmt::ptr(this), pk);
         _ck_ranges = query::clustering_key_filter_ranges::get_ranges(*_schema, _slice, pk);
         _ck_ranges_walker.emplace(*_schema, _ck_ranges->ranges(), _schema->has_static_columns());
         _last_lower_bound_counter = 0;
@@ -429,7 +429,7 @@ public:
     }
 
     proceed flush() {
-        sstlog.trace("mp_row_consumer_k_l {}: flush(in_progress={}, ready={}, skip={})", fmt::ptr(this),
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: flush(in_progress={}, ready={}, skip={})", fmt::ptr(this),
             _in_progress ? std::optional<mutation_fragment::printer>(std::in_place, *_schema, *_in_progress) : std::optional<mutation_fragment::printer>(),
             _ready ? std::optional<mutation_fragment::printer>(std::in_place, *_schema, *_ready) : std::optional<mutation_fragment::printer>(),
             _skip_in_progress);
@@ -449,7 +449,7 @@ public:
     }
 
     proceed flush_if_needed(range_tombstone&& rt) {
-        sstlog.trace("mp_row_consumer_k_l {}: flush_if_needed(in_progress={}, ready={}, skip={})", fmt::ptr(this),
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: flush_if_needed(in_progress={}, ready={}, skip={})", fmt::ptr(this),
             _in_progress ? std::optional<mutation_fragment::printer>(std::in_place, *_schema, *_in_progress) : std::optional<mutation_fragment::printer>(),
             _ready ? std::optional<mutation_fragment::printer>(std::in_place, *_schema, *_ready) : std::optional<mutation_fragment::printer>(),
             _skip_in_progress);
@@ -472,7 +472,7 @@ public:
     }
 
     proceed flush_if_needed(bool is_static, position_in_partition&& pos) {
-        sstlog.trace("mp_row_consumer_k_l {}: flush_if_needed({})", fmt::ptr(this), pos);
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: flush_if_needed({})", fmt::ptr(this), pos);
 
         // Part of workaround for #1203
         _first_row_encountered = !is_static;
@@ -812,7 +812,7 @@ public:
 
     // Called when the reader is fast forwarded to given element.
     void reset(indexable_element el) {
-        sstlog.trace("mp_row_consumer_k_l {}: reset({})", fmt::ptr(this), static_cast<int>(el));
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: reset({})", fmt::ptr(this), static_cast<int>(el));
         _ready = {};
         if (el == indexable_element::partition) {
             _pending_collection = {};
@@ -847,7 +847,7 @@ public:
     // must be after it.
     //
     std::optional<position_in_partition_view> fast_forward_to(position_range r) {
-        sstlog.trace("mp_row_consumer_k_l {}: fast_forward_to({})", fmt::ptr(this), r);
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: fast_forward_to({})", fmt::ptr(this), r);
         _out_of_range = _is_mutation_end;
         _fwd_end = std::move(r).end();
 
@@ -865,7 +865,7 @@ public:
         if (_ck_ranges_walker->out_of_range()) {
             _out_of_range = true;
             _ready = {};
-            sstlog.trace("mp_row_consumer_k_l {}: no more ranges", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: no more ranges", fmt::ptr(this));
             return { };
         }
 
@@ -878,24 +878,24 @@ public:
         if (_in_progress) {
             advance_to(*_in_progress);
             if (!_skip_in_progress) {
-                sstlog.trace("mp_row_consumer_k_l {}: _in_progress in range", fmt::ptr(this));
+                LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: _in_progress in range", fmt::ptr(this));
                 return { };
             }
         }
 
         if (_out_of_range) {
-            sstlog.trace("mp_row_consumer_k_l {}: _out_of_range=true", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: _out_of_range=true", fmt::ptr(this));
             return { };
         }
 
         position_in_partition::less_compare less(*_schema);
         if (!less(start, _fwd_end)) {
             _out_of_range = true;
-            sstlog.trace("mp_row_consumer_k_l {}: no overlap with restrictions", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: no overlap with restrictions", fmt::ptr(this));
             return { };
         }
 
-        sstlog.trace("mp_row_consumer_k_l {}: advance_context({})", fmt::ptr(this), start);
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: advance_context({})", fmt::ptr(this), start);
         _last_lower_bound_counter = _ck_ranges_walker->lower_bound_change_counter();
         return start;
     }
@@ -912,7 +912,7 @@ public:
             return { };
         }
         _last_lower_bound_counter = _ck_ranges_walker->lower_bound_change_counter();
-        sstlog.trace("mp_row_consumer_k_l {}: advance_context({})", fmt::ptr(this), _ck_ranges_walker->lower_bound());
+        LOGMACRO(sstlog, log_level::trace, "mp_row_consumer_k_l {}: advance_context({})", fmt::ptr(this), _ck_ranges_walker->lower_bound());
         return _ck_ranges_walker->lower_bound();
     }
 
@@ -982,7 +982,7 @@ public:
             return mp_row_consumer_k_l::proceed::yes;
         }
 #endif
-        sstlog.trace("data_consume_row_context {}: state={}, size={}", fmt::ptr(this), static_cast<int>(_state), data.size());
+        LOGMACRO(sstlog, log_level::trace, "data_consume_row_context {}: state={}, size={}", fmt::ptr(this), static_cast<int>(_state), data.size());
         _processing_data = &data;
         return _gen.generate();
     }
@@ -1199,11 +1199,11 @@ private:
         return *_index_reader;
     }
     future<> advance_to_next_partition() {
-        sstlog.trace("reader {}: advance_to_next_partition()", fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "reader {}: advance_to_next_partition()", fmt::ptr(this));
         _before_partition = true;
         auto& consumer = _consumer;
         if (consumer.is_mutation_end()) {
-            sstlog.trace("reader {}: already at partition boundary", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "reader {}: already at partition boundary", fmt::ptr(this));
             _index_in_current_partition = false;
             return make_ready_future<>();
         }
@@ -1223,10 +1223,10 @@ private:
         });
     }
     future<> read_from_index() {
-        sstlog.trace("reader {}: read from index", fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "reader {}: read from index", fmt::ptr(this));
         auto tomb = _index_reader->partition_tombstone();
         if (!tomb) {
-            sstlog.trace("reader {}: no tombstone", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "reader {}: no tombstone", fmt::ptr(this));
             return read_from_datafile();
         }
         auto pk = _index_reader->get_partition_key();
@@ -1236,16 +1236,16 @@ private:
         return make_ready_future<>();
     }
     future<> read_from_datafile() {
-        sstlog.trace("reader {}: read from data file", fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "reader {}: read from data file", fmt::ptr(this));
         return _context->consume_input();
     }
     // Assumes that we're currently positioned at partition boundary.
     future<> read_partition() {
-        sstlog.trace("reader {}: reading partition", fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "reader {}: reading partition", fmt::ptr(this));
 
         _end_of_stream = true; // on_next_partition() will set it to true
         if (!_read_enabled) {
-            sstlog.trace("reader {}: eof", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "reader {}: eof", fmt::ptr(this));
             return make_ready_future<>();
         }
 
@@ -1262,7 +1262,7 @@ private:
         //
         if (_index_in_current_partition) {
             if (_context->eof()) {
-                sstlog.trace("reader {}: eof", fmt::ptr(this));
+                LOGMACRO(sstlog, log_level::trace, "reader {}: eof", fmt::ptr(this));
                 return make_ready_future<>();
             }
             if (_index_reader->partition_data_ready()) {
@@ -1280,12 +1280,12 @@ private:
     }
     // Can be called from any position.
     future<> read_next_partition() {
-        sstlog.trace("reader {}: read next partition", fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "reader {}: read next partition", fmt::ptr(this));
         // If next partition exists then on_next_partition will be called
         // and _end_of_stream will be set to false again.
         _end_of_stream = true;
         if (!_read_enabled || _single_partition_read) {
-            sstlog.trace("reader {}: eof", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "reader {}: eof", fmt::ptr(this));
             return make_ready_future<>();
         }
         return advance_to_next_partition().then([this] {
@@ -1363,7 +1363,7 @@ private:
         return initialize();
     }
     future<> skip_to(indexable_element el, uint64_t begin) {
-        sstlog.trace("sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
+        LOGMACRO(sstlog, log_level::trace, "sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
         if (begin <= _context->position()) {
             return make_ready_future<>();
         }

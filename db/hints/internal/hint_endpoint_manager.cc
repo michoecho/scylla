@@ -70,7 +70,7 @@ future<> hint_endpoint_manager::do_store_hint(schema_ptr s, lw_shared_ptr<const 
 
         ++shard_stats().written;
 
-        manager_logger.trace("Hint to {} was stored", end_point_key());
+        LOGMACRO(manager_logger, log_level::trace, "Hint to {} was stored", end_point_key());
         tracing::trace(tr_state, "Hint to {} was stored", end_point_key());
     } catch (...) {
         ++shard_stats().errors;
@@ -92,7 +92,7 @@ bool hint_endpoint_manager::store_hint(schema_ptr s, lw_shared_ptr<const frozen_
             return do_store_hint(std::move(s), std::move(fm), tr_state);
         });
     } catch (...) {
-        manager_logger.trace("Failed to store a hint to {}: {}", end_point_key(), std::current_exception());
+        LOGMACRO(manager_logger, log_level::trace, "Failed to store a hint to {}: {}", end_point_key(), std::current_exception());
         tracing::trace(tr_state, "Failed to store a hint to {}: {}", end_point_key(), std::current_exception());
 
         ++shard_stats().dropped;
@@ -194,7 +194,7 @@ future<hints_store_ptr> hint_endpoint_manager::get_or_load() {
 }
 
 future<db::commitlog> hint_endpoint_manager::add_store() noexcept {
-    manager_logger.trace("Going to add a store to {}", _hints_dir.c_str());
+    LOGMACRO(manager_logger, log_level::trace, "Going to add a store to {}", _hints_dir.c_str());
 
     return futurize_invoke([this] {
         return io_check([name = _hints_dir.c_str()] { return recursive_touch_directory(name); }).then([this] () {

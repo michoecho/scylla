@@ -193,7 +193,7 @@ future<> stream_blob_handler(replica::database& db,
                 std::optional<streaming::stream_blob_data> data = std::move(cmd_data.data);
                 if (data) {
                     total_size += data->size();
-                    blogger.trace("fstream[{}] Follower received data from peer={} data={}", meta.ops_id, from, data->size());
+                    LOGMACRO(blogger, log_level::trace, "fstream[{}] Follower received data from peer={} data={}", meta.ops_id, from, data->size());
                     status->check_valid_stream();
                     if (!data->empty()) {
                         co_await fstream->write((char*)data->data(), data->size());
@@ -448,7 +448,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
                         co_await coroutine::parallel_for_each(ss, [&] (sink_and_source& s) mutable -> future<> {
                             total_size += data_size;
                             ops_total_size += data_size;
-                            blogger.trace("fstream[{}] Master sending file={} to node={} chunk_size={}",
+                            LOGMACRO(blogger, log_level::trace, "fstream[{}] Master sending file={} to node={} chunk_size={}",
                                 ops_id, filename, s.node, data_size);
                             may_inject_error(meta, inject_errors, "tx_data");
                             co_await s.sink(cmd_data);

@@ -428,9 +428,9 @@ private:
             while (!_stopping && !have_work()) {
                 promise<> wait;
                 _main_loop_wait = &wait;
-                llogger.trace("background_reclaimer::main_loop: sleep");
+                LOGMACRO(llogger, log_level::trace, "background_reclaimer::main_loop: sleep");
                 co_await wait.get_future();
-                llogger.trace("background_reclaimer::main_loop: awakened");
+                LOGMACRO(llogger, log_level::trace, "background_reclaimer::main_loop: awakened");
                 _main_loop_wait = nullptr;
             }
             if (_stopping) {
@@ -445,7 +445,7 @@ private:
         if (have_work()) {
             auto shares = 1 + (1000 * (free_memory_threshold - memory::free_memory())) / free_memory_threshold;
             _sg.set_shares(shares);
-            llogger.trace("background_reclaimer::adjust_shares: {}", shares);
+            LOGMACRO(llogger, log_level::trace, "background_reclaimer::adjust_shares: {}", shares);
             if (_main_loop_wait) {
                 main_loop_wake();
             }
@@ -1409,7 +1409,7 @@ void segment_pool::free_segment(segment* seg) noexcept {
 }
 
 void segment_pool::free_segment(segment* seg, segment_descriptor& desc) noexcept {
-    llogger.trace("Releasing segment {}", fmt::ptr(seg));
+    LOGMACRO(llogger, log_level::trace, "Releasing segment {}", fmt::ptr(seg));
     desc._region = nullptr;
     deallocate_segment(seg);
     --_segments_in_use;
@@ -1799,7 +1799,7 @@ private:
             desc.encode(pos);
         }
         auto& desc = segment_pool().descriptor(_active);
-        llogger.trace("Closing segment {}, used={}, waste={} [B]", fmt::ptr(_active), desc.occupancy(), segment::size - _active_offset);
+        LOGMACRO(llogger, log_level::trace, "Closing segment {}, used={}, waste={} [B]", fmt::ptr(_active), desc.occupancy(), segment::size - _active_offset);
         _closed_occupancy += desc.occupancy();
 
         _segment_descs.push(desc);
@@ -1811,7 +1811,7 @@ private:
             return;
         }
         auto& desc = segment_pool().descriptor(_buf_active);
-        llogger.trace("Closing buf segment {}, used={}, waste={} [B]", fmt::ptr(_buf_active), desc.occupancy(), segment::size - _buf_active_offset);
+        LOGMACRO(llogger, log_level::trace, "Closing buf segment {}, used={}, waste={} [B]", fmt::ptr(_buf_active), desc.occupancy(), segment::size - _buf_active_offset);
         _closed_occupancy += desc.occupancy();
 
         _segment_descs.push(desc);
@@ -2793,7 +2793,7 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
             region::impl* r = _regions.back();
 
             if (!r->is_compactible()) {
-                llogger.trace("Unable to release segments, no compactible pools.");
+                LOGMACRO(llogger, log_level::trace, "Unable to release segments, no compactible pools.");
                 break;
             }
             ++regions;

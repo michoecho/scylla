@@ -359,7 +359,7 @@ locator::repair_scheduler_config deserialize_repair_scheduler_config(cql3::untyp
 }
 
 future<> save_tablet_metadata(replica::database& db, const tablet_metadata& tm, api::timestamp_type ts) {
-    tablet_logger.trace("Saving tablet metadata: {}", tm);
+    LOGMACRO(tablet_logger, log_level::trace, "Saving tablet metadata: {}", tm);
     std::vector<mutation> muts;
     muts.reserve(tm.all_tables().size());
     for (auto&& [id, tablets] : tm.all_tables()) {
@@ -452,13 +452,13 @@ static void do_validate_tablet_metadata_change(const locator::tablet_metadata& t
 }
 
 std::optional<locator::tablet_metadata_change_hint> get_tablet_metadata_change_hint(const std::vector<canonical_mutation>& mutations) {
-    tablet_logger.trace("tablet_metadata_change_hint({})", mutations.size());
+    LOGMACRO(tablet_logger, log_level::trace, "tablet_metadata_change_hint({})", mutations.size());
     auto s = db::system_keyspace::tablets();
 
     std::optional<locator::tablet_metadata_change_hint> hint;
 
     for (const auto& cm : mutations) {
-        tablet_logger.trace("tablet_metadata_change_hint() {} == {}", cm.column_family_id(), s->id());
+        LOGMACRO(tablet_logger, log_level::trace, "tablet_metadata_change_hint() {} == {}", cm.column_family_id(), s->id());
         if (cm.column_family_id() != s->id()) {
             continue;
         }
@@ -624,7 +624,7 @@ struct tablet_metadata_builder {
 future<tablet_metadata> read_tablet_metadata(cql3::query_processor& qp) {
     tablet_metadata tm;
     tablet_metadata_builder builder{tm};
-    tablet_logger.trace("Start reading tablet metadata");
+    LOGMACRO(tablet_logger, log_level::trace, "Start reading tablet metadata");
     try {
         co_await qp.query_internal("select * from system.tablets",
            [&] (const cql3::untyped_result_set_row& row) -> future<stop_iteration> {
@@ -639,7 +639,7 @@ future<tablet_metadata> read_tablet_metadata(cql3::query_processor& qp) {
         }
     }
     builder.on_end_of_stream();
-    tablet_logger.trace("Read tablet metadata: {}", tm);
+    LOGMACRO(tablet_logger, log_level::trace, "Read tablet metadata: {}", tm);
     co_return std::move(tm);
 }
 
@@ -729,7 +729,7 @@ future<> update_tablet_metadata(replica::database& db, cql3::query_processor& qp
     } catch (...) {
         std::throw_with_nested(std::runtime_error("Failed to read tablet metadata"));
     }
-    tablet_logger.trace("Updated tablet metadata: {}", tm);
+    LOGMACRO(tablet_logger, log_level::trace, "Updated tablet metadata: {}", tm);
 }
 
 future<std::vector<canonical_mutation>> read_tablet_mutations(seastar::sharded<replica::database>& db) {

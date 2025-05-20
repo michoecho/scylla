@@ -164,7 +164,7 @@ ssample(unsigned k, const std::vector<float>& p) {
         ret.emplace_back(randone(p, rnd + offset));
         offset += interval;
     }
-    hr_logger.trace("ssample returning {}", ret);
+    LOGMACRO(hr_logger, log_level::trace, "ssample returning {}", ret);
     return ret;
 }
 
@@ -233,7 +233,7 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
     // A surplus node keeps its entire desired amount of request, N*p,
     // for itself. A mixed node is cut off by 1/C.
     pp[me] = std::min(rf * p[me], 1.0f / k);
-    hr_logger.trace("pp[me({})]  = {}", me, pp[me]);
+    LOGMACRO(hr_logger, log_level::trace, "pp[me({})]  = {}", me, pp[me]);
 
     std::vector<float> deficit(rf);
     int mixed_count = 0;
@@ -249,7 +249,7 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
     // Each of the mixed nodes have the same same surplus:
     float mixed_surplus = 1 - 1.0f / k;
 
-    hr_logger.trace("starting distribution of mixed-node surplus to other mixed nodes:"
+    LOGMACRO(hr_logger, log_level::trace, "starting distribution of mixed-node surplus to other mixed nodes:"
                     " mixed_count={}, deficit={}, mixed_surplus={}", mixed_count, deficit, mixed_surplus);
 
     float my_surplus;
@@ -273,7 +273,7 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
             my_surplus = 0;
         }
     }
-    hr_logger.trace("my_surplus={}", my_surplus);
+    LOGMACRO(hr_logger, log_level::trace, "my_surplus={}", my_surplus);
 
     // Mixed node redistribution algorithm, to "convert" mixed nodes into
     // pure surplus or pure deficit nodes, while flowing probability between
@@ -281,7 +281,7 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
     // node doing the sending - in pp[]).
     if (deficit[me]) {
         // "me" is a mixed node. 
-        hr_logger.trace("CASE1");
+        LOGMACRO(hr_logger, log_level::trace, "CASE1");
         // We need a list of the mixed nodes sorted in increasing deficit order.
         // Actually, we only need to sort those nodes with deficit <=
         // min(deficit[me], mixed_surplus).
@@ -299,15 +299,15 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
                 sorted_deficits.insert(it, std::make_pair(i, deficit[i]));
             }
         }
-        hr_logger.trace("sorted_deficits={}{}", sorted_deficits | std::views::keys, sorted_deficits | std::views::values);
+        LOGMACRO(hr_logger, log_level::trace, "sorted_deficits={}{}", sorted_deficits | std::views::keys, sorted_deficits | std::views::values);
         float s = 0;
         int count = mixed_count;
         for (auto& d : sorted_deficits) {
-            hr_logger.trace("next sorted deficit={{{}, {}}}", d.first, d.second);
+            LOGMACRO(hr_logger, log_level::trace, "next sorted deficit={{{}, {}}}", d.first, d.second);
             // What "diff" to distribute
             auto diff = d.second - s;
             s = d.second;
-            hr_logger.trace("diff={}, pp before={}, count={}", diff, pp, count);
+            LOGMACRO(hr_logger, log_level::trace, "diff={}, pp before={}, count={}", diff, pp, count);
             --count;
             // Distribute diff among all the mixed nodes with higher deficit.
             // There should be exactly "count" of those excluding me.
@@ -315,7 +315,7 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
                 break;
             }
             for (unsigned i = 0; i < rf; i++) {
-                hr_logger.trace("{} {} {} {}", i, d.first, deficit[i], d.second);
+                LOGMACRO(hr_logger, log_level::trace, "{} {} {} {}", i, d.first, deficit[i], d.second);
                 // The ">=" here is ok: If several deficits are tied, the first one
                 // contributes the diff to all those nodes (all are equal, so >=),
                 // while when we get to the following nodes, they have diff==0
@@ -323,11 +323,11 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
                 // doesn't quite match count nodes.
                 if (i != me && deficit[i] >= d.second) {
                     pp[i] += diff / count;
-                    hr_logger.trace("pp[{}]={} (case a)", i, pp[i]);
+                    LOGMACRO(hr_logger, log_level::trace, "pp[{}]={} (case a)", i, pp[i]);
                 }
             }
 
-            hr_logger.trace("     pp after1=", pp);
+            LOGMACRO(hr_logger, log_level::trace, "     pp after1=", pp);
             if (d.first == me) {
                 // We only care what "me" sends, and only the elements in
                 // the sorted list earlier than me could have forced it to
@@ -346,16 +346,16 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
             auto last_deficit = sorted_deficits.back().second;
             auto diff = mixed_surplus - last_deficit;
             if (count > 1) {
-                hr_logger.trace("CASE4. surplus {} count {}", diff, count);
+                LOGMACRO(hr_logger, log_level::trace, "CASE4. surplus {} count {}", diff, count);
                 for (unsigned i = 0; i < rf; i++) {
                     if (i != me && deficit[i] > last_deficit) {
-                        hr_logger.trace("adding {}  to pp[{}]={}", (diff / (count-1)), i,  pp[i]);
+                        LOGMACRO(hr_logger, log_level::trace, "adding {}  to pp[{}]={}", (diff / (count-1)), i,  pp[i]);
                         pp[i] += diff / (count - 1);
                     }
                 }
                 // TODO: confirm that this loop worked exactly count - 1 times.
             } else {
-                hr_logger.trace("CASE3a. surplus={}", diff);
+                LOGMACRO(hr_logger, log_level::trace, "CASE3a. surplus={}", diff);
                 // CASE3: count == 1 is possible. example for p = 0.2, 0.3, 0.5:
                 //    surplus  0.5  0.5  0.5
                 //    deficit  0.1  0.4  1.0
@@ -382,11 +382,11 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
                 for (unsigned i = 0; i < rf; i++) {
                     if (i != me) {
                         pp[i] += diff / (mixed_count - 1);
-                        hr_logger.trace("pp[{}]={} (case b)", i, pp[i]);
+                        LOGMACRO(hr_logger, log_level::trace, "pp[{}]={} (case b)", i, pp[i]);
                     }
                 }
             }
-            hr_logger.trace("      pp after2={}", pp);
+            LOGMACRO(hr_logger, log_level::trace, "      pp after2={}", pp);
         } else {
             // Additionally, if the algorithm ends with a single mixed node
             // we need to apply a fix. Above we already handled the case that
@@ -409,14 +409,14 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
             }
             if (n_converted_to_deficit == 1) {
                 auto diff = mixed_surplus - last_deficit;
-                hr_logger.trace("CASE3b. surplus={}", diff);
+                LOGMACRO(hr_logger, log_level::trace, "CASE3b. surplus={}", diff);
                 pp[mix_i] += diff / (mixed_count - 1);
-                hr_logger.trace("pp[{}]={} (case c)", mix_i, pp[mix_i]);
+                LOGMACRO(hr_logger, log_level::trace, "pp[{}]={} (case c)", mix_i, pp[mix_i]);
                 for (unsigned i = 0; i < rf; i++) {
                     if (deficit[i] > 0) { // mixed node
                         if (i != mix_i && i != me) {
                             pp[i] -= diff / (mixed_count - 1) / (mixed_count - 2);
-                            hr_logger.trace("pp[{}]={} (case d)", i, pp[i]);
+                            LOGMACRO(hr_logger, log_level::trace, "pp[{}]={} (case d)", i, pp[i]);
                         }
                     }
                 }
@@ -453,7 +453,7 @@ redistribute(const std::vector<float>& p, unsigned me, unsigned k) {
                 // already flowed some work to other nodes in the
                 // mixed node redistribution algorithm above.
                 pp[j] += deficit[j] / new_total_deficit * my_surplus; 
-                hr_logger.trace("pp[{}]={} (case e)", j, pp[j]);
+                LOGMACRO(hr_logger, log_level::trace, "pp[{}]={} (case e)", j, pp[j]);
             }
         }
     }

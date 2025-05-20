@@ -483,14 +483,14 @@ public:
         auto all_endpoints = _gossiper.get_live_token_owners();
         auto timeout = clock_type::now() + timeout_in_ms;
 
-        slogger.trace("Enqueuing truncate messages to hosts {}", all_endpoints);
+        LOGMACRO(slogger, log_level::trace, "Enqueuing truncate messages to hosts {}", all_endpoints);
 
         try {
             co_await coroutine::parallel_for_each(all_endpoints, [&] (auto ep) {
                 return send_truncate(ep, timeout, keyspace, cfname);
             });
         } catch (rpc::timeout_error& e) {
-            slogger.trace("Truncation of {} timed out: {}", cfname, e.what());
+            LOGMACRO(slogger, log_level::trace, "Truncation of {} timed out: {}", cfname, e.what());
             throw;
         }
     }
@@ -1177,12 +1177,12 @@ static result<db::per_partition_rate_limit::info> choose_rate_limit_info(
             if (*decision == db::rate_limiter::can_proceed::yes) {
                 // The coordinator has decided to accept the operation.
                 // Tell other replicas only to account, but not reject
-                slogger.trace("Per-partition rate limiting: coordinator accepted");
+                LOGMACRO(slogger, log_level::trace, "Per-partition rate limiting: coordinator accepted");
                 tracing::trace(tr_state, "Per-partition rate limiting: coordinator accepted");
                 return db::per_partition_rate_limit::account_only{};
             } else {
                 // The coordinator has decided to reject, abort the operation
-                slogger.trace("Per-partition rate limiting: coordinator rejected");
+                LOGMACRO(slogger, log_level::trace, "Per-partition rate limiting: coordinator rejected");
                 tracing::trace(tr_state, "Per-partition rate limiting: coordinator rejected");
                 return coordinator_exception_container(exceptions::rate_limit_exception(s->ks_name(), s->cf_name(), op_type, true));
             }
@@ -1191,7 +1191,7 @@ static result<db::per_partition_rate_limit::info> choose_rate_limit_info(
 
     // The coordinator is not a replica. The decision whether to accept
     // or reject is left for replicas.
-    slogger.trace("Per-partition rate limiting: replicas will decide");
+    LOGMACRO(slogger, log_level::trace, "Per-partition rate limiting: replicas will decide");
     tracing::trace(tr_state, "Per-partition rate limiting: replicas will decide");
     return enforce_info;
 }
@@ -1653,7 +1653,7 @@ public:
 
     void on_timeout() {
         if (_cl_achieved) {
-            slogger.trace("Write is not acknowledged by {} replicas after achieving CL", get_targets());
+            LOGMACRO(slogger, log_level::trace, "Write is not acknowledged by {} replicas after achieving CL", get_targets());
         }
         _error = error::TIMEOUT;
         // We don't delay request completion after a timeout, but its possible we are currently delaying.
@@ -1722,7 +1722,7 @@ public:
                     _type, get_trace_state());
             signal(hints);
             if (_cl == db::consistency_level::ANY && hints) {
-                slogger.trace("Wrote hint to satisfy CL.ANY after no replicas acknowledged the write");
+                LOGMACRO(slogger, log_level::trace, "Wrote hint to satisfy CL.ANY after no replicas acknowledged the write");
             }
             if (_cl_achieved) { // For CL=ANY this can still be false
                 for (auto&& ep : get_targets()) {
@@ -2158,7 +2158,7 @@ future<paxos::prepare_summary> paxos_response_handler::prepare_ballot(utils::UUI
     // We may continue collecting prepare responses in the background after the reply is ready
     (void)do_with(paxos::prepare_summary(_live_endpoints.size()), std::move(request_tracker), shared_from_this(),
             [this, ballot] (paxos::prepare_summary& summary, auto& request_tracker, shared_ptr<paxos_response_handler>& prh) mutable -> future<> {
-        paxos::paxos_state::logger.trace("CAS[{}] prepare_ballot: sending ballot {} to {}", _id, ballot, _live_endpoints);
+        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] prepare_ballot: sending ballot {} to {}", _id, ballot, _live_endpoints);
         auto handle_one_msg = [this, &summary, ballot, &request_tracker] (locator::host_id peer) mutable -> future<> {
             paxos::prepare_response response;
             try {
@@ -2177,7 +2177,7 @@ future<paxos::prepare_summary> paxos_response_handler::prepare_ballot(utils::UUI
                 if (request_tracker.p) {
                     auto ex = std::current_exception();
                     if (is_timeout_exception(ex)) {
-                        paxos::paxos_state::logger.trace("CAS[{}] prepare_ballot: timeout while sending ballot {} to {}", _id,
+                        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] prepare_ballot: timeout while sending ballot {} to {}", _id,
                                     ballot, peer);
                         auto e = std::make_exception_ptr(mutation_write_timeout_exception(_schema->ks_name(), _schema->cf_name(),
                                     _cl_for_paxos, summary.committed_ballots_by_replica.size(),  _required_participants,
@@ -2185,7 +2185,7 @@ future<paxos::prepare_summary> paxos_response_handler::prepare_ballot(utils::UUI
                         request_tracker.set_exception(std::move(e));
                     } else {
                         request_tracker.errors++;
-                        paxos::paxos_state::logger.trace("CAS[{}] prepare_ballot: fail to send ballot {} to {}: {}", _id,
+                        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] prepare_ballot: fail to send ballot {} to {}: {}", _id,
                                 ballot, peer, ex);
                         if (_required_participants + request_tracker.errors > _live_endpoints.size()) {
                             auto e = std::make_exception_ptr(mutation_write_failure_exception(_schema->ks_name(),
@@ -2206,7 +2206,7 @@ future<paxos::prepare_summary> paxos_response_handler::prepare_ballot(utils::UUI
                 using T = std::decay_t<decltype(response)>;
                 if constexpr (std::is_same_v<T, utils::UUID>) {
                     tracing::trace(tr_state, "prepare_ballot: got more up to date ballot {} from /{}", response, peer);
-                    paxos::paxos_state::logger.trace("CAS[{}] prepare_ballot: got more up to date ballot {} from {}", _id, response, peer);
+                    paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] prepare_ballot: got more up to date ballot {} from {}", _id, response, peer);
                     // We got an UUID that prevented our proposal from succeeding
                     summary.update_most_recent_promised_ballot(response);
                     summary.promised = false;
@@ -2215,7 +2215,7 @@ future<paxos::prepare_summary> paxos_response_handler::prepare_ballot(utils::UUI
                 } else if constexpr (std::is_same_v<T, paxos::promise>) {
                     utils::UUID mrc_ballot = utils::UUID_gen::min_time_UUID();
 
-                    paxos::paxos_state::logger.trace("CAS[{}] prepare_ballot: got a response {} from {}", _id, response, peer);
+                    paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] prepare_ballot: got a response {} from {}", _id, response, peer);
                     tracing::trace(tr_state, "prepare_ballot: got a response {} from /{}", response, peer);
 
                     // Find the newest learned value among all replicas that answered.
@@ -2271,7 +2271,7 @@ future<paxos::prepare_summary> paxos_response_handler::prepare_ballot(utils::UUI
 
                     if (summary.committed_ballots_by_replica.size() == _required_participants) { // got all replies
                         tracing::trace(tr_state, "prepare_ballot: got enough replies to proceed");
-                        paxos::paxos_state::logger.trace("CAS[{}] prepare_ballot: got enough replies to proceed", _id);
+                        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] prepare_ballot: got enough replies to proceed", _id);
                         request_tracker.set_value(std::move(summary));
                     }
                 } else {
@@ -2320,7 +2320,7 @@ future<bool> paxos_response_handler::accept_proposal(lw_shared_ptr<paxos::propos
     // We may continue collecting propose responses in the background after the reply is ready
     (void)do_with(std::move(request_tracker), shared_from_this(), [this, timeout_if_partially_accepted, proposal = std::move(proposal)]
                            (auto& request_tracker, shared_ptr<paxos_response_handler>& prh) -> future<> {
-        paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: sending commit {} to {}", _id, *proposal, _live_endpoints);
+        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: sending commit {} to {}", _id, *proposal, _live_endpoints);
         auto handle_one_msg = [this, &request_tracker, timeout_if_partially_accepted, proposal = std::move(proposal)] (locator::host_id peer) mutable -> future<> {
             bool is_timeout = false;
             std::optional<bool> accepted;
@@ -2337,11 +2337,11 @@ future<bool> paxos_response_handler::accept_proposal(lw_shared_ptr<paxos::propos
                 if (request_tracker.p) {
                     auto ex = std::current_exception();
                     if (is_timeout_exception(ex)) {
-                        paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: timeout while sending proposal {} to {}",
+                        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: timeout while sending proposal {} to {}",
                                 _id, *proposal, peer);
                         is_timeout = true;
                     } else {
-                        paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: failure while sending proposal {} to {}: {}", _id,
+                        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: failure while sending proposal {} to {}: {}", _id,
                                 *proposal, peer, ex);
                         request_tracker.errors++;
                     }
@@ -2355,7 +2355,7 @@ future<bool> paxos_response_handler::accept_proposal(lw_shared_ptr<paxos::propos
 
             if (accepted) {
                 tracing::trace(tr_state, "accept_proposal: got \"{}\" from /{}", *accepted ? "accepted" : "rejected", peer);
-                paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: got \"{}\" from {}", _id,
+                paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: got \"{}\" from {}", _id,
                         accepted ? "accepted" : "rejected", peer);
 
                 *accepted ? request_tracker.accepts++ : request_tracker.rejects++;
@@ -2376,7 +2376,7 @@ future<bool> paxos_response_handler::accept_proposal(lw_shared_ptr<paxos::propos
             */
             if (request_tracker.accepts == _required_participants) {
                 tracing::trace(tr_state, "accept_proposal: got enough accepts to proceed");
-                paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: got enough accepts to proceed", _id);
+                paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: got enough accepts to proceed", _id);
                 request_tracker.set_value(true);
             } else if (is_timeout) {
                 auto e = std::make_exception_ptr(mutation_write_timeout_exception(_schema->ks_name(), _schema->cf_name(),
@@ -2394,12 +2394,12 @@ future<bool> paxos_response_handler::accept_proposal(lw_shared_ptr<paxos::propos
                 // In case there is no need to reply with a timeout if at least one node is accepted
                 // we can fail the request as soon is we know a quorum is unreachable.
                 tracing::trace(tr_state, "accept_proposal: got enough rejects to proceed");
-                paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: got enough rejects to proceed", _id);
+                paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: got enough rejects to proceed", _id);
                 request_tracker.set_value(false);
             } else if (request_tracker.all_replies() == _live_endpoints.size()) { // wait for all replies
                 if (request_tracker.accepts == 0 && request_tracker.errors == 0) {
                     tracing::trace(tr_state, "accept_proposal: proposal is fully rejected");
-                    paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: proposal is fully rejected", _id);
+                    paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: proposal is fully rejected", _id);
                     // Return false if fully refused. Consider errors as accepts here since it
                     // is not possible to know for sure.
                     request_tracker.set_value(false);
@@ -2407,7 +2407,7 @@ future<bool> paxos_response_handler::accept_proposal(lw_shared_ptr<paxos::propos
                     // We got some rejects, but not all, and there were errors. So we can't know for
                     // sure that the proposal is fully rejected, and it is obviously not
                     // accepted, either.
-                    paxos::paxos_state::logger.trace("CAS[{}] accept_proposal: proposal is partially rejected", _id);
+                    paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] accept_proposal: proposal is partially rejected", _id);
                     tracing::trace(tr_state, "accept_proposal: proposal is partially rejected");
                     _proxy->get_stats().cas_write_timeout_due_to_uncertainty++;
                     // TODO: we report write timeout exception to be compatible with Cassandra,
@@ -2441,7 +2441,7 @@ namespace service {
 // This function implements learning stage of Paxos protocol
 future<> paxos_response_handler::learn_decision(lw_shared_ptr<paxos::proposal> decision, bool allow_hints) {
     tracing::trace(tr_state, "learn_decision: committing {} with cl={}", *decision, _cl_for_learn);
-    paxos::paxos_state::logger.trace("CAS[{}] learn_decision: committing {} with cl={}", _id, *decision, _cl_for_learn);
+    paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}] learn_decision: committing {} with cl={}", _id, *decision, _cl_for_learn);
     // FIXME: allow_hints is ignored. Consider if we should follow it and remove if not.
     // Right now we do not store hints for when committing decisions.
 
@@ -3126,7 +3126,7 @@ storage_proxy::storage_proxy(distributed<replica::database>& db, storage_proxy::
                                         "if it grows too large. If it's notably different from scylla_database_view_update_backlog, it means "
                                         "that we're currently processing a write that generated a large number of view updates.")),
     });
-    slogger.trace("hinted DCs: {}", cfg.hinted_handoff_enabled.to_configuration_string());
+    LOGMACRO(slogger, log_level::trace, "hinted DCs: {}", cfg.hinted_handoff_enabled.to_configuration_string());
     _hints_manager.register_metrics("hints_manager");
     _hints_for_views_manager.register_metrics("hints_for_views_manager");
 }
@@ -3354,7 +3354,7 @@ storage_proxy::create_write_response_handler_helper(schema_ptr s, const dht::tok
     host_id_vector_replica_set natural_endpoints = erm->get_natural_replicas(token);
     host_id_vector_topology_change pending_endpoints = erm->get_pending_replicas(token);
 
-    slogger.trace("creating write handler for token: {} natural: {} pending: {}", token, natural_endpoints, pending_endpoints);
+    LOGMACRO(slogger, log_level::trace, "creating write handler for token: {} natural: {} pending: {}", token, natural_endpoints, pending_endpoints);
     tracing::trace(tr_state, "Creating write handler for token: {} natural: {} pending: {}", token, natural_endpoints ,pending_endpoints);
 
     const bool coordinator_in_replica_set = std::find(natural_endpoints.begin(), natural_endpoints.end(),
@@ -3410,10 +3410,10 @@ storage_proxy::create_write_response_handler_helper(schema_ptr s, const dht::tok
         }
         rate_limit_info = r_rate_limit_info.value();
     } else {
-        slogger.trace("Operation is not rate limited");
+        LOGMACRO(slogger, log_level::trace, "Operation is not rate limited");
     }
 
-    slogger.trace("creating write handler with live: {} dead: {}", live_endpoints, dead_endpoints);
+    LOGMACRO(slogger, log_level::trace, "creating write handler with live: {} dead: {}", live_endpoints, dead_endpoints);
     tracing::trace(tr_state, "Creating write handler with live: {} dead: {}", live_endpoints, dead_endpoints);
 
     db::assure_sufficient_live_nodes(cl, *erm, live_endpoints, pending_endpoints);
@@ -3449,7 +3449,7 @@ storage_proxy::create_write_response_handler(const read_repair_mutation& mut, db
     std::ranges::copy(m | std::views::keys, std::inserter(endpoints, endpoints.begin()));
     auto mh = std::make_unique<per_destination_mutation>(m);
 
-    slogger.trace("creating write handler for read repair token: {} endpoint: {}", mh->token(), endpoints);
+    LOGMACRO(slogger, log_level::trace, "creating write handler for read repair token: {} endpoint: {}", mh->token(), endpoints);
     tracing::trace(tr_state, "Creating write handler for read repair token: {} endpoint: {}", mh->token(), endpoints);
 
     // No rate limiting for read repair
@@ -3476,7 +3476,7 @@ storage_proxy::create_write_response_handler(const std::tuple<lw_shared_ptr<paxo
         // isn't overloaded
         return boost::outcome_v2::failure(overloaded_exception("View update backlog is too high on node containing the base replica"));
     }
-    slogger.trace("creating write handler for paxos repair token: {} endpoint: {}", token, endpoints);
+    LOGMACRO(slogger, log_level::trace, "creating write handler for paxos repair token: {} endpoint: {}", token, endpoints);
     tracing::trace(tr_state, "Creating write handler for paxos repair token: {} endpoint: {}", token, endpoints);
 
     auto ermp = paxos_handler->get_effective_replication_map();
@@ -3600,7 +3600,7 @@ future<result<>> storage_proxy::mutate_end(future<result<>> mutate_result, utils
         return std::move(res);
     },  utils::result_catch<replica::no_such_keyspace>([&] (const auto& ex, auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: write to non existing keyspace: {}", ex.what());
-        slogger.trace("Write to non existing keyspace: {}", ex.what());
+        LOGMACRO(slogger, log_level::trace, "Write to non existing keyspace: {}", ex.what());
         return handle.into_future();
     }), utils::result_catch<mutation_write_timeout_exception>([&] (const auto& ex, auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: write timeout; received {:d} of {:d} required replies", ex.received, ex.block_for);
@@ -3610,7 +3610,7 @@ future<result<>> storage_proxy::mutate_end(future<result<>> mutate_result, utils
     }), utils::result_catch<exceptions::unavailable_exception>([&] (const auto& ex, auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: unavailable");
         stats.write_unavailables.mark();
-        slogger.trace("Unavailable");
+        LOGMACRO(slogger, log_level::trace, "Unavailable");
         return handle.into_future();
     }), utils::result_catch<exceptions::rate_limit_exception>([&] (const auto& ex, auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: rate limit exceeded");
@@ -3619,12 +3619,12 @@ future<result<>> storage_proxy::mutate_end(future<result<>> mutate_result, utils
         } else {
             stats.write_rate_limited_by_replicas.mark();
         }
-        slogger.trace("Rate limit exceeded");
+        LOGMACRO(slogger, log_level::trace, "Rate limit exceeded");
         return handle.into_future();
     }), utils::result_catch<overloaded_exception>([&] (const auto& ex, auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: overloaded");
         stats.write_unavailables.mark();
-        slogger.trace("Overloaded");
+        LOGMACRO(slogger, log_level::trace, "Overloaded");
         return handle.into_future();
     }), utils::result_catch_dots([&] (auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: unknown reason");
@@ -3667,8 +3667,8 @@ future<> storage_proxy::mutate_counters(Range&& mutations, db::consistency_level
         co_return;
     }
 
-    slogger.trace("mutate_counters cl={}", cl);
-    mlogger.trace("counter mutations={}", mutations);
+    LOGMACRO(slogger, log_level::trace, "mutate_counters cl={}", cl);
+    LOGMACRO(mlogger, log_level::trace, "counter mutations={}", mutations);
 
 
     // Choose a leader for each mutation
@@ -3863,8 +3863,8 @@ storage_proxy::mutate_internal(Range mutations, db::consistency_level cl, bool c
         return make_ready_future<result<>>(bo::success());
     }
 
-    slogger.trace("mutate cl={}", cl);
-    mlogger.trace("mutations={}", mutations);
+    LOGMACRO(slogger, log_level::trace, "mutate cl={}", cl);
+    LOGMACRO(mlogger, log_level::trace, "mutations={}", mutations);
 
     // If counters is set it means that we are replicating counter shards. There
     // is no need for special handling anymore, since the leader has already
@@ -4182,7 +4182,7 @@ future<> storage_proxy::send_to_endpoint(
                 std::inserter(targets, targets.begin()),
                 std::back_inserter(dead_endpoints),
                 std::bind_front(&storage_proxy::is_alive, this, std::cref(*erm)));
-        slogger.trace("Creating write handler with live: {}; dead: {}", targets, dead_endpoints);
+        LOGMACRO(slogger, log_level::trace, "Creating write handler with live: {}; dead: {}", targets, dead_endpoints);
         db::assure_sufficient_live_nodes(cl, *erm, targets, pending_endpoints);
         return create_write_response_handler(
             std::move(erm),
@@ -5396,11 +5396,11 @@ protected:
                                || data_resolver->live_partition_count() >= original_partition_limit())
                         && !data_resolver->any_partition_short_read()) {
                     tracing::trace(_trace_state, "Read stage is done for read-repair");
-                    mlogger.trace("reconciled: {}", rr_opt->pretty_printer(_schema));
+                    LOGMACRO(mlogger, log_level::trace, "reconciled: {}", rr_opt->pretty_printer(_schema));
 
                     auto result = ::make_foreign(::make_lw_shared<query::result>(
                             co_await to_data_query_result(std::move(*rr_opt), _schema, _cmd->slice, _cmd->get_row_limit(), _cmd->partition_limit)));
-                    qlogger.trace("reconciled: {}", result->pretty_printer(_schema, _cmd->slice));
+                    LOGMACRO(qlogger, log_level::trace, "reconciled: {}", result->pretty_printer(_schema, _cmd->slice));
 
                     // Un-reverse mutations for reversed queries. When a mutation comes from a node in mixed-node cluster
                     // it is reversed in make_mutation_data_request(). So we always deal here with reversed mutations for
@@ -5479,7 +5479,7 @@ protected:
                         _retry_cmd->slice.options.remove<query::partition_slice::option::allow_short_read>();
                     }
 
-                    slogger.trace("Retrying query with command {} (previous is {})", *_retry_cmd, *cmd);
+                    LOGMACRO(slogger, log_level::trace, "Retrying query with command {} (previous is {})", *_retry_cmd, *cmd);
                     reconcile(cl, timeout, _retry_cmd);
                 }
 
@@ -5722,7 +5722,7 @@ result<::shared_ptr<abstract_read_executor>> storage_proxy::get_read_executor(lw
             retry_type == speculative_retry::type::NONE ? nullptr : &extra_replica,
             _db.local().get_config().cache_hit_rate_read_balancing() ? &*cf : nullptr);
 
-    slogger.trace("creating read executor for token {} with all: {} targets: {} rp decision: {}", token, all_replicas, target_replicas, repair_decision);
+    LOGMACRO(slogger, log_level::trace, "creating read executor for token {} with all: {} targets: {} rp decision: {}", token, all_replicas, target_replicas, repair_decision);
     tracing::trace(trace_state, "Creating read executor for token {} with all: {} targets: {} repair decision: {}", token, all_replicas, target_replicas, repair_decision);
 
     // Throw UAE early if we don't have enough replicas.
@@ -5750,7 +5750,7 @@ result<::shared_ptr<abstract_read_executor>> storage_proxy::get_read_executor(lw
         }
         rate_limit_info = r_rate_limit_info.value();
     } else {
-        slogger.trace("Operation is not rate limited");
+        LOGMACRO(slogger, log_level::trace, "Operation is not rate limited");
     }
 
     // Speculative retry is disabled *OR* there are simply no extra replicas to speculate.
@@ -5772,12 +5772,12 @@ result<::shared_ptr<abstract_read_executor>> storage_proxy::get_read_executor(lw
     if (target_replicas.size() == block_for) { // If RRD.DC_LOCAL extra replica may already be present
         auto local_dc_filter = erm->get_topology().get_local_dc_filter();
         if (!extra_replica || (is_datacenter_local(cl) && !local_dc_filter(*extra_replica))) {
-            slogger.trace("read executor no extra target to speculate");
+            LOGMACRO(slogger, log_level::trace, "read executor no extra target to speculate");
             tracing::trace(trace_state, "Creating never_speculating_read_executor - there are no extra replicas to speculate with");
             return ::make_shared<never_speculating_read_executor>(schema, cf, shared_from_this(), std::move(erm), cmd, std::move(partition_range), cl, std::move(target_replicas), std::move(trace_state), std::move(permit), rate_limit_info);
         } else {
             target_replicas.push_back(*extra_replica);
-            slogger.trace("creating read executor with extra target {}", *extra_replica);
+            LOGMACRO(slogger, log_level::trace, "creating read executor with extra target {}", *extra_replica);
             tracing::trace(trace_state, "Added extra target {} for speculative read", *extra_replica);
         }
     }
@@ -6138,7 +6138,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
                     co_await coroutine::maybe_yield();
                 }
             }
-            slogger.trace("creating range read executor for range {} in table {}.{} with targets {}",
+            LOGMACRO(slogger, log_level::trace, "creating range read executor for range {} in table {}.{} with targets {}",
                         range, schema->ks_name(), schema->cf_name(), filtered_endpoints);
             try {
                 db::assure_sufficient_live_nodes(cl, *erm, filtered_endpoints, host_id_vector_topology_change{});
@@ -6278,12 +6278,12 @@ storage_proxy::query_result(schema_ptr query_schema,
         static thread_local int next_id = 0;
         auto query_id = next_id++;
 
-        slogger.trace("query {}.{} cmd={}, ranges={}, id={}", query_schema->ks_name(), query_schema->cf_name(), *cmd, partition_ranges, query_id);
+        LOGMACRO(slogger, log_level::trace, "query {}.{} cmd={}, ranges={}, id={}", query_schema->ks_name(), query_schema->cf_name(), *cmd, partition_ranges, query_id);
         return do_query(query_schema, cmd, std::move(partition_ranges), cl, std::move(query_options)).then_wrapped([query_id, cmd, query_schema] (future<result<coordinator_query_result>> f) -> result<coordinator_query_result> {
             auto rres = utils::result_try([&] {
                 return f.get();
             },  utils::result_catch_dots([&] (auto&& handle) {
-                slogger.trace("query id={} failed: {}", query_id, handle.as_inner());
+                LOGMACRO(slogger, log_level::trace, "query id={} failed: {}", query_id, handle.as_inner());
                 return handle.into_result();
             }));
             if (!rres) {
@@ -6293,11 +6293,11 @@ storage_proxy::query_result(schema_ptr query_schema,
             auto& res = qr.query_result;
             if (res->buf().is_linearized()) {
                 res->ensure_counts();
-                slogger.trace("query_result id={}, size={}, rows={}, partitions={}", query_id, res->buf().size(), *res->row_count(), *res->partition_count());
+                LOGMACRO(slogger, log_level::trace, "query_result id={}, size={}, rows={}, partitions={}", query_id, res->buf().size(), *res->row_count(), *res->partition_count());
             } else {
-                slogger.trace("query_result id={}, size={}", query_id, res->buf().size());
+                LOGMACRO(slogger, log_level::trace, "query_result id={}, size={}", query_id, res->buf().size());
             }
-            qlogger.trace("id={}, {}", query_id, res->pretty_printer(query_schema, cmd->slice));
+            LOGMACRO(qlogger, log_level::trace, "id={}, {}", query_id, res->pretty_printer(query_schema, cmd->slice));
             return qr;
         });
     }
@@ -6610,7 +6610,7 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
         write ? get_stats().cas_write_unavailables.mark() :  get_stats().cas_read_unavailables.mark();
         throw;
     } catch (seastar::semaphore_timed_out& ex) {
-        paxos::paxos_state::logger.trace("CAS[{}]: timeout while waiting for row lock {}", handler->id(), ex.what());
+        paxos::paxos_state::LOGMACRO(logger, log_level::trace, "CAS[{}]: timeout while waiting for row lock {}", handler->id(), ex.what());
         if (write) {
             get_stats().cas_write_timeouts.mark();
             throw mutation_write_timeout_exception(schema->ks_name(), schema->cf_name(), cl_for_paxos, 0,  handler->block_for(), db::write_type::CAS);

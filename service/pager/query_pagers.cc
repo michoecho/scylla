@@ -100,13 +100,13 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
     }
     _cmd->query_uuid = *_query_uuid;
 
-    qlogger.trace("fetch_page query id {}", _cmd->query_uuid);
+    LOGMACRO(qlogger, log_level::trace, "fetch_page query id {}", _cmd->query_uuid);
 
     if (_last_pkey) {
         auto dpk = dht::decorate_key(*_query_schema, *_last_pkey);
         dht::ring_position lo(dpk);
 
-        qlogger.trace("PKey={}, Pos={}, reversed={}", dpk, _last_pos, _cmd->slice.is_reversed());
+        LOGMACRO(qlogger, log_level::trace, "PKey={}, Pos={}, reversed={}", dpk, _last_pos, _cmd->slice.is_reversed());
 
         // Note: we're assuming both that the ranges are checked
         // and "cql-compliant", and that storage_proxy will process
@@ -134,18 +134,18 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
                         ;
 
                 if (remove) {
-                    qlogger.trace("Remove range {}", *i);
+                    LOGMACRO(qlogger, log_level::trace, "Remove range {}", *i);
                     i = ranges.erase(i);
                     continue;
                 }
                 if (contains) {
                     auto r = range_type( bound_type{ lo, inclusive }, i->end(), i->is_singular());
-                    qlogger.trace("Modify range {} -> {}", *i, r);
+                    LOGMACRO(qlogger, log_level::trace, "Modify range {} -> {}", *i, r);
                     *i = std::move(r);
                 }
                 ++i;
             }
-            qlogger.trace("Result ranges {}", ranges);
+            LOGMACRO(qlogger, log_level::trace, "Result ranges {}", ranges);
         };
 
         // last ck can be empty depending on whether we
@@ -340,7 +340,7 @@ public:
         throw std::logic_error("Should not reach!");
     }
     void accept_new_partition(const partition_key& key, uint64_t row_count) {
-        qlogger.trace("Accepting partition: {} ({})", key, row_count);
+        LOGMACRO(qlogger, log_level::trace, "Accepting partition: {} ({})", key, row_count);
         total_rows += std::max(row_count, uint64_t(1));
         last_pkey = key;
         last_ckey = { };

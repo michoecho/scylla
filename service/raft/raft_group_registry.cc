@@ -543,7 +543,7 @@ future<bool> direct_fd_pinger::ping(direct_failure_detector::pinger::endpoint_id
             // This may happen e.g. when node B is replacing node A with the same IP.
             // When we ping node A, the pings will reach node B instead.
             // B will detect they were destined for node A and return wrong_destination.
-            rslog.trace("ping(id = {}): wrong destination (reached {})",
+            LOGMACRO(rslog, log_level::trace, "ping(id = {}): wrong destination (reached {})",
                         dst_id, wrong_dst->reached_id);
             co_return false;
         } else if (auto* info = std::get_if<group_liveness_info>(&reply.result)) {

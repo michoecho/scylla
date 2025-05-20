@@ -375,7 +375,7 @@ future<> server_impl::start() {
     auto commit_idx = co_await _persistence->load_commit_idx();
     raft::configuration rpc_config = log.get_configuration();
     index_t stable_idx = log.stable_idx();
-    logger.trace("[{}] start raft instance: snapshot id={} commit index={} last stable index={}", id(), snapshot.id, commit_idx, stable_idx);
+    LOGMACRO(logger, log_level::trace, "[{}] start raft instance: snapshot id={} commit index={} last stable index={}", id(), snapshot.id, commit_idx, stable_idx);
     if (commit_idx > stable_idx) {
         on_internal_error(logger, "Raft init failed: committed index cannot be larger then persisted one");
     }
@@ -441,7 +441,7 @@ future<> server_impl::wait_for_leader(seastar::abort_source* as) {
         co_return;
     }
 
-    logger.trace("[{}] the leader is unknown, waiting through uncertainty", id());
+    LOGMACRO(logger, log_level::trace, "[{}] the leader is unknown, waiting through uncertainty", id());
     _fsm->ping_leader();
     if (!_leader_promise) {
         _leader_promise.emplace();
@@ -554,14 +554,14 @@ future<> server_impl::wait_for_entry(entry_id eid, wait_type type, seastar::abor
                 SCYLLA_ASSERT(snap_term);
                 SCYLLA_ASSERT(snap_idx >= eid.idx);
                 if (type == wait_type::committed && snap_term == eid.term) {
-                    logger.trace("[{}] wait_for_entry {}.{}: entry got truncated away, but has the snapshot's term"
+                    LOGMACRO(logger, log_level::trace, "[{}] wait_for_entry {}.{}: entry got truncated away, but has the snapshot's term"
                                  " (snapshot index: {})", id(), eid.term, eid.idx, snap_idx);
                     co_return;
 
                     // We don't do this for `wait_type::applied` - see below why.
                 }
 
-                logger.trace("[{}] wait_for_entry {}.{}: entry got truncated away", id(), eid.term, eid.idx);
+                LOGMACRO(logger, log_level::trace, "[{}] wait_for_entry {}.{}: entry got truncated away", id(), eid.term, eid.idx);
                 throw commit_status_unknown();
             }
 
@@ -596,7 +596,7 @@ future<> server_impl::wait_for_entry(entry_id eid, wait_type type, seastar::abor
     }
 
     auto& container = type == wait_type::committed ? _awaited_commits : _awaited_applies;
-    logger.trace("[{}] waiting for entry {}.{}", id(), eid.term, eid.idx);
+    LOGMACRO(logger, log_level::trace, "[{}] waiting for entry {}.{}", id(), eid.term, eid.idx);
 
     // This will track the commit/apply status of the entry
     auto [it, inserted] = container.emplace(eid.idx, op_status{eid.term, promise<>()});
@@ -650,7 +650,7 @@ future<> server_impl::wait_for_entry(entry_id eid, wait_type type, seastar::abor
         SCYLLA_ASSERT(it->second.abort);
     }
     co_await it->second.done.get_future();
-    logger.trace("[{}] done waiting for {}.{}", id(), eid.term, eid.idx);
+    LOGMACRO(logger, log_level::trace, "[{}] done waiting for {}.{}", id(), eid.term, eid.idx);
     co_return;
 }
 
@@ -673,7 +673,7 @@ future<entry_id> server_impl::add_entry_on_leader(command cmd, seastar::abort_so
         }
         memory_permit.release();
     }
-    logger.trace("[{}] adding entry after waiting for memory permit", id());
+    LOGMACRO(logger, log_level::trace, "[{}] adding entry after waiting for memory permit", id());
 
     try {
         const log_entry& e = _fsm->add_entry(std::move(cmd));
@@ -693,7 +693,7 @@ future<add_entry_reply> server_impl::execute_add_entry(server_id from, command c
         co_return add_entry_reply{not_a_member{format("Add entry from {} was discarded since "
                                                          "it is not part of the configuration", from)}};
     }
-    logger.trace("[{}] adding a forwarded entry from {}", id(), from);
+    LOGMACRO(logger, log_level::trace, "[{}] adding a forwarded entry from {}", id(), from);
     try {
         co_return add_entry_reply{co_await add_entry_on_leader(std::move(cmd), as)};
     } catch (raft::not_a_leader& e) {
@@ -743,13 +743,13 @@ future<> server_impl::do_on_leader_with_retries(seastar::abort_source* as, Async
 
 future<> server_impl::add_entry(command command, wait_type type, seastar::abort_source* as) {
     if (command.size() > _config.max_command_size) {
-        logger.trace("[{}] add_entry command size exceeds the limit: {} > {}",
+        LOGMACRO(logger, log_level::trace, "[{}] add_entry command size exceeds the limit: {} > {}",
                      id(), command.size(), _config.max_command_size);
         throw command_is_too_big_error(command.size(), _config.max_command_size);
     }
     _stats.add_command++;
 
-    logger.trace("[{}] an entry is submitted", id());
+    LOGMACRO(logger, log_level::trace, "[{}] an entry is submitted", id());
     if (!_config.enable_forwarding) {
         if (const auto leader = _fsm->current_leader(); leader != _id) {
             throw not_a_leader{leader};
@@ -761,16 +761,16 @@ future<> server_impl::add_entry(command command, wait_type type, seastar::abort_
     co_await do_on_leader_with_retries(as, [&](server_id& leader) -> future<stop_iteration> {
         auto reply = co_await [&]() -> future<add_entry_reply> {
             if (leader == _id) {
-                logger.trace("[{}] an entry proceeds on a leader", id());
+                LOGMACRO(logger, log_level::trace, "[{}] an entry proceeds on a leader", id());
                 // Make a copy of the command since we may still
                 // retry and forward it.
                 co_return co_await execute_add_entry(leader, command, as);
             } else {
-                logger.trace("[{}] forwarding the entry to {}", id(), leader);
+                LOGMACRO(logger, log_level::trace, "[{}] forwarding the entry to {}", id(), leader);
                 try {
                     co_return co_await _rpc->send_add_entry(leader, command);
                 } catch (const transport_error& e) {
-                    logger.trace("[{}] send_add_entry on {} resulted in {}; "
+                    LOGMACRO(logger, log_level::trace, "[{}] send_add_entry on {} resulted in {}; "
                                  "rethrow as commit_status_unknown", _id, leader, e);
                     throw raft::commit_status_unknown();
                 }
@@ -791,7 +791,7 @@ future<> server_impl::add_entry(command command, wait_type type, seastar::abort_
             co_await coroutine::return_exception(std::get<not_a_member>(reply));
         }
         const auto& e = std::get<transient_error>(reply);
-        logger.trace("[{}] got {}", _id, e);
+        LOGMACRO(logger, log_level::trace, "[{}] got {}", _id, e);
         leader = e.leader;
         co_return stop_iteration::no;
     });
@@ -810,7 +810,7 @@ future<add_entry_reply> server_impl::execute_modify_config(server_id from,
         // Wait for a new slot to become available
         auto cfg = get_configuration().current;
         for (auto& s : add) {
-            logger.trace("[{}] adding server {} as {}", id(), s.addr.id,
+            LOGMACRO(logger, log_level::trace, "[{}] adding server {} as {}", id(), s.addr.id,
                     s.can_vote? "voter" : "non-voter");
             auto it = cfg.find(s);
             if (it == cfg.end()) {
@@ -818,7 +818,7 @@ future<add_entry_reply> server_impl::execute_modify_config(server_id from,
             } else if (it->can_vote != s.can_vote) {
                 cfg.erase(s);
                 cfg.insert(s);
-                logger.trace("[{}] server {} already in configuration now {}",
+                LOGMACRO(logger, log_level::trace, "[{}] server {} already in configuration now {}",
                         id(), s.addr.id, s.can_vote? "voter" : "non-voter");
             } else {
                 logger.warn("[{}] the server {} already exists in configuration as {}",
@@ -826,7 +826,7 @@ future<add_entry_reply> server_impl::execute_modify_config(server_id from,
             }
         }
         for (auto& to_remove: del) {
-            logger.trace("[{}] removing server {}", id(), to_remove);
+            LOGMACRO(logger, log_level::trace, "[{}] removing server {}", id(), to_remove);
             // erase(to_remove) only available from C++23
             auto it = cfg.find(to_remove);
             if (it != cfg.end()) {
@@ -882,11 +882,11 @@ future<> server_impl::modify_config(std::vector<config_member> add, std::vector<
                 // still retry and forward them.
                 co_return co_await execute_modify_config(leader, add, del, as);
             } else {
-                logger.trace("[{}] forwarding the entry to {}", id(), leader);
+                LOGMACRO(logger, log_level::trace, "[{}] forwarding the entry to {}", id(), leader);
                 try {
                     co_return co_await _rpc->send_modify_config(leader, add, del);
                 } catch (const transport_error& e) {
-                    logger.trace("[{}] send_modify_config on {} resulted in {}; "
+                    LOGMACRO(logger, log_level::trace, "[{}] send_modify_config on {} resulted in {}; "
                                  "rethrow as commit_status_unknown", _id, leader, e);
                     throw raft::commit_status_unknown();
                 }
@@ -899,7 +899,7 @@ future<> server_impl::modify_config(std::vector<config_member> add, std::vector<
             co_return stop_iteration::yes;
         }
         if (const auto e = std::get_if<raft::transient_error>(&reply)) {
-            logger.trace("[{}] got {}", _id, *e);
+            LOGMACRO(logger, log_level::trace, "[{}] got {}", _id, *e);
             leader = e->leader;
             co_return stop_iteration::no;
         }
@@ -1106,7 +1106,7 @@ future<> server_impl::process_fsm_output(index_t& last_stable, fsm_output&& batc
 
     if (batch.snp) {
         const auto& [snp, is_local, preserve_log_entries] = *batch.snp;
-        logger.trace("[{}] io_fiber storing snapshot {}", _id, snp.id);
+        LOGMACRO(logger, log_level::trace, "[{}] io_fiber storing snapshot {}", _id, snp.id);
         // Persist the snapshot
         co_await _persistence->store_snapshot_descriptor(snp, preserve_log_entries);
         _snapshot_desc_idx = snp.idx;
@@ -1238,7 +1238,7 @@ future<> server_impl::process_server_requests(server_requests&& requests) {
 }
 
 future<> server_impl::io_fiber(index_t last_stable) {
-    logger.trace("[{}] io_fiber start", _id);
+    LOGMACRO(logger, log_level::trace, "[{}] io_fiber start", _id);
     try {
         while (true) {
             bool has_fsm_output = false;
@@ -1296,7 +1296,7 @@ void server_impl::send_snapshot(server_id dst, install_snapshot&& snp) {
                         : log_level::error;
                 logger.log(lvl, "[{}] Transferring snapshot to {} failed with: {}", _id, dst, eptr);
             } else {
-                logger.trace("[{}] Transferred snapshot to {}", _id, dst);
+                LOGMACRO(logger, log_level::trace, "[{}] Transferred snapshot to {}", _id, dst);
                 reply = f.get();
             }
             _fsm->step(dst, std::move(reply));
@@ -1325,7 +1325,7 @@ future<snapshot_reply> server_impl::apply_snapshot(server_id from, install_snaps
 }
 
 future<> server_impl::applier_fiber() {
-    logger.trace("applier_fiber start");
+    LOGMACRO(logger, log_level::trace, "applier_fiber start");
 
     try {
         while (true) {
@@ -1334,7 +1334,7 @@ future<> server_impl::applier_fiber() {
             co_await std::visit(make_visitor(
             [this] (std::vector<log_entry_ptr>& batch) -> future<> {
                 if (batch.empty()) {
-                    logger.trace("[{}] applier fiber: received empty batch", _id);
+                    LOGMACRO(logger, log_level::trace, "[{}] applier fiber: received empty batch", _id);
                     co_return;
                 }
 
@@ -1395,7 +1395,7 @@ future<> server_impl::applier_fiber() {
                     snp.term = last_term;
                     snp.idx = _applied_idx;
                     snp.config = _fsm->log_last_conf_for(_applied_idx);
-                    logger.trace("[{}] applier fiber: taking snapshot term={}, idx={}", _id, snp.term, snp.idx);
+                    LOGMACRO(logger, log_level::trace, "[{}] applier fiber: taking snapshot term={}, idx={}", _id, snp.term, snp.idx);
                     snp.id = co_await _state_machine->take_snapshot();
                     // Note that at this point (after the `co_await`), _fsm may already have applied a later snapshot.
                     // That's fine, `_fsm->apply_snapshot` will simply ignore our current attempt; we will soon receive
@@ -1403,7 +1403,7 @@ future<> server_impl::applier_fiber() {
                     auto max_trailing = force_snapshot ? 0 : _config.snapshot_trailing;
                     auto max_trailing_bytes = force_snapshot ? 0 : _config.snapshot_trailing_size;
                     if (!_fsm->apply_snapshot(snp, max_trailing, max_trailing_bytes, true)) {
-                        logger.trace("[{}] applier fiber: while taking snapshot term={} idx={} id={},"
+                        LOGMACRO(logger, log_level::trace, "[{}] applier fiber: while taking snapshot term={} idx={} id={},"
                                 " fsm received a later snapshot at idx={}", _id, snp.term, snp.idx, snp.id, _fsm->log_last_snapshot_idx());
                     }
                     _stats.snapshots_taken++;
@@ -1412,7 +1412,7 @@ future<> server_impl::applier_fiber() {
             [this] (snapshot_descriptor& snp) -> future<> {
                 SCYLLA_ASSERT(snp.idx >= _applied_idx);
                 // Apply snapshot it to the state machine
-                logger.trace("[{}] apply_fiber applying snapshot {}", _id, snp.id);
+                LOGMACRO(logger, log_level::trace, "[{}] apply_fiber applying snapshot {}", _id, snp.id);
                 co_await _state_machine->load_snapshot(snp.id);
                 drop_waiters(snp.idx);
                 _applied_idx = snp.idx;
@@ -1434,10 +1434,10 @@ future<> server_impl::applier_fiber() {
                 snp.term = *applied_term;
                 snp.idx = _applied_idx;
                 snp.config = _fsm->log_last_conf_for(_applied_idx);
-                logger.trace("[{}] taking snapshot at term={}, idx={} due to request", _id, snp.term, snp.idx);
+                LOGMACRO(logger, log_level::trace, "[{}] taking snapshot at term={}, idx={} due to request", _id, snp.term, snp.idx);
                 snp.id = co_await _state_machine->take_snapshot();
                 if (!_fsm->apply_snapshot(snp, 0, 0, true)) {
-                    logger.trace("[{}] while taking snapshot term={} idx={} id={} due to request,"
+                    LOGMACRO(logger, log_level::trace, "[{}] while taking snapshot term={} idx={} id={} due to request,"
                            " fsm received a later snapshot at idx={}", _id, snp.term, snp.idx, snp.id, _fsm->log_last_snapshot_idx());
                 }
                 _stats.snapshots_taken++;
@@ -1488,7 +1488,7 @@ future<> server_impl::wait_for_apply(index_t idx, abort_source* as) {
 future<read_barrier_reply> server_impl::execute_read_barrier(server_id from, seastar::abort_source* as) {
     check_not_aborted();
 
-    logger.trace("[{}] execute_read_barrier start", _id);
+    LOGMACRO(logger, log_level::trace, "[{}] execute_read_barrier start", _id);
 
     std::optional<std::pair<read_id, index_t>> rid;
     try {
@@ -1500,7 +1500,7 @@ future<read_barrier_reply> server_impl::execute_read_barrier(server_id from, sea
     } catch (not_a_leader& err) {
         return make_ready_future<read_barrier_reply>(err);
     }
-    logger.trace("[{}] execute_read_barrier read id is {} for commit idx {}",
+    LOGMACRO(logger, log_level::trace, "[{}] execute_read_barrier read id is {} for commit idx {}",
         _id, rid->first, rid->second);
     if (as && as->abort_requested()) {
         return make_exception_future<read_barrier_reply>(
@@ -1528,7 +1528,7 @@ future<read_barrier_reply> server_impl::get_read_idx(server_id leader, seastar::
 }
 
 future<> server_impl::read_barrier(seastar::abort_source* as) {
-    logger.trace("[{}] read_barrier start", _id);
+    LOGMACRO(logger, log_level::trace, "[{}] read_barrier start", _id);
     index_t read_idx;
 
     co_await do_on_leader_with_retries(as, [&](server_id& leader) -> future<stop_iteration> {
@@ -1537,7 +1537,7 @@ future<> server_impl::read_barrier(seastar::abort_source* as) {
         try {
             res = co_await get_read_idx(leader, as);
         } catch (const transport_error& e) {
-            logger.trace("[{}] read_barrier on {} resulted in {}; retrying", _id, leader, e);
+            LOGMACRO(logger, log_level::trace, "[{}] read_barrier on {} resulted in {}; retrying", _id, leader, e);
             leader = server_id{};
             co_return stop_iteration::no;
         }
@@ -1545,7 +1545,7 @@ future<> server_impl::read_barrier(seastar::abort_source* as) {
             // the leader is not ready to answer because it did not
             // committed any entries yet, so wait for any entry to be
             // committed (if non were since start of the attempt) and retry.
-            logger.trace("[{}] read_barrier leader not ready", _id);
+            LOGMACRO(logger, log_level::trace, "[{}] read_barrier leader not ready", _id);
             co_await wait_for_apply(++applied, as);
             co_return stop_iteration::no;
         }
@@ -1557,7 +1557,7 @@ future<> server_impl::read_barrier(seastar::abort_source* as) {
         co_return stop_iteration::yes;
     });
 
-    logger.trace("[{}] read_barrier read index {}, applied index {}", _id, read_idx, _applied_idx);
+    LOGMACRO(logger, log_level::trace, "[{}] read_barrier read index {}, applied index {}", _id, read_idx, _applied_idx);
     co_return co_await wait_for_apply(read_idx, as);
 }
 
@@ -1565,7 +1565,7 @@ void server_impl::abort_snapshot_transfer(server_id id) {
     auto it = _snapshot_transfers.find(id);
     if (it != _snapshot_transfers.end()) {
         auto& [f, as, tid] = it->second;
-        logger.trace("[{}] Request abort of snapshot transfer to {}", _id, id);
+        LOGMACRO(logger, log_level::trace, "[{}] Request abort of snapshot transfer to {}", _id, id);
         as.request_abort();
         _aborted_snapshot_transfers.emplace(tid, std::move(f));
         _snapshot_transfers.erase(it);
@@ -1574,7 +1574,7 @@ void server_impl::abort_snapshot_transfer(server_id id) {
 
 void server_impl::abort_snapshot_transfers() {
     for (auto&& [id, t] : _snapshot_transfers) {
-        logger.trace("[{}] Request abort of snapshot transfer to {}", _id, id);
+        LOGMACRO(logger, log_level::trace, "[{}] Request abort of snapshot transfer to {}", _id, id);
         t.as.request_abort();
         _aborted_snapshot_transfers.emplace(t.id, std::move(t.f));
     }
@@ -1599,7 +1599,7 @@ void server_impl::handle_background_error(const char* fiber_name) {
 future<> server_impl::abort(sstring reason) {
     _is_alive = false;
     _aborted = std::move(reason);
-    logger.trace("[{}]: abort() called", _id);
+    LOGMACRO(logger, log_level::trace, "[{}]: abort() called", _id);
     _fsm->stop();
     _events.broken();
     _snapshot_desc_idx_changed.broken();
@@ -1732,7 +1732,7 @@ future<> server_impl::set_configuration(config_member_set c_new, seastar::abort_
         // We need to 'observe' possible exceptions in f, otherwise they will be
         // considered unhandled and cause a warning.
         (void)f.handle_exception([id = _id] (auto e) {
-            logger.trace("[{}] error while waiting for non-joint configuration to be committed: {}", id, e);
+            LOGMACRO(logger, log_level::trace, "[{}] error while waiting for non-joint configuration to be committed: {}", id, e);
         });
         throw;
     }

@@ -368,7 +368,7 @@ future<group0_info> persistent_discovery::run(
         }
 
         if (std::holds_alternative<discovery::pause>(output)) {
-            group0_log.trace("server {} pausing discovery...", my_addr.id);
+            LOGMACRO(group0_log, log_level::trace, "server {} pausing discovery...", my_addr.id);
             co_await seastar::sleep_abortable(std::chrono::milliseconds{1000}, as);
             continue;
         }
@@ -379,7 +379,7 @@ future<group0_info> persistent_discovery::run(
             auto timeout = db::timeout_clock::now() + std::chrono::milliseconds{1000};
             co_await parallel_for_each(request_list, [&] (std::pair<discovery_peer, discovery::peer_list>& req) -> future<> {
                 netw::msg_addr peer(req.first.ip_addr);
-                group0_log.trace("sending discovery message to {}", peer);
+                LOGMACRO(group0_log, log_level::trace, "sending discovery message to {}", peer);
                 try {
                     auto reply = co_await ser::group0_rpc_verbs::send_group0_peer_exchange(&ms, peer, timeout, std::move(req.second));
 
@@ -396,7 +396,7 @@ future<group0_info> persistent_discovery::run(
                     }
                 } catch (std::exception& e) {
                     if (dynamic_cast<std::runtime_error*>(&e)) {
-                        group0_log.trace("failed to send message: {}", e);
+                        LOGMACRO(group0_log, log_level::trace, "failed to send message: {}", e);
                     } else {
                         tracker.set_exception(std::current_exception());
                     }

@@ -718,15 +718,15 @@ SEASTAR_TEST_CASE(test_cell_ordering) {
     auto expiry_2 = now + ttl_2;
 
     auto assert_order = [] (atomic_cell_view first, atomic_cell_view second) {
-        testlog.trace("Expected {} < {}", first, second);
+        LOGMACRO(testlog, log_level::trace, "Expected {} < {}", first, second);
         BOOST_REQUIRE(compare_atomic_cell_for_merge(first, second) < 0);
 
-        testlog.trace("Expected {} > {}", second, first);
+        LOGMACRO(testlog, log_level::trace, "Expected {} > {}", second, first);
         BOOST_REQUIRE(compare_atomic_cell_for_merge(second, first) > 0);
     };
 
     auto assert_equal = [] (atomic_cell_view c1, atomic_cell_view c2) {
-        testlog.trace("Expected {} == {}", c1, c2);
+        LOGMACRO(testlog, log_level::trace, "Expected {} == {}", c1, c2);
         BOOST_REQUIRE(compare_atomic_cell_for_merge(c1, c2) == 0);
         BOOST_REQUIRE(compare_atomic_cell_for_merge(c2, c1) == 0);
     };
@@ -1155,9 +1155,9 @@ SEASTAR_TEST_CASE(test_v2_apply_monotonically_is_monotonic_on_alloc_failures) {
             auto expected = target + second;
             auto expected_cont = mutation_partition_v2(s, expected.partition()).get_continuity(s);
 
-            testlog.trace("target: {}", target);
-            testlog.trace("second: {}", second);
-            testlog.trace("expected: {}", expected);
+            LOGMACRO(testlog, log_level::trace, "target: {}", target);
+            LOGMACRO(testlog, log_level::trace, "second: {}", second);
+            LOGMACRO(testlog, log_level::trace, "expected: {}", expected);
 
             auto preempt_check = [] () noexcept {
                 try {
@@ -1186,8 +1186,8 @@ SEASTAR_TEST_CASE(test_v2_apply_monotonically_is_monotonic_on_alloc_failures) {
                     actual.add(s, c1);
                     actual.add(s, c2);
                     if (!actual.equals(s, expected_cont)) {
-                        testlog.trace("c1: {}", mutation_partition_v2::printer(s, m));
-                        testlog.trace("c2: {}", mutation_partition_v2::printer(s, m2));
+                        LOGMACRO(testlog, log_level::trace, "c1: {}", mutation_partition_v2::printer(s, m));
+                        LOGMACRO(testlog, log_level::trace, "c2: {}", mutation_partition_v2::printer(s, m2));
                         BOOST_FAIL(format("Continuity should be contained in the expected one, expected {}, got {} ({} + {})",
                                           expected_cont, actual, c1, c2));
                     }
@@ -1633,14 +1633,14 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_upgrade_type_change) {
 // to TTL.
 SEASTAR_THREAD_TEST_CASE(test_row_marker_expiry) {
     auto must_be_alive = [&] (row_marker mark, gc_clock::time_point t) {
-        testlog.trace("must_be_alive({}, {})", mark, t);
+        LOGMACRO(testlog, log_level::trace, "must_be_alive({}, {})", mark, t);
         BOOST_REQUIRE(mark.is_live(tombstone(), t));
         BOOST_REQUIRE(mark.is_missing() || !mark.is_dead(t));
         BOOST_REQUIRE(mark.compact_and_expire(tombstone(), t, never_gc, gc_clock::time_point()));
     };
 
     auto must_be_dead = [&] (row_marker mark, gc_clock::time_point t) {
-        testlog.trace("must_be_dead({}, {})", mark, t);
+        LOGMACRO(testlog, log_level::trace, "must_be_dead({}, {})", mark, t);
         BOOST_REQUIRE(!mark.is_live(tombstone(), t));
         BOOST_REQUIRE(mark.is_missing() || mark.is_dead(t));
         BOOST_REQUIRE(!mark.compact_and_expire(tombstone(), t, never_gc, gc_clock::time_point()));
@@ -2178,12 +2178,12 @@ static void test_all_preemption_points(std::function<void(preemption_check)> fun
     uint64_t preempt_after = 0;
     bool preempted;
     do {
-        testlog.trace("preempt after {}", preempt_after);
+        LOGMACRO(testlog, log_level::trace, "preempt after {}", preempt_after);
         preempted = false;
         uint64_t check_count = 0;
         func([&] () noexcept {
             if (check_count++ == preempt_after) {
-                testlog.trace("preempted");
+                LOGMACRO(testlog, log_level::trace, "preempted");
                 preempted = true;
                 return true;
             } else {
@@ -2205,8 +2205,8 @@ SEASTAR_TEST_CASE(test_v2_merging_in_non_evictable_snapshot) {
         m1.partition().make_fully_continuous();
         m2.partition().make_fully_continuous();
 
-        testlog.trace("m1 = {}", m1);
-        testlog.trace("m2 = {}", m2);
+        LOGMACRO(testlog, log_level::trace, "m1 = {}", m1);
+        LOGMACRO(testlog, log_level::trace, "m2 = {}", m2);
 
         mutation_partition_v2 m1_v2(s, m1.partition());
         mutation_partition_v2 m2_v2(s, m2.partition());
@@ -2216,8 +2216,8 @@ SEASTAR_TEST_CASE(test_v2_merging_in_non_evictable_snapshot) {
         BOOST_REQUIRE(!has_redundant_dummies(m1_v2));
         BOOST_REQUIRE(!has_redundant_dummies(m2_v2));
 
-        testlog.trace("m1_v2 = {}", mutation_partition_v2::printer(s, m1_v2));
-        testlog.trace("m2_v2 = {}", mutation_partition_v2::printer(s, m2_v2));
+        LOGMACRO(testlog, log_level::trace, "m1_v2 = {}", mutation_partition_v2::printer(s, m1_v2));
+        LOGMACRO(testlog, log_level::trace, "m2_v2 = {}", mutation_partition_v2::printer(s, m2_v2));
 
         mutation_application_stats app_stats;
         auto result_v1 = mutation_partition(s, (m1 + m2).partition());
@@ -2234,9 +2234,9 @@ SEASTAR_TEST_CASE(test_v2_merging_in_non_evictable_snapshot) {
 
             BOOST_REQUIRE(!has_redundant_dummies(result_v2));
 
-            testlog.trace("result_v1 = {}", mutation_partition::printer(s, result_v1));
-            testlog.trace("result_v2 = {}", mutation_partition_v2::printer(s, result_v2));
-            testlog.trace("result_v2_as_v1 = {}",
+            LOGMACRO(testlog, log_level::trace, "result_v1 = {}", mutation_partition::printer(s, result_v1));
+            LOGMACRO(testlog, log_level::trace, "result_v2 = {}", mutation_partition_v2::printer(s, result_v2));
+            LOGMACRO(testlog, log_level::trace, "result_v2_as_v1 = {}",
                           value_of([&] { return mutation_partition::printer(s, result_v2.as_mutation_partition(s)); }));
 
             assert_that(gen.schema(), result_v2).is_equal_to_compacted(result_v1);
@@ -2303,13 +2303,13 @@ SEASTAR_TEST_CASE(test_v2_merging_in_evictable_snapshot) {
             }
         }
 
-        testlog.trace("m1_v2 = {}", mutation_partition_v2::printer(s, m1_v2));
-        testlog.trace("m2_v2 = {}", mutation_partition_v2::printer(s, m2_v2));
+        LOGMACRO(testlog, log_level::trace, "m1_v2 = {}", mutation_partition_v2::printer(s, m1_v2));
+        LOGMACRO(testlog, log_level::trace, "m2_v2 = {}", mutation_partition_v2::printer(s, m2_v2));
 
         auto expected_continuity = m1_v2.get_continuity(s, is_continuous::yes);
-        testlog.trace("m1 cont = {}", expected_continuity);
+        LOGMACRO(testlog, log_level::trace, "m1 cont = {}", expected_continuity);
         expected_continuity.add(s, m2_v2.get_continuity(s, is_continuous::yes));
-        testlog.trace("m2 cont = {}", m2_v2.get_continuity(s, is_continuous::yes));
+        LOGMACRO(testlog, log_level::trace, "m2 cont = {}", m2_v2.get_continuity(s, is_continuous::yes));
 
         tracker.insert(m1_v2);
         tracker.insert(m2_v2);
@@ -2330,7 +2330,7 @@ SEASTAR_TEST_CASE(test_v2_merging_in_evictable_snapshot) {
             seastar::thread::maybe_yield();
         }
 
-        testlog.trace("result_v2 = {}", mutation_partition_v2::printer(s, result_v2));
+        LOGMACRO(testlog, log_level::trace, "result_v2 = {}", mutation_partition_v2::printer(s, result_v2));
 
         auto v2_continuity = result_v2.get_continuity(s, is_continuous::yes);
         if (!v2_continuity.equals(s, expected_continuity)) {
@@ -2345,9 +2345,9 @@ SEASTAR_TEST_CASE(test_v2_merging_in_evictable_snapshot) {
             result_v1.set_continuity(s, r, is_continuous::yes);
         }
 
-        testlog.trace("result_v1 = {}", mutation_partition::printer(s, result_v1));
+        LOGMACRO(testlog, log_level::trace, "result_v1 = {}", mutation_partition::printer(s, result_v1));
         if (testlog.is_enabled(seastar::log_level::trace)) {
-            testlog.trace("result_v2_as_v1 = {}", mutation_partition::printer(s, result_v2.as_mutation_partition(s)));
+            LOGMACRO(testlog, log_level::trace, "result_v2_as_v1 = {}", mutation_partition::printer(s, result_v2.as_mutation_partition(s)));
         }
 
         assert_that(gen.schema(), result_v2).is_equal_to_compacted(result_v1);
@@ -3632,21 +3632,21 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_detach_state) {
         void consume(const tombstone& t) { }
         stop_iteration consume(static_row&& sr, tombstone, bool) {
             const auto ret = ++frags >= frag_limit;
-            testlog.trace("consume(static_row) ret={}", ret);
+            LOGMACRO(testlog, log_level::trace, "consume(static_row) ret={}", ret);
             return stop_iteration(ret);
         }
         stop_iteration consume(clustering_row&& cr, row_tombstone t, bool is_alive) {
             const auto ret = ++frags >= frag_limit;
-            testlog.trace("consume(clustering_row) ret={}", ret);
+            LOGMACRO(testlog, log_level::trace, "consume(clustering_row) ret={}", ret);
             return stop_iteration(ret);
         }
         stop_iteration consume(range_tombstone_change&& rtc) {
             const auto ret = ++frags >= frag_limit;
-            testlog.trace("consume(range_tombstone) ret={}", ret);
+            LOGMACRO(testlog, log_level::trace, "consume(range_tombstone) ret={}", ret);
             return stop_iteration(ret);
         }
         stop_iteration consume_end_of_partition() {
-            testlog.trace("consume_end_of_partition()");
+            LOGMACRO(testlog, log_level::trace, "consume_end_of_partition()");
             return stop_iteration(final_stop);
         }
         void consume_end_of_stream() { }

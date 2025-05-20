@@ -391,7 +391,7 @@ inline
 future<cached_promoted_index::pi_offset_type>
 cached_promoted_index::read_block_offset(pi_index_type idx, tracing::trace_state_ptr trace_state) {
     return read(_promoted_index_start + get_offset_entry_pos(idx), trace_state, _u32_parser).then([idx, this] {
-        sstlog.trace("cached_promoted_index {}: read_block_offset: idx: {}, offset: {}", fmt::ptr(this), idx, _u32_parser.value());
+        LOGMACRO(sstlog, log_level::trace, "cached_promoted_index {}: read_block_offset: idx: {}, offset: {}", fmt::ptr(this), idx, _u32_parser.value());
         return _u32_parser.value();
     });
 }
@@ -401,7 +401,7 @@ future<> cached_promoted_index::read_block_start(promoted_index_block& block, tr
     return read(_promoted_index_start + block.offset, trace_state, _clustering_parser).then([this, &block] {
         auto mem_before = block.memory_usage();
         block.start.emplace(_clustering_parser.get_and_reset());
-        sstlog.trace("cached_promoted_index {}: read_block_start: {}", fmt::ptr(this), block);
+        LOGMACRO(sstlog, log_level::trace, "cached_promoted_index {}: read_block_start: {}", fmt::ptr(this), block);
         _metrics.used_bytes += block.memory_usage() - mem_before;
     });
 }
@@ -416,7 +416,7 @@ future<> cached_promoted_index::read_block(promoted_index_block& block, tracing:
         block.data_file_offset = _block_parser.offset();
         block.width = _block_parser.width();
         _metrics.used_bytes += block.memory_usage() - mem_before;
-        sstlog.trace("cached_promoted_index {}: read_block: {}", fmt::ptr(this), block);
+        LOGMACRO(sstlog, log_level::trace, "cached_promoted_index {}: read_block: {}", fmt::ptr(this), block);
     });
 }
 
@@ -487,16 +487,16 @@ private:
                     _current_pos = position_in_partition::after_all_clustered_rows();
                 }
                 tracing::trace(_trace_state, "mc_bsearch_clustered_cursor: bisecting done, current=[{}] .start={}", _current_idx, _current_pos);
-                sstlog.trace("mc_bsearch_clustered_cursor {}: bisecting done, current=[{}] .start={}", fmt::ptr(this), _current_idx, _current_pos);
+                LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: bisecting done, current=[{}] .start={}", fmt::ptr(this), _current_idx, _current_pos);
                 return make_ready_future<stop_iteration>(stop_iteration::yes);
             }
 
             auto mid = _current_idx + (_upper_idx - _current_idx) / 2;
             tracing::trace(_trace_state, "mc_bsearch_clustered_cursor: bisecting range [{}, {}], mid={}", _current_idx, _upper_idx, mid);
-            sstlog.trace("mc_bsearch_clustered_cursor {}: bisecting range [{}, {}], mid={}", fmt::ptr(this), _current_idx, _upper_idx, mid);
+            LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: bisecting range [{}, {}], mid={}", fmt::ptr(this), _current_idx, _upper_idx, mid);
             return _promoted_index.get_block_with_start(mid, _trace_state).then([this, mid, pos] (promoted_index_block* block) {
                 position_in_partition::less_compare less(_s);
-                sstlog.trace("mc_bsearch_clustered_cursor {}: compare with [{}] .start={}", fmt::ptr(this), mid, block->start);
+                LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: compare with [{}] .start={}", fmt::ptr(this), mid, block->start);
                 if (less(pos, *block->start)) {
                     // Eventually _current_idx will reach _upper_idx, so _current_pos only needs to be
                     // updated whenever _upper_idx changes.
@@ -544,14 +544,14 @@ public:
     future<std::optional<skip_info>> advance_to(position_in_partition_view pos) override {
         position_in_partition::less_compare less(_s);
 
-        sstlog.trace("mc_bsearch_clustered_cursor {}: advance_to({}), _current_pos={}, _current_idx={}, cached={}",
+        LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: advance_to({}), _current_pos={}, _current_idx={}, cached={}",
             fmt::ptr(this), pos, _current_pos, _current_idx, _promoted_index.file().cached_bytes());
         tracing::trace(_trace_state, "mc_bsearch_clustered_cursor {}: advance_to({}), _current_pos={}, _current_idx={}",
             fmt::ptr(this), pos, _current_pos, _current_idx);
 
         if (_current_pos) {
             if (less(pos, *_current_pos)) {
-                sstlog.trace("mc_bsearch_clustered_cursor {}: same block", fmt::ptr(this));
+                LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: same block", fmt::ptr(this));
                 return make_ready_future<std::optional<skip_info>>(std::nullopt);
             }
             ++_current_idx;
@@ -559,22 +559,22 @@ public:
 
         return advance_to_upper_bound(pos).then([this, pos] {
             if (_current_idx == 0) {
-                sstlog.trace("mc_bsearch_clustered_cursor {}: same block", fmt::ptr(this));
+                LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: same block", fmt::ptr(this));
                 return _promoted_index.get_block(_current_idx, _trace_state).then([this] (promoted_index_block* block) {
                     _skip_info = skip_info{block->data_file_offset, tombstone(), position_in_partition::before_all_clustered_rows()};
-                    sstlog.trace("mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
+                    LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
                 });
             }
             return _promoted_index.get_block(_current_idx - 1, _trace_state).then([this, pos] (promoted_index_block* block) {
-                sstlog.trace("mc_bsearch_clustered_cursor {}: [{}] = {}", fmt::ptr(this), block->index, *block);
+                LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: [{}] = {}", fmt::ptr(this), block->index, *block);
                 position_in_partition::less_compare less(_s);
                 if (less(*block->end, pos) && _features.is_enabled(CorrectLastPiBlockWidth)) {
-                    sstlog.trace("mc_bsearch_clustered_cursor {}: Move to next block", fmt::ptr(this));
+                    LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: Move to next block", fmt::ptr(this));
                     if (_current_idx == _blocks_count) {
                         _current_pos = position_in_partition::after_all_clustered_rows();
                         _skip_info = skip_info{block->data_file_offset + block->width, tombstone(),
                                                position_in_partition::before_all_clustered_rows()};
-                        sstlog.trace("mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
+                        LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
                         return make_ready_future<>();
                     }
                     tombstone tomb;
@@ -586,9 +586,9 @@ public:
                     _promoted_index.invalidate_prior(block, _trace_state);
                     ++_current_idx;
                     return _promoted_index.get_block(_current_idx - 1, _trace_state).then([this, tomb, tomb_pos = std::move(tomb_pos)] (promoted_index_block* block) mutable {
-                        sstlog.trace("mc_bsearch_clustered_cursor {}: [{}] = {}", fmt::ptr(this), block->index, *block);
+                        LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: [{}] = {}", fmt::ptr(this), block->index, *block);
                         _skip_info = skip_info{block->data_file_offset, tomb, std::move(tomb_pos)};
-                        sstlog.trace("mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
+                        LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
                         if (_current_idx == _blocks_count) {
                             _current_pos = position_in_partition::after_all_clustered_rows();
                             return make_ready_future<>();
@@ -599,7 +599,7 @@ public:
                     });
                 }
                 offset_in_partition datafile_offset = block->data_file_offset;
-                sstlog.trace("mc_bsearch_clustered_cursor {}: datafile_offset={}", fmt::ptr(this), datafile_offset);
+                LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: datafile_offset={}", fmt::ptr(this), datafile_offset);
                 if (_current_idx < 2) {
                     _skip_info = skip_info{datafile_offset, tombstone(), position_in_partition::before_all_clustered_rows()};
                     return make_ready_future<>();
@@ -611,7 +611,7 @@ public:
                 // to read the active tombstone from the preceding block, _current_idx - 2.
                 return _promoted_index.get_block(_current_idx - 2, _trace_state)
                         .then([this, datafile_offset] (promoted_index_block* block) {
-                    sstlog.trace("mc_bsearch_clustered_cursor {}: [{}] = {}", fmt::ptr(this), _current_idx - 2, *block);
+                    LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: [{}] = {}", fmt::ptr(this), _current_idx - 2, *block);
                     // XXX: Until we have automatic eviction, we need to invalidate cached index blocks
                     // as we walk so that memory footprint is not O(N) but O(log(N)).
                     _promoted_index.invalidate_prior(block, _trace_state);
@@ -625,7 +625,7 @@ public:
                 });
             });
         }).then([this] {
-            sstlog.trace("mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
+            LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
             tracing::trace(_trace_state, "mc_bsearch_clustered_cursor {}: {}", fmt::ptr(this), _skip_info);
             return std::make_optional(_skip_info);
         });
@@ -641,7 +641,7 @@ public:
         }
         return _promoted_index.get_block(_current_idx, _trace_state)
                 .then([this] (promoted_index_block* block) -> std::optional<entry_info> {
-            sstlog.trace("mc_bsearch_clustered_cursor {}: block {}: start={}, end={}, offset={}", fmt::ptr(this), _current_idx,
+            LOGMACRO(sstlog, log_level::trace, "mc_bsearch_clustered_cursor {}: block {}: start={}, end={}, offset={}", fmt::ptr(this), _current_idx,
                 *block->start, *block->end, block->data_file_offset);
             ++_current_idx;
             return entry_info{*block->start, *block->end, block->data_file_offset};

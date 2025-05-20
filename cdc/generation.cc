@@ -471,7 +471,7 @@ static std::optional<cdc::generation_id> get_generation_id_for(const locator::ho
         return std::nullopt;
     }
     auto gen_id_string = gen_id_ptr->value();
-    cdc_log.trace("endpoint={}, gen_id_string={}", endpoint, gen_id_string);
+    LOGMACRO(cdc_log, log_level::trace, "endpoint={}, gen_id_string={}", endpoint, gen_id_string);
     return gms::versioned_value::cdc_generation_id_from_string(gen_id_string);
 }
 

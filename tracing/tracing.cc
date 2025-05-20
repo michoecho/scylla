@@ -72,9 +72,9 @@ bool tracing::may_create_new_session(const std::optional<utils::UUID>& session_i
     // Don't create a session if its records are likely to be dropped
     if (!have_records_budget(exp_trace_events_per_session) || _active_sessions >= max_pending_sessions + write_event_sessions_threshold) {
         if (session_id) {
-            tracing_logger.trace("{}: Too many outstanding tracing records or sessions. Dropping a secondary session", *session_id);
+            LOGMACRO(tracing_logger, log_level::trace, "{}: Too many outstanding tracing records or sessions. Dropping a secondary session", *session_id);
         } else {
-            tracing_logger.trace("Too many outstanding tracing records or sessions. Dropping a primary session");
+            LOGMACRO(tracing_logger, log_level::trace, "Too many outstanding tracing records or sessions. Dropping a primary session");
         }
 
         if (++stats.dropped_sessions % tracing::log_warning_period == 1) {
@@ -149,7 +149,7 @@ void tracing::write_timer_callback() {
         return;
     }
 
-    tracing_logger.trace("Timer kicks in: {}", _pending_for_write_records_bulk.size() ? "writing" : "not writing");
+    LOGMACRO(tracing_logger, log_level::trace, "Timer kicks in: {}", _pending_for_write_records_bulk.size() ? "writing" : "not writing");
     write_pending_records();
     _write_timer.arm(write_period);
 }

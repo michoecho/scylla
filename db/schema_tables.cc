@@ -738,7 +738,7 @@ future<table_schema_version> calculate_schema_digest(distributed<service::storag
                 if (diff_logger.is_enabled(logging::log_level::trace)) {
                     md5_hasher h;
                     feed_hash_for_schema_digest(h, m, features);
-                    diff_logger.trace("Digest {} for {}, compacted={}", h.finalize(), m, compact_for_schema_digest(m));
+                    LOGMACRO(diff_logger, log_level::trace, "Digest {} for {}, compacted={}", h.finalize(), m, compact_for_schema_digest(m));
                 }
             }
         }
@@ -755,14 +755,14 @@ static thread_local semaphore the_merge_lock {1};
 
 future<> merge_lock() {
     if (slogger.is_enabled(log_level::trace)) {
-        slogger.trace("merge_lock at {}", current_backtrace());
+        LOGMACRO(slogger, log_level::trace, "merge_lock at {}", current_backtrace());
     }
     return smp::submit_to(0, [] { return the_merge_lock.wait(); });
 }
 
 future<> merge_unlock() {
     if (slogger.is_enabled(log_level::trace)) {
-        slogger.trace("merge_unlock at {}", current_backtrace());
+        LOGMACRO(slogger, log_level::trace, "merge_unlock at {}", current_backtrace());
     }
     return smp::submit_to(0, [] { the_merge_lock.signal(); });
 }
@@ -771,7 +771,7 @@ future<semaphore_units<>> hold_merge_lock() noexcept {
     SCYLLA_ASSERT(this_shard_id() == 0);
 
     if (slogger.is_enabled(log_level::trace)) {
-        slogger.trace("hold_merge_lock at {}", current_backtrace());
+        LOGMACRO(slogger, log_level::trace, "hold_merge_lock at {}", current_backtrace());
     }
     return get_units(the_merge_lock, 1);
 }
@@ -2190,7 +2190,7 @@ static void prepare_builder_from_scylla_tables_row(const schema_ctxt& ctxt, sche
 
 schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations sm, std::optional<table_schema_version> version)
 {
-    slogger.trace("create_table_from_mutations: version={}, {}", version, sm);
+    LOGMACRO(slogger, log_level::trace, "create_table_from_mutations: version={}, {}", version, sm);
 
     auto table_rs = query::result_set(sm.columnfamilies_mutation());
     const query::result_set_row& table_row = table_rs.row(0);

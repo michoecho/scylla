@@ -328,7 +328,7 @@ SEASTAR_THREAD_TEST_CASE(test_stress_eviction) {
     cached_file cf(f, metrics, cf_lru, region, file_size);
 
     region.make_evictable([&] {
-        testlog.trace("Evicting");
+        LOGMACRO(testlog, log_level::trace, "Evicting");
         cf.invalidate_at_most_front(file_size / 2);
         return cf_lru.evict();
     });
@@ -354,7 +354,7 @@ SEASTAR_THREAD_TEST_CASE(test_stress_eviction) {
     testlog.debug("Starting test...");
 
     for (size_t j = 0; j < n_pages * 16; ++j) {
-        testlog.trace("Allocating");
+        LOGMACRO(testlog, log_level::trace, "Allocating");
         auto stride = tests::random::get_int(1, 20);
         auto page_idx = tests::random::get_int(n_pages - stride);
         read_to_void(cf, page_idx * page_size, page_size * stride);

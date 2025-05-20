@@ -417,7 +417,7 @@ hint_endpoint_manager& manager::get_ep_manager(const endpoint_id& host_id, const
         auto [it, _] = _ep_managers.emplace(host_id, hint_endpoint_manager{host_id, std::move(hint_directory), *this});
         hint_endpoint_manager& ep_man = it->second;
 
-        manager_logger.trace("Created an endpoint manager for {}", host_id);
+        LOGMACRO(manager_logger, log_level::trace, "Created an endpoint manager for {}", host_id);
         ep_man.start();
 
         return ep_man;
@@ -454,7 +454,7 @@ bool manager::store_hint(endpoint_id host_id, schema_ptr s, lw_shared_ptr<const 
     }
 
     if (stopping() || draining_all() || !started() || !can_hint_for(host_id)) {
-        manager_logger.trace("Can't store a hint to {}", host_id);
+        LOGMACRO(manager_logger, log_level::trace, "Can't store a hint to {}", host_id);
         ++_stats.dropped;
         return false;
     }
@@ -462,12 +462,12 @@ bool manager::store_hint(endpoint_id host_id, schema_ptr s, lw_shared_ptr<const 
     auto ip = _gossiper_anchor->get_address_map().get(host_id);
 
     try {
-        manager_logger.trace("Going to store a hint to {}", host_id);
+        LOGMACRO(manager_logger, log_level::trace, "Going to store a hint to {}", host_id);
         tracing::trace(tr_state, "Going to store a hint to {}", host_id);
 
         return get_ep_manager(host_id, ip).store_hint(std::move(s), std::move(fm), tr_state);
     } catch (...) {
-        manager_logger.trace("Failed to store a hint to {}: {}", host_id, std::current_exception());
+        LOGMACRO(manager_logger, log_level::trace, "Failed to store a hint to {}: {}", host_id, std::current_exception());
         tracing::trace(tr_state, "Failed to store a hint to {}: {}", host_id, std::current_exception());
 
         ++_stats.errors;
@@ -505,20 +505,20 @@ bool manager::can_hint_for(endpoint_id ep) const noexcept {
     // hints where N is the total number nodes in the cluster.
     const auto hipf = hints_in_progress_for(ep);
     if (_stats.size_of_hints_in_progress > max_size_of_hints_in_progress() && hipf > 0) {
-        manager_logger.trace("size_of_hints_in_progress {} hints_in_progress_for({}) {}",
+        LOGMACRO(manager_logger, log_level::trace, "size_of_hints_in_progress {} hints_in_progress_for({}) {}",
                 _stats.size_of_hints_in_progress, ep, hipf);
         return false;
     }
 
     // Check that the destination DC is "hintable".
     if (!check_dc_for(ep)) {
-        manager_logger.trace("{}'s DC is not hintable", ep);
+        LOGMACRO(manager_logger, log_level::trace, "{}'s DC is not hintable", ep);
         return false;
     }
 
     const bool node_is_alive = local_gossiper().get_endpoint_downtime(ep) <= _max_hint_window_us;
     if (!node_is_alive) {
-        manager_logger.trace("{} has been down for too long, not hinting", ep);
+        LOGMACRO(manager_logger, log_level::trace, "{} has been down for too long, not hinting", ep);
         return false;
     }
 
@@ -635,7 +635,7 @@ future<> manager::drain_for(endpoint_id host_id, gms::inet_address ip) noexcept 
         co_return;
     }
 
-    manager_logger.trace("Draining starts for {}", host_id);
+    LOGMACRO(manager_logger, log_level::trace, "Draining starts for {}", host_id);
 
     const auto holder = seastar::gate::holder{_draining_eps_gate};
     // As long as we hold on to this lock, no migration of hinted handoff to host IDs
@@ -722,7 +722,7 @@ future<> manager::drain_for(endpoint_id host_id, gms::inet_address ip) noexcept 
         manager_logger.error("Exception when draining {}: {}", host_id, eptr);
     }
 
-    manager_logger.trace("drain_for: finished draining {}", host_id);
+    LOGMACRO(manager_logger, log_level::trace, "drain_for: finished draining {}", host_id);
 }
 
 void manager::update_backlog(size_t backlog, size_t max_backlog) {

@@ -69,7 +69,7 @@ mutation_reader toppartitions_data_listener::on_read(const schema_ptr& s, const 
     bool include_all = _table_filters.empty() && _keyspace_filters.empty();
 
     if (include_all || _keyspace_filters.contains(s->ks_name()) || _table_filters.contains({s->ks_name(), s->cf_name()})) {
-        dblog.trace("toppartitions_data_listener::on_read: {}.{}", s->ks_name(), s->cf_name());
+        LOGMACRO(dblog, log_level::trace, "toppartitions_data_listener::on_read: {}.{}", s->ks_name(), s->cf_name());
         return make_filtering_reader(std::move(rd), [zis = this->weak_from_this(), s = std::move(s)] (const dht::decorated_key& dk) {
             // The data query may be executing after the toppartitions_data_listener object has been removed, so check
             if (zis) {
@@ -86,7 +86,7 @@ void toppartitions_data_listener::on_write(const schema_ptr& s, const frozen_mut
     bool include_all = _table_filters.empty() && _keyspace_filters.empty();
     
     if (include_all || _keyspace_filters.contains(s->ks_name()) || _table_filters.contains({s->ks_name(), s->cf_name()})) {
-        dblog.trace("toppartitions_data_listener::on_write: {}.{}", s->ks_name(), s->cf_name());
+        LOGMACRO(dblog, log_level::trace, "toppartitions_data_listener::on_write: {}.{}", s->ks_name(), s->cf_name());
         _top_k_write.append(toppartitions_item_key{s, m.decorated_key(*s)});
     }
 }
@@ -129,7 +129,7 @@ future<toppartitions_query::results> toppartitions_query::gather(unsigned res_si
     dblog.debug("toppartitions_query::gather");
 
     auto map = [res_size] (toppartitions_data_listener& listener) {
-        dblog.trace("toppartitions_query::map_reduce with listener {}", fmt::ptr(&listener));
+        LOGMACRO(dblog, log_level::trace, "toppartitions_query::map_reduce with listener {}", fmt::ptr(&listener));
         top_t rd = toppartitions_data_listener::globalize(listener._top_k_read.top(res_size));
         top_t wr = toppartitions_data_listener::globalize(listener._top_k_write.top(res_size));
         return make_foreign(std::make_unique<std::tuple<top_t, top_t>>(std::move(rd), std::move(wr)));

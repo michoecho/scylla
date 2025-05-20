@@ -63,7 +63,7 @@ static void kmip_logger(void *cb_arg, unsigned char *str, unsigned long len) {
     if (std::find_if(v.begin(), v.end(), [](char c) { return !::isspace(c); }) == v.end()) {
         return;
     }
-    kmip_log.trace("kmipcmd: {}", v);
+    LOGMACRO(kmip_log, log_level::trace, "kmipcmd: {}", v);
 }
 
 namespace encryption {
@@ -345,20 +345,20 @@ future<> kmip_host::impl::connection::connect() {
 }
 
 future<> kmip_host::impl::connection::wait_for_io() {
-    kmip_log.trace("{}: Waiting...", *this);
+    LOGMACRO(kmip_log, log_level::trace, "{}: Waiting...", *this);
     auto o = std::exchange(_pending, std::nullopt);
     return o ? std::move(*o) : make_ready_future();
 }
 
 int kmip_host::impl::connection::send(void* data, unsigned int len, unsigned int*) {
     if (_pending) {
-        kmip_log.trace("{}: operation pending...", *this);
+        LOGMACRO(kmip_log, log_level::trace, "{}: operation pending...", *this);
         return KMIP_ERROR_RETRY;
     }
-    kmip_log.trace("{}: Sending {} bytes", *this, len);
+    LOGMACRO(kmip_log, log_level::trace, "{}: Sending {} bytes", *this, len);
 
     auto f = _output.write(reinterpret_cast<char *>(data), len).then([this] {
-        kmip_log.trace("{}: send done. flushing...", *this);
+        LOGMACRO(kmip_log, log_level::trace, "{}: send done. flushing...", *this);
         return _output.flush();
     });
     // if the call failed already, we still want to
@@ -371,12 +371,12 @@ int kmip_host::impl::connection::send(void* data, unsigned int len, unsigned int
 }
 
 int kmip_host::impl::connection::recv(void* data, unsigned int len, unsigned int* outlen) {
-    kmip_log.trace("{}: Waiting for data ({})", *this, len);
+    LOGMACRO(kmip_log, log_level::trace, "{}: Waiting for data ({})", *this, len);
     for (;;) {
         if (_in_buffer) {
             auto n = std::min(unsigned(_in_buffer->size()), len);
             *outlen = n;
-            kmip_log.trace("{}: returning {} ({}) bytes", *this, n, _in_buffer->size());
+            LOGMACRO(kmip_log, log_level::trace, "{}: returning {} ({}) bytes", *this, n, _in_buffer->size());
             std::copy(_in_buffer->begin(), _in_buffer->begin() + n, reinterpret_cast<char *>(data));
             _in_buffer->trim_front(n);
             if (_in_buffer->empty()) {
@@ -390,13 +390,13 @@ int kmip_host::impl::connection::recv(void* data, unsigned int len, unsigned int
         }
 
         if (_pending) {
-            kmip_log.trace("{}: operation pending...", *this);
+            LOGMACRO(kmip_log, log_level::trace, "{}: operation pending...", *this);
             return KMIP_ERROR_RETRY;
         }
 
-        kmip_log.trace("{}: issue read", *this);
+        LOGMACRO(kmip_log, log_level::trace, "{}: issue read", *this);
         auto f = _input.read().then([this](temporary_buffer<char> buf) {
-            kmip_log.trace("{}: got {} bytes", *this, buf.size());
+            LOGMACRO(kmip_log, log_level::trace, "{}: got {} bytes", *this, buf.size());
            _in_buffer = std::move(buf);
         });
 
@@ -428,7 +428,7 @@ int kmip_host::impl::connection::io_callback(KMIP *kmip, void *cb_arg, int op, v
 }
 
 void kmip_host::impl::connection::attach(KMIP_CMD* cmd) {
-    kmip_log.trace("{} Attach: {}", *this, reinterpret_cast<void*>(cmd));
+    LOGMACRO(kmip_log, log_level::trace, "{} Attach: {}", *this, reinterpret_cast<void*>(cmd));
     if (cmd == nullptr) {
         return;
     }
@@ -580,7 +580,7 @@ future<int> kmip_host::impl::do_cmd(KMIP_CMD* cmd, con_ptr cp, Func& f, bool ret
 
 template<typename Func>
 future<kmip_host::impl::kmip_cmd> kmip_host::impl::do_cmd(kmip_cmd cmd_in, Func && f) {
-    kmip_log.trace("{}: begin do_cmd", *this, cmd_in);
+    LOGMACRO(kmip_log, log_level::trace, "{}: begin do_cmd", *this, cmd_in);
     KMIP_CMD* cmd = cmd_in;
 
     // #998 Need to do retry loop, because we can have either timed out connection,
@@ -608,7 +608,7 @@ future<kmip_host::impl::kmip_cmd> kmip_host::impl::do_cmd(kmip_cmd cmd_in, Func 
             }).then([this, cmd, &f, retry](con_ptr cp) mutable {
                 auto host = cp->host();
                 auto res = do_cmd(cmd, std::move(cp), f);
-                kmip_log.trace("{}: request {}", *this, fmt::ptr(KMIP_CMD_get_request(cmd)));
+                LOGMACRO(kmip_log, log_level::trace, "{}: request {}", *this, fmt::ptr(KMIP_CMD_get_request(cmd)));
                 return res.then([this, retry, host = std::move(host)](int res) {
                     if (res == KMIP_ERROR_IO) {
                         kmip_log.debug("{}: request error {}", *this, kmip_errorc.message(res));
@@ -636,7 +636,7 @@ future<kmip_host::impl::kmip_cmd> kmip_host::impl::do_cmd(kmip_cmd cmd_in, Func 
         });
     }).then([this, cmd = std::move(cmd_in)](int res) mutable {
         kmip_chk(res, cmd);
-        kmip_log.trace("{}: result {}", *this, fmt::ptr(KMIP_CMD_get_response(cmd)));
+        LOGMACRO(kmip_log, log_level::trace, "{}: result {}", *this, fmt::ptr(KMIP_CMD_get_response(cmd)));
         return std::move(cmd);
     });
 }
@@ -655,9 +655,9 @@ future<kmip_host::impl::con_ptr> kmip_host::impl::get_connection(const sstring& 
     }
 
     auto cp = ::make_shared<connection>(host, _options);
-    kmip_log.trace("{}: connecting to {}", *this, host);
+    LOGMACRO(kmip_log, log_level::trace, "{}: connecting to {}", *this, host);
     return cp->connect().then([this, cp, host] {
-        kmip_log.trace("{}: verifying {}", *this, host);
+        LOGMACRO(kmip_log, log_level::trace, "{}: verifying {}", *this, host);
         kmip_cmd cmd;
         static auto connection_query = [](KMIP_CMD* cmd) {
             static const std::array<int, 2> query_options = {
@@ -670,7 +670,7 @@ future<kmip_host::impl::con_ptr> kmip_host::impl::get_connection(const sstring& 
         auto f = do_cmd(cmd, cp, connection_query, true /* keep cp */);
         return f.then([this, host, cmd = std::move(cmd), cp](int res) {
             kmip_chk(res, cmd);
-            kmip_log.trace("{}: connected {}", *this, host);
+            LOGMACRO(kmip_log, log_level::trace, "{}: connected {}", *this, host);
             return cp;
         });
     });
@@ -1019,7 +1019,7 @@ future<shared_ptr<symmetric_key>> kmip_host::impl::find_key(const id_type& id) {
             auto str = mode.empty() || padding.empty() ? alg : alg + "/" + mode + "/" + padding;
             key_info derived_info{ str, keylen*8};
 
-            kmip_log.trace("{}: Found {}:{} {}", _name, uuid, derived_info.alg, derived_info.len);
+            LOGMACRO(kmip_log, log_level::trace, "{}: Found {}:{} {}", _name, uuid, derived_info.alg, derived_info.len);
 
             return make_shared<symmetric_key>(derived_info, bytes(key, key + keylen));
         });

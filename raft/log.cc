@@ -191,15 +191,15 @@ index_t log::maybe_append(std::vector<log_entry_ptr>&& entries) {
     for (auto& e : entries) {
         if (e->idx <= last_idx()) {
             if (e->idx < _first_idx) {
-                logger.trace("append_entries: skipping entry with idx {} less than log start {}",
+                LOGMACRO(logger, log_level::trace, "append_entries: skipping entry with idx {} less than log start {}",
                     e->idx, _first_idx);
                 continue;
             }
             if (e->term == get_entry(e->idx)->term) {
-                logger.trace("append_entries: entries with index {} has matching terms {}", e->idx, e->term);
+                LOGMACRO(logger, log_level::trace, "append_entries: entries with index {} has matching terms {}", e->idx, e->term);
                 continue;
             }
-            logger.trace("append_entries: entries with index {} has non matching terms e.term={}, _log[i].term = {}",
+            LOGMACRO(logger, log_level::trace, "append_entries: entries with index {} has non matching terms e.term={}, _log[i].term = {}",
                 e->idx, e->term, get_entry(e->idx)->term);
             // If an existing entry conflicts with a new one (same
             // index but different terms), delete the existing

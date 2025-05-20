@@ -715,7 +715,7 @@ public:
                             logg.debug("Encrypted sstable component {} using delayed opening {} (id: {})", sst.component_basename(type), *esx, id);
 
                             co_return make_delayed_encrypted_file(f, esx->key_block_size(), [esx, comp = sst.component_basename(type), id = std::move(id)] {
-                                logg.trace("Delayed component {} using {} (id: {}) resolve", comp, *esx, id);
+                                LOGMACRO(logg, log_level::trace, "Delayed component {} using {} (id: {}) resolve", comp, *esx, id);
                                 return esx->key_for_read(id);
                             });
                         }

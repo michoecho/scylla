@@ -114,7 +114,7 @@ public:
         // It's a coordination mistake to route requests to non-owners. Topology coordinator should synchronize
         // with request coordinators before moving the shard away.
         auto shard = shard_for_reads(tid, _host).value_or(0);
-        tablet_logger.trace("[{}] shard_of({}) = {}, tablet={}", _table, t, shard, tid);
+        LOGMACRO(tablet_logger, log_level::trace, "[{}] shard_of({}) = {}, tablet={}", _table, t, shard, tid);
         return shard;
     }
 
@@ -122,7 +122,7 @@ public:
         ensure_tablet_map();
         auto tid = _tmap->get_tablet_id(t);
         auto shards = shard_for_writes(tid, _host, sel);
-        tablet_logger.trace("[{}] shard_for_writes({}) = {}, tablet={}", _table, t, shards, tid);
+        LOGMACRO(tablet_logger, log_level::trace, "[{}] shard_for_writes({}) = {}, tablet={}", _table, t, shards, tid);
         return shards;
     }
 
@@ -132,10 +132,10 @@ public:
         while ((tb = _tmap->next_tablet(*tb))) {
             auto r = shard_for_reads(*tb, _host);
             auto next = _tmap->get_first_token(*tb);
-            tablet_logger.trace("[{}] token_for_next_shard({}) = {{{}, {}}}, tablet={}", _table, t, next, r, *tb);
+            LOGMACRO(tablet_logger, log_level::trace, "[{}] token_for_next_shard({}) = {{{}, {}}}, tablet={}", _table, t, next, r, *tb);
             return dht::shard_and_token{r.value_or(0), next};
         }
-        tablet_logger.trace("[{}] token_for_next_shard({}) = null", _table, t);
+        LOGMACRO(tablet_logger, log_level::trace, "[{}] token_for_next_shard({}) = null", _table, t);
         return std::nullopt;
     }
 
@@ -146,12 +146,12 @@ public:
             token = s_a_t->token;
             if (s_a_t->shard == shard) {
                 if (--spans == 0) {
-                    tablet_logger.trace("[{}] token_for_next_shard({}, {}, {}) = {}", _table, t, shard, spans, s_a_t->token);
+                    LOGMACRO(tablet_logger, log_level::trace, "[{}] token_for_next_shard({}, {}, {}) = {}", _table, t, shard, spans, s_a_t->token);
                     return token;
                 }
             }
         }
-        tablet_logger.trace("[{}] token_for_next_shard({}, {}, {}) = null", _table, t, shard, spans);
+        LOGMACRO(tablet_logger, log_level::trace, "[{}] token_for_next_shard({}, {}, {}) = null", _table, t, shard, spans);
         return dht::maximum_token();
     }
 };

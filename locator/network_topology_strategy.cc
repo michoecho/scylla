@@ -406,7 +406,7 @@ future<tablet_replica_set> network_topology_strategy::add_tablets_in_dc(schema_p
         }
         if (candidate.nodes.empty()) {
             rack_list.pop_back();
-            tablet_logger.trace("allocate_replica {}.{}: no candidate nodes left on rack={}", s->ks_name(), s->cf_name(), rack);
+            LOGMACRO(tablet_logger, log_level::trace, "allocate_replica {}.{}: no candidate nodes left on rack={}", s->ks_name(), s->cf_name(), rack);
             // Note that this rack can't be in new_racks since
             // those had no existing replicas and if current rack has no nodes
             // we skip it in the beginning of the loop body
@@ -461,7 +461,7 @@ future<tablet_replica_set> network_topology_strategy::add_tablets_in_dc(schema_p
                             s->ks_name(), s->cf_name(), tb.id, replica, dc, dc_node_count, dc_rf, replicas));
         }
         nodes.pop_back();
-        tablet_logger.trace("allocate_replica {}.{} tablet_id={}: allocated tablet replica={} dc={} rack={}: nodes remaining in rack={}",
+        LOGMACRO(tablet_logger, log_level::trace, "allocate_replica {}.{} tablet_id={}: allocated tablet replica={} dc={} rack={}: nodes remaining in rack={}",
                 s->ks_name(), s->cf_name(), tb.id, replica, node.dc_rack().dc, node.dc_rack().rack, nodes.size());
         if (nodes.empty()) {
             candidate = candidate_racks.erase(candidate);
@@ -473,9 +473,9 @@ future<tablet_replica_set> network_topology_strategy::add_tablets_in_dc(schema_p
         }
         if (tablet_logger.is_enabled(log_level::trace)) {
             if (candidate != candidate_racks.end()) {
-                tablet_logger.trace("allocate_replica {}.{} tablet_id={}: next rack={} nodes={}", s->ks_name(), s->cf_name(), tb.id, candidate->rack, candidate->nodes.size());
+                LOGMACRO(tablet_logger, log_level::trace, "allocate_replica {}.{} tablet_id={}: next rack={} nodes={}", s->ks_name(), s->cf_name(), tb.id, candidate->rack, candidate->nodes.size());
             } else {
-                tablet_logger.trace("allocate_replica {}.{} tablet_id={}: no candidate racks left", s->ks_name(), s->cf_name(), tb.id);
+                LOGMACRO(tablet_logger, log_level::trace, "allocate_replica {}.{} tablet_id={}: no candidate racks left", s->ks_name(), s->cf_name(), tb.id);
             }
         }
         return replica;

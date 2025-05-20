@@ -722,8 +722,8 @@ SEASTAR_THREAD_TEST_CASE(test_range_deletion) {
         size_t row_idx = 0;
 
         auto check_row = [&](int32_t ck, cdc::operation operation) {
-            testlog.trace("{}", results[row_idx][ck_index]);
-            testlog.trace("{}", bytes_opt(ck_type->decompose(ck)));
+            LOGMACRO(testlog, log_level::trace, "{}", results[row_idx][ck_index]);
+            LOGMACRO(testlog, log_level::trace, "{}", bytes_opt(ck_type->decompose(ck)));
             BOOST_REQUIRE_EQUAL(results[row_idx][ck_index], bytes_opt(ck_type->decompose(ck)));
             BOOST_REQUIRE_EQUAL(results[row_idx][op_index], bytes_opt(op_type->decompose(std::underlying_type_t<cdc::operation>(operation))));
             ++row_idx;

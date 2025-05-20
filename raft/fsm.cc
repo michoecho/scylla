@@ -33,7 +33,7 @@ fsm::fsm(server_id id, term_t current_term, server_id voted_for, log log,
     // After we observed the state advance commit_idx to persisted one (if provided)
     // so that the log can be replayed
     _commit_idx = std::max(_commit_idx, commit_idx);
-    logger.trace("fsm[{}]: starting, current term {}, log length {}, commit index {}", _my_id, _current_term, _log.last_idx(), _commit_idx);
+    LOGMACRO(logger, log_level::trace, "fsm[{}]: starting, current term {}, log length {}, commit index {}", _my_id, _current_term, _log.last_idx(), _commit_idx);
 
     // Init timeout settings
     if (_log.get_configuration().current.size() == 1 && _log.get_configuration().can_vote(_my_id)) {
@@ -80,7 +80,7 @@ const log_entry& fsm::add_entry(T command) {
             // start another membership change once a majority of
             // the old cluster has moved to operating under the
             // rules of C_new.
-            logger.trace("[{}] A{}configuration change at index {} is not yet committed (config {}) (commit_idx: {})",
+            LOGMACRO(logger, log_level::trace, "[{}] A{}configuration change at index {} is not yet committed (config {}) (commit_idx: {})",
                 _my_id, _log.get_configuration().is_joint() ? " joint " : " ",
                 _log.last_conf_idx(), _log.get_configuration(), _commit_idx);
             throw conf_change_in_progress();
@@ -96,7 +96,7 @@ const log_entry& fsm::add_entry(T command) {
         tmp.enter_joint(command.current);
         command = std::move(tmp);
 
-        logger.trace("[{}] appending joint config entry at {}: {}", _my_id, _log.next_idx(), command);
+        LOGMACRO(logger, log_level::trace, "[{}] appending joint config entry at {}: {}", _my_id, _log.next_idx(), command);
     }
 
     utils::get_local_injector().inject("fsm::add_entry/test-failure",
@@ -127,13 +127,13 @@ void fsm::advance_commit_idx(index_t leader_commit_idx) {
 
     auto new_commit_idx = std::min(leader_commit_idx, _log.last_idx());
 
-    logger.trace("advance_commit_idx[{}]: leader_commit_idx={}, new_commit_idx={}",
+    LOGMACRO(logger, log_level::trace, "advance_commit_idx[{}]: leader_commit_idx={}, new_commit_idx={}",
         _my_id, leader_commit_idx, new_commit_idx);
 
     if (new_commit_idx > _commit_idx) {
         _commit_idx = new_commit_idx;
         _sm_events.signal();
-        logger.trace("advance_commit_idx[{}]: signal apply_entries: committed: {}",
+        LOGMACRO(logger, log_level::trace, "advance_commit_idx[{}]: signal apply_entries: committed: {}",
             _my_id, _commit_idx);
     }
 }
@@ -184,7 +184,7 @@ void fsm::become_leader() {
     // set_configuration() begins replicating from the last entry
     // in the log.
     leader_state().tracker.set_configuration(_log.get_configuration(), _log.last_idx());
-    logger.trace("fsm::become_leader() {} stable index: {} last index: {}",
+    LOGMACRO(logger, log_level::trace, "fsm::become_leader() {} stable index: {} last index: {}",
         _my_id, _log.stable_idx(), _log.last_idx());
 }
 
@@ -283,7 +283,7 @@ void fsm::become_candidate(bool is_prevote, bool is_leadership_transfer) {
             // Already signaled _sm_events in update_current_term()
             continue;
         }
-        logger.trace("{} [term: {}, index: {}, last log term: {}{}{}] sent vote request to {}",
+        LOGMACRO(logger, log_level::trace, "{} [term: {}, index: {}, last log term: {}{}{}] sent vote request to {}",
             _my_id, term, _log.last_idx(), _log.last_term(), is_prevote ? ", prevote" : "",
             is_leadership_transfer ? ", force" : "", server.id);
 
@@ -292,17 +292,17 @@ void fsm::become_candidate(bool is_prevote, bool is_leadership_transfer) {
     if (votes.tally_votes() == vote_result::WON) {
         // A single node cluster.
         if (is_prevote) {
-            logger.trace("become_candidate[{}] won prevote", _my_id);
+            LOGMACRO(logger, log_level::trace, "become_candidate[{}] won prevote", _my_id);
             become_candidate(false);
         } else {
-            logger.trace("become_candidate[{}] won vote", _my_id);
+            LOGMACRO(logger, log_level::trace, "become_candidate[{}] won vote", _my_id);
             become_leader();
         }
     }
 }
 
 bool fsm::has_output() const {
-    logger.trace("fsm::has_output() {} stable index: {} last index: {}",
+    LOGMACRO(logger, log_level::trace, "fsm::has_output() {} stable index: {} last index: {}",
         _my_id, _log.stable_idx(), _log.last_idx());
 
     auto diff = _log.last_idx() - _log.stable_idx();
@@ -403,7 +403,7 @@ fsm_output fsm::get_output() {
 void fsm::advance_stable_idx(index_t idx) {
     index_t prev_stable_idx = _log.stable_idx();
     _log.stable_to(idx);
-    logger.trace("advance_stable_idx[{}]: prev_stable_idx={}, idx={}", _my_id, prev_stable_idx, idx);
+    LOGMACRO(logger, log_level::trace, "advance_stable_idx[{}]: prev_stable_idx={}, idx={}", _my_id, prev_stable_idx, idx);
     if (is_leader()) {
         auto leader_progress = leader_state().tracker.find(_my_id);
         if (leader_progress) {
@@ -435,11 +435,11 @@ void fsm::maybe_commit() {
         // an entry from the current term has been committed in
         // this way, then all prior entries are committed
         // indirectly because of the Log Matching Property.
-        logger.trace("maybe_commit[{}]: cannot commit because of term {} != {}",
+        LOGMACRO(logger, log_level::trace, "maybe_commit[{}]: cannot commit because of term {} != {}",
             _my_id, _log[new_commit_idx.value()]->term, _current_term);
         return;
     }
-    logger.trace("maybe_commit[{}]: commit {}", _my_id, new_commit_idx);
+    LOGMACRO(logger, log_level::trace, "maybe_commit[{}]: commit {}", _my_id, new_commit_idx);
 
     _commit_idx = new_commit_idx;
     // We have a quorum of servers with match_idx greater than the
@@ -447,7 +447,7 @@ void fsm::maybe_commit() {
     _sm_events.signal();
 
     if (committed_conf_change) {
-        logger.trace("maybe_commit[{}]: committed conf change at idx {} (config: {})", _my_id, _log.last_conf_idx(), _log.get_configuration());
+        LOGMACRO(logger, log_level::trace, "maybe_commit[{}]: committed conf change at idx {} (config: {})", _my_id, _log.last_conf_idx(), _log.get_configuration());
         if (_log.get_configuration().is_joint()) {
             // 4.3. Arbitrary configuration changes using joint consensus
             //
@@ -455,7 +455,7 @@ void fsm::maybe_commit() {
             // system then transitions to the new configuration.
             configuration cfg(_log.get_configuration());
             cfg.leave_joint();
-            logger.trace("[{}] appending non-joint config entry at {}: {}", _my_id, _log.next_idx(), cfg);
+            LOGMACRO(logger, log_level::trace, "[{}] appending non-joint config entry at {}: {}", _my_id, _log.next_idx(), cfg);
             _log.emplace_back(seastar::make_lw_shared<log_entry>({_current_term, _log.next_idx(), std::move(cfg)}));
             leader_state().tracker.set_configuration(_log.get_configuration(), _log.last_idx());
             // Leaving joint configuration may commit more entries
@@ -477,7 +477,7 @@ void fsm::maybe_commit() {
         } else {
             auto lp = leader_state().tracker.find(_my_id);
             if (lp == nullptr || !lp->can_vote) {
-                logger.trace("maybe_commit[{}]: stepping down as leader", _my_id);
+                LOGMACRO(logger, log_level::trace, "maybe_commit[{}]: stepping down as leader", _my_id);
                 // 4.2.2 Removing the current leader
                 //
                 // The leader temporarily manages a configuration
@@ -535,7 +535,7 @@ void fsm::tick_leader() {
                 continue;
             }
             if (progress.match_idx < _log.last_idx() || progress.commit_idx < _commit_idx) {
-                logger.trace("tick[{}]: replicate to {} because match={} < last_idx={} || "
+                LOGMACRO(logger, log_level::trace, "tick[{}]: replicate to {} because match={} < last_idx={} || "
                     "follower commit_idx={} < commit_idx={}",
                     _my_id, progress.id, progress.match_idx, _log.last_idx(),
                     progress.commit_idx, _commit_idx);
@@ -555,15 +555,15 @@ void fsm::tick_leader() {
     }
 
     if (state.stepdown) {
-        logger.trace("tick[{}]: stepdown is active", _my_id);
+        LOGMACRO(logger, log_level::trace, "tick[{}]: stepdown is active", _my_id);
         auto me = leader_state().tracker.find(_my_id);
         if (me == nullptr || !me->can_vote) {
-            logger.trace("tick[{}]: not aborting stepdown because we have been removed from the configuration", _my_id);
+            LOGMACRO(logger, log_level::trace, "tick[{}]: not aborting stepdown because we have been removed from the configuration", _my_id);
             // Do not abort stepdown if not part of the current
             // config or non voting member since the node cannot
             // be a leader any longer
         } else if (*state.stepdown <= _clock.now()) {
-            logger.trace("tick[{}]: cancel stepdown", _my_id);
+            LOGMACRO(logger, log_level::trace, "tick[{}]: cancel stepdown", _my_id);
             // Cancel stepdown (only if the leader is part of the cluster)
             leader_state().log_limiter_semaphore->signal(_config.max_log_size);
             state.stepdown.reset();
@@ -571,7 +571,7 @@ void fsm::tick_leader() {
             _abort_leadership_transfer = true;
             _sm_events.signal(); // signal to handle aborting of leadership transfer
         } else if (state.timeout_now_sent) {
-            logger.trace("tick[{}]: resend timeout_now", _my_id);
+            LOGMACRO(logger, log_level::trace, "tick[{}]: resend timeout_now", _my_id);
             // resend timeout now in case it was lost
             send_to(*state.timeout_now_sent, timeout_now{_current_term});
         }
@@ -599,7 +599,7 @@ void fsm::tick() {
         // simply because there were no AppendEntries RPCs recently.
         _last_election_time = _clock.now();
     } else if (is_past_election_timeout()) {
-        logger.trace("tick[{}]: becoming a candidate at term {}, last election: {}, now: {}", _my_id,
+        LOGMACRO(logger, log_level::trace, "tick[{}]: becoming a candidate at term {}, last election: {}, now: {}", _my_id,
             _current_term, _last_election_time, _clock.now());
         become_candidate(_config.enable_prevoting);
     }
@@ -616,7 +616,7 @@ void fsm::tick() {
         if (!cfg.is_joint() && cfg.current.contains(_my_id)) {
             for (auto s : cfg.current) {
                 if (s.can_vote && s.addr.id != _my_id && _failure_detector.is_alive(s.addr.id)) {
-                    logger.trace("tick[{}]: searching for a leader. Pinging {}", _my_id, s.addr.id);
+                    LOGMACRO(logger, log_level::trace, "tick[{}]: searching for a leader. Pinging {}", _my_id, s.addr.id);
                     send_to(s.addr.id, append_reply{_current_term, _commit_idx, append_reply::rejected{index_t{0}, index_t{0}}});
                 }
             }
@@ -625,7 +625,7 @@ void fsm::tick() {
 }
 
 void fsm::append_entries(server_id from, append_request&& request) {
-    logger.trace("append_entries[{}] received ct={}, prev idx={} prev term={} commit idx={}, idx={} num entries={}",
+    LOGMACRO(logger, log_level::trace, "append_entries[{}] received ct={}, prev idx={} prev term={} commit idx={}, idx={} num entries={}",
             _my_id, request.current_term, request.prev_log_idx, request.prev_log_term,
             request.leader_commit_idx, request.entries.size() ? request.entries[0]->idx : index_t(0), request.entries.size());
 
@@ -639,7 +639,7 @@ void fsm::append_entries(server_id from, append_request&& request) {
     // bandwidth.
     auto [match, term] = _log.match_term(request.prev_log_idx, request.prev_log_term);
     if (!match) {
-        logger.trace("append_entries[{}]: no matching term at position {}: expected {}, found {}",
+        LOGMACRO(logger, log_level::trace, "append_entries[{}]: no matching term at position {}: expected {}, found {}",
                 _my_id, request.prev_log_idx, request.prev_log_term, term);
         // Reply false if log doesn't contain an entry at
         // prevLogIndex whose term matches prevLogTerm (§5.3).
@@ -682,7 +682,7 @@ void fsm::append_entries_reply(server_id from, append_reply&& reply) {
     }
 
     if (progress.state == follower_progress::state::SNAPSHOT) {
-        logger.trace("append_entries_reply[{}->{}]: ignored in snapshot state", _my_id, from);
+        LOGMACRO(logger, log_level::trace, "append_entries_reply[{}->{}]: ignored in snapshot state", _my_id, from);
         return;
     }
 
@@ -692,7 +692,7 @@ void fsm::append_entries_reply(server_id from, append_reply&& reply) {
         // accepted
         index_t last_idx = std::get<append_reply::accepted>(reply.result).last_new_idx;
 
-        logger.trace("append_entries_reply[{}->{}]: accepted match={} last index={}",
+        LOGMACRO(logger, log_level::trace, "append_entries_reply[{}->{}]: accepted match={} last index={}",
             _my_id, from, progress.match_idx, last_idx);
 
         progress.accepted(last_idx);
@@ -723,21 +723,21 @@ void fsm::append_entries_reply(server_id from, append_reply&& reply) {
         // rejected
         append_reply::rejected rejected = std::get<append_reply::rejected>(reply.result);
 
-        logger.trace("append_entries_reply[{}->{}]: rejected match={} index={}",
+        LOGMACRO(logger, log_level::trace, "append_entries_reply[{}->{}]: rejected match={} index={}",
             _my_id, from, progress.match_idx, rejected.non_matching_idx);
 
         // If non_matching_idx and last_idx are zero it means that a follower is looking for a leader
         // as such message cannot be a result of real mismatch.
         // Send an empty append message to notify it that we are the leader
         if (rejected.non_matching_idx == index_t{0} && rejected.last_idx == index_t{0}) {
-            logger.trace("append_entries_reply[{}->{}]: send empty append message", _my_id, from);
+            LOGMACRO(logger, log_level::trace, "append_entries_reply[{}->{}]: send empty append message", _my_id, from);
             replicate_to(progress, true);
             return;
         }
 
         // check reply validity
         if (progress.is_stray_reject(rejected)) {
-            logger.trace("append_entries_reply[{}->{}]: drop stray append reject", _my_id, from);
+            LOGMACRO(logger, log_level::trace, "append_entries_reply[{}->{}]: drop stray append reject", _my_id, from);
             return;
         }
 
@@ -762,7 +762,7 @@ void fsm::append_entries_reply(server_id from, append_reply&& reply) {
     // follower, so re-track it.
     opt_progress = leader_state().tracker.find(from);
     if (opt_progress != nullptr) {
-        logger.trace("append_entries_reply[{}->{}]: next_idx={}, match_idx={}",
+        LOGMACRO(logger, log_level::trace, "append_entries_reply[{}->{}]: next_idx={}, match_idx={}",
             _my_id, from, opt_progress->next_idx, opt_progress->match_idx);
 
         replicate_to(*opt_progress, false);
@@ -789,7 +789,7 @@ void fsm::request_vote(server_id from, vote_request&& request) {
     // ...and we believe the candidate is up to date.
     if (can_vote && _log.is_up_to_date(request.last_log_idx, request.last_log_term)) {
 
-        logger.trace("{} [term: {}, index: {}, last log term: {}, voted_for: {}] "
+        LOGMACRO(logger, log_level::trace, "{} [term: {}, index: {}, last log term: {}, voted_for: {}] "
             "voted for {} [log_term: {}, log_index: {}]",
             _my_id, _current_term, _log.last_idx(), _log.last_term(), _voted_for,
             from, request.last_log_term, request.last_log_idx);
@@ -815,7 +815,7 @@ void fsm::request_vote(server_id from, vote_request&& request) {
         // viable candidate, so it should not reset its election
         // timer, to avoid election disruption by non-viable
         // candidates.
-        logger.trace("{} [term: {}, index: {}, log_term: {}, voted_for: {}] "
+        LOGMACRO(logger, log_level::trace, "{} [term: {}, index: {}, log_term: {}, voted_for: {}] "
             "rejected vote for {} [current_term: {}, log_term: {}, log_index: {}, is_prevote: {}]",
             _my_id, _current_term, _log.last_idx(), _log.last_term(), _voted_for,
             from, request.current_term, request.last_log_term, request.last_log_idx, request.is_prevote);
@@ -827,12 +827,12 @@ void fsm::request_vote(server_id from, vote_request&& request) {
 void fsm::request_vote_reply(server_id from, vote_reply&& reply) {
     SCYLLA_ASSERT(is_candidate());
 
-    logger.trace("request_vote_reply[{}] received a {} vote from {}", _my_id, reply.vote_granted ? "yes" : "no", from);
+    LOGMACRO(logger, log_level::trace, "request_vote_reply[{}] received a {} vote from {}", _my_id, reply.vote_granted ? "yes" : "no", from);
 
     auto& state = std::get<candidate>(_state);
     // Should not register a reply to prevote as a real vote
     if (state.is_prevote != reply.is_prevote) {
-        logger.trace("request_vote_reply[{}] ignoring prevote from {} as state is vote", _my_id, from);
+        LOGMACRO(logger, log_level::trace, "request_vote_reply[{}] ignoring prevote from {} as state is vote", _my_id, from);
         return;
     }
     state.votes.register_vote(from, reply.vote_granted);
@@ -842,10 +842,10 @@ void fsm::request_vote_reply(server_id from, vote_reply&& reply) {
         break;
     case vote_result::WON:
         if (state.is_prevote) {
-            logger.trace("request_vote_reply[{}] won prevote", _my_id);
+            LOGMACRO(logger, log_level::trace, "request_vote_reply[{}] won prevote", _my_id);
             become_candidate(false);
         } else {
-            logger.trace("request_vote_reply[{}] won vote", _my_id);
+            LOGMACRO(logger, log_level::trace, "request_vote_reply[{}] won vote", _my_id);
             become_leader();
         }
         break;
@@ -857,14 +857,14 @@ void fsm::request_vote_reply(server_id from, vote_reply&& reply) {
 
 void fsm::replicate_to(follower_progress& progress, bool allow_empty) {
 
-    logger.trace("replicate_to[{}->{}]: called next={} match={}",
+    LOGMACRO(logger, log_level::trace, "replicate_to[{}->{}]: called next={} match={}",
         _my_id, progress.id, progress.next_idx, progress.match_idx);
 
     while (progress.can_send_to()) {
         index_t next_idx = progress.next_idx;
         if (progress.next_idx > _log.last_idx()) {
             next_idx = index_t(0);
-            logger.trace("replicate_to[{}->{}]: next past last next={} stable={}, empty={}",
+            LOGMACRO(logger, log_level::trace, "replicate_to[{}->{}]: next past last next={} stable={}, empty={}",
                     _my_id, progress.id, progress.next_idx, _log.last_idx(), allow_empty);
             if (!allow_empty) {
                 // Send out only persisted entries.
@@ -894,7 +894,7 @@ void fsm::replicate_to(follower_progress& progress, bool allow_empty) {
             // continue syncing the log.
             progress.become_snapshot(snapshot.idx);
             send_to(progress.id, install_snapshot{_current_term, snapshot});
-            logger.trace("replicate_to[{}->{}]: send snapshot next={} snapshot={}",
+            LOGMACRO(logger, log_level::trace, "replicate_to[{}->{}]: send snapshot next={} snapshot={}",
                     _my_id, progress.id, progress.next_idx,  snapshot.idx);
             return;
         }
@@ -912,7 +912,7 @@ void fsm::replicate_to(follower_progress& progress, bool allow_empty) {
             while (next_idx <= _log.last_idx() && size < _config.append_request_threshold) {
                 const auto& entry = _log[next_idx.value()];
                 req.entries.push_back(entry);
-                logger.trace("replicate_to[{}->{}]: send entry idx={}, term={}",
+                LOGMACRO(logger, log_level::trace, "replicate_to[{}->{}]: send entry idx={}, term={}",
                              _my_id, progress.id, entry->idx, entry->term);
                 size += entry->get_size();
                 next_idx++;
@@ -929,7 +929,7 @@ void fsm::replicate_to(follower_progress& progress, bool allow_empty) {
                 progress.next_idx = next_idx;
             }
         } else {
-            logger.trace("replicate_to[{}->{}]: send empty", _my_id, progress.id);
+            LOGMACRO(logger, log_level::trace, "replicate_to[{}->{}]: send empty", _my_id, progress.id);
         }
 
         send_to(progress.id, std::move(req));
@@ -958,7 +958,7 @@ void fsm::install_snapshot_reply(server_id from, snapshot_reply&& reply) {
     follower_progress& progress = *opt_progress;
 
     if (progress.state != follower_progress::state::SNAPSHOT) {
-        logger.trace("install_snapshot_reply[{}]: called not in snapshot state", _my_id);
+        LOGMACRO(logger, log_level::trace, "install_snapshot_reply[{}]: called not in snapshot state", _my_id);
         return;
     }
 
@@ -974,7 +974,7 @@ void fsm::install_snapshot_reply(server_id from, snapshot_reply&& reply) {
 }
 
 bool fsm::apply_snapshot(snapshot_descriptor snp, size_t max_trailing_entries, size_t max_trailing_bytes, bool local) {
-    logger.trace("apply_snapshot[{}]: current term: {}, term: {}, idx: {}, id: {}, local: {}",
+    LOGMACRO(logger, log_level::trace, "apply_snapshot[{}]: current term: {}, term: {}, idx: {}, id: {}, local: {}",
             _my_id, _current_term, snp.term, snp.idx, snp.id, local);
     // If the snapshot is locally generated, all entries up to its index must have been locally applied,
     // so in particular they must have been observed as committed.
@@ -1004,7 +1004,7 @@ bool fsm::apply_snapshot(snapshot_descriptor snp, size_t max_trailing_entries, s
         .is_local = local,
         .preserved_log_entries = _log.get_snapshot().idx.value() + 1 - new_first_index.value()});
     if (is_leader()) {
-        logger.trace("apply_snapshot[{}]: signal {} available units", _my_id, units);
+        LOGMACRO(logger, log_level::trace, "apply_snapshot[{}]: signal {} available units", _my_id, units);
         leader_state().log_limiter_semaphore->signal(units);
     }
     _sm_events.signal();
@@ -1033,18 +1033,18 @@ void fsm::transfer_leadership(logical_clock::duration timeout) {
 }
 
 void fsm::send_timeout_now(server_id id) {
-    logger.trace("send_timeout_now[{}] send timeout_now to {}", _my_id, id);
+    LOGMACRO(logger, log_level::trace, "send_timeout_now[{}] send timeout_now to {}", _my_id, id);
     send_to(id, timeout_now{_current_term});
     leader_state().timeout_now_sent = id;
     auto me = leader_state().tracker.find(_my_id);
     if (me == nullptr || !me->can_vote) {
-        logger.trace("send_timeout_now[{}] become follower", _my_id);
+        LOGMACRO(logger, log_level::trace, "send_timeout_now[{}] become follower", _my_id);
         become_follower({});
     }
 }
 
 void fsm::broadcast_read_quorum(read_id id) {
-    logger.trace("broadcast_read_quorum[{}] send read id {}", _my_id, id);
+    LOGMACRO(logger, log_level::trace, "broadcast_read_quorum[{}] send read id {}", _my_id, id);
     for (auto&& [_, p] : leader_state().tracker) {
         if (p.can_vote) {
             if (p.id == _my_id) {
@@ -1058,7 +1058,7 @@ void fsm::broadcast_read_quorum(read_id id) {
 
 void fsm::handle_read_quorum_reply(server_id from, const read_quorum_reply& reply) {
     SCYLLA_ASSERT(is_leader());
-    logger.trace("handle_read_quorum_reply[{}] got reply from {} for id {}", _my_id, from, reply.id);
+    LOGMACRO(logger, log_level::trace, "handle_read_quorum_reply[{}] got reply from {} for id {}", _my_id, from, reply.id);
     auto& state = leader_state();
     follower_progress* progress = state.tracker.find(from);
     if (progress == nullptr) {
@@ -1082,7 +1082,7 @@ void fsm::handle_read_quorum_reply(server_id from, const read_quorum_reply& repl
 
     _output.max_read_id_with_quorum = state.max_read_id_with_quorum = new_committed_read;
 
-    logger.trace("handle_read_quorum_reply[{}] new commit read {}", _my_id, new_committed_read);
+    LOGMACRO(logger, log_level::trace, "handle_read_quorum_reply[{}] new commit read {}", _my_id, new_committed_read);
 
     _sm_events.signal();
 }
@@ -1104,7 +1104,7 @@ std::optional<std::pair<read_id, index_t>> fsm::start_read_barrier(server_id req
     }
 
     read_id id = next_read_id();
-    logger.trace("start_read_barrier[{}] starting read barrier with id {}", _my_id, id);
+    LOGMACRO(logger, log_level::trace, "start_read_barrier[{}] starting read barrier with id {}", _my_id, id);
     return std::make_pair(id, _commit_idx);
 }
 

@@ -165,7 +165,7 @@ void compression::segmented_offsets::init(uint32_t chunk_size) {
 
     const auto params = params_for_chunk_size(chunk_size);
 
-    sstlog.trace(
+    LOGMACRO(sstlog, log_level::trace, 
             "{} {}(): chunk size {} (log2)",
             fmt::ptr(this),
             __FUNCTION__,

@@ -65,7 +65,7 @@ void verify_tablet_metadata_persistence(cql_test_env& env, const tablet_metadata
 
 static
 void verify_tablet_metadata_update(cql_test_env& env, tablet_metadata& tm, std::vector<mutation> muts) {
-    testlog.trace("verify_tablet_metadata_update(): {}", muts);
+    LOGMACRO(testlog, log_level::trace, "verify_tablet_metadata_update(): {}", muts);
 
     auto& db = env.local_db();
 
@@ -401,15 +401,15 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
         auto table2 = add_table(e).get();
         auto table2_schema = db.find_schema(table2);
 
-        testlog.trace("table1: {}", table1);
-        testlog.trace("table2: {}", table2);
+        LOGMACRO(testlog, log_level::trace, "table1: {}", table1);
+        LOGMACRO(testlog, log_level::trace, "table2: {}", table2);
 
         tablet_metadata tm = read_tablet_metadata(e.local_qp()).get();
         auto ts = current_timestamp(e);
 
         // Add table1
         {
-            testlog.trace("add table1");
+            LOGMACRO(testlog, log_level::trace, "add table1");
 
             tablet_map tmap(1);
             tmap.set_tablet(tmap.first_tablet(), tablet_info {
@@ -427,7 +427,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Add table2
         {
-            testlog.trace("add table2");
+            LOGMACRO(testlog, log_level::trace, "add table2");
 
             tablet_map tmap(4);
             auto tb = tmap.first_tablet();
@@ -462,7 +462,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Increase RF of table2
         {
-            testlog.trace("increates RF of table2");
+            LOGMACRO(testlog, log_level::trace, "increates RF of table2");
 
             const auto& tmap = tm.get_tablet_map(table2);
             auto tb = tmap.first_tablet();
@@ -494,7 +494,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Reduce RF for table1, increasing tablet count
         {
-            testlog.trace("reduce RF for table1, increasing tablet count");
+            LOGMACRO(testlog, log_level::trace, "reduce RF for table1, increasing tablet count");
 
             tablet_map tmap(2);
             auto tb = tmap.first_tablet();
@@ -518,7 +518,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Reduce tablet count for table1
         {
-            testlog.trace("reduce tablet count for table1");
+            LOGMACRO(testlog, log_level::trace, "reduce tablet count for table1");
 
             tablet_map tmap(1);
             auto tb = tmap.first_tablet();
@@ -535,7 +535,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Change replica of table1
         {
-            testlog.trace("change replica of table1");
+            LOGMACRO(testlog, log_level::trace, "change replica of table1");
 
             replica::tablet_mutation_builder builder(ts++, table1);
 
@@ -554,7 +554,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Migrate all tablets of table2
         {
-            testlog.trace("stream all tablets of table2");
+            LOGMACRO(testlog, log_level::trace, "stream all tablets of table2");
 
             const auto& tmap = tm.get_tablet_map(table2);
 
@@ -580,7 +580,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Remove transitions from tablets of table2
         {
-            testlog.trace("stream all tablets of table2");
+            LOGMACRO(testlog, log_level::trace, "stream all tablets of table2");
 
             const auto& tmap = tm.get_tablet_map(table2);
 
@@ -605,7 +605,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_update) {
 
         // Drop table2
         {
-            testlog.trace("drop table2");
+            LOGMACRO(testlog, log_level::trace, "drop table2");
 
             verify_tablet_metadata_update(e, tm, {
                     make_drop_tablet_map_mutation(table2, ts++)
@@ -622,8 +622,8 @@ SEASTAR_TEST_CASE(test_tablet_metadata_hint) {
         auto table1 = add_table(e).get();
         auto table2 = add_table(e).get();
 
-        testlog.trace("table1: {}", table1);
-        testlog.trace("table2: {}", table2);
+        LOGMACRO(testlog, log_level::trace, "table1: {}", table1);
+        LOGMACRO(testlog, log_level::trace, "table2: {}", table2);
 
         tablet_metadata tm = read_tablet_metadata(e.local_qp()).get();
         auto ts = current_timestamp(e);
@@ -1438,7 +1438,7 @@ void apply_plan(token_metadata& tm, const migration_plan& plan) {
     for (auto&& mig : plan.migrations()) {
         tm.tablets().mutate_tablet_map(mig.tablet.table, [&] (tablet_map& tmap) {
             auto tinfo = tmap.get_tablet_info(mig.tablet.tablet);
-            testlog.trace("Replacing tablet {} replica from {} to {}", mig.tablet.tablet, mig.src, mig.dst);
+            LOGMACRO(testlog, log_level::trace, "Replacing tablet {} replica from {} to {}", mig.tablet.tablet, mig.src, mig.dst);
             tinfo.replicas = replace_replica(tinfo.replicas, mig.src, mig.dst);
             tmap.set_tablet(mig.tablet.tablet, tinfo);
         });

@@ -182,7 +182,7 @@ schema_ptr schema_registry_entry::load(view_schema_and_base_info fs) {
         _schema_promise = {};
     }
     _state = state::LOADED;
-    slogger.trace("Loaded {} = {}", _version, *s);
+    LOGMACRO(slogger, log_level::trace, "Loaded {} = {}", _version, *s);
     return s;
 }
 
@@ -199,7 +199,7 @@ schema_ptr schema_registry_entry::load(schema_ptr s) {
         _schema_promise = {};
     }
     _state = state::LOADED;
-    slogger.trace("Loaded {} = {}", _version, *s);
+    LOGMACRO(slogger, log_level::trace, "Loaded {} = {}", _version, *s);
     return s;
 }
 
@@ -208,12 +208,12 @@ future<schema_ptr> schema_registry_entry::start_loading(async_schema_loader load
     auto f = _loader(_version);
     auto sf = _schema_promise.get_shared_future();
     _state = state::LOADING;
-    slogger.trace("Loading {}", _version);
+    LOGMACRO(slogger, log_level::trace, "Loading {}", _version);
     // Move to background.
     (void)f.then_wrapped([self = shared_from_this(), this] (future<view_schema_and_base_info>&& f) {
         _loader = {};
         if (_state != state::LOADING) {
-            slogger.trace("Loading of {} aborted", _version);
+            LOGMACRO(slogger, log_level::trace, "Loading of {} aborted", _version);
             return;
         }
         try {
@@ -234,7 +234,7 @@ future<schema_ptr> schema_registry_entry::start_loading(async_schema_loader load
 
 schema_ptr schema_registry_entry::get_schema() {
     if (!_schema) {
-        slogger.trace("Activating {}", _version);
+        LOGMACRO(slogger, log_level::trace, "Activating {}", _version);
         schema_ptr s;
         if (_base_info) {
             s = _frozen_schema->unfreeze(*_registry._ctxt, *_base_info);
@@ -254,7 +254,7 @@ schema_ptr schema_registry_entry::get_schema() {
 }
 
 void schema_registry_entry::detach_schema() noexcept {
-    slogger.trace("Deactivating {}", _version);
+    LOGMACRO(slogger, log_level::trace, "Deactivating {}", _version);
     _schema = nullptr;
     _erase_timer.arm(_registry.grace_period());
 }

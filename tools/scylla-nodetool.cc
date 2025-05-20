@@ -153,7 +153,7 @@ class scylla_rest_client {
         if (body) {
             req.write_body(body->content_type, body->content);
         }
-        nlog.trace("Making {} request to {} with parameters {}", type, url, params);
+        LOGMACRO(nlog, log_level::trace, "Making {} request to {} with parameters {}", type, url, params);
 
 
         http::reply::status_type status = http::reply::status_type::ok;
@@ -176,10 +176,10 @@ class scylla_rest_client {
         }
 
         if (res.empty()) {
-            nlog.trace("Got empty response");
+            LOGMACRO(nlog, log_level::trace, "Got empty response");
             return rjson::null_value();
         } else {
-            nlog.trace("Got response:\n{}", res);
+            LOGMACRO(nlog, log_level::trace, "Got response:\n{}", res);
             return rjson::parse(res);
         }
     }
@@ -4789,7 +4789,7 @@ std::vector<char*> massage_argv(int argc, char** argv) {
 
         const auto it = option_substitutions.find(arg_key);
         if (it != option_substitutions.end()) {
-            nlog.trace("Substituting cmd-line arg {} with {}", arg_key, it->second);
+            LOGMACRO(nlog, log_level::trace, "Substituting cmd-line arg {} with {}", arg_key, it->second);
             arg_key = it->second;
         }
 

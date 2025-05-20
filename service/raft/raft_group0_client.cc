@@ -563,7 +563,7 @@ static future<> add_write_mutations_entry(
         ::service::group0_guard group0_guard,
         seastar::abort_source& as,
         std::optional<::service::raft_timeout> timeout) {
-    logger.trace("add_write_mutations_entry: {} mutations with description {}",
+    LOGMACRO(logger, log_level::trace, "add_write_mutations_entry: {} mutations with description {}",
             muts.size(), description);
     auto group0_cmd = group0_client.prepare_command(
         ::service::write_mutations{

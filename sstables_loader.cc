@@ -79,7 +79,7 @@ public:
             ++_num_partitions_sent;
         }
         _num_bytes_sent += size;
-        llog.trace("send_meta_data: send mf to node={}, size={}", _node, size);
+        LOGMACRO(llog, log_level::trace, "send_meta_data: send mf to node={}, size={}", _node, size);
         co_return co_await _sink(fmf, streaming::stream_mutation_fragments_cmd::mutation_fragment_data);
     }
     future<> finish(bool failed) {
@@ -439,7 +439,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
                 const auto& current_dk = start.key();
 
                 current_targets = get_endpoints(current_dk.token());
-                llog.trace("load_and_stream: ops_uuid={}, current_dk={}, current_targets={}", ops_uuid,
+                LOGMACRO(llog, log_level::trace, "load_and_stream: ops_uuid={}, current_dk={}, current_targets={}", ops_uuid,
                         current_dk.token(), current_targets);
                 for (auto& node : current_targets) {
                     if (!metas.contains(node)) {

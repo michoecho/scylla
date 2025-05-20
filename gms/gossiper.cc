@@ -172,7 +172,7 @@ void gossiper::do_sort(utils::chunked_vector<gossip_digest>& g_digest_list) cons
 // Depends on
 // - no external dependency
 future<> gossiper::handle_syn_msg(locator::host_id from, gossip_digest_syn syn_msg) {
-    logger.trace("handle_syn_msg():from={},cluster_name:peer={},local={},group0_id:peer={},local={},partitioner_name:peer={},local={}",
+    LOGMACRO(logger, log_level::trace, "handle_syn_msg():from={},cluster_name:peer={},local={},group0_id:peer={},local={},partitioner_name:peer={},local={}",
         from, syn_msg.cluster_id(), get_cluster_name(), syn_msg.group0_id(), get_group0_id(), syn_msg.partioner(), get_partitioner_name());
     if (!is_enabled()) {
         co_return;
@@ -292,7 +292,7 @@ static bool should_count_as_msg_processing(const std::map<inet_address, endpoint
 // - on_join callbacks
 // - on_alive
 future<> gossiper::handle_ack_msg(locator::host_id id, gossip_digest_ack ack_msg) {
-    logger.trace("handle_ack_msg():from={},msg={}", id, ack_msg);
+    LOGMACRO(logger, log_level::trace, "handle_ack_msg():from={},msg={}", id, ack_msg);
 
     if (!is_enabled()) {
         co_return;
@@ -400,7 +400,7 @@ future<> gossiper::do_send_ack2_msg(locator::host_id from, utils::chunked_vector
 // - on_join callbacks
 // - on_alive callbacks
 future<> gossiper::handle_ack2_msg(locator::host_id from, gossip_digest_ack2 msg) {
-    logger.trace("handle_ack2_msg():msg={}", msg);
+    LOGMACRO(logger, log_level::trace, "handle_ack2_msg():msg={}", msg);
     if (!is_enabled()) {
         co_return;
     }
@@ -579,12 +579,12 @@ future<> gossiper::send_gossip(gossip_digest_syn message, std::set<T> epset) {
     std::uniform_int_distribution<int> dist(0, size - 1);
     int index = dist(_random_engine);
     std::conditional_t<std::is_same_v<T, gms::inet_address>, netw::msg_addr, T> id{__live_endpoints[index]};
-    logger.trace("Sending a GossipDigestSyn to {} ...", id);
+    LOGMACRO(logger, log_level::trace, "Sending a GossipDigestSyn to {} ...", id);
     return ser::gossip_rpc_verbs::send_gossip_digest_syn(&_messaging, id, std::move(message)).handle_exception([id] (auto ep) {
         // It is normal to reach here because it is normal that a node
         // tries to send a SYN message to a peer node which is down before
         // failure_detector thinks that peer node is down.
-        logger.trace("Fail to send GossipDigestSyn to {}: {}", id, ep);
+        LOGMACRO(logger, log_level::trace, "Fail to send GossipDigestSyn to {}: {}", id, ep);
     });
 }
 
@@ -598,13 +598,13 @@ future<> gossiper::do_apply_state_locally(locator::host_id node, endpoint_state 
         endpoint_state local_state = *es;
         auto local_generation = local_state.get_heart_beat_state().get_generation();
         auto remote_generation = remote_state.get_heart_beat_state().get_generation();
-        logger.trace("{} local generation {}, remote generation {}", node, local_generation, remote_generation);
+        LOGMACRO(logger, log_level::trace, "{} local generation {}, remote generation {}", node, local_generation, remote_generation);
         if (remote_generation > generation_type(get_generation_number().value() + MAX_GENERATION_DIFFERENCE)) {
             // assume some peer has corrupted memory and is broadcasting an unbelievable generation about another peer (or itself)
             logger.warn("received an invalid gossip generation for peer {}; local generation = {}, received generation = {}",
                 node, local_generation, remote_generation);
         } else if (remote_generation > local_generation) {
-            logger.trace("Updating heartbeat state generation to {} from {} for {} (notify={})", remote_generation, local_generation, node, !shadow_round);
+            LOGMACRO(logger, log_level::trace, "Updating heartbeat state generation to {} from {} for {} (notify={})", remote_generation, local_generation, node, !shadow_round);
             // major state change will handle the update by inserting the remote state directly
             co_await handle_major_state_change(std::move(remote_state), permit.id(), shadow_round);
         } else if (remote_generation == local_generation) {
@@ -659,17 +659,17 @@ future<> gossiper::apply_state_locally(std::map<inet_address, endpoint_state> ma
             hid = get_host_id(ep);
         }
         if (hid == my_host_id()) {
-            logger.trace("Ignoring gossip for {} because it maps to local id, but is not local address", ep);
+            LOGMACRO(logger, log_level::trace, "Ignoring gossip for {} because it maps to local id, but is not local address", ep);
             return make_ready_future<>();
         }
         if (_topo_sm) {
             if (_topo_sm->_topology.left_nodes.contains(raft::server_id(hid.uuid()))) {
-                logger.trace("Ignoring gossip for {} because it left", ep);
+                LOGMACRO(logger, log_level::trace, "Ignoring gossip for {} because it left", ep);
                 return make_ready_future<>();
             }
         } else {
             if (_just_removed_endpoints.contains(hid)) {
-                logger.trace("Ignoring gossip for {} because it is quarantined", hid);
+                LOGMACRO(logger, log_level::trace, "Ignoring gossip for {} because it is quarantined", hid);
                 return make_ready_future<>();
             }
         }
@@ -754,7 +754,7 @@ future<> gossiper::remove_endpoint(locator::host_id endpoint, permit_id pid) {
 }
 
 future<> gossiper::do_status_check() {
-    logger.trace("Performing status check ...");
+    LOGMACRO(logger, log_level::trace, "Performing status check ...");
 
     auto now = this->now();
 
@@ -1085,7 +1085,7 @@ void gossiper::run() {
    // Run it in the background.
   (void)seastar::with_semaphore(_callback_running, 1, [this] {
     return seastar::async([this, g = shared_from_this()] {
-            logger.trace("=== Gossip round START");
+            LOGMACRO(logger, log_level::trace, "=== Gossip round START");
 
             //wait on messaging service to start listening
             // MessagingService.instance().waitUntilListening();
@@ -1096,7 +1096,7 @@ void gossiper::run() {
                 heart_beat_state& hbs = my_endpoint_state().get_heart_beat_state();
                 hbs.update_heart_beat();
 
-                logger.trace("My heartbeat is now {}", hbs.get_heart_beat_version());
+                LOGMACRO(logger, log_level::trace, "My heartbeat is now {}", hbs.get_heart_beat_version());
             }
 
             utils::chunked_vector<gossip_digest> g_digests = make_random_gossip_digest();
@@ -1125,7 +1125,7 @@ void gossiper::run() {
                     for (auto& ep: live_nodes) {
                         (void)with_gate(_background_msg, [this, message, ep] () mutable {
                             return do_gossip_to_live_member(message, ep).handle_exception([] (auto ep) {
-                                logger.trace("Failed to send gossip to live members: {}", ep);
+                                LOGMACRO(logger, log_level::trace, "Failed to send gossip to live members: {}", ep);
                             });
                         });
                     }
@@ -1134,7 +1134,7 @@ void gossiper::run() {
                     for (auto& ep: _seeds) {
                         (void)with_gate(_background_msg, [this, message, ep] () mutable {
                             return do_gossip_to_live_member(message, ep).handle_exception([] (auto ep) {
-                                logger.trace("Failed to send gossip to live members: {}", ep);
+                                LOGMACRO(logger, log_level::trace, "Failed to send gossip to live members: {}", ep);
                             });
                         });
                     }
@@ -1145,7 +1145,7 @@ void gossiper::run() {
                 /* Gossip to some unreachable member with some probability to check if he is back up */
                 (void)with_gate(_background_msg, [this, message = std::move(message)] () mutable {
                     return do_gossip_to_unreachable_member(std::move(message)).handle_exception([] (auto ep) {
-                        logger.trace("Failed to send gossip to unreachable members: {}", ep);
+                        LOGMACRO(logger, log_level::trace, "Failed to send gossip to unreachable members: {}", ep);
                     });
                 });
                 if (!_topo_sm) {
@@ -1156,14 +1156,14 @@ void gossiper::run() {
         try {
             f.get();
             _nr_run++;
-            logger.trace("=== Gossip round OK");
+            LOGMACRO(logger, log_level::trace, "=== Gossip round OK");
         } catch (...) {
             logger.warn("=== Gossip round FAIL: {}", std::current_exception());
         }
 
         if (logger.is_enabled(logging::log_level::trace)) {
             for (auto& x : _endpoint_state_map) {
-                logger.trace("ep={}, eps={}", x.first, *x.second);
+                LOGMACRO(logger, log_level::trace, "ep={}, eps={}", x.first, *x.second);
             }
         }
         if (is_enabled()) {
@@ -1466,7 +1466,7 @@ future<> gossiper::do_gossip_to_unreachable_member(gossip_digest_syn message) {
                     addrs.insert(x.first);
                 }
             }
-            logger.trace("do_gossip_to_unreachable_member: live_endpoint nr={} unreachable_endpoints nr={}",
+            LOGMACRO(logger, log_level::trace, "do_gossip_to_unreachable_member: live_endpoint nr={} unreachable_endpoints nr={}",
                 live_endpoint_count, unreachable_endpoint_count);
             return send_gossip(message, addrs);
         }
@@ -1624,7 +1624,7 @@ std::optional<endpoint_state> gossiper::get_state_for_version_bigger_than(locato
         auto local_hb_version = eps.get_heart_beat_state().get_heart_beat_version();
         if (local_hb_version > version) {
             reqd_endpoint_state.emplace(eps.get_heart_beat_state(), eps.get_ip());
-            logger.trace("local heartbeat version {} greater than {} for {}", local_hb_version, version, for_endpoint);
+            LOGMACRO(logger, log_level::trace, "local heartbeat version {} greater than {} for {}", local_hb_version, version, for_endpoint);
         }
         /* Accumulate all application states whose versions are greater than "version" variable */
         for (auto& entry : eps.get_application_state_map()) {
@@ -1634,7 +1634,7 @@ std::optional<endpoint_state> gossiper::get_state_for_version_bigger_than(locato
                     reqd_endpoint_state.emplace(eps.get_heart_beat_state(), eps.get_ip());
                 }
                 auto& key = entry.first;
-                logger.trace("Adding state of {}, {}: {}" , for_endpoint, key, value.value());
+                LOGMACRO(logger, log_level::trace, "Adding state of {}, {}: {}" , for_endpoint, key, value.value());
                 reqd_endpoint_state->add_application_state(key, value);
             }
         }
@@ -1680,7 +1680,7 @@ void gossiper::update_timestamp_for_nodes(const std::map<inet_address, endpoint_
                 }
             }
             if (update) {
-                logger.trace("Updated timestamp for node {}", endpoint);
+                LOGMACRO(logger, log_level::trace, "Updated timestamp for node {}", endpoint);
                 update_timestamp(local_endpoint_state);
             }
         }
@@ -1729,7 +1729,7 @@ void gossiper::mark_alive(endpoint_state_ptr node) {
     auto gh = _background_msg.hold();
     logger.debug("Sending a EchoMessage to {}/{}, with generation_number={}", id, addr, generation);
     (void) send_echo(id, std::chrono::seconds(15), generation.value(), false).then([this, id] {
-        logger.trace("Got EchoMessage Reply");
+        LOGMACRO(logger, log_level::trace, "Got EchoMessage Reply");
         return real_mark_alive(id);
     }).handle_exception([addr, gh = std::move(gh), unmark_pending = std::move(unmark_pending), id] (auto ep) {
         logger.warn("Fail to send EchoMessage to {}/{}: {}", id, addr, ep);
@@ -1784,12 +1784,12 @@ future<> gossiper::real_mark_alive(locator::host_id host_id) {
 
     co_await _subscribers.for_each([addr, host_id, es, pid = permit.id()] (shared_ptr<i_endpoint_state_change_subscriber> subscriber) -> future<> {
         co_await subscriber->on_alive(addr, host_id, es, pid);
-        logger.trace("Notified {}", fmt::ptr(subscriber.get()));
+        LOGMACRO(logger, log_level::trace, "Notified {}", fmt::ptr(subscriber.get()));
     });
 }
 
 future<> gossiper::mark_dead(locator::host_id addr, endpoint_state_ptr state, permit_id pid) {
-    logger.trace("marking as down {}", addr);
+    LOGMACRO(logger, log_level::trace, "marking as down {}", addr);
     verify_permit(addr, pid);
 
     co_await mutate_live_and_unreachable_endpoints([addr = state->get_host_id()] (live_and_unreachable_endpoints& data) {
@@ -1813,7 +1813,7 @@ future<> gossiper::handle_major_state_change(endpoint_state eps, permit_id pid, 
             logger.debug("Node {} is now part of the cluster, status = {}", ep, get_gossip_status(eps));
         }
     }
-    logger.trace("Adding endpoint state for {}, status = {}", ep, get_gossip_status(eps));
+    LOGMACRO(logger, log_level::trace, "Adding endpoint state for {}, status = {}", ep, get_gossip_status(eps));
     co_await replicate(eps, pid);
 
     if (shadow_round) {
@@ -1889,7 +1889,7 @@ future<> gossiper::apply_new_states(endpoint_state local_state, const endpoint_s
         local_state.set_heart_beat_state_and_update_timestamp(remote_state.get_heart_beat_state());
     }
     // if (logger.isTraceEnabled()) {
-    //     logger.trace("Updating heartbeat state version to {} from {} for {} ...",
+    //     LOGMACRO(logger, log_level::trace, "Updating heartbeat state version to {} from {} for {} ...",
     //     local_state.get_heart_beat_state().get_heart_beat_version(), oldVersion, addr);
     // }
 
@@ -1969,7 +1969,7 @@ void gossiper::request_all(gossip_digest& g_digest,
     utils::chunked_vector<gossip_digest>& delta_gossip_digest_list, generation_type remote_generation) const {
     /* We are here since we have no data for this endpoint locally so request everything. */
     delta_gossip_digest_list.emplace_back(g_digest.get_endpoint(), remote_generation);
-    logger.trace("request_all for {}", g_digest.get_endpoint());
+    LOGMACRO(logger, log_level::trace, "request_all for {}", g_digest.get_endpoint());
 }
 
 void gossiper::send_all(gossip_digest& g_digest,
@@ -1977,7 +1977,7 @@ void gossiper::send_all(gossip_digest& g_digest,
     version_type max_remote_version) const {
     auto ep = g_digest.get_endpoint();
     auto id = try_get_host_id(ep);
-    logger.trace("send_all(): ep={}/{}, version > {}", id, ep, max_remote_version);
+    LOGMACRO(logger, log_level::trace, "send_all(): ep={}/{}, version > {}", id, ep, max_remote_version);
     if (id) {
         auto local_ep_state_ptr = get_state_for_version_bigger_than(*id, max_remote_version);
         if (local_ep_state_ptr) {
@@ -2006,7 +2006,7 @@ void gossiper::examine_gossiper(utils::chunked_vector<gossip_digest>& g_digest_l
             auto local_generation = ep_state_ptr.get_heart_beat_state().get_generation();
             /* get the max version of all keys in the state associated with this endpoint */
             auto max_local_version = get_max_endpoint_state_version(ep_state_ptr);
-            logger.trace("examine_gossiper(): ep={}, remote={}.{}, local={}.{}", ep,
+            LOGMACRO(logger, log_level::trace, "examine_gossiper(): ep={}, remote={}.{}, local={}.{}", ep,
                 remote_generation, max_remote_version, local_generation, max_local_version);
             if (remote_generation == local_generation && max_remote_version == max_local_version) {
                 continue;
@@ -2030,7 +2030,7 @@ void gossiper::examine_gossiper(utils::chunked_vector<gossip_digest>& g_digest_l
                  * greater than the max remote version.
                  */
                 if (max_remote_version > max_local_version) {
-                    logger.trace("examine_gossiper(): requesting version > {} from {}", max_local_version, g_digest.get_endpoint());
+                    LOGMACRO(logger, log_level::trace, "examine_gossiper(): requesting version > {} from {}", max_local_version, g_digest.get_endpoint());
                     delta_gossip_digest_list.emplace_back(g_digest.get_endpoint(), remote_generation, max_local_version);
                 } else if (max_remote_version < max_local_version) {
                     /* send all data with generation = localgeneration and version > max_remote_version */
@@ -2229,7 +2229,7 @@ future<> gossiper::add_saved_endpoint(locator::host_id host_id, gms::loaded_endp
     auto generation = ep_state.get_heart_beat_state().get_generation();
     co_await replicate(std::move(ep_state), permit.id());
     _unreachable_endpoints[host_id] = now();
-    logger.trace("Adding saved endpoint {} {}", ep, generation);
+    LOGMACRO(logger, log_level::trace, "Adding saved endpoint {} {}", ep, generation);
 }
 
 future<> gossiper::add_local_application_state(application_state state, versioned_value value) {
@@ -2316,7 +2316,7 @@ future<> gossiper::do_stop_gossiping() {
             logger.info("Sending a GossipShutdown to {} with generation {}", id, local_generation);
             try {
                 co_await ser::gossip_rpc_verbs::send_gossip_shutdown(&_messaging, id, get_broadcast_address(), local_generation.value());
-                logger.trace("Got GossipShutdown Reply");
+                LOGMACRO(logger, log_level::trace, "Got GossipShutdown Reply");
             } catch (...) {
                 logger.warn("Fail to send GossipShutdown to {}: {}", id, std::current_exception());
             }

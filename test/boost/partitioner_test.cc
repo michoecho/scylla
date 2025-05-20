@@ -742,9 +742,9 @@ SEASTAR_THREAD_TEST_CASE(test_dht_subtract_ranges) {
 
     auto res = dht::subtract_ranges(schema, ranges, ranges_to_subtract).get();
 
-    testlog.trace("ranges={}", ranges);
-    testlog.trace("ranges_to_subtract={}", ranges_to_subtract);
-    testlog.trace("res={}", res);
+    LOGMACRO(testlog, log_level::trace, "ranges={}", ranges);
+    LOGMACRO(testlog, log_level::trace, "ranges_to_subtract={}", ranges_to_subtract);
+    LOGMACRO(testlog, log_level::trace, "res={}", res);
 
     auto cmp = dht::ring_position_comparator(schema);
     for (const auto& r : res) {

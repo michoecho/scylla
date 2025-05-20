@@ -438,7 +438,7 @@ static void test_streamed_mutation_forwarding_guarantees(tests::reader_concurren
 
         for (; start < end; ++start) {
             if (!contains_key(start)) {
-                testlog.trace("skip {:d}", start);
+                LOGMACRO(testlog, log_level::trace, "skip {:d}", start);
                 continue;
             }
             sm.produces_row_with_key(keys[start]);
@@ -1312,10 +1312,10 @@ void test_slicing_with_overlapping_range_tombstones(tests::reader_concurrency_se
 
         mutation_rebuilder_v2 rebuilder(s);
         rd.consume_pausable([&] (mutation_fragment_v2&& mf) {
-            testlog.trace("mf: {}", mutation_fragment_v2::printer(*s, mf));
+            LOGMACRO(testlog, log_level::trace, "mf: {}", mutation_fragment_v2::printer(*s, mf));
             if (mf.position().is_clustering_row() && !prange.contains(*s, mf.position())) {
-                testlog.trace("m1: {}", m1);
-                testlog.trace("m2: {}", m2);
+                LOGMACRO(testlog, log_level::trace, "m1: {}", m1);
+                LOGMACRO(testlog, log_level::trace, "m2: {}", m2);
                 BOOST_FAIL(format("Received row which is not relevant for the slice: {}, slice: {}",
                                   mutation_fragment_v2::printer(*s, mf), prange));
             }
@@ -2803,7 +2803,7 @@ mutation forwardable_reader_to_mutation(mutation_reader r, const std::vector<pos
     r.consume(consumer(r.schema(), builder)).get();
     BOOST_REQUIRE(builder);
     for (auto& range : fwd_ranges) {
-        testlog.trace("forwardable_reader_to_mutation: forwarding to {}", range);
+        LOGMACRO(testlog, log_level::trace, "forwardable_reader_to_mutation: forwarding to {}", range);
         r.fast_forward_to(range).get();
         r.consume(consumer(r.schema(), builder)).get();
     }

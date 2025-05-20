@@ -330,11 +330,11 @@ future<std::tuple<UUID, key_ptr>> replicated_key_provider::get_key(const key_inf
 
         auto b = co_await _system_key->encrypt(k->key());
         auto ks = base64_encode(b);
-        log.trace("Inserting generated key {}", uuid);
+        LOGMACRO(log, log_level::trace, "Inserting generated key {}", uuid);
         co_await query(fmt::format("INSERT INTO {}.{} (key_file, cipher, strength, key_id, key) VALUES (?, ?, ?, ?, ?)", 
             KSNAME, TABLENAME), _system_key->name(), cipher, int32_t(id.info.len), uuid, ks
         );
-        log.trace("Flushing key table");
+        LOGMACRO(log, log_level::trace, "Flushing key table");
         co_await force_blocking_flush();
 
         co_return std::tuple(uuid, k);

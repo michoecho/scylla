@@ -142,7 +142,7 @@ future<> write_mutations_to_database(storage_proxy& proxy, gms::inet_address fro
     co_await proxy.mutate_locally(std::move(mutations), tracing::trace_state_ptr(), db::commitlog::force_sync::no);
 
     if (need_system_topology_flush) {
-        slogger.trace("write_mutations_to_database: flushing {}.{}", db::system_keyspace::NAME, db::system_keyspace::TOPOLOGY);
+        LOGMACRO(slogger, log_level::trace, "write_mutations_to_database: flushing {}.{}", db::system_keyspace::NAME, db::system_keyspace::TOPOLOGY);
         co_await proxy.get_db().local().flush(db::system_keyspace::NAME, db::system_keyspace::TOPOLOGY);
     }
 }
@@ -260,7 +260,7 @@ static void ensure_group0_schema(const group0_command& cmd, const replica::datab
 #endif
 
 future<> group0_state_machine::apply(std::vector<raft::command_cref> command) {
-    slogger.trace("apply() is called with {} commands", command.size());
+    LOGMACRO(slogger, log_level::trace, "apply() is called with {} commands", command.size());
 
     co_await utils::get_local_injector().inject("group0_state_machine::delay_apply", 1s);
 
@@ -281,9 +281,9 @@ future<> group0_state_machine::apply(std::vector<raft::command_cref> command) {
         ensure_group0_schema(cmd, _client.sys_ks().local_db());
 #endif
 
-        slogger.trace("cmd: prev_state_id: {}, new_state_id: {}, creator_addr: {}, creator_id: {}",
+        LOGMACRO(slogger, log_level::trace, "cmd: prev_state_id: {}, new_state_id: {}, creator_addr: {}, creator_id: {}",
                 cmd.prev_state_id, cmd.new_state_id, cmd.creator_addr, cmd.creator_id);
-        slogger.trace("cmd.history_append: {}", cmd.history_append);
+        LOGMACRO(slogger, log_level::trace, "cmd.history_append: {}", cmd.history_append);
 
         if (cmd.prev_state_id) {
             if (*cmd.prev_state_id != m.last_id()) {
@@ -293,12 +293,12 @@ future<> group0_state_machine::apply(std::vector<raft::command_cref> command) {
                 // is the one given by the last command.
                 // Similar thing may happen when we pull group0 state in transfer_snapshot - we pull the latest state of remote tables,
                 // not state at the snapshot descriptor.
-                slogger.trace("cmd.prev_state_id ({}) different than last group 0 state ID in history table ({})",
+                LOGMACRO(slogger, log_level::trace, "cmd.prev_state_id ({}) different than last group 0 state ID in history table ({})",
                         cmd.prev_state_id, m.last_id());
                 continue;
             }
         } else {
-            slogger.trace("unconditional modification, cmd.new_state_id: {}", cmd.new_state_id);
+            LOGMACRO(slogger, log_level::trace, "unconditional modification, cmd.new_state_id: {}", cmd.new_state_id);
         }
 
         auto size = m.cmd_size(cmd);
@@ -345,7 +345,7 @@ future<> group0_state_machine::transfer_snapshot(raft::server_id from_id, raft::
 
     auto holder = _gate.hold();
 
-    slogger.trace("transfer snapshot from {} index {} snp id {}", hid, snp.idx, snp.id);
+    LOGMACRO(slogger, log_level::trace, "transfer snapshot from {} index {} snp id {}", hid, snp.idx, snp.id);
     auto& as = _abort_source;
 
     // (Ab)use MIGRATION_REQUEST to also transfer group0 history table mutation besides schema tables mutations.

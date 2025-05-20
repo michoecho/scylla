@@ -691,7 +691,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_stop_waits_on_permits
 
 static void require_can_admit(schema_ptr schema, reader_concurrency_semaphore& semaphore, bool expected_can_admit, const char* description,
         seastar::compat::source_location sl = seastar::compat::source_location::current()) {
-    testlog.trace("Running admission scenario {}, with exepcted_can_admit={}", description, expected_can_admit);
+    LOGMACRO(testlog, log_level::trace, "Running admission scenario {}, with exepcted_can_admit={}", description, expected_can_admit);
     const auto stats_before = semaphore.get_stats();
 
     auto admit_fut = semaphore.obtain_permit(schema, "require_can_admit", 1024, db::timeout_clock::now(), {});
@@ -709,7 +709,7 @@ static void require_can_admit(schema_ptr schema, reader_concurrency_semaphore& s
     // Deliberately not checking `reads_enqueued_for_admission`, a read can be enqueued temporarily during the admission process.
 
     if (can_admit == expected_can_admit) {
-        testlog.trace("admission scenario '{}' with expected_can_admit={} passed at {}:{}", description, expected_can_admit, sl.file_name(),
+        LOGMACRO(testlog, log_level::trace, "admission scenario '{}' with expected_can_admit={} passed at {}:{}", description, expected_can_admit, sl.file_name(),
                 sl.line());
     } else {
         BOOST_FAIL(fmt::format("admission scenario '{}'  with expected_can_admit={} failed at {}:{}\ndiagnostics: {}", description,
@@ -1256,7 +1256,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_group) {
             const auto shares = it->shares;
             const ssize_t expected_memory = std::floor((double(shares) / double(total_shares)) * initial_resources.memory);
             const auto memory_diff = std::abs(res.memory - expected_memory);
-            testlog.trace("{}: {}/{} (shares) -> {}/{} (memory) | res.memory: {}", sg.name(), shares, total_shares, expected_memory, initial_resources.memory, res.memory);
+            LOGMACRO(testlog, log_level::trace, "{}: {}/{} (shares) -> {}/{} (memory) | res.memory: {}", sg.name(), shares, total_shares, expected_memory, initial_resources.memory, res.memory);
             BOOST_CHECK_LE(memory_diff, scheduling_groups.size()); // due to integer division, we allow for ceil/floor (off-by-one), the remainder being added to any semaphore
             total_memory += res.memory;
         });

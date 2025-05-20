@@ -125,7 +125,7 @@ public:
              auto res = resf.get();
              std::visit(overloaded_functor {
                  [&] (const json::json_return_type& json_return_value) {
-                     slogger.trace("api_handler success case");
+                     LOGMACRO(slogger, log_level::trace, "api_handler success case");
                      if (json_return_value._body_writer) {
                          // Unfortunately, write_body() forces us to choose
                          // from a fixed and irrelevant list of "mime-types"
@@ -167,7 +167,7 @@ protected:
         rjson::add(results, "message", err._msg);
         rep._content = rjson::print(std::move(results));
         rep._status = err._http_code;
-        slogger.trace("api_handler error case: {}", rep._content);
+        LOGMACRO(slogger, log_level::trace, "api_handler error case: {}", rep._content);
     }
 
     future_handler_function _f_handle;
@@ -434,7 +434,7 @@ future<executor::request_return_type> server::handle_api_request(std::unique_ptr
 
     if (slogger.is_enabled(log_level::trace)) {
         std::string buf;
-        slogger.trace("Request: {} {} {}", op, truncated_content_view(content, buf), req->_headers);
+        LOGMACRO(slogger, log_level::trace, "Request: {} {} {}", op, truncated_content_view(content, buf), req->_headers);
     }
     auto callback_it = _callbacks.find(op);
     if (callback_it == _callbacks.end()) {

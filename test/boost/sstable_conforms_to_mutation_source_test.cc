@@ -257,7 +257,7 @@ SEASTAR_THREAD_TEST_CASE(test_sstable_reversing_reader_random_schema) {
 
             tests::reader_concurrency_semaphore_wrapper semaphore;
 
-            testlog.trace("Slice: {}", slice);
+            LOGMACRO(testlog, log_level::trace, "Slice: {}", slice);
 
             for (const auto& m: muts) {
                 auto prange = dht::partition_range::make_singular(m.decorated_key());

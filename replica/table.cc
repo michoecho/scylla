@@ -2952,7 +2952,7 @@ future<> table::snapshot_on_all_shards(sharded<database>& sharded_db, const glob
 }
 
 future<table::snapshot_file_set> table::take_snapshot(sstring jsondir) {
-    tlogger.trace("take_snapshot {}", jsondir);
+    LOGMACRO(tlogger, log_level::trace, "take_snapshot {}", jsondir);
 
     auto sstable_deletion_guard = co_await get_sstable_list_permit();
 

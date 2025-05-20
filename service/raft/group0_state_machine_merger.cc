@@ -50,7 +50,7 @@ bool group0_state_machine_merger::can_merge(group0_command& cmd, size_t s) const
 }
 
 void group0_state_machine_merger::add(group0_command&& cmd, size_t added_size) {
-    slogger.trace("add to merging set new_state_id: {}", cmd.new_state_id);
+    LOGMACRO(slogger, log_level::trace, "add to merging set new_state_id: {}", cmd.new_state_id);
     auto m = convert_history_mutation(std::move(cmd.history_append), _db);
     // Set `last_group0_state_id` to the maximum of the current value and `cmd.new_state_id`,
     // but make sure we compare them the same way timeuuids are compared in clustering keys
@@ -89,7 +89,7 @@ std::vector<canonical_mutation>& group0_state_machine_merger::get_command_mutati
 
 std::pair<group0_command, mutation> group0_state_machine_merger::merge() {
     auto& cmd = _cmd_to_merge.back(); // use metadata from the last merged command
-    slogger.trace("merge new_state_id: {}", cmd.new_state_id);
+    LOGMACRO(slogger, log_level::trace, "merge new_state_id: {}", cmd.new_state_id);
     using mutation_set_type = std::unordered_set<mutation, mutation_hash_by_key, mutation_equals_by_key>;
     std::unordered_map<table_id, mutation_set_type> mutations;
 

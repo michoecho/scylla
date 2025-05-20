@@ -29,7 +29,7 @@ std::string format_msg(std::string_view test_function_name, bool ok, seastar::co
 
 bool do_check(bool condition, seastar::compat::source_location sl, std::string_view msg) {
     if (condition) {
-        testlog.trace("{}", format_msg(__FUNCTION__, condition, sl, msg));
+        LOGMACRO(testlog, log_level::trace, "{}", format_msg(__FUNCTION__, condition, sl, msg));
     } else {
         testlog.error("{}", format_msg(__FUNCTION__, condition, sl, msg));
     }
@@ -38,7 +38,7 @@ bool do_check(bool condition, seastar::compat::source_location sl, std::string_v
 
 void do_require(bool condition, seastar::compat::source_location sl, std::string_view msg) {
     if (condition) {
-        testlog.trace("{}", format_msg(__FUNCTION__, condition, sl, msg));
+        LOGMACRO(testlog, log_level::trace, "{}", format_msg(__FUNCTION__, condition, sl, msg));
     } else {
         auto formatted_msg = format_msg(__FUNCTION__, condition, sl, msg);
         testlog.error("{}", formatted_msg);

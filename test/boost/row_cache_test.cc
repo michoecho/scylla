@@ -4256,10 +4256,10 @@ SEASTAR_TEST_CASE(test_eviction_of_upper_bound_of_population_range) {
                     .has_monotonic_positions();
         }
 
-        testlog.trace("Evicting");
+        LOGMACRO(testlog, log_level::trace, "Evicting");
         evict_one_row(tracker); // Evicts before(0)
         evict_one_row(tracker); // Evicts ck(2)
-        testlog.trace("Unblocking");
+        LOGMACRO(testlog, log_level::trace, "Unblocking");
 
         thr.unblock();
         f.get();
@@ -4768,7 +4768,7 @@ SEASTAR_THREAD_TEST_CASE(test_preempt_cache_update) {
 
     // Test all possible preemption points.
     for (uint64_t preempt_after = 1; true; ++preempt_after) {
-        testlog.trace("preempt after {}", preempt_after);
+        LOGMACRO(testlog, log_level::trace, "preempt after {}", preempt_after);
         auto preempt_src = custom_preemption_source{std::make_unique<preempter>(preempt_after)};
         auto& p = dynamic_cast<preempter&>(*preempt_src._impl);
 

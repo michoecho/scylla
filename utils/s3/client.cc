@@ -307,7 +307,7 @@ future<> client::make_request(http::request req, reply_handler_ext handle_ex, st
 }
 
 future<> client::get_object_header(sstring object_name, http::experimental::client::reply_handler handler, seastar::abort_source* as) {
-    s3l.trace("HEAD {}", object_name);
+    LOGMACRO(s3l, log_level::trace, "HEAD {}", object_name);
     auto req = http::request::make("HEAD", _host, object_name);
     return make_request(std::move(req), std::move(handler), http::reply::status_type::ok, as);
 }
@@ -329,7 +329,7 @@ static std::time_t parse_http_last_modified_time(const sstring& object_name, sst
     if (strptime(last_modified.c_str(), "%a, %d %b %Y %H:%M:%S %Z", &tm) == nullptr) {
         s3l.warn("Unable to parse {} as Last-Modified for {}", last_modified, object_name);
     } else {
-        s3l.trace("Successfully parsed {} as Last-modified for {}", last_modified, object_name);
+        LOGMACRO(s3l, log_level::trace, "Successfully parsed {} as Last-modified for {}", last_modified, object_name);
     }
     return std::mktime(&tm);
 }
@@ -387,7 +387,7 @@ future<tag_set> client::get_object_tagging(sstring object_name, seastar::abort_s
     // see https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObjectTagging.html
     auto req = http::request::make("GET", _host, object_name);
     req.query_parameters["tagging"] = "";
-    s3l.trace("GET {} tagging", object_name);
+    LOGMACRO(s3l, log_level::trace, "GET {} tagging", object_name);
     tag_set tags;
     co_await make_request(std::move(req),
                           [&tags] (const http::reply& reply, input_stream<char>&& in) mutable -> future<> {
@@ -410,7 +410,7 @@ future<> client::put_object_tagging(sstring object_name, tag_set tagging, seasta
     // see https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObjectTagging.html
     auto req = http::request::make("PUT", _host, object_name);
     req.query_parameters["tagging"] = "";
-    s3l.trace("PUT {} tagging", object_name);
+    LOGMACRO(s3l, log_level::trace, "PUT {} tagging", object_name);
     auto body = dump_tagging(tagging);
     size_t body_size = body.size();
     req.write_body("xml", body_size, [body=std::move(body)] (output_stream<char>&& out) -> future<> {
@@ -434,7 +434,7 @@ future<> client::delete_object_tagging(sstring object_name, seastar::abort_sourc
     // see https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObjectTagging.html
     auto req = http::request::make("DELETE", _host, object_name);
     req.query_parameters["tagging"] = "";
-    s3l.trace("DELETE {} tagging", object_name);
+    LOGMACRO(s3l, log_level::trace, "DELETE {} tagging", object_name);
     co_await make_request(std::move(req), ignore_reply, http::reply::status_type::no_content, as);
 }
 
@@ -454,11 +454,11 @@ future<temporary_buffer<char>> client::get_object_contiguous(sstring object_name
             co_return temporary_buffer<char>();
         }
         auto range_header = format_range_header(*range);
-        s3l.trace("GET {} contiguous range='{}'", object_name, range_header);
+        LOGMACRO(s3l, log_level::trace, "GET {} contiguous range='{}'", object_name, range_header);
         req._headers["Range"] = std::move(range_header);
         expected = http::reply::status_type::partial_content;
     } else {
-        s3l.trace("GET {} contiguous", object_name);
+        LOGMACRO(s3l, log_level::trace, "GET {} contiguous", object_name);
     }
 
     size_t off = 0;
@@ -467,7 +467,7 @@ future<temporary_buffer<char>> client::get_object_contiguous(sstring object_name
         auto in = std::move(in_);
         ret = temporary_buffer<char>(rep.content_length);
         off = 0;
-        s3l.trace("Consume {} bytes for {}", ret->size(), object_name);
+        LOGMACRO(s3l, log_level::trace, "Consume {} bytes for {}", ret->size(), object_name);
         co_await in.consume([&off, &ret] (temporary_buffer<char> buf) mutable {
             if (buf.empty()) {
                 return make_ready_future<consumption_result<char>>(stop_consuming(std::move(buf)));
@@ -484,12 +484,12 @@ future<temporary_buffer<char>> client::get_object_contiguous(sstring object_name
         });
     }, expected, as);
     ret->trim(off);
-    s3l.trace("Consumed {} bytes of {}", off, object_name);
+    LOGMACRO(s3l, log_level::trace, "Consumed {} bytes of {}", off, object_name);
     co_return std::move(*ret);
 }
 
 future<> client::put_object(sstring object_name, temporary_buffer<char> buf, seastar::abort_source* as) {
-    s3l.trace("PUT {}", object_name);
+    LOGMACRO(s3l, log_level::trace, "PUT {}", object_name);
     auto req = http::request::make("PUT", _host, object_name);
     auto len = buf.size();
     req.write_body("bin", len, [buf = std::move(buf)] (output_stream<char>&& out_) -> future<> {
@@ -513,7 +513,7 @@ future<> client::put_object(sstring object_name, temporary_buffer<char> buf, sea
 }
 
 future<> client::put_object(sstring object_name, ::memory_data_sink_buffers bufs, seastar::abort_source* as) {
-    s3l.trace("PUT {} (buffers)", object_name);
+    LOGMACRO(s3l, log_level::trace, "PUT {} (buffers)", object_name);
     auto req = http::request::make("PUT", _host, object_name);
     auto len = bufs.size();
     req.write_body("bin", len, [bufs = std::move(bufs)] (output_stream<char>&& out_) -> future<> {
@@ -539,7 +539,7 @@ future<> client::put_object(sstring object_name, ::memory_data_sink_buffers bufs
 }
 
 future<> client::delete_object(sstring object_name, seastar::abort_source* as) {
-    s3l.trace("DELETE {}", object_name);
+    LOGMACRO(s3l, log_level::trace, "DELETE {}", object_name);
     auto req = http::request::make("DELETE", _host, object_name);
     co_await make_request(std::move(req), ignore_reply, http::reply::status_type::no_content, as);
 }
@@ -656,7 +656,7 @@ private:
         auto req = http::request::make("PUT", _client->_host, _object_name);
         req._headers["x-amz-copy-source"] = _source_object;
         auto range = format("bytes={}-{}", offset, offset + part_size - 1);
-        s3l.trace("PUT part {}, Upload range: {}, Upload ID:", part_number, range, _upload_id);
+        LOGMACRO(s3l, log_level::trace, "PUT part {}, Upload range: {}, Upload ID:", part_number, range, _upload_id);
 
         req._headers["x-amz-copy-source-range"] = range;
         req.query_parameters.emplace("partNumber", to_sstring(part_number + 1));
@@ -672,7 +672,7 @@ private:
                 if (etag.empty()) {
                     return make_exception_future<>(std::runtime_error("Cannot parse ETag"));
                 }
-                s3l.trace("Part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
+                LOGMACRO(s3l, log_level::trace, "Part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
                 _part_etags[part_number] = std::move(etag);
                 return make_ready_future<>();
             });
@@ -781,7 +781,7 @@ future<> dump_multipart_upload_parts(output_stream<char> out, const utils::chunk
 }
 
 future<> client::multipart_upload::start_upload() {
-    s3l.trace("POST uploads {} (tag {})", _object_name, seastar::value_of([this] { return _tag ? _tag->key + "=" + _tag->value : "none"; }));
+    LOGMACRO(s3l, log_level::trace, "POST uploads {} (tag {})", _object_name, seastar::value_of([this] { return _tag ? _tag->key + "=" + _tag->value : "none"; }));
     auto rep = http::request::make("POST", _client->_host, _object_name);
     rep.query_parameters["uploads"] = "";
     if (_tag) {
@@ -794,7 +794,7 @@ future<> client::multipart_upload::start_upload() {
         if (_upload_id.empty()) {
             co_await coroutine::return_exception(std::runtime_error("cannot initiate upload"));
         }
-        s3l.trace("created uploads for {} -> id = {}", _object_name, _upload_id);
+        LOGMACRO(s3l, log_level::trace, "created uploads for {} -> id = {}", _object_name, _upload_id);
     }, http::reply::status_type::ok, _as);
 }
 
@@ -807,7 +807,7 @@ future<> client::multipart_upload::upload_part(memory_data_sink_buffers bufs) {
 
     unsigned part_number = _part_etags.size();
     _part_etags.emplace_back();
-    s3l.trace("PUT part {} {} bytes in {} buffers (upload id {})", part_number, bufs.size(), bufs.buffers().size(), _upload_id);
+    LOGMACRO(s3l, log_level::trace, "PUT part {} {} bytes in {} buffers (upload id {})", part_number, bufs.size(), bufs.buffers().size(), _upload_id);
     auto req = http::request::make("PUT", _client->_host, _object_name);
     auto size = bufs.size();
     req._headers["Content-Length"] = seastar::format("{}", size);
@@ -816,7 +816,7 @@ future<> client::multipart_upload::upload_part(memory_data_sink_buffers bufs) {
     req.write_body("bin", size, [this, part_number, bufs = std::move(bufs), p = std::move(claim)] (output_stream<char>&& out_) mutable -> future<> {
         auto out = std::move(out_);
         std::exception_ptr ex;
-        s3l.trace("upload {} part data (upload id {})", part_number, _upload_id);
+        LOGMACRO(s3l, log_level::trace, "upload {} part data (upload id {})", part_number, _upload_id);
         try {
             for (auto&& buf : bufs.buffers()) {
                 co_await out.write(buf.get(), buf.size());
@@ -847,7 +847,7 @@ future<> client::multipart_upload::upload_part(memory_data_sink_buffers bufs) {
     auto gh = _bg_flushes.hold();
     (void)_client->make_request(std::move(req), [this, size, part_number, start = s3_clock::now()] (group_client& gc, const http::reply& rep, input_stream<char>&& in_) mutable -> future<> {
         auto etag = rep.get_header("ETag");
-        s3l.trace("uploaded {} part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
+        LOGMACRO(s3l, log_level::trace, "uploaded {} part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
         _part_etags[part_number] = std::move(etag);
         gc.write_stats.update(size, s3_clock::now() - start);
         return make_ready_future<>();
@@ -858,7 +858,7 @@ future<> client::multipart_upload::upload_part(memory_data_sink_buffers bufs) {
 }
 
 future<> client::multipart_upload::abort_upload() {
-    s3l.trace("DELETE upload {}", _upload_id);
+    LOGMACRO(s3l, log_level::trace, "DELETE upload {}", _upload_id);
     auto req = http::request::make("DELETE", _client->_host, _object_name);
     req.query_parameters["uploadId"] = std::exchange(_upload_id, ""); // now upload_started() returns false
     co_await _client->make_request(std::move(req), ignore_reply, http::reply::status_type::no_content)
@@ -871,7 +871,7 @@ future<> client::multipart_upload::abort_upload() {
 }
 
 future<> client::multipart_upload::finalize_upload() {
-    s3l.trace("wait for {} parts to complete (upload id {})", _part_etags.size(), _upload_id);
+    LOGMACRO(s3l, log_level::trace, "wait for {} parts to complete (upload id {})", _part_etags.size(), _upload_id);
     co_await _bg_flushes.close();
 
     unsigned parts_xml_len = prepare_multipart_upload_parts(_part_etags);
@@ -879,7 +879,7 @@ future<> client::multipart_upload::finalize_upload() {
         co_await coroutine::return_exception(std::runtime_error("Failed to parse ETag list. Aborting multipart upload."));
     }
 
-    s3l.trace("POST upload completion {} parts (upload id {})", _part_etags.size(), _upload_id);
+    LOGMACRO(s3l, log_level::trace, "POST upload completion {} parts (upload id {})", _part_etags.size(), _upload_id);
     auto req = http::request::make("POST", _client->_host, _object_name);
     req.query_parameters["uploadId"] = _upload_id;
     req.write_body("xml", parts_xml_len, [this] (output_stream<char>&& out) -> future<> {
@@ -921,7 +921,7 @@ future<> client::upload_sink_base::close() {
         }
         co_await abort_upload();
     } else {
-        s3l.trace("closing multipart upload");
+        LOGMACRO(s3l, log_level::trace, "closing multipart upload");
     }
 }
 
@@ -955,7 +955,7 @@ public:
             // This is handy for small objects that are uploaded via the sink. It makes
             // upload happen in one REST call, instead of three (create + PUT + wrap-up)
             if (!upload_started()) {
-                s3l.trace("Sink fallback to plain PUT for {}", _object_name);
+                LOGMACRO(s3l, log_level::trace, "Sink fallback to plain PUT for {}", _object_name);
                 co_return co_await _client->put_object(_object_name, std::move(_bufs));
             }
 
@@ -984,7 +984,7 @@ future<> client::multipart_upload::upload_part(std::unique_ptr<upload_sink> piec
     auto& piece = *piece_ptr;
     unsigned part_number = _part_etags.size();
     _part_etags.emplace_back();
-    s3l.trace("PUT part {} from {} (upload id {})", part_number, piece._object_name, _upload_id);
+    LOGMACRO(s3l, log_level::trace, "PUT part {} from {} (upload id {})", part_number, piece._object_name, _upload_id);
     auto req = http::request::make("PUT", _client->_host, _object_name);
     req.query_parameters["partNumber"] = format("{}", part_number + 1);
     req.query_parameters["uploadId"] = _upload_id;
@@ -1007,7 +1007,7 @@ future<> client::multipart_upload::upload_part(std::unique_ptr<upload_sink> piec
                     if (etag.empty()) {
                         return make_exception_future<>(std::runtime_error("cannot copy part upload"));
                     }
-                    s3l.trace("copy-uploaded {} part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
+                    LOGMACRO(s3l, log_level::trace, "copy-uploaded {} part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
                     _part_etags[part_number] = std::move(etag);
                     return make_ready_future<>();
                 });
@@ -1036,7 +1036,7 @@ class client::upload_jumbo_sink final : public upload_sink_base {
         if (_current->parts_count() >= _maximum_parts_in_piece) {
             auto next = std::make_unique<upload_sink>(_client, format("{}_{}", _object_name, parts_count() + 1), piece_tag);
             co_await upload_part(std::exchange(_current, std::move(next)));
-            s3l.trace("Initiated {} piece (upload_id {})", parts_count(), _upload_id);
+            LOGMACRO(s3l, log_level::trace, "Initiated {} piece (upload_id {})", parts_count(), _upload_id);
         }
     }
 
@@ -1136,7 +1136,7 @@ data_source client::make_download_source(sstring object_name, std::optional<rang
 auto client::download_source::request_body() -> future<external_body> {
     auto req = http::request::make("GET", _client->_host, _object_name);
     auto range_header = format_range_header(_range);
-    s3l.trace("GET {} download range {}:{}", _object_name, _range.off, _range.len);
+    LOGMACRO(s3l, log_level::trace, "GET {} download range {}:{}", _object_name, _range.off, _range.len);
     req._headers["Range"] = std::move(range_header);
 
     auto bp = std::make_unique<std::optional<promise<external_body>>>(std::in_place);
@@ -1144,7 +1144,7 @@ auto client::download_source::request_body() -> future<external_body> {
     future<external_body> f = p->get_future();
 
     (void)_client->make_request(std::move(req), [this, &p] (group_client& gc, const http::reply& rep, input_stream<char>&& in_) mutable -> future<> {
-        s3l.trace("GET {} got the body ({} {} bytes)", _object_name, rep._status, rep.content_length);
+        LOGMACRO(s3l, log_level::trace, "GET {} got the body ({} {} bytes)", _object_name, rep._status, rep.content_length);
         if (rep._status != http::reply::status_type::partial_content && rep._status != http::reply::status_type::ok) {
             co_await coroutine::return_exception(httpd::unexpected_status_error(rep._status));
         }
@@ -1171,14 +1171,14 @@ future<temporary_buffer<char>> client::download_source::get() {
                 auto buf = co_await _body->b.read_up_to(_range.len);
                 _range.off += buf.size();
                 _range.len -= buf.size();
-                s3l.trace("GET {} got the {}-bytes buffer", _object_name, buf.size());
+                LOGMACRO(s3l, log_level::trace, "GET {} got the {}-bytes buffer", _object_name, buf.size());
                 if (buf.empty()) {
                     _body->done.set_value();
                     _body.reset();
                 }
                 co_return std::move(buf);
             } catch (...) {
-                s3l.trace("GET {} error reading body, completing it and re-trying", _object_name);
+                LOGMACRO(s3l, log_level::trace, "GET {} error reading body, completing it and re-trying", _object_name);
                 _body->done.set_exception(std::current_exception());
                 _body.reset();
             }
@@ -1252,7 +1252,7 @@ class client::do_upload_file : private multipart_upload {
         req._headers["Content-Length"] = to_sstring(part_size);
         req.query_parameters.emplace("partNumber", to_sstring(part_number + 1));
         req.query_parameters.emplace("uploadId", _upload_id);
-        s3l.trace("PUT part {}, {} bytes (upload id {})", part_number, part_size, _upload_id);
+        LOGMACRO(s3l, log_level::trace, "PUT part {}, {} bytes (upload id {})", part_number, part_size, _upload_id);
         req.write_body("bin", part_size, [f=std::move(f), mem_units=std::move(mem_units), offset, part_size, &progress = _progress] (output_stream<char>&& out_) {
             auto input = make_file_input_stream(f, offset, part_size, input_stream_options());
             auto output = std::move(out_);
@@ -1262,7 +1262,7 @@ class client::do_upload_file : private multipart_upload {
         auto gh = _bg_flushes.hold();
         std::ignore = _client->make_request(std::move(req), [this, part_size, part_number, start = s3_clock::now()] (group_client& gc, const http::reply& reply, input_stream<char>&& in_) mutable -> future<> {
             auto etag = reply.get_header("ETag");
-            s3l.trace("uploaded {} part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
+            LOGMACRO(s3l, log_level::trace, "uploaded {} part data -> etag = {} (upload id {})", part_number, etag, _upload_id);
             _part_etags[part_number] = std::move(etag);
             gc.write_stats.update(part_size, s3_clock::now() - start);
             return make_ready_future();
@@ -1303,7 +1303,7 @@ class client::do_upload_file : private multipart_upload {
         try {
             for (size_t offset = 0; offset < total_size; offset += part_size) {
                 part_size = std::min(total_size - offset, part_size);
-                s3l.trace("upload_part: {}~{}/{}", offset, part_size, total_size);
+                LOGMACRO(s3l, log_level::trace, "upload_part: {}~{}/{}", offset, part_size, total_size);
                 co_await upload_part(file{f}, offset, part_size);
             }
 
@@ -1322,7 +1322,7 @@ class client::do_upload_file : private multipart_upload {
 
     future<> put_object(file&& f, uint64_t len) {
         // https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
-        s3l.trace("PUT {} ({})", _object_name, _path.native());
+        LOGMACRO(s3l, log_level::trace, "PUT {} ({})", _object_name, _path.native());
         auto mem_units = co_await _client->claim_memory(_transmit_size);
 
         auto req = http::request::make("PUT", _client->_host, _object_name);
@@ -1591,7 +1591,7 @@ future<> client::bucket_lister::start_listing() {
     // https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html
     sstring continuation_token;
     do {
-        s3l.trace("GET /?list-type=2 (prefix={})", _prefix);
+        LOGMACRO(s3l, log_level::trace, "GET /?list-type=2 (prefix={})", _prefix);
         auto req = http::request::make("GET", _client->_host, format("/{}", _bucket));
         req.query_parameters.emplace("list-type", "2");
         req.query_parameters.emplace("max-keys", _max_keys);

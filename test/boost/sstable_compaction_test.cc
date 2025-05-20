@@ -2303,7 +2303,7 @@ static void verify_fragments(std::vector<sstables::shared_sstable> ssts, reader_
 
     auto r = assert_that(make_combined_reader(schema, permit, std::move(readers)));
     for (const auto& mf : mfs) {
-        testlog.trace("Expecting {}", mutation_fragment_v2::printer(*schema, mf));
+        LOGMACRO(testlog, log_level::trace, "Expecting {}", mutation_fragment_v2::printer(*schema, mf));
         r.produces(*schema, mf);
     }
     r.produces_end_of_stream();
@@ -2886,7 +2886,7 @@ SEASTAR_TEST_CASE(sstable_validate_test) {
         uint64_t& count;
         void operator()(sstring what) {
             ++count;
-            testlog.trace("validation error: ", what);
+            LOGMACRO(testlog, log_level::trace, "validation error: ", what);
         }
     };
 
@@ -3174,7 +3174,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
         auto dk = ss.make_pkey(tests::random::get_int<uint32_t>(0, 8));
         auto it = expected_partitions.find(dk);
 
-        testlog.trace("Generating data for {} partition {}", it == expected_partitions.end() ? "new" : "existing", dk);
+        LOGMACRO(testlog, log_level::trace, "Generating data for {} partition {}", it == expected_partitions.end() ? "new" : "existing", dk);
 
         if (it == expected_partitions.end()) {
             auto [inserted_it, _] = expected_partitions.emplace(dk, expected_rows_type(*schema));
@@ -3189,12 +3189,12 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
             const auto is_clustering_row = tests::random::get_int<unsigned>(0, 8);
             if (is_clustering_row) {
                 auto ck = ss.make_ckey(tests::random::get_int<uint32_t>(0, 8));
-                testlog.trace("Generating clustering row {}", ck);
+                LOGMACRO(testlog, log_level::trace, "Generating clustering row {}", ck);
 
                 all_fragments.emplace_back(*schema, permit, ss.make_row_v2(permit, ck, "cv"));
                 expected_rows.clustering_rows.insert(ck);
             } else {
-                testlog.trace("Generating static row");
+                LOGMACRO(testlog, log_level::trace, "Generating static row");
 
                 all_fragments.emplace_back(*schema, permit, ss.make_static_row_v2(permit, "sv"));
                 expected_rows.has_static_row = true;
@@ -3203,15 +3203,15 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
 
         const auto partition_end_roll = tests::random::get_int(0, 100);
         if (partition_end_roll < 80) {
-            testlog.trace("Generating partition end");
+            LOGMACRO(testlog, log_level::trace, "Generating partition end");
             all_fragments.emplace_back(*schema, permit, partition_end());
         } else if (partition_end_roll < 90) {
-            testlog.trace("Generating double partition end");
+            LOGMACRO(testlog, log_level::trace, "Generating double partition end");
             ++double_partition_end;
             all_fragments.emplace_back(*schema, permit, partition_end());
             all_fragments.emplace_back(*schema, permit, partition_end());
         } else {
-            testlog.trace("Not generating partition end");
+            LOGMACRO(testlog, log_level::trace, "Not generating partition end");
             ++missing_partition_end;
         }
     }

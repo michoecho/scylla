@@ -53,7 +53,7 @@ future<semaphore_units<named_semaphore::exception_factory>> resource_manager::ge
     size_t hint_memory_budget = std::max(min_send_hint_budget, buf_size);
     // Allow a very big mutation to be sent out by consuming the whole shard budget
     hint_memory_budget = std::min(hint_memory_budget, _max_send_in_flight_memory);
-    resource_manager_logger.trace("memory budget: need {} have {}", hint_memory_budget, _send_limiter.available_units());
+    LOGMACRO(resource_manager_logger, log_level::trace, "memory budget: need {} have {}", hint_memory_budget, _send_limiter.available_units());
     return get_units(_send_limiter, hint_memory_budget);
 }
 
@@ -76,7 +76,7 @@ void space_watchdog::start() {
                 const auto units = get_units(_update_lock, 1).get();
                 on_timer();
             } catch (...) {
-                resource_manager_logger.trace("space_watchdog: unexpected exception - stop all hints generators");
+                LOGMACRO(resource_manager_logger, log_level::trace, "space_watchdog: unexpected exception - stop all hints generators");
                 // Stop all hint generators if space_watchdog callback failed
                 for (manager& shard_manager : _shard_managers) {
                     shard_manager.forbid_hints();
@@ -180,7 +180,7 @@ void space_watchdog::on_timer() {
                 //         nor a host ID.
                 else {
                     // We use trace here to prevent flooding logs with unnecessary information.
-                    resource_manager_logger.trace("Encountered a hint directory of invalid name while scanning: {}", de.name);
+                    LOGMACRO(resource_manager_logger, log_level::trace, "Encountered a hint directory of invalid name while scanning: {}", de.name);
                     return scan_one_ep_dir(dir / de.name, shard_manager, {});
                 }
             }).get();
@@ -195,7 +195,7 @@ void space_watchdog::on_timer() {
             adjusted_quota = per_device_limits.max_shard_disk_space_size - delta;
         }
 
-        resource_manager_logger.trace("space_watchdog: consuming {}/{} bytes", _total_size, adjusted_quota);
+        LOGMACRO(resource_manager_logger, log_level::trace, "space_watchdog: consuming {}/{} bytes", _total_size, adjusted_quota);
         for (manager& shard_manager : per_device_limits.managers) {
             shard_manager.update_backlog(_total_size, adjusted_quota);
         }

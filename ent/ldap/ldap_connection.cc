@@ -62,12 +62,12 @@ void throw_if_failed(int status, const char* op, const ldap_connection& conn, in
 std::mutex ldap_connection::_global_init_mutex;
 
 void ldap_connection::ldap_deleter::operator()(LDAP* ld) {
-    mylog.trace("ldap_deleter: invoking unbind");
+    LOGMACRO(mylog, log_level::trace, "ldap_deleter: invoking unbind");
     int status = ldap_unbind(ld);
     if (status != LDAP_SUCCESS) {
         mylog.error("ldap_unbind failed with status {}", status);
     }
-    mylog.trace("ldap_deleter done");
+    LOGMACRO(mylog, log_level::trace, "ldap_deleter done");
 }
 
 ldap_connection::ldap_connection(seastar::connected_socket&& socket) :
@@ -95,7 +95,7 @@ ldap_connection::ldap_connection(seastar::connected_socket&& socket) :
     // NB: libldap never actually reads or writes directly to _fd.  It reads and writes through the
     // custom Sockbuf_IO we provide it.
     static constexpr int LDAP_PROTO_EXT = 4; // From ldap_pvt.h, which isn't always available.
-    mylog.trace("constructor invoking ldap_init");
+    LOGMACRO(mylog, log_level::trace, "constructor invoking ldap_init");
     LDAP* init_result;
     {
         std::lock_guard<std::mutex> global_init_lock{_global_init_mutex};
@@ -122,12 +122,12 @@ ldap_connection::ldap_connection(seastar::connected_socket&& socket) :
 
     Sockbuf* sb;
     throw_if_failed(ldap_get_option(_ldap.get(), LDAP_OPT_SOCKBUF, &sb), "ldap_get_option", *this, LDAP_OPT_SUCCESS);
-    mylog.trace("constructor adding Sockbuf_IO");
+    LOGMACRO(mylog, log_level::trace, "constructor adding Sockbuf_IO");
     throw_if_failed(
             ber_sockbuf_add_io(sb, const_cast<Sockbuf_IO*>(&seastar_sbio), LBER_SBIOD_LEVEL_PROVIDER, this),
             "ber_sockbuf_add_io",
             *this);
-    mylog.trace("constructor done");
+    LOGMACRO(mylog, log_level::trace, "constructor done");
 }
 
 future<> ldap_connection::close() {
@@ -152,7 +152,7 @@ future<> ldap_connection::close() {
 }
 
 future<ldap_msg_ptr> ldap_connection::await_result(int msgid) {
-    mylog.trace("await_result({})", msgid);
+    LOGMACRO(mylog, log_level::trace, "await_result({})", msgid);
 
     if (_status != status::up) {
         mylog.error("await_result({}) error: connection is not up", msgid);
@@ -172,19 +172,19 @@ future<ldap_msg_ptr> ldap_connection::await_result(int msgid) {
 }
 
 future<ldap_msg_ptr> ldap_connection::await_result(int status, int msgid) {
-    mylog.trace("await_result({}, {})", status, msgid);
+    LOGMACRO(mylog, log_level::trace, "await_result({}, {})", status, msgid);
     if (status == LDAP_SUCCESS) {
         return await_result(msgid);
     } else {
         const char* err = ldap_err2string(status);
-        mylog.trace("await_result({}, {}) reporting error {}", status, msgid, err);
+        LOGMACRO(mylog, log_level::trace, "await_result({}, {}) reporting error {}", status, msgid, err);
         return make_exception_future<ldap_msg_ptr>(
                 std::runtime_error(fmt::format("ldap operation error: {}", err)));
     }
 }
 
 future<ldap_msg_ptr> ldap_connection::simple_bind(const char *who, const char *passwd) {
-    mylog.trace("simple_bind({})", who);
+    LOGMACRO(mylog, log_level::trace, "simple_bind({})", who);
     if (_status != status::up) {
         mylog.error("simple_bind({}) punting, connection down", who);
         return make_exception_future<ldap_msg_ptr>(
@@ -197,7 +197,7 @@ future<ldap_msg_ptr> ldap_connection::simple_bind(const char *who, const char *p
         return make_exception_future<ldap_msg_ptr>(
                 std::runtime_error(fmt::format("ldap simple bind error: {}", err)));
     } else {
-        mylog.trace("simple_bind: msgid {}", msgid);
+        LOGMACRO(mylog, log_level::trace, "simple_bind: msgid {}", msgid);
         return await_result(msgid);
     }
 }
@@ -212,7 +212,7 @@ future<ldap_msg_ptr> ldap_connection::search(
         LDAPControl **clientctrls,
         struct timeval *timeout,
         int sizelimit) {
-    mylog.trace("search");
+    LOGMACRO(mylog, log_level::trace, "search");
     int msgid;
     if (_status != status::up) {
         mylog.error("search punting, connection down");
@@ -253,7 +253,7 @@ int ldap_connection::sbi_ctrl(Sockbuf_IO_Desc* sid, int opt, void* arg) noexcept
 }
 
 ber_slen_t ldap_connection::sbi_read(Sockbuf_IO_Desc* sid, void* buffer, ber_len_t size) noexcept {
-    mylog.trace("sbi_read {}/{}", static_cast<const void*>(sid), static_cast<const void*>(sid->sbiod_pvt));
+    LOGMACRO(mylog, log_level::trace, "sbi_read {}/{}", static_cast<const void*>(sid), static_cast<const void*>(sid->sbiod_pvt));
     try {
         return connection(sid)->read(reinterpret_cast<char*>(buffer), size);
     } catch (...) {
@@ -263,7 +263,7 @@ ber_slen_t ldap_connection::sbi_read(Sockbuf_IO_Desc* sid, void* buffer, ber_len
 }
 
 ber_slen_t ldap_connection::sbi_write(Sockbuf_IO_Desc* sid, void* buffer, ber_len_t size) noexcept {
-    mylog.trace("sbi_write {}/{}", static_cast<const void*>(sid), static_cast<const void*>(sid->sbiod_pvt));
+    LOGMACRO(mylog, log_level::trace, "sbi_write {}/{}", static_cast<const void*>(sid), static_cast<const void*>(sid->sbiod_pvt));
     try {
         return connection(sid)->write(reinterpret_cast<const char*>(buffer), size);
     } catch (...) {
@@ -301,16 +301,16 @@ void ldap_connection::read_ahead() {
         set_status(status::eof);
         return;
     }
-    mylog.trace("read_ahead");
+    LOGMACRO(mylog, log_level::trace, "read_ahead");
     _read_in_progress = true;
-    mylog.trace("read_ahead invoking socket read");
+    LOGMACRO(mylog, log_level::trace, "read_ahead invoking socket read");
     _read_consumer = _input_stream.read().then([this] (temporary_buffer<char> b) {
         if (b.empty()) {
             mylog.debug("read_ahead received empty buffer; assuming EOF");
             set_status(status::eof);
             return;
         }
-        mylog.trace("read_ahead received data of size {}", b.size());
+        LOGMACRO(mylog, log_level::trace, "read_ahead received data of size {}", b.size());
         if (!_read_buffer.empty()) { // Shouldn't happen; read_ahead's purpose is to replenish empty _read_buffer.
             mylog.error("read_ahead dropping {} unconsumed bytes", _read_buffer.size());
         }
@@ -321,18 +321,18 @@ void ldap_connection::read_ahead() {
         mylog.error("Seastar read failed: {}", ep);
         set_status(status::err);
     });
-    mylog.trace("read_ahead done");
+    LOGMACRO(mylog, log_level::trace, "read_ahead done");
 }
 
 ber_slen_t ldap_connection::write(char const* b, ber_len_t size) {
-    mylog.trace("write({})", size);
+    LOGMACRO(mylog, log_level::trace, "write({})", size);
     switch (_status) {
     case status::err:
-        mylog.trace("write({}) reporting error", size);
+        LOGMACRO(mylog, log_level::trace, "write({}) reporting error", size);
         errno = ECONNRESET;
         return -1;
     case status::down:
-        mylog.trace("write({}) invoked after shutdown", size);
+        LOGMACRO(mylog, log_level::trace, "write({}) invoked after shutdown", size);
         errno = ENOTCONN;
         return -1;
     case status::up:
@@ -343,40 +343,40 @@ ber_slen_t ldap_connection::write(char const* b, ber_len_t size) {
         if (_status != status::up) {
             return make_ready_future<>();
         }
-        mylog.trace("write invoking socket write");
+        LOGMACRO(mylog, log_level::trace, "write invoking socket write");
         return _output_stream.write(std::move(buf)).then([this] {
             // Sockbuf_IO doesn't seem to have the notion of flushing the stream, so we flush after
             // every write.
-            mylog.trace("write invoking flush");
+            LOGMACRO(mylog, log_level::trace, "write invoking flush");
             return _output_stream.flush();
         }).handle_exception([this] (std::exception_ptr ep) {
             mylog.error("Seastar write failed: {}", ep);
             set_status(status::err);
         });
     });
-    mylog.trace("write({}) done, status={}", size, _status);
+    LOGMACRO(mylog, log_level::trace, "write({}) done, status={}", size, _status);
     return _status == status::up ? size : -1; // _status can be err here if _outstanding_write threw.
 }
 
 ber_slen_t ldap_connection::read(char* b, ber_len_t size) {
-    mylog.trace("read({})", size);
+    LOGMACRO(mylog, log_level::trace, "read({})", size);
     switch (_status) {
     case status::eof:
-        mylog.trace("read({}) reporting eof", size);
+        LOGMACRO(mylog, log_level::trace, "read({}) reporting eof", size);
         return 0;
     case status::err:
-        mylog.trace("read({}) reporting error", size);
+        LOGMACRO(mylog, log_level::trace, "read({}) reporting error", size);
         errno = ECONNRESET;
         return -1;
     case status::down:
-        mylog.trace("read({}) invoked after shutdown", size);
+        LOGMACRO(mylog, log_level::trace, "read({}) invoked after shutdown", size);
         errno = ENOTCONN;
         return -1;
     case status::up:
         ; // Proceed.
     }
     if (_read_buffer.empty()) { // Can happen because libldap doesn't always wait for data to be ready.
-        mylog.trace("read({}) found empty read buffer", size);
+        LOGMACRO(mylog, log_level::trace, "read({}) found empty read buffer", size);
         // Don't invoke read_ahead() here; it was already invoked as soon as _read_buffer was
         // drained.  In fact, its Seastar read might have actually completed, and the buffer is
         // about to be filled by a waiting continuation.  We DON'T want another read_ahead() before
@@ -388,25 +388,25 @@ ber_slen_t ldap_connection::read(char* b, ber_len_t size) {
     std::copy_n(_read_buffer.begin(), byte_count, b);
     _read_buffer.trim_front(byte_count);
     if (_read_buffer.empty()) {
-        mylog.trace("read({}) replenishing buffer", size);
+        LOGMACRO(mylog, log_level::trace, "read({}) replenishing buffer", size);
         read_ahead();
     }
-    mylog.trace("read({}) returning {}", size, byte_count);
+    LOGMACRO(mylog, log_level::trace, "read({}) returning {}", size, byte_count);
     return byte_count;
 }
 
 void ldap_connection::shutdown()  {
-    mylog.trace("shutdown");
+    LOGMACRO(mylog, log_level::trace, "shutdown");
     set_status(status::down);
-    mylog.trace("shutdown: shutdown input");
+    LOGMACRO(mylog, log_level::trace, "shutdown: shutdown input");
     _socket.shutdown_input();
-    mylog.trace("shutdown: shutdown output");
+    LOGMACRO(mylog, log_level::trace, "shutdown: shutdown output");
     _socket.shutdown_output();
-    mylog.trace("shutdown done");
+    LOGMACRO(mylog, log_level::trace, "shutdown done");
 }
 
 void ldap_connection::poll_results() {
-    mylog.trace("poll_results");
+    LOGMACRO(mylog, log_level::trace, "poll_results");
     if (!_ldap) { // Could happen during close(), which unbinds.
         mylog.debug("poll_results: _ldap is null, punting");
         return;
@@ -428,12 +428,12 @@ void ldap_connection::poll_results() {
     LDAPMessage *result;
     while (!_read_buffer.empty() && _status == status::up) {
         static timeval zero_duration{};
-        mylog.trace("poll_results: {} in buffer, invoking ldap_result", _read_buffer.size());
+        LOGMACRO(mylog, log_level::trace, "poll_results: {} in buffer, invoking ldap_result", _read_buffer.size());
         const int status = ldap_result(get_ldap(), LDAP_RES_ANY, /*all=*/1, &zero_duration, &result);
         if (status > 0) {
             ldap_msg_ptr result_ptr(result);
             const int id = ldap_msgid(result);
-            mylog.trace("poll_results: ldap_result returned status {}, id {}", status, id);
+            LOGMACRO(mylog, log_level::trace, "poll_results: ldap_result returned status {}, id {}", status, id);
             const auto found = _msgid_to_promise.find(id);
             if (found == _msgid_to_promise.end()) {
                 mylog.error("poll_results: got valid result for unregistered id {}, dropping it", id);
@@ -447,13 +447,13 @@ void ldap_connection::poll_results() {
             set_status(status::err);
         }
     }
-    mylog.trace("poll_results done");
+    LOGMACRO(mylog, log_level::trace, "poll_results done");
 }
 
 void ldap_connection::set_status(ldap_connection::status s) {
     _status = s;
     if (s != status::up) {
-        mylog.trace("set_status: signal result-waiting futures");
+        LOGMACRO(mylog, log_level::trace, "set_status: signal result-waiting futures");
         for (auto& e : _msgid_to_promise) {
             e.second.set_exception(std::runtime_error("ldap_connection status set to error"));
         }

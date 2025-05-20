@@ -159,7 +159,7 @@ void execute_reads(const schema_ptr& schema, reader_concurrency_semaphore& sem, 
             }).handle_exception([&e, &sem, initial_res] (std::exception_ptr eptr) {
                 const auto res = sem.available_resources();
                 testlog.error("Read failed: {}", eptr);
-                testlog.trace("Reads remaining: count: {}/{}, memory: {}/{}, waiters: {}", (initial_res.count - res.count), initial_res.count,
+                LOGMACRO(testlog, log_level::trace, "Reads remaining: count: {}/{}, memory: {}/{}, waiters: {}", (initial_res.count - res.count), initial_res.count,
                         (initial_res.memory - res.memory), initial_res.memory, sem.get_stats().waiters);
                 e = std::move(eptr);
             });
@@ -169,11 +169,11 @@ void execute_reads(const schema_ptr& schema, reader_concurrency_semaphore& sem, 
         }
 
         const auto res = sem.available_resources();
-        testlog.trace("Initiated reads: {}/{}, count: {}/{}, memory: {}/{}, waiters: {}", n, reads, (initial_res.count - res.count), initial_res.count,
+        LOGMACRO(testlog, log_level::trace, "Initiated reads: {}/{}, count: {}/{}, memory: {}/{}, waiters: {}", n, reads, (initial_res.count - res.count), initial_res.count,
                 (initial_res.memory - res.memory), initial_res.memory, sem.get_stats().waiters);
 
         if (sem.get_stats().waiters) {
-            testlog.trace("Waiting for queue to drain");
+            LOGMACRO(testlog, log_level::trace, "Waiting for queue to drain");
             sem.obtain_permit(schema, "drain", 1, db::no_timeout, {}).get();
         }
     }

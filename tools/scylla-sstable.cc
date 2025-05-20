@@ -399,7 +399,7 @@ public:
         return _last_kind;
     }
     future<stop_iteration> operator()(mutation_fragment_v2&& mf) {
-        sst_log.trace("consume {}", mf.mutation_fragment_kind());
+        LOGMACRO(sst_log, log_level::trace, "consume {}", mf.mutation_fragment_kind());
         if (mf.is_partition_start() && _filter && !_filter(mf.as_partition_start().key())) {
             return make_ready_future<stop_iteration>(stop_iteration::yes);
         }
@@ -835,7 +835,7 @@ stop_iteration consume_reader(mutation_reader rd, sstable_consumer& consumer, ss
     if (!partitions.empty()) {
         filter = [&] (const dht::decorated_key& key) {
             const auto pass = partitions.contains(key);
-            sst_log.trace("filter({})={}", key, pass);
+            LOGMACRO(sst_log, log_level::trace, "filter({})={}", key, pass);
             skip_partition = !pass;
             return pass;
         };
@@ -844,14 +844,14 @@ stop_iteration consume_reader(mutation_reader rd, sstable_consumer& consumer, ss
     while (!rd.is_end_of_stream()) {
         skip_partition = false;
         rd.consume_pausable(std::ref(wrapper)).get();
-        sst_log.trace("consumer paused, skip_partition={}", skip_partition);
+        LOGMACRO(sst_log, log_level::trace, "consumer paused, skip_partition={}", skip_partition);
         if (!rd.is_end_of_stream() && !skip_partition) {
             if (wrapper.last_kind() == mutation_fragment_v2::kind::partition_end) {
-                sst_log.trace("consumer returned stop_iteration::yes for partition end, stopping");
+                LOGMACRO(sst_log, log_level::trace, "consumer returned stop_iteration::yes for partition end, stopping");
                 break;
             }
             if (wrapper(mutation_fragment_v2(*rd.schema(), rd.permit(), partition_end{})).get() == stop_iteration::yes) {
-                sst_log.trace("consumer returned stop_iteration::yes for synthetic partition end, stopping");
+                LOGMACRO(sst_log, log_level::trace, "consumer returned stop_iteration::yes for synthetic partition end, stopping");
                 break;
             }
             skip_partition = true;
@@ -870,7 +870,7 @@ stop_iteration consume_reader(mutation_reader rd, sstable_consumer& consumer, ss
 
 void consume_sstables(schema_ptr schema, reader_permit permit, std::vector<sstables::shared_sstable> sstables, bool merge, bool use_full_scan_reader,
         std::function<stop_iteration(mutation_reader&, sstables::sstable*)> reader_consumer) {
-    sst_log.trace("consume_sstables(): {} sstables, merge={}, use_full_scan_reader={}", sstables.size(), merge, use_full_scan_reader);
+    LOGMACRO(sst_log, log_level::trace, "consume_sstables(): {} sstables, merge={}, use_full_scan_reader={}", sstables.size(), merge, use_full_scan_reader);
     if (merge) {
         std::vector<mutation_reader> readers;
         readers.reserve(sstables.size());
@@ -1884,13 +1884,13 @@ class json_mutation_stream_parser {
         template<typename... Args>
         bool error(fmt::format_string<Args...> fmt, Args&&... args) {
             auto parse_error = fmt::format(fmt, std::forward<Args>(args)...);
-            sst_log.trace("{}", parse_error);
+            LOGMACRO(sst_log, log_level::trace, "{}", parse_error);
             _queue.abort(std::make_exception_ptr(std::runtime_error(parse_error)));
             return false;
         }
 
         bool emit(mutation_fragment_v2 mf) {
-            sst_log.trace("emit({})", mf.mutation_fragment_kind());
+            LOGMACRO(sst_log, log_level::trace, "emit({})", mf.mutation_fragment_kind());
             _queue.push_eventually(std::move(mf)).get();
             return true;
         }
@@ -2104,7 +2104,7 @@ class json_mutation_stream_parser {
             std::optional<state> next_state;
         };
         retire_state_result handle_retire_state() {
-            sst_log.trace("handle_retire_state(): stack={}", stack_to_string());
+            LOGMACRO(sst_log, log_level::trace, "handle_retire_state(): stack={}", stack_to_string());
             retire_state_result ret;
             switch (top()) {
                 case state::before_partition:
@@ -2245,13 +2245,13 @@ class json_mutation_stream_parser {
             return _state_stack[i];
         }
         bool push(state s) {
-            sst_log.trace("push({})", to_string(s));
+            LOGMACRO(sst_log, log_level::trace, "push({})", to_string(s));
             _state_stack.push_front(s);
             return true;
         }
         bool pop() {
             auto res = handle_retire_state();
-            sst_log.trace("pop({})", res.ok ? res.pop_states : 0);
+            LOGMACRO(sst_log, log_level::trace, "pop({})", res.ok ? res.pop_states : 0);
             if (!res.ok) {
                 return false;
             }
@@ -2279,7 +2279,7 @@ class json_mutation_stream_parser {
         }
         handler(handler&&) = default;
         bool Null() {
-            sst_log.trace("Null()");
+            LOGMACRO(sst_log, log_level::trace, "Null()");
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2289,7 +2289,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool Bool(bool b) {
-            sst_log.trace("Bool({})", b);
+            LOGMACRO(sst_log, log_level::trace, "Bool({})", b);
             switch (top()) {
                 case state::before_bool:
                     _bool.emplace(b);
@@ -2300,7 +2300,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool Int(int i) {
-            sst_log.trace("Int({})", i);
+            LOGMACRO(sst_log, log_level::trace, "Int({})", i);
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2313,7 +2313,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool Uint(unsigned i) {
-            sst_log.trace("Uint({})", i);
+            LOGMACRO(sst_log, log_level::trace, "Uint({})", i);
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2326,7 +2326,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool Int64(int64_t i) {
-            sst_log.trace("Int64({})", i);
+            LOGMACRO(sst_log, log_level::trace, "Int64({})", i);
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2339,7 +2339,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool Uint64(uint64_t i) {
-            sst_log.trace("Uint64({})", i);
+            LOGMACRO(sst_log, log_level::trace, "Uint64({})", i);
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2352,7 +2352,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool Double(double d) {
-            sst_log.trace("Double({})", d);
+            LOGMACRO(sst_log, log_level::trace, "Double({})", d);
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2362,11 +2362,11 @@ class json_mutation_stream_parser {
             return true;
         }
         bool RawNumber(const Ch* str, rapidjson::SizeType length, bool copy) {
-            sst_log.trace("RawNumber({})", std::string_view(str, length));
+            LOGMACRO(sst_log, log_level::trace, "RawNumber({})", std::string_view(str, length));
             return unexpected();
         }
         bool String(const Ch* str, rapidjson::SizeType length, bool copy) {
-            sst_log.trace("String({})", std::string_view(str, length));
+            LOGMACRO(sst_log, log_level::trace, "String({})", std::string_view(str, length));
             switch (top()) {
                 case state::before_ignored_value:
                     return pop();
@@ -2379,7 +2379,7 @@ class json_mutation_stream_parser {
             return true;
         }
         bool StartObject() {
-            sst_log.trace("StartObject()");
+            LOGMACRO(sst_log, log_level::trace, "StartObject()");
             switch (top()) {
                 case state::before_partition:
                     return push(state::in_partition);
@@ -2406,7 +2406,7 @@ class json_mutation_stream_parser {
         }
         bool Key(const Ch* str, rapidjson::SizeType length, bool copy) {
             _key = std::string(str, length);
-            sst_log.trace("Key({})", _key);
+            LOGMACRO(sst_log, log_level::trace, "Key({})", _key);
             switch (top()) {
                 case state::in_partition:
                     if (_key == "key") {
@@ -2515,7 +2515,7 @@ class json_mutation_stream_parser {
             }
         }
         bool EndObject(rapidjson::SizeType memberCount) {
-            sst_log.trace("EndObject()");
+            LOGMACRO(sst_log, log_level::trace, "EndObject()");
             switch (top()) {
                 case state::in_partition:
                 case state::in_key:
@@ -2531,7 +2531,7 @@ class json_mutation_stream_parser {
             }
         }
         bool StartArray() {
-            sst_log.trace("StartArray()");
+            LOGMACRO(sst_log, log_level::trace, "StartArray()");
             switch (top()) {
                 case state::start:
                     return push(state::before_partition);
@@ -2542,7 +2542,7 @@ class json_mutation_stream_parser {
             }
         }
         bool EndArray(rapidjson::SizeType elementCount) {
-            sst_log.trace("EndArray({})", elementCount);
+            LOGMACRO(sst_log, log_level::trace, "EndArray({})", elementCount);
             switch (top()) {
                 case state::before_clustering_element:
                 case state::before_partition:
@@ -3553,7 +3553,7 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
                     schema_with_source->source,
                     schema_with_source->path ? seastar::format(" ({})", schema_with_source->path->native()) : "",
                     schema_with_source->obtained_from);
-            sst_log.trace("Loaded schema: {}", schema);
+            LOGMACRO(sst_log, log_level::trace, "Loaded schema: {}", schema);
         } else {
             return 1;
         }

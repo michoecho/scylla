@@ -580,11 +580,11 @@ future<rjson::value> encryption::gcp_host::impl::send_request(std::string_view u
     rjson::value v;
     co_await send_request(uri, std::move(body), content_type, [&](const http::reply& rep, std::string_view s) {
         if (rep._status != http::reply::status_type::ok) {
-            gcp_log.trace("Got unexpected response ({})", rep._status);
+            LOGMACRO(gcp_log, log_level::trace, "Got unexpected response ({})", rep._status);
             for (auto& [k, v] : rep._headers) {
-                gcp_log.trace("{}: {}", k, v);
+                LOGMACRO(gcp_log, log_level::trace, "{}: {}", k, v);
             }
-            gcp_log.trace("{}", s);
+            LOGMACRO(gcp_log, log_level::trace, "{}", s);
             throw httpd::unexpected_status_error(rep._status);
         }
         v = rjson::parse(s); 
@@ -646,10 +646,10 @@ future<> encryption::gcp_host::impl::send_request(std::string_view uri, std::str
         client.add_header(httpclient::CONTENT_TYPE_HEADER, content_type);
     }
 
-    gcp_log.trace("Sending {} request to {} ({}): {}", content_type, uri, headers, body);
+    LOGMACRO(gcp_log, log_level::trace, "Sending {} request to {} ({}): {}", content_type, uri, headers, body);
 
     co_await client.send([&] (const http::reply& rep, std::string_view result) {
-        gcp_log.trace("Got response {}: {}", int(rep._status), result);
+        LOGMACRO(gcp_log, log_level::trace, "Got response {}: {}", int(rep._status), result);
         handler(rep, result);
     });
 }
@@ -758,7 +758,7 @@ future<rjson::value> encryption::gcp_host::impl::gcp_auth_post_with_retry(std::s
                 : co_await get_default_credentials()
                 ;
             if (!src.gcp_credentials_file.empty()) {
-                gcp_log.trace("Loaded credentials from {}", src.gcp_credentials_file);
+                LOGMACRO(gcp_log, log_level::trace, "Loaded credentials from {}", src.gcp_credentials_file);
             }
             if (!src.gcp_impersonate_service_account.empty()) {
                 c = google_credentials(impersonated_service_account_credentials(src.gcp_impersonate_service_account, std::move(c)));
@@ -906,7 +906,7 @@ future<encryption::gcp_host::impl::key_and_id_type> encryption::gcp_host::impl::
     auto sid = fmt::format("{}/{}:{}", keyring, keyname, cipher);
     bytes id(sid.begin(), sid.end());
 
-    gcp_log.trace("Created key id {}", sid);
+    LOGMACRO(gcp_log, log_level::trace, "Created key id {}", sid);
 
     co_return key_and_id_type{ key, id };
 }

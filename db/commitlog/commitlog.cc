@@ -417,7 +417,7 @@ public:
         ++totals.pending_flushes;
         if (totals.pending_flushes >= cfg.max_active_flushes) {
             ++totals.flush_limit_exceeded;
-            clogger.trace("Flush ops overflow: {}. Will block.", totals.pending_flushes);
+            LOGMACRO(clogger, log_level::trace, "Flush ops overflow: {}. Will block.", totals.pending_flushes);
         }
         return _flush_semaphore.wait();
     }
@@ -427,7 +427,7 @@ public:
     }
     segment_manager(config c);
     ~segment_manager() {
-        clogger.trace("Commitlog {} disposed", cfg.commit_log_location);
+        LOGMACRO(clogger, log_level::trace, "Commitlog {} disposed", cfg.commit_log_location);
     }
 
     void update_configuration(const config&);
@@ -950,7 +950,7 @@ public:
         SCYLLA_ASSERT(me.use_count() > 1);
         uint64_t pos = _file_pos;
 
-        clogger.trace("Syncing {} {} -> {}", *this, _flush_pos, pos);
+        LOGMACRO(clogger, log_level::trace, "Syncing {} {} -> {}", *this, _flush_pos, pos);
 
         // Only run the flush when all write ops at lower rp:s
         // have completed.
@@ -971,7 +971,7 @@ public:
             // we should only get here when all actual data is 
             // already flushed (see below, close()).
             if (file_position() < _segment_manager->max_size) {
-                clogger.trace("{} is closed but not terminated.", *this);
+                LOGMACRO(clogger, log_level::trace, "{} is closed but not terminated.", *this);
                 if (_buffer.empty()) {
                     new_buffer(0);
                 }
@@ -1001,7 +1001,7 @@ public:
         });
 
         if (pos <= _flush_pos) {
-            clogger.trace("{} already synced! ({} < {})", *this, pos, _flush_pos);
+            LOGMACRO(clogger, log_level::trace, "{} already synced! ({} < {})", *this, pos, _flush_pos);
             co_return me;
         }
 
@@ -1011,7 +1011,7 @@ public:
             // we fast-fail the whole commit.
             _flush_pos = std::max(pos, _flush_pos);
             ++_segment_manager->totals.flush_count;
-            clogger.trace("{} synced to {}", *this, _flush_pos);
+            LOGMACRO(clogger, log_level::trace, "{} synced to {}", *this, _flush_pos);
         } catch (...) {
             clogger.error("Failed to flush commits to disk: {}", std::current_exception());
             throw;
@@ -1120,11 +1120,11 @@ public:
 
             forget_schema_versions();
 
-            clogger.trace("Writing {} entries, {} k in {} -> {}", num, size, off, off + size);
+            LOGMACRO(clogger, log_level::trace, "Writing {} entries, {} k in {} -> {}", num, size, off, off + size);
         } else {
             SCYLLA_ASSERT(num == 0);
             SCYLLA_ASSERT(_closed);
-            clogger.trace("Terminating {} at pos {}", *this, _file_pos);
+            LOGMACRO(clogger, log_level::trace, "Terminating {} at pos {}", *this, _file_pos);
             write(out, uint64_t(0));
         }
 
@@ -1191,7 +1191,7 @@ public:
                     _segment_manager->totals.active_size_on_disk += bytes;
                     ++_segment_manager->totals.cycle_count;
                     if (bytes == view.size_bytes()) {
-                        clogger.trace("Final write of {} to {}: {}/{} bytes at {}", bytes, *this, size, size, off);
+                        LOGMACRO(clogger, log_level::trace, "Final write of {} to {}: {}/{} bytes at {}", bytes, *this, size, size, off);
                         break;
                     }
                     // gah, partial write. should always get here with dma chunk sized
@@ -1199,7 +1199,7 @@ public:
                     bytes = align_down(bytes, _alignment);
                     off += bytes;
                     view.remove_prefix(bytes);
-                    clogger.trace("Partial write of {} to {}: {}/{} bytes at at {}", bytes, *this, size - view.size_bytes(), size, off - bytes);
+                    LOGMACRO(clogger, log_level::trace, "Partial write of {} to {}: {}/{} bytes at at {}", bytes, *this, size - view.size_bytes(), size, off - bytes);
                     continue;
                     // TODO: retry/ignore/fail/stop - optional behaviour in origin.
                     // we fast-fail the whole commit.
@@ -1428,7 +1428,7 @@ public:
     }
 
     void reset_file_position(size_t file_pos) {
-        clogger.trace("{}: set file position to {}", fmt::streamed(*this), file_pos);
+        LOGMACRO(clogger, log_level::trace, "{}: set file position to {}", fmt::streamed(*this), file_pos);
         assert(_flush_pos >= file_pos);
         _file_pos = file_pos;
         _flush_pos = file_pos;
@@ -1692,7 +1692,7 @@ future<> db::commitlog::segment_manager::oversized_allocation(entry_writer& writ
 
             sseg_ptr s = co_await get_segment();
 
-            clogger.trace("Writing entry {} of {}", i, writer.num_entries);
+            LOGMACRO(clogger, log_level::trace, "Writing entry {} of {}", i, writer.num_entries);
 
             using write_result = segment::write_result;
 
@@ -1863,7 +1863,7 @@ future<> db::commitlog::segment_manager::oversized_allocation(entry_writer& writ
     SCYLLA_ASSERT(nw > 0 || _request_controller.available_units() == ssize_t(max_request_controller_units()));
 
     if (!failed) {
-        clogger.trace("Oversized allocation succeeded.");
+        LOGMACRO(clogger, log_level::trace, "Oversized allocation succeeded.");
         co_return;
     }
     if (e) {
@@ -1920,7 +1920,7 @@ db::commitlog::segment_manager::segment_manager(config c)
     SCYLLA_ASSERT(max_size > 0);
     SCYLLA_ASSERT(max_mutation_size < segment::multi_entry_size_magic);
 
-    clogger.trace("Commitlog {} maximum disk size: {} MB / cpu ({} cpus)",
+    LOGMACRO(clogger, log_level::trace, "Commitlog {} maximum disk size: {} MB / cpu ({} cpus)",
             cfg.commit_log_location, max_disk_size / (1024 * 1024),
             smp::count);
 
@@ -2053,7 +2053,7 @@ future<> db::commitlog::segment_manager::init() {
     // always run the timer now, since we need to handle segment pre-alloc etc as well.
     _timer.set_callback(std::bind(&segment_manager::on_timer, this));
     auto delay = this_shard_id() * std::ceil(double(cfg.commitlog_sync_period_in_ms) / smp::count);
-    clogger.trace("Delaying timer loop {} ms", delay);
+    LOGMACRO(clogger, log_level::trace, "Delaying timer loop {} ms", delay);
     // We need to wait until we have scanned all other segments to actually start serving new
     // segments. We are ready now
     _reserve_replenisher = with_scheduling_group(cfg.sched_group, [this] { return replenish_reserve(); });
@@ -2310,7 +2310,7 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
             if (existing_size > max_size) {
                 co_await f.truncate(max_size);
             } else if (existing_size < max_size) {
-                clogger.trace("Pre-writing {} of {} KB to segment {}", (max_size - existing_size)/1024, max_size/1024, filename);
+                LOGMACRO(clogger, log_level::trace, "Pre-writing {} of {} KB to segment {}", (max_size - existing_size)/1024, max_size/1024, filename);
 
                 // re-open without o_dsync for pre-alloc. The reason/rationale
                 // being that we want automatic (meta)data sync from O_DSYNC for when
@@ -2574,7 +2574,7 @@ struct fmt::formatter<db::commitlog::segment::cf_mark> {
 };
 
 void db::commitlog::segment_manager::discard_unused_segments() noexcept {
-    clogger.trace("Checking for unused segments ({} active)", _segments.size());
+    LOGMACRO(clogger, log_level::trace, "Checking for unused segments ({} active)", _segments.size());
 
     std::erase_if(_segments, [=](sseg_ptr s) {
         if (s->can_delete()) {
@@ -3005,7 +3005,7 @@ db::commitlog::segment_manager::buffer_type db::commitlog::segment_manager::acqu
     while (buffers.size() < fragment_count) {
         buffers.emplace_back(allocate_single_buffer(segment::default_size, alignment));
     }
-    clogger.trace("Allocated {} k buffer", s / 1024);
+    LOGMACRO(clogger, log_level::trace, "Allocated {} k buffer", s / 1024);
     return fragmented_temporary_buffer(std::move(buffers), s);
 }
 
@@ -3603,7 +3603,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
         void advance_pos(size_t off) {
             auto old = pos;
             pos = next_pos(off);
-            clogger.trace("Pos {} -> {} ({})", old, pos, off);
+            LOGMACRO(clogger, log_level::trace, "Pos {} -> {} ({})", old, pos, off);
         }
 
         future<> read_entry() {

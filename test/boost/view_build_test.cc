@@ -725,7 +725,7 @@ SEASTAR_THREAD_TEST_CASE(test_view_update_generator_buffering) {
             const auto total_rows = _partition_rows.at(mut.decorated_key());
             _buffer_rows += current_rows;
 
-            testlog.trace("consumer_verifier::check(): key={}, rows={}/{}, _buffer={}",
+            LOGMACRO(testlog, log_level::trace, "consumer_verifier::check(): key={}, rows={}/{}, _buffer={}",
                     partition_key::with_schema_wrapper(*_schema, mut.key()),
                     current_rows,
                     total_rows,
@@ -757,10 +757,10 @@ SEASTAR_THREAD_TEST_CASE(test_view_update_generator_buffering) {
 
             if (_buffer_rows >= _max_rows_hard) { // buffer flushed on hard limit
                 _buffer_rows = 0;
-                testlog.trace("consumer_verifier::check(): buffer ends on hard limit");
+                LOGMACRO(testlog, log_level::trace, "consumer_verifier::check(): buffer ends on hard limit");
             } else if (_buffer_rows >= _max_rows_soft) { // buffer flushed on soft limit
                 _buffer_rows = 0;
-                testlog.trace("consumer_verifier::check(): buffer ends on soft limit");
+                LOGMACRO(testlog, log_level::trace, "consumer_verifier::check(): buffer ends on soft limit");
             }
         }
 
@@ -853,7 +853,7 @@ SEASTAR_THREAD_TEST_CASE(test_view_update_generator_buffering) {
 
         BOOST_REQUIRE_EQUAL(muts.size(), collected_muts.size());
         for (size_t i = 0; i < muts.size(); ++i) {
-            testlog.trace("compare mutation {}", i);
+            LOGMACRO(testlog, log_level::trace, "compare mutation {}", i);
             BOOST_REQUIRE_EQUAL(muts[i], collected_muts[i]);
         }
     }

@@ -226,7 +226,7 @@ public:
     }
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>> execute_cql(std::string_view text) override {
-        testlog.trace("{}(\"{}\")", __FUNCTION__, text);
+        LOGMACRO(testlog, log_level::trace, "{}(\"{}\")", __FUNCTION__, text);
         auto qs = make_query_state();
         auto qo = make_shared<cql3::query_options>(cql3::query_options::DEFAULT);
         return local_qp().execute_direct_without_checking_exception_message(text, *qs, test_dialect(), *qo).then([qs, qo] (auto msg) {
@@ -238,7 +238,7 @@ public:
         std::string_view text,
         std::unique_ptr<cql3::query_options> qo) override
     {
-        testlog.trace("{}(\"{}\")", __FUNCTION__, text);
+        LOGMACRO(testlog, log_level::trace, "{}(\"{}\")", __FUNCTION__, text);
         auto qs = make_query_state();
         auto& lqo = *qo;
         return local_qp().execute_direct_without_checking_exception_message(text, *qs, test_dialect(), lqo).then([qs, qo = std::move(qo)] (auto msg) {

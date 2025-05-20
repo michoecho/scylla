@@ -16,10 +16,10 @@ namespace sstables {
 
 void metadata_collector::convert(disk_array<uint32_t, disk_string<uint16_t>>& to, const std::optional<position_in_partition>& from) {
     if (!from) {
-        mdclogger.trace("{}: convert: empty", _name);
+        LOGMACRO(mdclogger, log_level::trace, "{}: convert: empty", _name);
         return;
     }
-    mdclogger.trace("{}: convert: {}", _name, position_in_partition_view::printer(_schema, *from));
+    LOGMACRO(mdclogger, log_level::trace, "{}: convert: {}", _name, position_in_partition_view::printer(_schema, *from));
     for (auto& value : from->key().components()) {
         to.elements.push_back(disk_string<uint16_t>{to_bytes(value)});
     }
@@ -41,12 +41,12 @@ void metadata_collector::update_min_max_components(position_in_partition_view po
     const auto max_pos = is_prefix_row ? position_in_partition_view::after_all_prefixed(pos) : pos;
 
     if (!_min_clustering_pos || cmp(min_pos, *_min_clustering_pos) < 0) {
-        mdclogger.trace("{}: setting min_clustering_key={}", _name, position_in_partition_view::printer(_schema, min_pos));
+        LOGMACRO(mdclogger, log_level::trace, "{}: setting min_clustering_key={}", _name, position_in_partition_view::printer(_schema, min_pos));
         _min_clustering_pos.emplace(min_pos);
     }
 
     if (!_max_clustering_pos || cmp(max_pos, *_max_clustering_pos) > 0) {
-        mdclogger.trace("{}: setting max_clustering_key={}", _name, position_in_partition_view::printer(_schema, max_pos));
+        LOGMACRO(mdclogger, log_level::trace, "{}: setting max_clustering_key={}", _name, position_in_partition_view::printer(_schema, max_pos));
         _max_clustering_pos.emplace(max_pos);
     }
 }

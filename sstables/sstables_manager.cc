@@ -223,7 +223,7 @@ future<> sstables_manager::components_reclaim_reload_fiber() {
 
     co_await coroutine::switch_to(_maintenance_sg);
 
-    sstlog.trace("components_reloader_fiber start");
+    LOGMACRO(sstlog, log_level::trace, "components_reloader_fiber start");
 
     while (true) {
         co_await _components_memory_change_event.when();

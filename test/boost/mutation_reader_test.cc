@@ -2367,7 +2367,7 @@ SEASTAR_THREAD_TEST_CASE(test_multishard_streaming_reader) {
 
         const auto min_size = std::min(reference_muts.size(), tested_muts.size());
         for (size_t i = 0; i < min_size; ++i) {
-            testlog.trace("Comparing mutation {:d}/{:d}", i, min_size - 1);
+            LOGMACRO(testlog, log_level::trace, "Comparing mutation {:d}/{:d}", i, min_size - 1);
             assert_that(tested_muts[i]).is_equal_to(reference_muts[i]);
         }
 
@@ -2937,7 +2937,7 @@ void check_evictable_reader_validation_is_triggered(
     } catch (std::runtime_error& e) {
         if (fail) {
             if (error_prefix == std::string_view(e.what(), error_prefix.size())) {
-                testlog.trace("Expected exception caught: {}", std::current_exception());
+                LOGMACRO(testlog, log_level::trace, "Expected exception caught: {}", std::current_exception());
                 return;
             } else {
                 BOOST_FAIL(fmt::format("Exception with unexpected message caught: {}", std::current_exception()));
@@ -4497,10 +4497,10 @@ SEASTAR_TEST_CASE(test_multishard_reader_buffer_hint_large_partitions) {
                                     : (*current_partition == partition_end_size ? partition_end_size : row_size);
 
                             current_buffer_size += fragment_size;
-                            testlog.trace("fill buffer loop for shard#{}: to_read={}, current_partition={}, fragment_size={}, current_buffer_size={}", shard_id, to_read, *current_partition, fragment_size, current_buffer_size);
+                            LOGMACRO(testlog, log_level::trace, "fill buffer loop for shard#{}: to_read={}, current_partition={}, fragment_size={}, current_buffer_size={}", shard_id, to_read, *current_partition, fragment_size, current_buffer_size);
                             if (current_buffer_size >= shard_reader_buffer_size) {
                                 ++buffer_fill_calls_per_shard.at(shard_id);
-                                testlog.trace("fill buffer loop for shard#{}: finished buffer #{} with size {}", shard_id, buffer_fill_calls_per_shard.at(shard_id), current_buffer_size);
+                                LOGMACRO(testlog, log_level::trace, "fill buffer loop for shard#{}: finished buffer #{} with size {}", shard_id, buffer_fill_calls_per_shard.at(shard_id), current_buffer_size);
                                 // After each eviction, the evictable reader will
                                 // emit a range tombstone change resetting the
                                 // current tombstone.
@@ -4525,7 +4525,7 @@ SEASTAR_TEST_CASE(test_multishard_reader_buffer_hint_large_partitions) {
                         }
                         if (current_buffer_size > range_tombstone_size) {
                             ++buffer_fill_calls_per_shard.at(shard_id);
-                            testlog.trace("fill buffer loop for shard#{}: finished buffer #{} with size {}", shard_id, buffer_fill_calls_per_shard.at(shard_id), current_buffer_size);
+                            LOGMACRO(testlog, log_level::trace, "fill buffer loop for shard#{}: finished buffer #{} with size {}", shard_id, buffer_fill_calls_per_shard.at(shard_id), current_buffer_size);
                         }
 
                         if (!shard_data.back()) {
@@ -4537,7 +4537,7 @@ SEASTAR_TEST_CASE(test_multishard_reader_buffer_hint_large_partitions) {
             }
 
             for (unsigned shard_id = 0; shard_id != smp::count; ++shard_id) {
-                testlog.trace("shard#{}", shard_id);
+                LOGMACRO(testlog, log_level::trace, "shard#{}", shard_id);
 
                 if (shards_visited > shard_id) {
                     const auto reads_from_shard = buffer_fill_calls_per_shard.at(shard_id);

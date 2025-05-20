@@ -1655,7 +1655,7 @@ public:
         auto new_tablet_count_per_shard = node_info.shards[dst.shard].tablet_count_per_table[table] + 1;
         auto new_shard_load = *node_info.shard_load(dst.shard, new_tablet_count_per_shard, _target_tablet_size);
         auto dst_shard_badness = (new_shard_load - shard_balance_threshold) / table_size;
-        lblogger.trace("Table {} @{} shard balance threshold: {}, dst: {} ({:.4f})", table, dst,
+        LOGMACRO(lblogger, log_level::trace, "Table {} @{} shard balance threshold: {}, dst: {} ({:.4f})", table, dst,
                        shard_balance_threshold, new_shard_load, dst_shard_badness);
 
         // max number of tablets per node to keep perfect distribution.
@@ -1663,7 +1663,7 @@ public:
         size_t new_tablet_count_per_node = node_info.tablet_count_per_table[table] + 1;
         load_type new_node_load = *node_info.get_avg_load(new_tablet_count_per_node, _target_tablet_size);
         auto dst_node_badness = (new_node_load - node_balance_threshold) / table_size;
-        lblogger.trace("Table {} @{} node balance threshold: {}, dst: {} ({:.4f})", table, dst,
+        LOGMACRO(lblogger, log_level::trace, "Table {} @{} node balance threshold: {}, dst: {} ({:.4f})", table, dst,
                        node_balance_threshold, new_node_load, dst_node_badness);
 
         return migration_badness{0, 0, dst_shard_badness, dst_node_badness};
@@ -1689,7 +1689,7 @@ public:
         auto new_tablet_count_per_shard = node_info.shards[src.shard].tablet_count_per_table[table] - 1;
         auto new_shard_load = *node_info.shard_load(src.shard, new_tablet_count_per_shard, _target_tablet_size);
         auto src_shard_badness = (leaving_shard_balance_threshold - new_shard_load) / table_size;
-        lblogger.trace("Table {} @{} shard balance threshold: {}, src: {} ({:.4f})", table, src,
+        LOGMACRO(lblogger, log_level::trace, "Table {} @{} shard balance threshold: {}, src: {} ({:.4f})", table, src,
                        leaving_shard_balance_threshold, new_shard_load, src_shard_badness);
 
         // max number of tablets per node to keep perfect distribution.
@@ -1697,7 +1697,7 @@ public:
         size_t new_tablet_count_per_node = node_info.tablet_count_per_table[table] - 1;
         auto new_node_load = *node_info.get_avg_load(new_tablet_count_per_node, _target_tablet_size);
         auto src_node_badness = (leaving_node_balance_threshold - new_node_load) / table_size;
-        lblogger.trace("Table {} @{} node balance threshold: {}, src: {} ({:.4f})", table, src,
+        LOGMACRO(lblogger, log_level::trace, "Table {} @{} node balance threshold: {}, src: {} ({:.4f})", table, src,
                        leaving_node_balance_threshold, new_node_load, src_node_badness);
 
         return migration_badness{src_shard_badness, src_node_badness, 0, 0};
@@ -1736,7 +1736,7 @@ public:
             if (!tablets.empty()) {
                 auto badness = evaluate_candidate(nodes, table, src, dst);
                 auto candidate = migration_candidate{*tablets.begin(), src, dst, badness};
-                lblogger.trace("Candidate: {}", candidate);
+                LOGMACRO(lblogger, log_level::trace, "Candidate: {}", candidate);
                 if (!best_candidate || candidate.badness < best_candidate->badness) {
                     best_candidate = candidate;
                 }
@@ -1747,7 +1747,7 @@ public:
             on_internal_error(lblogger, format("No candidates for migration on {}", src));
         }
 
-        lblogger.trace("Best candidate: {}", *best_candidate);
+        LOGMACRO(lblogger, log_level::trace, "Best candidate: {}", *best_candidate);
         co_return *best_candidate;
     }
 
@@ -1782,7 +1782,7 @@ public:
         auto& src_tinfo = tmap.get_tablet_info(tablet.tablet);
         for (auto&& r : src_tinfo.replicas) {
             if (nodes.contains(r.host)) {
-                lblogger.trace("Erasing tablet {} from {}", tablet, r);
+                LOGMACRO(lblogger, log_level::trace, "Erasing tablet {} from {}", tablet, r);
                 // Not necessarily all replicas of sibling tablets are co-located, and so we need to
                 // remove them from candidate list using global_tablet_id.
                 erase_candidate(nodes[r.host].shards[r.shard], migration_tablet_set{tablet});
@@ -1820,7 +1820,7 @@ public:
 
         // Allow migrating only from candidate nodes which have higher load than the target.
         if (src_info.avg_load <= dst_info.avg_load) {
-            lblogger.trace("Load inversion: src={} (avg_load={}), dst={} (avg_load={})",
+            LOGMACRO(lblogger, log_level::trace, "Load inversion: src={} (avg_load={}), dst={} (avg_load={})",
                            src_info.id, src_info.avg_load, dst_info.id, dst_info.avg_load);
             return false;
         }
@@ -1828,7 +1828,7 @@ public:
         // Prevent load inversion post-movement which can lead to oscillations.
         if (*src_info.get_avg_load(src_info.tablet_count - delta, _target_tablet_size) <
             *dst_info.get_avg_load(dst_info.tablet_count + delta, _target_tablet_size)) {
-            lblogger.trace("Load inversion post-movement: src={} (avg_load={}), dst={} (avg_load={})",
+            LOGMACRO(lblogger, log_level::trace, "Load inversion post-movement: src={} (avg_load={}), dst={} (avg_load={})",
                            src_info.id, src_info.avg_load, dst_info.id, dst_info.avg_load);
             return false;
         }
@@ -2297,7 +2297,7 @@ public:
                                       min_dst_badness.node_badness()}
             };
 
-            lblogger.trace("candidate: {}", candidate);
+            LOGMACRO(lblogger, log_level::trace, "candidate: {}", candidate);
 
             if (candidate.badness < min_candidate.badness) {
                 min_candidate = candidate;
@@ -2321,14 +2321,14 @@ public:
                     std::optional<tablet_replica> min_src;
 
                     if (load == 0) {
-                        lblogger.trace("No src candidates for table {} on node {}", table, src.host);
+                        LOGMACRO(lblogger, log_level::trace, "No src candidates for table {} on node {}", table, src.host);
                         continue;
                     }
 
                     for (auto new_src_shard: src_node_info.shards_by_load) {
                         auto new_src = tablet_replica{src.host, new_src_shard};
                         if (src_node_info.shards[new_src_shard].candidates[table].empty()) {
-                            lblogger.trace("No src candidates for table {} on shard {}", table, new_src);
+                            LOGMACRO(lblogger, log_level::trace, "No src candidates for table {} on shard {}", table, new_src);
                             continue;
                         }
                         auto badness = evaluate_src_badness(nodes, table, new_src);
@@ -2352,7 +2352,7 @@ public:
             }
         }
 
-        lblogger.trace("best candidate: {}", min_candidate);
+        LOGMACRO(lblogger, log_level::trace, "best candidate: {}", min_candidate);
 
         if (drain_skipped) {
             src_node_info.skipped_candidates.pop_back();
@@ -2363,7 +2363,7 @@ public:
         // Restore invariants.
 
         if (min_candidate.dst != dst) {
-            lblogger.trace("dst changed.");
+            LOGMACRO(lblogger, log_level::trace, "dst changed.");
 
             if (min_candidate.dst.host != dst.host) {
                 auto i = std::find(nodes_by_load_dst.begin(), nodes_by_load_dst.end(), min_candidate.dst.host);
@@ -2376,7 +2376,7 @@ public:
             }
 
             if (min_candidate.src.shard != src.shard) {
-                lblogger.trace("src changed.");
+                LOGMACRO(lblogger, log_level::trace, "src changed.");
                 auto i = std::find(src_node_info.shards_by_load.begin(), src_node_info.shards_by_load.end(), min_candidate.src.shard);
                 std::swap(src_node_info.shards_by_load.back(), *i);
                 std::make_heap(src_node_info.shards_by_load.begin(), std::prev(src_node_info.shards_by_load.end()),
@@ -2590,14 +2590,14 @@ public:
             // Pick best target shard.
 
             auto dst = global_shard_id {target, _load_sketch->get_least_loaded_shard(target)};
-            lblogger.trace("target shard: {}, tablets={}, load={}", dst.shard,
+            LOGMACRO(lblogger, log_level::trace, "target shard: {}, tablets={}, load={}", dst.shard,
                            target_info.shards[dst.shard].tablet_count,
                            target_info.shard_load(dst.shard, _target_tablet_size));
 
             if (lblogger.is_enabled(seastar::log_level::trace)) {
                 shard_id shard = 0;
                 for (auto&& shard_load : target_info.shards) {
-                    lblogger.trace("shard {}: load: {}, tablets: {}, candidates: {}, tables: {}", tablet_replica{dst.host, shard},
+                    LOGMACRO(lblogger, log_level::trace, "shard {}: load: {}, tablets: {}, candidates: {}, tables: {}", tablet_replica{dst.host, shard},
                                    target_info.shard_load(shard, _target_tablet_size), shard_load.tablet_count,
                                    shard_load.candidate_count(), shard_load.tablet_count_per_table);
                     shard++;

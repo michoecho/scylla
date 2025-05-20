@@ -4973,11 +4973,11 @@ SEASTAR_THREAD_TEST_CASE(test_query_limit) {
                         if (should_fail) {
                             BOOST_FAIL("Expected exception, but none was thrown.");
                         } else {
-                            testlog.trace("No exception thrown, as expected.");
+                            LOGMACRO(testlog, log_level::trace, "No exception thrown, as expected.");
                         }
                     } catch (exceptions::read_failure_exception& e) {
                         if (should_fail) {
-                            testlog.trace("Exception thrown, as expected: {}", e);
+                            LOGMACRO(testlog, log_level::trace, "Exception thrown, as expected: {}", e);
                         } else {
                             BOOST_FAIL(fmt::format("Expected no exception, but caught: {}", e));
                         }

@@ -33,6 +33,7 @@
 #include <ranges>
 #include <fmt/ranges.h>  // IWYU pragma: keep
 #include "utils/log.hh"
+using seastar::log_level;
 
 extern logging::logger hr_logger;
 
@@ -126,7 +127,7 @@ miss_equalizing_combination(
     clip_probabilities(p, 1.0f / bf);
 
 
-    hr_logger.trace("desired probabilities: {}, {}", node_hit_rate | std::views::keys, p);
+    LOGMACRO(hr_logger, log_level::trace, "desired probabilities: {}, {}", node_hit_rate | std::views::keys, p);
 
     // If me >= rf, this node is NOT one of the replicas, and we just need
     // to use the probabilities for these replicas, without doing the
@@ -135,7 +136,7 @@ miss_equalizing_combination(
         p = redistribute(p, me, bf);
     }
 
-    hr_logger.trace("returned _pp={}", p);
+    LOGMACRO(hr_logger, log_level::trace, "returned _pp={}", p);
     std::vector<Node> nodes(rf);
     for (unsigned i = 0; i < rf; i++) {
         nodes[i] = node_hit_rate[i].first;

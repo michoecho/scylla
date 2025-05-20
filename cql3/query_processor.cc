@@ -569,7 +569,7 @@ query_processor::execute_maybe_with_guard(service::query_state& query_state, ::s
 
 future<::shared_ptr<result_message>>
 query_processor::execute_direct_without_checking_exception_message(const std::string_view& query_string, service::query_state& query_state, dialect d, query_options& options) {
-    log.trace("execute_direct: \"{}\"", query_string);
+    LOGMACRO(log, log_level::trace, "execute_direct: \"{}\"", query_string);
     tracing::trace(query_state.get_trace_state(), "Parsing a statement");
     auto p = get_statement(query_string, query_state.get_client_state(), d);
     auto statement = p->statement;
@@ -925,7 +925,7 @@ query_processor::execute_internal(
         cache_internal cache) {
 
     if (log.is_enabled(logging::log_level::trace)) {
-        log.trace("execute_internal: {}\"{}\" ({})", cache ? "(cached) " : "", query_string, fmt::join(values, ", "));
+        LOGMACRO(log, log_level::trace, "execute_internal: {}\"{}\" ({})", cache ? "(cached) " : "", query_string, fmt::join(values, ", "));
     }
     if (cache) {
         auto p = prepare_internal(query_string);
@@ -1011,7 +1011,7 @@ query_processor::execute_batch_without_checking_exception_message(
         for (const auto& s: batch->get_statements()) {
             oss << std::endl <<  s.statement->raw_cql_statement;
         }
-        log.trace("execute_batch({}): {}", batch->get_statements().size(), oss.str());
+        LOGMACRO(log, log_level::trace, "execute_batch({}): {}", batch->get_statements().size(), oss.str());
     }
     co_return co_await batch->execute(*this, query_state, options, std::nullopt);
 }

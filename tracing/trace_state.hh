@@ -133,7 +133,7 @@ public:
             _supplied_start_ts_us = info.start_ts_us;
         }
 
-        trace_state_logger.trace("{}: props {}, slow query threshold {}us, slow query ttl {}s", session_id(), _state_props.mask(), info.slow_query_threshold_us, info.slow_query_ttl_sec);
+        LOGMACRO(trace_state_logger, log_level::trace, "{}: props {}, slow query threshold {}us, slow query ttl {}s", session_id(), _state_props.mask(), info.slow_query_threshold_us, info.slow_query_ttl_sec);
     }
 
     ~trace_state();
@@ -533,7 +533,7 @@ inline void trace_state::trace_internal(std::string&& message) {
     // In any case, this should be rare, therefore we don't try to optimize this
     // flow.
     if (!_local_tracing_ptr->have_records_budget()) {
-        tracing_logger.trace("{}: Maximum number of traces is reached. Some traces are going to be dropped", session_id());
+        LOGMACRO(tracing_logger, log_level::trace, "{}: Maximum number of traces is reached. Some traces are going to be dropped", session_id());
         if ((++_local_tracing_ptr->stats.dropped_records) % tracing::log_warning_period == 1) {
             tracing_logger.warn("Maximum records limit is hit {} times", _local_tracing_ptr->stats.dropped_records);
         }

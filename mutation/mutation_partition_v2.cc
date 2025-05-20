@@ -222,12 +222,12 @@ stop_iteration mutation_partition_v2::apply_monotonically(const schema& s, const
             auto insert_result = _rows.insert_before_hint(i, std::move(this_sentinel), cmp);
             auto i2 = insert_result.first;
             if (insert_result.second) {
-                mplog.trace("{}: inserting sentinel at {}", fmt::ptr(this), i2->position());
+                LOGMACRO(mplog, log_level::trace, "{}: inserting sentinel at {}", fmt::ptr(this), i2->position());
                 if (tracker) {
                     tracker->insert(*std::prev(i2), *i2);
                 }
             } else {
-                mplog.trace("{}: merging sentinel at {}", fmt::ptr(this), i2->position());
+                LOGMACRO(mplog, log_level::trace, "{}: merging sentinel at {}", fmt::ptr(this), i2->position());
                 i2->set_continuous(true);
                 i2->set_range_tombstone(rt);
             }
@@ -235,12 +235,12 @@ stop_iteration mutation_partition_v2::apply_monotonically(const schema& s, const
         if (p_sentinel) {
             SCYLLA_ASSERT(p_i != p._rows.end());
             if (cmp(p_i->position(), p_sentinel->position()) == 0) {
-                mplog.trace("{}: clearing attributes on {}", fmt::ptr(&p), p_i->position());
+                LOGMACRO(mplog, log_level::trace, "{}: clearing attributes on {}", fmt::ptr(&p), p_i->position());
                 SCYLLA_ASSERT(p_i->dummy());
                 p_i->set_continuous(false);
                 p_i->set_range_tombstone({});
             } else {
-                mplog.trace("{}: inserting sentinel at {}", fmt::ptr(&p), p_sentinel->position());
+                LOGMACRO(mplog, log_level::trace, "{}: inserting sentinel at {}", fmt::ptr(&p), p_sentinel->position());
                 auto insert_result = p._rows.insert_before_hint(p_i, std::move(p_sentinel), cmp);
                 if (tracker) {
                     tracker->insert(*p_i, *insert_result.first);
@@ -331,7 +331,7 @@ stop_iteration mutation_partition_v2::apply_monotonically(const schema& s, const
                     }
                     p_sentinel = std::move(s1);
                     this_sentinel = std::move(s2);
-                    mplog.trace("preempted, res={}", res);
+                    LOGMACRO(mplog, log_level::trace, "preempted, res={}", res);
                     return stop_iteration::no;
                 }
 

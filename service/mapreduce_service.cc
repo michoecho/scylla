@@ -478,7 +478,7 @@ future<query::mapreduce_result> mapreduce_service::execute_on_this_shard(
         if (ranges_owned_by_this_shard.empty()) {
             break;
         }
-        flogger.trace("Forwarding to {} ranges owned by this shard", ranges_owned_by_this_shard.size());
+        LOGMACRO(flogger, log_level::trace, "Forwarding to {} ranges owned by this shard", ranges_owned_by_this_shard.size());
 
         auto pager = service::pager::query_pagers::pager(
             _proxy,

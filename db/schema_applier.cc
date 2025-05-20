@@ -159,21 +159,21 @@ table_selector get_affected_tables(const sstring& keyspace_name, const mutation&
     };
     table_selector result;
     if (m.partition().partition_tombstone()) {
-        slogger.trace("Mutation of {}.{} for keyspace {} contains a partition tombstone",
+        LOGMACRO(slogger, log_level::trace, "Mutation of {}.{} for keyspace {} contains a partition tombstone",
                       m.schema()->ks_name(), m.schema()->cf_name(), keyspace_name);
         result.all_in_keyspace = true;
     }
     for (auto&& e : m.partition().row_tombstones()) {
         const range_tombstone& rt = e.tombstone();
         if (rt.start.size(s) == 0 || rt.end.size(s) == 0) {
-            slogger.trace("Mutation of {}.{} for keyspace {} contains a multi-table range tombstone",
+            LOGMACRO(slogger, log_level::trace, "Mutation of {}.{} for keyspace {} contains a multi-table range tombstone",
                           m.schema()->ks_name(), m.schema()->cf_name(), keyspace_name);
             result.all_in_keyspace = true;
             break;
         }
         auto table_name = get_table_name(rt.start);
         if (table_name != get_table_name(rt.end)) {
-            slogger.trace("Mutation of {}.{} for keyspace {} contains a multi-table range tombstone",
+            LOGMACRO(slogger, log_level::trace, "Mutation of {}.{} for keyspace {} contains a multi-table range tombstone",
                           m.schema()->ks_name(), m.schema()->cf_name(), keyspace_name);
             result.all_in_keyspace = true;
             break;
@@ -183,7 +183,7 @@ table_selector get_affected_tables(const sstring& keyspace_name, const mutation&
     for (auto&& row : m.partition().clustered_rows()) {
         result.add(get_table_name(row.key()));
     }
-    slogger.trace("Mutation of {}.{} for keyspace {} affects tables: {}, all_in_keyspace: {}",
+    LOGMACRO(slogger, log_level::trace, "Mutation of {}.{} for keyspace {} affects tables: {}, all_in_keyspace: {}",
                   m.schema()->ks_name(), m.schema()->cf_name(), keyspace_name, result.tables, result.all_in_keyspace);
     return result;
 }
@@ -754,7 +754,7 @@ static future<> merge_aggregates(distributed<service::storage_proxy>& proxy, con
 
 static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, sharded<db::system_keyspace>& sys_ks, std::vector<mutation> mutations, bool reload)
 {
-    slogger.trace("do_merge_schema: {}", mutations);
+    LOGMACRO(slogger, log_level::trace, "do_merge_schema: {}", mutations);
     schema_ptr s = keyspaces();
     // compare before/after schemas of the affected keyspaces only
     std::set<sstring> keyspaces;
@@ -790,7 +790,7 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, shar
     for (auto&& [keyspace_name, sel] : affected_tables) {
         if (sel.all_in_keyspace) {
             // FIXME: Obtain from the database object
-            slogger.trace("Reading table list for keyspace {}", keyspace_name);
+            LOGMACRO(slogger, log_level::trace, "Reading table list for keyspace {}", keyspace_name);
             for (auto k : all_table_kinds) {
                 for (auto&& n : co_await read_table_names_of_keyspace(proxy, keyspace_name, get_table_holder(k))) {
                     sel.add(k, std::move(n));

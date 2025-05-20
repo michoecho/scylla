@@ -1359,7 +1359,7 @@ bool compaction_manager::can_perform_regular_compaction(table_state& t) {
 future<> compaction_manager::maybe_wait_for_sstable_count_reduction(table_state& t) {
     auto schema = t.schema();
     if (!can_perform_regular_compaction(t)) {
-        cmlog.trace("maybe_wait_for_sstable_count_reduction in {}: cannot perform regular compaction", t);
+        LOGMACRO(cmlog, log_level::trace, "maybe_wait_for_sstable_count_reduction in {}: cannot perform regular compaction", t);
         co_return;
     }
     auto num_runs_for_compaction = [&, this] {
@@ -1372,7 +1372,7 @@ future<> compaction_manager::maybe_wait_for_sstable_count_reduction(table_state&
     const auto threshold = size_t(std::max(schema->max_compaction_threshold(), 32));
     auto count = num_runs_for_compaction();
     if (count <= threshold) {
-        cmlog.trace("No need to wait for sstable count reduction in {}: {} <= {}",
+        LOGMACRO(cmlog, log_level::trace, "No need to wait for sstable count reduction in {}: {} <= {}",
                 t, count, threshold);
         co_return;
     }

@@ -146,7 +146,7 @@ public:
                 _options.aws_profile = "default";
             }
         }
-        kms_log.trace("Added KMS node {}={}", name, _options.endpoint.empty() 
+        LOGMACRO(kms_log, log_level::trace, "Added KMS node {}={}", name, _options.endpoint.empty() 
             ? (_options.host.empty() ? _options.aws_region : _options.host)
             : _options.endpoint 
         );
@@ -371,7 +371,7 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
         static constexpr const char* HOST_HEADER = "host";
 
         static auto logged_send = [](httpclient& client) -> future<result_type> {
-            kms_log.trace("Request: {}", client.request());
+            LOGMACRO(kms_log, log_level::trace, "Request: {}", client.request());
             result_type res;
             try {
                 res = co_await client.send();
@@ -380,7 +380,7 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
             } catch (std::exception& e) {
                 std::throw_with_nested(service_error(fmt::format("Error sending to host {}:{}: {}", client.host(), client.port(), e.what())));
             }
-            kms_log.trace("Result: status={}, response={}", res.result_int(), res);
+            LOGMACRO(kms_log, log_level::trace, "Result: status={}, response={}", res.result_int(), res);
             if (res.result() != httpclient::reply_status::ok) {
                 throw kms_error(get_response_error(res), "EC2 metadata query");
             }
@@ -471,7 +471,7 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
                     while (i != e) {
                         if ((*i)[1].length() > 0) {
                             profile = (*i)[1].str();
-                            kms_log.trace("Found profile {} ({})", profile, credentials);
+                            LOGMACRO(kms_log, log_level::trace, "Found profile {} ({})", profile, credentials);
                         } else if (profile == _options.aws_profile) {
                             std::string key((*i)[2].str());
                             std::string val((*i)[3].str());
@@ -688,7 +688,7 @@ future<encryption::kms_host::impl::result_type> encryption::kms_host::impl::post
     auto now = db_clock::now();
     auto req_id = utils::UUID_gen::get_time_UUID(std::chrono::system_clock::time_point(now.time_since_epoch()));
 
-    kms_log.trace("Building request: {} ({}:{}) {}", query.target, query.host, query.port, req_id);
+    LOGMACRO(kms_log, log_level::trace, "Building request: {} ({}:{}) {}", query.target, query.host, query.port, req_id);
 
     httpclient client(std::string(query.host), query.port, std::move(creds));
 
@@ -747,7 +747,7 @@ future<encryption::kms_host::impl::result_type> encryption::kms_host::impl::post
     auto canonicalRequestString = canonicalRequestStream.str();
     auto canonicalRequestHash = make_hash(canonicalRequestString);
 
-    kms_log.trace("Canonical request: {}", canonicalRequestString);
+    LOGMACRO(kms_log, log_level::trace, "Canonical request: {}", canonicalRequestString);
 
     auto simpleDate = fmt::format(SIMPLE_DATE_FORMAT_STR, t_now);
 
@@ -761,7 +761,7 @@ future<encryption::kms_host::impl::result_type> encryption::kms_host::impl::post
     auto stringToSign = stringToSignStream.str();
 
     // these log messages intentionally made to mimic aws sdk/boto3
-    kms_log.trace("StringToSign: {}", stringToSign);
+    LOGMACRO(kms_log, log_level::trace, "StringToSign: {}", stringToSign);
 
     std::string finalSignature;
 
@@ -793,11 +793,11 @@ future<encryption::kms_host::impl::result_type> encryption::kms_host::impl::post
     client.content(query.content);
     client.method(httpclient::method_type::POST);
 
-    kms_log.trace("Request: {}", client.request());
+    LOGMACRO(kms_log, log_level::trace, "Request: {}", client.request());
 
     auto res = co_await client.send();
 
-    kms_log.trace("Result: status={}, response={}", res.result_int(), res);
+    LOGMACRO(kms_log, log_level::trace, "Result: status={}, response={}", res.result_int(), res);
 
     co_return res;
 }

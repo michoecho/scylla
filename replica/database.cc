@@ -1961,7 +1961,7 @@ future<> database::do_apply_many(const std::vector<frozen_mutation>& muts, db::t
             on_internal_error(dblog, format("Must call apply() on the owning shard ({} not in {})", this_shard_id(), m_shards));
         }
 
-        dblog.trace("apply [{}/{}]: {}", i, muts.size() - 1, muts[i].pretty_printer(s));
+        LOGMACRO(dblog, log_level::trace, "apply [{}/{}]: {}", i, muts.size() - 1, muts[i].pretty_printer(s));
         writers.emplace_back(s, muts[i], commitlog_entry_writer::force_sync::yes);
     }
 
@@ -2095,7 +2095,7 @@ void database::update_write_metrics_for_timed_out_write() {
 
 future<> database::apply(schema_ptr s, const frozen_mutation& m, tracing::trace_state_ptr tr_state, db::commitlog::force_sync sync, db::timeout_clock::time_point timeout, db::per_partition_rate_limit::info rate_limit_info) {
     if (dblog.is_enabled(logging::log_level::trace)) {
-        dblog.trace("apply {}", m.pretty_printer(s));
+        LOGMACRO(dblog, log_level::trace, "apply {}", m.pretty_printer(s));
     }
     if (timeout <= db::timeout_clock::now()) {
         update_write_metrics_for_timed_out_write();
@@ -2109,7 +2109,7 @@ future<> database::apply(schema_ptr s, const frozen_mutation& m, tracing::trace_
 
 future<> database::apply_hint(schema_ptr s, const frozen_mutation& m, tracing::trace_state_ptr tr_state, db::timeout_clock::time_point timeout) {
     if (dblog.is_enabled(logging::log_level::trace)) {
-        dblog.trace("apply hint {}", m.pretty_printer(s));
+        LOGMACRO(dblog, log_level::trace, "apply hint {}", m.pretty_printer(s));
     }
     if (!s->is_synced()) {
         on_internal_error(dblog, format("attempted to apply hint using not synced schema of {}.{}, version={}", s->ks_name(), s->cf_name(), s->version()));
@@ -2586,7 +2586,7 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
     }, false);
 
     const auto should_flush = with_snapshot && cf.can_flush();
-    dblog.trace("{} {}.{} and views on all shards", should_flush ? "Flushing" : "Clearing", s->ks_name(), s->cf_name());
+    LOGMACRO(dblog, log_level::trace, "{} {}.{} and views on all shards", should_flush ? "Flushing" : "Clearing", s->ks_name(), s->cf_name());
     std::function<future<>(replica::table&)> flush_or_clear = should_flush ?
             [] (replica::table& cf) {
                 // TODO:
@@ -2646,7 +2646,7 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
 }
 
 future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, const table_truncate_state& st) {
-    dblog.trace("Truncating {}.{} on shard", cf.schema()->ks_name(), cf.schema()->cf_name());
+    LOGMACRO(dblog, log_level::trace, "Truncating {}.{} on shard", cf.schema()->ks_name(), cf.schema()->cf_name());
 
     const auto uuid = cf.schema()->id();
     const auto truncated_at = st.truncated_at;

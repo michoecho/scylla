@@ -515,7 +515,7 @@ future<> storage_service::raft_topology_update_ip(locator::host_id id, gms::inet
 future<storage_service::nodes_to_notify_after_sync> storage_service::sync_raft_topology_nodes(mutable_token_metadata_ptr tmptr, std::unordered_set<raft::server_id> prev_normal) {
     nodes_to_notify_after_sync nodes_to_notify;
 
-    rtlogger.trace("Start sync_raft_topology_nodes");
+    LOGMACRO(rtlogger, log_level::trace, "Start sync_raft_topology_nodes");
 
     const auto& t = _topology_state_machine._topology;
 
@@ -543,7 +543,7 @@ future<storage_service::nodes_to_notify_after_sync> storage_service::sync_raft_t
     };
 
     auto process_normal_node = [&] (raft::server_id id, locator::host_id host_id, std::optional<gms::inet_address> ip, const replica_state& rs) -> future<> {
-        rtlogger.trace("loading topology: raft id={} ip={} node state={} dc={} rack={} tokens state={} tokens={} shards={}",
+        LOGMACRO(rtlogger, log_level::trace, "loading topology: raft id={} ip={} node state={} dc={} rack={} tokens state={} tokens={} shards={}",
                       id, ip, rs.state, rs.datacenter, rs.rack, _topology_state_machine._topology.tstate, rs.ring.value().tokens, rs.shard_count, rs.cleanup);
         // Save tokens, not needed for raft topology management, but needed by legacy
         // Also ip -> id mapping is needed for address map recreation on reboot
@@ -560,7 +560,7 @@ future<storage_service::nodes_to_notify_after_sync> storage_service::sync_raft_t
     };
 
     auto process_transition_node = [&](raft::server_id id, locator::host_id host_id, std::optional<gms::inet_address> ip, const replica_state& rs) -> future<> {
-        rtlogger.trace("loading topology: raft id={} ip={} node state={} dc={} rack={} tokens state={} tokens={}",
+        LOGMACRO(rtlogger, log_level::trace, "loading topology: raft id={} ip={} node state={} dc={} rack={} tokens state={} tokens={}",
                       id, ip, rs.state, rs.datacenter, rs.rack, _topology_state_machine._topology.tstate,
                       seastar::value_of([&] () -> sstring {
                           return rs.ring ? ::format("{}", rs.ring->tokens) : sstring("null");
@@ -659,7 +659,7 @@ future<storage_service::nodes_to_notify_after_sync> storage_service::sync_raft_t
 
     co_await when_all_succeed(sys_ks_futures.begin(), sys_ks_futures.end()).discard_result();
 
-    rtlogger.trace("End sync_raft_topology_nodes");
+    LOGMACRO(rtlogger, log_level::trace, "End sync_raft_topology_nodes");
 
     co_return nodes_to_notify;
 }
@@ -816,7 +816,7 @@ future<> storage_service::topology_state_load(state_change_hint hint) {
     }
 
     for (const auto& gen_id : _topology_state_machine._topology.committed_cdc_generations) {
-        rtlogger.trace("topology_state_load: process committed cdc generation {}", gen_id);
+        LOGMACRO(rtlogger, log_level::trace, "topology_state_load: process committed cdc generation {}", gen_id);
         co_await _cdc_gens.local().handle_cdc_generation(gen_id);
         if (gen_id == _topology_state_machine._topology.committed_cdc_generations.back()) {
             co_await _sys_ks.local().update_cdc_generation_id(gen_id);
@@ -1032,7 +1032,7 @@ future<> storage_service::sstable_cleanup_fiber(raft::server& server, gate::hold
                 auto me = _topology_state_machine._topology.find(server.id());
                 // Recheck that cleanup is needed after the barrier
                 if (!me || me->second.cleanup != cleanup_status::running) {
-                    rtlogger.trace("cleanup triggered, but not needed");
+                    LOGMACRO(rtlogger, log_level::trace, "cleanup triggered, but not needed");
                     continue;
                 }
 
@@ -2814,9 +2814,9 @@ std::optional<db::system_keyspace::peer_info> storage_service::get_peer_info_for
 
 std::unordered_set<locator::token> storage_service::get_tokens_for(locator::host_id endpoint) {
     auto tokens_string = _gossiper.get_application_state_value(endpoint, application_state::TOKENS);
-    slogger.trace("endpoint={}, tokens_string={}", endpoint, tokens_string);
+    LOGMACRO(slogger, log_level::trace, "endpoint={}, tokens_string={}", endpoint, tokens_string);
     auto ret = versioned_value::tokens_from_string(tokens_string);
-    slogger.trace("endpoint={}, tokens={}", endpoint, ret);
+    LOGMACRO(slogger, log_level::trace, "endpoint={}, tokens={}", endpoint, ret);
     return ret;
 }
 
@@ -5446,7 +5446,7 @@ future<std::map<token, inet_address>> storage_service::get_tablet_to_endpoint_ma
 
 std::chrono::milliseconds storage_service::get_ring_delay() {
     auto ring_delay = _db.local().get_config().ring_delay_ms();
-    slogger.trace("Get RING_DELAY: {}ms", ring_delay);
+    LOGMACRO(slogger, log_level::trace, "Get RING_DELAY: {}ms", ring_delay);
     return std::chrono::milliseconds(ring_delay);
 }
 
@@ -6419,7 +6419,7 @@ future<service::group0_guard> storage_service::get_guard_for_tablet_update() {
 
 future<bool> storage_service::exec_tablet_update(service::group0_guard guard, std::vector<canonical_mutation> updates, sstring reason) {
     rtlogger.info("{}", reason);
-    rtlogger.trace("do update {} reason {}", updates, reason);
+    LOGMACRO(rtlogger, log_level::trace, "do update {} reason {}", updates, reason);
     updates.emplace_back(topology_mutation_builder(guard.write_timestamp())
             .set_version(_topology_state_machine._topology.version + 1)
             .build());
@@ -6833,7 +6833,7 @@ future<> storage_service::transit_tablet(table_id table, dht::token token, nonco
         auto [ updates, reason ] = prepare_mutations(tmap, guard.write_timestamp());
 
         rtlogger.info("{}", reason);
-        rtlogger.trace("do update {} reason {}", updates, reason);
+        LOGMACRO(rtlogger, log_level::trace, "do update {} reason {}", updates, reason);
 
         {
             topology_mutation_builder builder(guard.write_timestamp());

@@ -372,7 +372,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
             group0_guard guard, std::vector<canonical_mutation>&& updates, const sstring& reason) {
         try {
             rtlogger.info("updating topology state: {}", reason);
-            rtlogger.trace("update_topology_state mutations: {}", updates);
+            LOGMACRO(rtlogger, log_level::trace, "update_topology_state mutations: {}", updates);
             topology_change change{std::move(updates)};
             group0_command g0_cmd = _group0.client().prepare_command(std::move(change), guard, reason);
             co_await _group0.client().add_entry(std::move(g0_cmd), std::move(guard), _as);
@@ -590,7 +590,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                 auto const reason = format(
                     "insert CDC generation data (UUID: {}), part", gen_uuid);
 
-                rtlogger.trace("do update {} reason {}", m, reason);
+                LOGMACRO(rtlogger, log_level::trace, "do update {} reason {}", m, reason);
                 write_mutations change{{std::move(m)}};
                 group0_command g0_cmd = _group0.client().prepare_command(std::move(change), reason);
                 return _group0.client().add_entry_unguarded(std::move(g0_cmd), &_as);
@@ -970,7 +970,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
             }
 
             sstring reason = seastar::format("ALTER tablets KEYSPACE called with options: {}", saved_ks_props);
-            rtlogger.trace("do update {} reason {}", updates, reason);
+            LOGMACRO(rtlogger, log_level::trace, "do update {} reason {}", updates, reason);
             mixed_change change{std::move(updates)};
             group0_command g0_cmd = _group0.client().prepare_command(std::move(change), guard, reason);
             co_await utils::get_local_injector().inject("wait-before-committing-rf-change-event", utils::wait_for_message(30s));

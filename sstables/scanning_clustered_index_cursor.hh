@@ -64,7 +64,7 @@ private:
 
     // Unconditionally reads the promoted index blocks from the next data buffer
     future<> get_next_pi_blocks() {
-        sstlog.trace("scanning_clustered_index_cursor {}: parsing more blocks", fmt::ptr(this));
+        LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: parsing more blocks", fmt::ptr(this));
         promoted_index_blocks& blocks = _reader.get_pi_blocks();
         blocks = promoted_index_blocks{};
         _reader.switch_to_consume_next_mode();
@@ -116,7 +116,7 @@ public:
         const promoted_index_blocks* pi_blocks = &get_pi_blocks();
 
         if (all_blocks_read() && _current_pi_idx >= pi_blocks->size() - 1) {
-            sstlog.trace("scanning_clustered_index_cursor {}: position in current block (all blocks are read)", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: position in current block (all blocks are read)", fmt::ptr(this));
             return make_ready_future<std::optional<skip_info>>(std::nullopt);
         }
 
@@ -126,7 +126,7 @@ public:
         };
 
         if (!pi_blocks->empty() && cmp_with_start(pos, (*pi_blocks)[_current_pi_idx])) {
-            sstlog.trace("scanning_clustered_index_cursor {}: position in current block (exact match)", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: position in current block (exact match)", fmt::ptr(this));
             return make_ready_future<std::optional<skip_info>>(std::nullopt);
         }
 
@@ -138,7 +138,7 @@ public:
             }
 
             auto info = get_info_from_promoted_block(i, *pi_blocks);
-            sstlog.trace("scanning_clustered_index_cursor {}: lower bound skipped to cell, _current_pi_idx={}, offset={}",
+            LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: lower bound skipped to cell, _current_pi_idx={}, offset={}",
                 fmt::ptr(this), _current_pi_idx, info.offset);
             _skip_info = info;
             return make_ready_future<std::optional<skip_info>>(std::move(info));
@@ -151,7 +151,7 @@ public:
                 std::advance(i, _current_pi_idx - 1);
             }
             auto info = get_info_from_promoted_block(i, *pi_blocks);
-            sstlog.trace("scanning_clustered_index_cursor {}: skipped to cell, _current_pi_idx={}, offset={}",
+            LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: skipped to cell, _current_pi_idx={}, offset={}",
                 fmt::ptr(this), _current_pi_idx, info.offset);
             _skip_info = info;
             return std::make_optional(std::move(info));
@@ -164,7 +164,7 @@ public:
 
     future<std::optional<offset_in_partition>> probe_upper_bound(position_in_partition_view pos) override {
         if (get_total_pi_blocks_count() == 0) {
-            sstlog.trace("scanning_clustered_index_cursor {}: no promoted index", fmt::ptr(this));
+            LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: no promoted index", fmt::ptr(this));
             return make_ready_future<std::optional<offset_in_partition>>(std::nullopt);
         }
 
@@ -191,7 +191,7 @@ public:
         }
 
         auto pi_index = std::distance(pi_blocks->begin(), i);
-        sstlog.trace("scanning_clustered_index_cursor {} upper bound: skipped to cell, pi_idx={}, offset={}", fmt::ptr(this), pi_index, i->offset());
+        LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {} upper bound: skipped to cell, pi_idx={}, offset={}", fmt::ptr(this), pi_index, i->offset());
         return make_ready_future<std::optional<offset_in_partition>>(offset_in_partition(i->offset()));
     }
 
@@ -207,7 +207,7 @@ public:
             });
         }
 
-        sstlog.trace("scanning_clustered_index_cursor {}: next_entry(), pi_idx={}", fmt::ptr(this), _current_pi_idx);
+        LOGMACRO(sstlog, log_level::trace, "scanning_clustered_index_cursor {}: next_entry(), pi_idx={}", fmt::ptr(this), _current_pi_idx);
         promoted_index_block& block = pi_blocks[_current_pi_idx];
         auto ei = entry_info{block.start(_s), block.end(_s), block.offset()};
         ++_current_pi_idx;

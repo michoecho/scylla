@@ -182,7 +182,7 @@ void sstable_directory::filesystem_components_lister::handle(sstables::entry_des
         return;
     }
 
-    dirlog.trace("for SSTable directory, scanning {}", filename);
+    LOGMACRO(dirlog, log_level::trace, "for SSTable directory, scanning {}", filename);
     _state->generations_found.emplace(desc.generation, filename);
 
     switch (desc.component) {
@@ -243,7 +243,7 @@ sstable_directory::process_descriptor(sstables::entry_descriptor desc,
     auto shards = co_await get_shards_for_this_sstable(desc, storage_opts, flags);
     if (flags.sort_sstables_according_to_owner && shards.size() == 1 && shards[0] != this_shard_id()) {
         // identified a remote unshared sstable
-        dirlog.trace("{} identified as a remote unshared SSTable, shard={}", seastar::value_of([this, &desc] {
+        LOGMACRO(dirlog, log_level::trace, "{} identified as a remote unshared SSTable, shard={}", seastar::value_of([this, &desc] {
                 return sstable::component_basename(_schema->ks_name(), _schema->cf_name(),
                         desc.version, desc.generation, desc.format, component_type::Data);
             }), shards[0]);
@@ -255,16 +255,16 @@ sstable_directory::process_descriptor(sstables::entry_descriptor desc,
     validate(sst, flags);
 
     if (flags.need_mutate_level) {
-        dirlog.trace("Mutating {} to level 0\n", sst->get_filename());
+        LOGMACRO(dirlog, log_level::trace, "Mutating {} to level 0\n", sst->get_filename());
         co_await sst->mutate_sstable_level(0);
     }
 
     if (flags.sort_sstables_according_to_owner) {
         if (shards.size() == 1) {
-            dirlog.trace("{} identified as a local unshared SSTable", sst->get_filename());
+            LOGMACRO(dirlog, log_level::trace, "{} identified as a local unshared SSTable", sst->get_filename());
             _unshared_local_sstables.push_back(std::move(sst));
         } else {
-            dirlog.trace("{} identified as a shared SSTable, shards={}", sst->get_filename(), shards);
+            LOGMACRO(dirlog, log_level::trace, "{} identified as a shared SSTable, shards={}", sst->get_filename(), shards);
             _shared_sstable_info.push_back(co_await sst->get_open_info());
         }
     } else {
@@ -374,7 +374,7 @@ future<> sstable_directory::filesystem_components_lister::process(sstable_direct
         auto range = _state->generations_found.equal_range(desc.generation);
         for (auto it = range.first; it != range.second; ++it) {
             auto& path = it->second;
-            dirlog.trace("Scheduling to remove file {}, from an SSTable with a Temporary TOC", path.native());
+            LOGMACRO(dirlog, log_level::trace, "Scheduling to remove file {}, from an SSTable with a Temporary TOC", path.native());
             _state->files_for_removal.insert(path.native());
         }
         _state->generations_found.erase(range.first, range.second);
@@ -535,7 +535,7 @@ future<>
 sstable_directory::remove_sstables(std::vector<sstables::shared_sstable> sstlist) {
     dirlog.debug("Removing {} SSTables", sstlist.size());
     return parallel_for_each(std::move(sstlist), [] (const sstables::shared_sstable& sst) {
-        dirlog.trace("Removing SSTable {}", sst->get_filename());
+        LOGMACRO(dirlog, log_level::trace, "Removing SSTable {}", sst->get_filename());
         return sst->unlink().then([sst] {});
     });
 }
@@ -549,7 +549,7 @@ sstable_directory::collect_output_unshared_sstables(std::vector<sstables::shared
         auto shard = shards[0];
 
         if (shard == this_shard_id()) {
-            dirlog.trace("Collected output SSTable {} already local", sst->get_filename());
+            LOGMACRO(dirlog, log_level::trace, "Collected output SSTable {} already local", sst->get_filename());
             _unshared_local_sstables.push_back(std::move(sst));
             return make_ready_future<>();
         }
@@ -558,7 +558,7 @@ sstable_directory::collect_output_unshared_sstables(std::vector<sstables::shared
             return make_exception_future<>(std::runtime_error("Unexpected remote sstable"));
         }
 
-        dirlog.trace("Collected output SSTable {} is remote. Storing it", sst->get_filename());
+        LOGMACRO(dirlog, log_level::trace, "Collected output SSTable {} is remote. Storing it", sst->get_filename());
         _unshared_remote_sstables[shard].push_back(sst->get_descriptor(component_type::Data));
         return make_ready_future<>();
     });
@@ -643,7 +643,7 @@ future<sstring> sstable_directory::create_pending_deletion_log(opened_directory&
         sstring pending_delete_dir = (base_dir.path() / sstables::pending_delete_dir).native();
         pending_delete_log = format("{}/sstables-{}-{}.log", pending_delete_dir, gen_tracker.min(), gen_tracker.max());
         sstring tmp_pending_delete_log = pending_delete_log + ".tmp";
-        dirlog.trace("Writing {}", tmp_pending_delete_log);
+        LOGMACRO(dirlog, log_level::trace, "Writing {}", tmp_pending_delete_log);
 
             touch_directory(pending_delete_dir).get();
             auto oflags = open_flags::wo | open_flags::create | open_flags::exclusive;
@@ -662,7 +662,7 @@ future<sstring> sstable_directory::create_pending_deletion_log(opened_directory&
                 }
                 out.write(toc.begin() + trim_size, toc.size() - trim_size).get();
                 out.write("\n").get();
-                dirlog.trace("Wrote '{}' to {}", sstring(toc.begin() + trim_size, toc.size() - trim_size), tmp_pending_delete_log);
+                LOGMACRO(dirlog, log_level::trace, "Wrote '{}' to {}", sstring(toc.begin() + trim_size, toc.size() - trim_size), tmp_pending_delete_log);
             }
 
             out.flush().get();

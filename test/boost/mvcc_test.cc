@@ -43,7 +43,7 @@ static mutation_partition read_partition_from(const schema& schema, partition_sn
     mutation_partition p(schema);
     position_in_partition prev = position_in_partition::before_all_clustered_rows();
     do {
-        testlog.trace("cur: {}", cur);
+        LOGMACRO(testlog, log_level::trace, "cur: {}", cur);
         p.clustered_row(schema, cur.position(), is_dummy(cur.dummy()), is_continuous(cur.continuous()))
             .apply(schema, cur.row().as_deletable_row());
         auto after_pos = position_in_partition::after_key(schema, cur.position());
@@ -499,18 +499,18 @@ void evict_with_consistency_check(mvcc_container& ms, mvcc_partition& e, const m
     // Test for violation of "last versions are evicted first" and "information monotonicity"
     // by evicting and verifying the result after each eviction.
     const schema& s = *ms.schema();
-    testlog.trace("expected: {}", mutation_partition::printer(s, expected));
+    LOGMACRO(testlog, log_level::trace, "expected: {}", mutation_partition::printer(s, expected));
     while (true) {
-        testlog.trace("evicting");
+        LOGMACRO(testlog, log_level::trace, "evicting");
         auto ret = ms.tracker()->evict_from_lru_shallow();
 
-        testlog.trace("entry: {}", partition_entry::printer(e.entry()));
+        LOGMACRO(testlog, log_level::trace, "entry: {}", partition_entry::printer(e.entry()));
 
         auto p = e.squashed();
         auto cont = p.get_continuity(s);
 
-        testlog.trace("squashed: {}", mutation_partition::printer(s, p));
-        testlog.trace("continuity: {}", cont);
+        LOGMACRO(testlog, log_level::trace, "squashed: {}", mutation_partition::printer(s, p));
+        LOGMACRO(testlog, log_level::trace, "continuity: {}", cont);
 
         // Check that cursor view is the same.
         auto p2 = read_using_cursor(*e.read(), false);
@@ -568,7 +568,7 @@ SEASTAR_TEST_CASE(test_snapshot_cursor_is_consistent_with_merging) {
                 auto snap2 = e.read();
                 e += m3;
 
-                testlog.trace("e: {}", partition_entry::printer(e.entry()));
+                LOGMACRO(testlog, log_level::trace, "e: {}", partition_entry::printer(e.entry()));
 
                 auto expected = e.squashed();
                 auto snap = e.read();
@@ -1285,42 +1285,42 @@ SEASTAR_TEST_CASE(test_ensure_in_latest_preserves_range_tombstones) {
             position_in_partition::equal_compare eq(s);
 
             BOOST_REQUIRE(rev_cur.advance_to(position_in_partition::before_all_clustered_rows()));
-            testlog.trace("cur: {}", rev_cur);
+            LOGMACRO(testlog, log_level::trace, "cur: {}", rev_cur);
             BOOST_REQUIRE(eq(rev_cur.table_position(), position_in_partition::after_all_clustered_rows()));
             BOOST_REQUIRE(rev_cur.continuous());
             BOOST_REQUIRE(!rev_cur.range_tombstone());
             BOOST_REQUIRE(!rev_cur.range_tombstone_for_row());
 
             BOOST_REQUIRE(rev_cur.next());
-            testlog.trace("cur: {}", rev_cur);
+            LOGMACRO(testlog, log_level::trace, "cur: {}", rev_cur);
             BOOST_REQUIRE(eq(rev_cur.table_position(), table.make_ckey(6)));
             BOOST_REQUIRE(!rev_cur.continuous());
             BOOST_REQUIRE(!rev_cur.range_tombstone());
             BOOST_REQUIRE(!rev_cur.range_tombstone_for_row());
 
             BOOST_REQUIRE(rev_cur.next());
-            testlog.trace("cur: {}", rev_cur);
+            LOGMACRO(testlog, log_level::trace, "cur: {}", rev_cur);
             BOOST_REQUIRE(eq(rev_cur.table_position(), table.make_ckey(4)));
             BOOST_REQUIRE(!rev_cur.continuous());
             BOOST_REQUIRE(!rev_cur.range_tombstone());
             BOOST_REQUIRE_EQUAL(rev_cur.range_tombstone_for_row(), t0);
 
             BOOST_REQUIRE(rev_cur.next());
-            testlog.trace("cur: {}", rev_cur);
+            LOGMACRO(testlog, log_level::trace, "cur: {}", rev_cur);
             BOOST_REQUIRE(eq(rev_cur.table_position(), table.make_ckey(3)));
             BOOST_REQUIRE(rev_cur.continuous());
             BOOST_REQUIRE_EQUAL(rev_cur.range_tombstone(), t0);
             BOOST_REQUIRE_EQUAL(rev_cur.range_tombstone_for_row(), t1);
 
             BOOST_REQUIRE(rev_cur.next());
-            testlog.trace("cur: {}", rev_cur);
+            LOGMACRO(testlog, log_level::trace, "cur: {}", rev_cur);
             BOOST_REQUIRE(eq(rev_cur.table_position(), table.make_ckey(0)));
             BOOST_REQUIRE(rev_cur.continuous());
             BOOST_REQUIRE_EQUAL(rev_cur.range_tombstone(), t1);
             BOOST_REQUIRE_EQUAL(rev_cur.range_tombstone_for_row(), t1);
 
             BOOST_REQUIRE(!rev_cur.next());
-            testlog.trace("cur: {}", rev_cur);
+            LOGMACRO(testlog, log_level::trace, "cur: {}", rev_cur);
             BOOST_REQUIRE(eq(rev_cur.table_position(), position_in_partition::before_all_clustered_rows()));
             BOOST_REQUIRE(rev_cur.continuous());
             BOOST_REQUIRE_EQUAL(rev_cur.range_tombstone(), t1);
@@ -1527,25 +1527,25 @@ SEASTAR_TEST_CASE(test_range_tombstone_representation) {
             logalloc::reclaim_lock rl(r); // To make cur stable
 
             cur.advance_to(position_in_partition::before_all_clustered_rows());
-            testlog.trace("{}", cur);
+            LOGMACRO(testlog, log_level::trace, "{}", cur);
             BOOST_REQUIRE(eq(cur.table_position(), table.make_ckey(0)));
             BOOST_REQUIRE_EQUAL(cur.range_tombstone(), t0);
             BOOST_REQUIRE_EQUAL(cur.range_tombstone_for_row(), t0);
 
             BOOST_REQUIRE(cur.next());
-            testlog.trace("{}", cur);
+            LOGMACRO(testlog, log_level::trace, "{}", cur);
             BOOST_REQUIRE(eq(cur.table_position(), table.make_ckey(1)));
             BOOST_REQUIRE_EQUAL(cur.range_tombstone(), t1);
             BOOST_REQUIRE_EQUAL(cur.range_tombstone_for_row(), t1);
 
             BOOST_REQUIRE(cur.next());
-            testlog.trace("{}", cur);
+            LOGMACRO(testlog, log_level::trace, "{}", cur);
             BOOST_REQUIRE(eq(cur.table_position(), table.make_ckey(2)));
             BOOST_REQUIRE_EQUAL(cur.range_tombstone(), t1);
             BOOST_REQUIRE_EQUAL(cur.range_tombstone_for_row(), t2);
 
             BOOST_REQUIRE(cur.next());
-            testlog.trace("{}", cur);
+            LOGMACRO(testlog, log_level::trace, "{}", cur);
             BOOST_REQUIRE(eq(cur.table_position(), position_in_partition::after_all_clustered_rows()));
             BOOST_REQUIRE_EQUAL(cur.range_tombstone(), t1);
 
@@ -2034,7 +2034,7 @@ SEASTAR_TEST_CASE(test_apply_to_incomplete_with_dummies) {
             }
         });
 
-        testlog.trace("entry @{}: {}", __LINE__, partition_entry::printer(e.entry()));
+        LOGMACRO(testlog, log_level::trace, "entry @{}: {}", __LINE__, partition_entry::printer(e.entry()));
 
         mutation m2(s, ss.make_pkey());
         // This one covers the dummy row for before(3) and before(2), marking the range [1, 3] as continuous.
@@ -2049,7 +2049,7 @@ SEASTAR_TEST_CASE(test_apply_to_incomplete_with_dummies) {
         e += m3;
         auto snp3 = e.read();
 
-        testlog.trace("entry @{}: {}", __LINE__, partition_entry::printer(e.entry()));
+        LOGMACRO(testlog, log_level::trace, "entry @{}: {}", __LINE__, partition_entry::printer(e.entry()));
 
         auto expected = m0 + m1 + m2 + m3;
 

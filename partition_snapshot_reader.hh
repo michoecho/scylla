@@ -85,7 +85,7 @@ class partition_snapshot_flat_reader : public mutation_reader::impl, public Acco
             in_alloc_section([&] {
                 _done = false;
                 _cursor.advance_to(lower_bound);
-                mplog.trace("on_new_range({}): {}", lower_bound, _cursor);
+                LOGMACRO(mplog, log_level::trace, "on_new_range({}): {}", lower_bound, _cursor);
             });
         }
 
@@ -115,22 +115,22 @@ class partition_snapshot_flat_reader : public mutation_reader::impl, public Acco
                 _cursor.maybe_refresh();
 
                 auto rt_before_row = _cursor.range_tombstone();
-                mplog.trace("next_interval(): range={}, rt={}, cursor={}", ck_range_query, rt_before_row, _cursor);
+                LOGMACRO(mplog, log_level::trace, "next_interval(): range={}, rt={}, cursor={}", ck_range_query, rt_before_row, _cursor);
 
                 if (_done || cmp(_cursor.position(), position_in_partition::for_range_end(ck_range_query)) >= 0) {
-                    mplog.trace("next_interval(): done");
+                    LOGMACRO(mplog, log_level::trace, "next_interval(): done");
                     return interval_info{rt_before_row, std::monostate{}};
                 }
 
                 if (_cursor.dummy()) {
-                    mplog.trace("next_interval(): pos={}, rt={}", _cursor.position(), rt_before_row);
+                    LOGMACRO(mplog, log_level::trace, "next_interval(): pos={}, rt={}", _cursor.position(), rt_before_row);
                     auto res = interval_info{rt_before_row, position_in_partition(_cursor.position())};
                     _done = !_cursor.next();
                     return res;
                 }
 
                 tombstone rt_for_row = _cursor.range_tombstone_for_row();
-                mplog.trace("next_interval(): row, pos={}, rt={}, rt_for_row={}", _cursor.position(), rt_before_row, rt_for_row);
+                LOGMACRO(mplog, log_level::trace, "next_interval(): row, pos={}, rt={}, rt_for_row={}", _cursor.position(), rt_before_row, rt_for_row);
                 auto result = mutation_fragment_v2(_query_schema, _permit, _cursor.row());
                 _done = !_cursor.next();
                 return interval_info{rt_before_row, row_info{std::move(result), rt_for_row}};
