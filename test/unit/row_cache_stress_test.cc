@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
 
             timer<> completion_timer;
             completion_timer.set_callback([&] {
-                testlog.info("Test done.");
+                LOGMACRO(testlog, log_level::info, "Test done.");
                 cancelled = true;
             });
             completion_timer.arm(std::chrono::seconds(seconds));
@@ -319,7 +319,7 @@ int main(int argc, char** argv) {
             monotonic_counter<uint64_t> flushes([&] { return t.mutation_phase; });
             stats_printer.set_callback([&] {
                 auto MB = 1024 * 1024;
-                testlog.info("reads/s: {}, scans/s: {}, mutations/s: {}, flushes/s: {}, Cache: {}/{} [MB], LSA: {}/{} [MB], std free: {} [MB]",
+                LOGMACRO(testlog, log_level::info, "reads/s: {}, scans/s: {}, mutations/s: {}, flushes/s: {}, Cache: {}/{} [MB], LSA: {}/{} [MB], std free: {} [MB]",
                     reads.change(), scans.change(), mutations.change(), flushes.change(),
                     t.tracker.region().occupancy().used_space() / MB,
                     t.tracker.region().occupancy().total_space() / MB,
@@ -339,7 +339,7 @@ int main(int argc, char** argv) {
                 int_range ck_range = make_int_range(start, start + len);
 
                 int pk = t.p_keys.size() / 2; // FIXME: spread over 3 consecutive partitions
-                testlog.info("{} is using pk={} ck={}", id, pk, ck_range);
+                LOGMACRO(testlog, log_level::info, "{} is using pk={} ck={}", id, pk, ck_range);
                 while (!cancelled) {
                     LOGMACRO(testlog, log_level::trace, "{}: starting read", id);
                     auto rd = t.make_single_key_reader(pk, ck_range);

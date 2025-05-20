@@ -142,7 +142,7 @@ void stream_manager::init_messaging_service_handler(abort_source& as) {
             lw_shared_ptr<std::any> log_done;
             if (utils::get_local_injector().is_enabled("stream_mutation_fragments")) {
                 log_done = make_lw_shared<std::any>(seastar::make_shared(seastar::defer([] {
-                    sslog.info("stream_mutation_fragments: done");
+                    LOGMACRO(sslog, log_level::info, "stream_mutation_fragments: done");
                 })));
             }
 
@@ -174,15 +174,15 @@ void stream_manager::init_messaging_service_handler(abort_source& as) {
                         return utils::get_local_injector().inject("stream_mutation_fragments", [&guard, &as] (auto& handler) -> future<> {
                             auto& guard_ = guard;
                             auto& as_ = as;
-                            sslog.info("stream_mutation_fragments: waiting");
+                            LOGMACRO(sslog, log_level::info, "stream_mutation_fragments: waiting");
                             while (!handler.poll_for_message()) {
                                 guard_.check();
                                 co_await sleep_abortable(std::chrono::milliseconds(5), as_);
                             }
-                            sslog.info("stream_mutation_fragments: released");
+                            LOGMACRO(sslog, log_level::info, "stream_mutation_fragments: released");
                         }).then([mf = std::move(mf)] () mutable {
                             if (utils::get_local_injector().is_enabled("stream_mutation_fragments_rx_error")) {
-                                sslog.info("stream_mutation_fragments_rx_error: throw");
+                                LOGMACRO(sslog, log_level::info, "stream_mutation_fragments_rx_error: throw");
                                 throw std::runtime_error("stream_mutation_fragments_rx_error");
                             }
                             return mutation_fragment_opt(std::move(mf));
@@ -232,7 +232,7 @@ void stream_manager::init_messaging_service_handler(abort_source& as) {
                     received_partitions = f.get();
                 }
                 if (received_partitions) {
-                    sslog.info("[Stream #{}] Write to sstable for ks={}, cf={}, estimated_partitions={}, received_partitions={}",
+                    LOGMACRO(sslog, log_level::info, "[Stream #{}] Write to sstable for ks={}, cf={}, estimated_partitions={}, received_partitions={}",
                             plan_id, s->ks_name(), s->cf_name(), estimated_partitions, received_partitions);
                 }
                 if (status == -1) {
@@ -363,10 +363,10 @@ future<> stream_session::on_initialization_complete() {
 
 void stream_session::received_failed_complete_message() {
     if (utils::get_local_injector().is_enabled("stream_session_ignore_failed_message")) {
-        sslog.info("[Stream #{}] Ignored failed complete message, peer={}", plan_id(), peer);
+        LOGMACRO(sslog, log_level::info, "[Stream #{}] Ignored failed complete message, peer={}", plan_id(), peer);
         return;
     }
-    sslog.info("[Stream #{}] Received failed complete message, peer={}", plan_id(), peer);
+    LOGMACRO(sslog, log_level::info, "[Stream #{}] Received failed complete message, peer={}", plan_id(), peer);
     _received_failed_complete_message = true;
     close_session(stream_session_state::FAILED);
 }
@@ -375,7 +375,7 @@ void stream_session::abort() {
     if (sslog.is_enabled(logging::log_level::debug)) {
         LOGMACRO(sslog, log_level::debug, "[Stream #{}] Aborted stream session={}, peer={}, is_initialized={}", plan_id(), fmt::ptr(this), peer, is_initialized());
     } else {
-        sslog.info("[Stream #{}] Aborted stream session, peer={}, is_initialized={}", plan_id(), peer, is_initialized());
+        LOGMACRO(sslog, log_level::info, "[Stream #{}] Aborted stream session, peer={}, is_initialized={}", plan_id(), peer, is_initialized());
     }
     close_session(stream_session_state::FAILED);
 }
@@ -598,7 +598,7 @@ void stream_session::close_session(stream_session_state final_state) {
 
 void stream_session::start() {
     if (_requests.empty() && _transfers.empty()) {
-        sslog.info("[Stream #{}] Session does not have any tasks.", plan_id());
+        LOGMACRO(sslog, log_level::info, "[Stream #{}] Session does not have any tasks.", plan_id());
         close_session(stream_session_state::COMPLETE);
         return;
     }

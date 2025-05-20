@@ -282,13 +282,13 @@ public:
     }
 
     void reset() noexcept {
-        _logger.info("Resetting cache");
+        LOGMACRO(_logger, log_level::info, "Resetting cache");
 
         remove_if([](const value_type&){ return true; });
     }
 
     bool update_config(config cfg) {
-        _logger.info("Updating loading cache; max_size: {}, expiry: {}ms, refresh: {}ms", cfg.max_size,
+        LOGMACRO(_logger, log_level::info, "Updating loading cache; max_size: {}, expiry: {}ms, refresh: {}ms", cfg.max_size,
                      std::chrono::duration_cast<std::chrono::milliseconds>(cfg.expiry).count(),
                      std::chrono::duration_cast<std::chrono::milliseconds>(cfg.refresh).count());
 

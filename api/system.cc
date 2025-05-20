@@ -155,22 +155,22 @@ void set_system(http_context& ctx, routes& r) {
     });
 
     hs::drop_sstable_caches.set(r, [&ctx](std::unique_ptr<request> req) {
-        apilog.info("Dropping sstable caches");
+        LOGMACRO(apilog, log_level::info, "Dropping sstable caches");
         return ctx.db.invoke_on_all([] (replica::database& db) {
             return db.drop_caches();
         }).then([] {
-            apilog.info("Caches dropped");
+            LOGMACRO(apilog, log_level::info, "Caches dropped");
             return json::json_return_type(json::json_void());
         });
     });
 
     hs::dump_profile.set(r, [](std::unique_ptr<request> req) {
         if (!__llvm_profile_dump) {
-            apilog.info("Profile will not be dumped, executable is not instrumented with profile dumping.");
+            LOGMACRO(apilog, log_level::info, "Profile will not be dumped, executable is not instrumented with profile dumping.");
             return make_ready_future<json::json_return_type>(json::json_return_type(json::json_void()));
         }
         sstring profile_dest(__llvm_profile_get_filename ? __llvm_profile_get_filename() : "disk");
-        apilog.info("Dumping profile to {}", profile_dest);
+        LOGMACRO(apilog, log_level::info, "Dumping profile to {}", profile_dest);
         __llvm_profile_dump();
         if (__llvm_profile_reset_counters) {
             // If counters are not reset the profile dumping mechanism will issue a warning and exit
@@ -181,7 +181,7 @@ void set_system(http_context& ctx, routes& r) {
         } else {
             apilog.warn("Could not reset profile counters, profile dumping will be skipped next time it is attempted");
         }
-        apilog.info("Profile dumped to {}", profile_dest);
+        LOGMACRO(apilog, log_level::info, "Profile dumped to {}", profile_dest);
         return make_ready_future<json::json_return_type>(json::json_return_type(json::json_void()));
     }) ;
 }

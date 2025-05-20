@@ -171,11 +171,11 @@ SEASTAR_TEST_CASE(frozen_mutation_is_consumed_in_order) {
     frozen_mutation fm{m};
 
     auto validate_consume = [] (schema_ptr s, const frozen_mutation& fm, const mutation& m) {
-        testlog.info("Validating frozen_mutation::consume");
+        LOGMACRO(testlog, log_level::info, "Validating frozen_mutation::consume");
         auto c = validating_consumer(*s);
         fm.consume(s, c);
 
-        testlog.info("Validating frozen_mutation::consume: rebuilding mutation");
+        LOGMACRO(testlog, log_level::info, "Validating frozen_mutation::consume: rebuilding mutation");
         mutation_rebuilder_v2 rebuilder(s);
         auto rebuilt_mut = fm.consume(s, rebuilder).result;
         assert_that(rebuilt_mut).has_mutation();
@@ -183,12 +183,12 @@ SEASTAR_TEST_CASE(frozen_mutation_is_consumed_in_order) {
     };
 
     auto validate_consume_gently = [] (schema_ptr s, const frozen_mutation& fm, const mutation& m) -> future<> {
-        testlog.info("Validating frozen_mutation::consume_gently");
+        LOGMACRO(testlog, log_level::info, "Validating frozen_mutation::consume_gently");
         auto c = validating_consumer(*s);
         auto adaptor = frozen_mutation_consumer_adaptor(s, c);
         co_await fm.consume_gently(s, adaptor);
 
-        testlog.info("Validating frozen_mutation::consume_gently: rebuilding mutation");
+        LOGMACRO(testlog, log_level::info, "Validating frozen_mutation::consume_gently: rebuilding mutation");
         mutation_rebuilder_v2 rebuilder(s);
         auto rebuilt_mut = fm.consume(s, rebuilder).result;
         assert_that(rebuilt_mut).has_mutation();
@@ -199,7 +199,7 @@ SEASTAR_TEST_CASE(frozen_mutation_is_consumed_in_order) {
     co_await validate_consume_gently(s, fm, m);
 
     // Add another random mutation and re-test
-    testlog.info("Adding another random partition to mutation");
+    LOGMACRO(testlog, log_level::info, "Adding another random partition to mutation");
     m += gen();
     fm = freeze(m);
 

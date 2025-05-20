@@ -1026,7 +1026,7 @@ SEASTAR_THREAD_TEST_CASE(read_max_size) {
             for (auto allow_short_read : {true, false}) {
                 for (auto max_size : {1024u, 1024u * 1024u, 1024u * 1024u * 1024u}) {
                     const auto should_throw = max_size < (num_rows * value.size() * 2) && !allow_short_read;
-                    testlog.info("checking: query_method={}, allow_short_read={}, max_size={}, should_throw={}", query_method_name, allow_short_read, max_size, should_throw);
+                    LOGMACRO(testlog, log_level::info, "checking: query_method={}, allow_short_read={}, max_size={}, should_throw={}", query_method_name, allow_short_read, max_size, should_throw);
                     auto slice = s->full_slice();
                     if (allow_short_read) {
                         slice.options.set<query::partition_slice::option::allow_short_read>();
@@ -1107,7 +1107,7 @@ SEASTAR_THREAD_TEST_CASE(unpaged_mutation_read_global_limit) {
         };
 
         for (auto [query_method_name, query_method] : query_methods) {
-            testlog.info("checking: query_method={}", query_method_name);
+            LOGMACRO(testlog, log_level::info, "checking: query_method={}", query_method_name);
             auto slice = s->full_slice();
             slice.options.remove<query::partition_slice::option::allow_short_read>();
             query::read_command cmd(s->id(), s->version(), slice, query::max_result_size(max_size), query::tombstone_limit::max);

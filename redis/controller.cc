@@ -80,7 +80,7 @@ future<> controller::listen(seastar::sharded<auth::service>& auth_service, const
                 auto cred = std::make_shared<seastar::tls::credentials_builder>();
                 f = utils::configure_tls_creds_builder(*cred, std::move(ceo));
 
-                slogger.info("Enabling encrypted REDIS connections between client and server");
+                LOGMACRO(slogger, log_level::info, "Enabling encrypted REDIS connections between client and server");
 
                 if (cfg.redis_ssl_port() && cfg.redis_ssl_port() != cfg.redis_port()) {
                     configs.emplace_back(listen_cfg{{ip, cfg.redis_ssl_port()}, std::move(cred)});
@@ -93,7 +93,7 @@ future<> controller::listen(seastar::sharded<auth::service>& auth_service, const
             return f.then([server, configs = std::move(configs), keepalive] {
                 return parallel_for_each(configs, [server, keepalive](const listen_cfg & cfg) {
                     return server->invoke_on_all(&redis_transport::redis_server::listen, cfg.addr, cfg.cred, false, keepalive, std::nullopt, [&c = *server]() -> auto& { return c.local(); }).then([cfg] {
-                        slogger.info("Starting listening for REDIS clients on {} ({})", cfg.addr, cfg.cred ? "encrypted" : "unencrypted");
+                        LOGMACRO(slogger, log_level::info, "Starting listening for REDIS clients on {} ({})", cfg.addr, cfg.cred ? "encrypted" : "unencrypted");
                     });
                 });
             });

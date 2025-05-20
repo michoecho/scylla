@@ -216,7 +216,7 @@ SEASTAR_TEST_CASE(scan_enormous_table_test) {
             rows_fetched += count_rows_fetched(msg);
             paging_state = extract_paging_state(msg);
             if (rows_fetched >= fetched_rows_log_counter){
-                testlog.info("Fetched {} rows", rows_fetched);
+                LOGMACRO(testlog, log_level::info, "Fetched {} rows", rows_fetched);
                 fetched_rows_log_counter += 1e7;
             }
         } while(has_more_pages(msg));

@@ -708,12 +708,12 @@ static future<bool> scan_table(
         member = std::move(attribute_name);
         column_name = bytes(executor::ATTRS_COLUMN_NAME);
         cd = s->get_column_definition(column_name);
-        tlogger.info("table {} TTL enabled with attribute {} in {}", s->cf_name(), *member, executor::ATTRS_COLUMN_NAME);
+        LOGMACRO(tlogger, log_level::info, "table {} TTL enabled with attribute {} in {}", s->cf_name(), *member, executor::ATTRS_COLUMN_NAME);
     } else {
-        tlogger.info("table {} TTL enabled with attribute {}", s->cf_name(), *attribute_name);
+        LOGMACRO(tlogger, log_level::info, "table {} TTL enabled with attribute {}", s->cf_name(), *attribute_name);
     }
     if (!cd) {
-        tlogger.info("table {} TTL column is missing, not scanning", s->cf_name());
+        LOGMACRO(tlogger, log_level::info, "table {} TTL column is missing, not scanning", s->cf_name());
         co_return false;
     }
     data_type column_type = cd->type;
@@ -724,7 +724,7 @@ static future<bool> scan_table(
     // scan it.
     if ((member && column_type->get_kind() != abstract_type::kind::map) ||
         (!member && column_type->get_kind() != abstract_type::kind::decimal)) {
-        tlogger.info("table {} TTL column has unsupported type, not scanning", s->cf_name());
+        LOGMACRO(tlogger, log_level::info, "table {} TTL column has unsupported type, not scanning", s->cf_name());
         co_return false;
     }
     expiration_stats.scan_table++;
@@ -798,7 +798,7 @@ future<> expiration_service::run() {
                     tlogger.warn("table {}.{} expiration scan failed: {}",
                         s->ks_name(), s->cf_name(), std::current_exception());
                 } else {
-                    tlogger.info("expiration scan failed when table {}.{} was deleted",
+                    LOGMACRO(tlogger, log_level::info, "expiration scan failed when table {}.{} was deleted",
                         s->ks_name(), s->cf_name());
                 }
             }
@@ -814,7 +814,7 @@ future<> expiration_service::run() {
         std::chrono::milliseconds period(long(_db.get_config().alternator_ttl_period_in_seconds() * 1000));
         if (scan_duration < period) {
             try {
-                tlogger.info("sleeping {} seconds until next period", (period - scan_duration).count()/1000.0);
+                LOGMACRO(tlogger, log_level::info, "sleeping {} seconds until next period", (period - scan_duration).count()/1000.0);
                 co_await seastar::sleep_abortable(period - scan_duration, _abort_source);
             } catch(seastar::sleep_aborted&) {}
         } else {

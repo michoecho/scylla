@@ -117,12 +117,12 @@ do_test_file_stream(replica::database& db, netw::messaging_service& ms, std::vec
             }
             size_t stream_bytes = co_await tablet_stream_files(ms, std::move(files), targets, table, ops_id, service::null_topology_guard, inject_error);
             co_await mark_tablet_stream_done(ops_id);
-            testlog.info("do_test_file_stream[{}] status=ok files={} stream_bytes={}", ops_id, filelist.size(), stream_bytes);
+            LOGMACRO(testlog, log_level::info, "do_test_file_stream[{}] status=ok files={} stream_bytes={}", ops_id, filelist.size(), stream_bytes);
             ret = true;
         } catch (seastar::rpc::stream_closed&) {
             testlog.warn("do_test_file_stream[{}] status=fail error={} retry={}", ops_id, std::current_exception(), n_retries++);
             if (n_retries < 3) {
-                testlog.info("Retrying send");
+                LOGMACRO(testlog, log_level::info, "Retrying send");
                 continue;
             }
         } catch (...) {
@@ -168,7 +168,7 @@ void do_test_file_stream(bool inject_error) {
             file_size = (rand() % 10) * 1024 * base_size + rand() % base_size;
         }
         file_size = std::max(size_t(1), file_size);
-        testlog.info("file_tx={} file_size={}", file, file_size);
+        LOGMACRO(testlog, log_level::info, "file_tx={} file_size={}", file, file_size);
         write_random_content_to_file(file, file_size).get();
     }
 
@@ -179,7 +179,7 @@ void do_test_file_stream(bool inject_error) {
     bool cleanup = true;
     for (auto& file : files) {
         auto hash = generate_file_hash(file).get();
-        testlog.info("file_tx={}    hash={}", file, hash);
+        LOGMACRO(testlog, log_level::info, "file_tx={}    hash={}", file, hash);
         hash_tx.push_back(hash);
         if (cleanup) {
             seastar::remove_file(file).get();
@@ -198,12 +198,12 @@ void do_test_file_stream(bool inject_error) {
             }
         }
         hash_rx.push_back(hash);
-        testlog.info("file_rx={} hash={}", file, hash);
+        LOGMACRO(testlog, log_level::info, "file_rx={} hash={}", file, hash);
     }
 
     BOOST_REQUIRE(hash_tx.size() == hash_rx.size());
     for (size_t i = 0; i < hash_tx.size(); i++) {
-        testlog.info("Check tx_hash={} rx_hash={}", hash_tx[i], hash_rx[i]);
+        LOGMACRO(testlog, log_level::info, "Check tx_hash={} rx_hash={}", hash_tx[i], hash_rx[i]);
         if (inject_error) {
             BOOST_REQUIRE(hash_tx[i] == hash_rx[i] || sstring("SKIP") == hash_rx[i]);
         } else {
@@ -228,7 +228,7 @@ void do_test_unsupported_file_ops() {
     }
 
     for (auto& file : files) {
-        testlog.info("file_tx={} file_size={}", file, file_size);
+        LOGMACRO(testlog, log_level::info, "file_tx={} file_size={}", file, file_size);
         write_random_content_to_file(file, file_size).get();
     }
 

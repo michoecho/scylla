@@ -87,7 +87,7 @@ future<> migration_manager::stop() {
 
 future<> migration_manager::drain()
 {
-    mlogger.info("stopping migration service");
+    LOGMACRO(mlogger, log_level::info, "stopping migration service");
     _as.request_abort();
 
     co_await uninit_messaging_service();
@@ -262,7 +262,7 @@ bool migration_manager::have_schema_agreement() {
         return stop_iteration::no;
     });
     if (match) {
-        mlogger.info("Schema agreement check passed.");
+        LOGMACRO(mlogger, log_level::info, "Schema agreement check passed.");
     }
     return match;
 }
@@ -350,7 +350,7 @@ future<> migration_manager::submit_migration_task(locator::host_id id, bool can_
 
 future<> migration_manager::do_merge_schema_from(locator::host_id id)
 {
-    mlogger.info("Pulling schema from {}", id);
+    LOGMACRO(mlogger, log_level::info, "Pulling schema from {}", id);
     abort_source as;
     auto frozen_and_canonical_mutations = co_await ser::migration_manager_rpc_verbs::send_migration_request(&_messaging, id, as, netw::schema_pull_options{});
     auto&& [_, canonical_mutations] = frozen_and_canonical_mutations;
@@ -360,7 +360,7 @@ future<> migration_manager::do_merge_schema_from(locator::host_id id)
     }
 
     co_await merge_schema_from(id, *canonical_mutations);
-    mlogger.info("Schema merge with {} completed", id);
+    LOGMACRO(mlogger, log_level::info, "Schema merge with {} completed", id);
 }
 
 future<> migration_manager::merge_schema_from(locator::host_id id)
@@ -369,7 +369,7 @@ future<> migration_manager::merge_schema_from(locator::host_id id)
         return make_exception_future<>(abort_requested_exception());
     }
 
-    mlogger.info("Requesting schema pull from {}", id);
+    LOGMACRO(mlogger, log_level::info, "Requesting schema pull from {}", id);
     // FIXME: Drop entries for removed nodes (or earlier).
     auto res = _schema_pulls.try_emplace(id, [id, this] {
         return do_merge_schema_from(id);
@@ -404,7 +404,7 @@ future<> migration_manager::merge_schema_from(locator::host_id src, const std::v
 }
 
 future<> migration_manager::reload_schema() {
-    mlogger.info("Reloading schema");
+    LOGMACRO(mlogger, log_level::info, "Reloading schema");
     std::vector<mutation> mutations;
     return db::schema_tables::merge_schema(_sys_ks, _storage_proxy.container(), _feat, std::move(mutations), true);
 }
@@ -613,13 +613,13 @@ void migration_notifier::before_drop_keyspace(const sstring& keyspace_name,
 
 std::vector<mutation> prepare_keyspace_update_announcement(replica::database& db, lw_shared_ptr<keyspace_metadata> ksm, api::timestamp_type ts) {
     db.validate_keyspace_update(*ksm);
-    mlogger.info("Update Keyspace: {}", ksm);
+    LOGMACRO(mlogger, log_level::info, "Update Keyspace: {}", ksm);
     return db::schema_tables::make_create_keyspace_mutations(db.features().cluster_schema_features(), ksm, ts);
 }
 
 std::vector<mutation> prepare_new_keyspace_announcement(replica::database& db, lw_shared_ptr<keyspace_metadata> ksm, api::timestamp_type timestamp) {
     db.validate_new_keyspace(*ksm);
-    mlogger.info("Create new Keyspace: {}", ksm);
+    LOGMACRO(mlogger, log_level::info, "Create new Keyspace: {}", ksm);
     return db::schema_tables::make_create_keyspace_mutations(db.features().cluster_schema_features(), ksm, timestamp);
 }
 
@@ -648,7 +648,7 @@ static future<std::vector<mutation>> do_prepare_new_column_family_announcement(s
         throw exceptions::invalid_request_exception(format("Table with ID {} already exists: {}", cfm->id(), db.find_schema(cfm->id())));
     }
 
-    mlogger.info("Create new ColumnFamily: {}", cfm);
+    LOGMACRO(mlogger, log_level::info, "Create new ColumnFamily: {}", cfm);
 
     return seastar::async([&db, &ksm, cfm, timestamp] {
         auto mutations = db::schema_tables::make_create_table_mutations(cfm, timestamp);
@@ -687,7 +687,7 @@ future<std::vector<mutation>> prepare_column_family_update_announcement(storage_
     try {
         auto& db = sp.local_db();
         auto&& old_schema = db.find_column_family(cfm->ks_name(), cfm->cf_name()).schema(); // FIXME: Should we lookup by id?
-        mlogger.info("Update table '{}.{}' From {} To {}", cfm->ks_name(), cfm->cf_name(), *old_schema, *cfm);
+        LOGMACRO(mlogger, log_level::info, "Update table '{}.{}' From {} To {}", cfm->ks_name(), cfm->cf_name(), *old_schema, *cfm);
         auto&& keyspace = db.find_keyspace(cfm->ks_name()).metadata();
 
         auto mutations = co_await seastar::async([&] {
@@ -696,7 +696,7 @@ future<std::vector<mutation>> prepare_column_family_update_announcement(storage_
         });
         for (auto&& view : view_updates) {
             auto& old_view = keyspace->cf_meta_data().at(view->cf_name());
-            mlogger.info("Update view '{}.{}' From {} To {}", view->ks_name(), view->cf_name(), *old_view, *view);
+            LOGMACRO(mlogger, log_level::info, "Update view '{}.{}' From {} To {}", view->ks_name(), view->cf_name(), *old_view, *view);
             auto view_mutations = db::schema_tables::make_update_view_mutations(keyspace, view_ptr(old_view), std::move(view), ts, false);
             std::move(view_mutations.begin(), view_mutations.end(), std::back_inserter(mutations));
             co_await coroutine::maybe_yield();
@@ -720,12 +720,12 @@ static future<std::vector<mutation>> do_prepare_new_type_announcement(storage_pr
 }
 
 future<std::vector<mutation>> prepare_new_type_announcement(storage_proxy& sp, user_type new_type, api::timestamp_type ts) {
-    mlogger.info("Prepare Create new User Type: {}", new_type->get_name_as_string());
+    LOGMACRO(mlogger, log_level::info, "Prepare Create new User Type: {}", new_type->get_name_as_string());
     return do_prepare_new_type_announcement(sp, std::move(new_type), ts);
 }
 
 future<std::vector<mutation>> prepare_update_type_announcement(storage_proxy& sp, user_type updated_type, api::timestamp_type ts) {
-    mlogger.info("Prepare Update User Type: {}", updated_type->get_name_as_string());
+    LOGMACRO(mlogger, log_level::info, "Prepare Update User Type: {}", updated_type->get_name_as_string());
     return do_prepare_new_type_announcement(sp, updated_type, ts);
 }
 
@@ -762,7 +762,7 @@ future<std::vector<mutation>> prepare_keyspace_drop_announcement(replica::databa
         throw exceptions::configuration_exception(format("Cannot drop non existing keyspace '{}'.", ks_name));
     }
     auto& keyspace = db.find_keyspace(ks_name);
-    mlogger.info("Drop Keyspace '{}'", ks_name);
+    LOGMACRO(mlogger, log_level::info, "Drop Keyspace '{}'", ks_name);
     return seastar::async([&db, &keyspace, ts, ks_name] {
         auto mutations = db::schema_tables::make_drop_keyspace_mutations(db.features().cluster_schema_features(), keyspace.metadata(), ts);
         db.get_notifier().before_drop_keyspace(ks_name, mutations, ts);
@@ -792,7 +792,7 @@ future<std::vector<mutation>> prepare_column_family_drop_announcement(storage_pr
             co_await coroutine::return_exception(exceptions::invalid_request_exception(seastar::format("Cannot drop table when materialized views still depend on it ({}.{{{}}})",
                         schema->ks_name(), fmt::join(explicit_view_names, ", "))));
         }
-        mlogger.info("Drop table '{}.{}'", schema->ks_name(), schema->cf_name());
+        LOGMACRO(mlogger, log_level::info, "Drop table '{}.{}'", schema->ks_name(), schema->cf_name());
 
         std::vector<mutation> drop_si_mutations;
         if (!schema->all_indices().empty()) {
@@ -803,7 +803,7 @@ future<std::vector<mutation>> prepare_column_family_drop_announcement(storage_pr
         mutations.insert(mutations.end(), std::make_move_iterator(drop_si_mutations.begin()), std::make_move_iterator(drop_si_mutations.end()));
         for (auto& v : views) {
             if (!old_cfm.get_index_manager().is_index(v)) {
-                mlogger.info("Drop view '{}.{}' of table '{}'", v->ks_name(), v->cf_name(), schema->cf_name());
+                LOGMACRO(mlogger, log_level::info, "Drop view '{}.{}' of table '{}'", v->ks_name(), v->cf_name(), schema->cf_name());
                 auto m = db::schema_tables::make_drop_view_mutations(keyspace, v, ts);
                 mutations.insert(mutations.end(), std::make_move_iterator(m.begin()), std::make_move_iterator(m.end()));
             }
@@ -826,7 +826,7 @@ future<std::vector<mutation>> prepare_column_family_drop_announcement(storage_pr
 future<std::vector<mutation>> prepare_type_drop_announcement(storage_proxy& sp, user_type dropped_type, api::timestamp_type ts) {
     auto& db = sp.local_db();
     auto&& keyspace = db.find_keyspace(dropped_type->_keyspace);
-    mlogger.info("Drop User Type: {}", dropped_type->get_name_as_string());
+    LOGMACRO(mlogger, log_level::info, "Drop User Type: {}", dropped_type->get_name_as_string());
     auto mutations =
             db::schema_tables::make_drop_type_mutations(keyspace.metadata(), dropped_type, ts);
     return include_keyspace(sp, *keyspace.metadata(), std::move(mutations));
@@ -840,7 +840,7 @@ future<std::vector<mutation>> prepare_new_view_announcement(storage_proxy& sp, v
         if (keyspace->cf_meta_data().contains(view->cf_name())) {
             throw exceptions::already_exists_exception(view->ks_name(), view->cf_name());
         }
-        mlogger.info("Create new view: {}", view);
+        LOGMACRO(mlogger, log_level::info, "Create new view: {}", view);
         return seastar::async([&db, keyspace = std::move(keyspace), &sp, view = std::move(view), ts] {
             auto mutations = db::schema_tables::make_create_view_mutations(keyspace, view, ts);
             // We don't have a separate on_before_create_view() listener to
@@ -866,7 +866,7 @@ future<std::vector<mutation>> prepare_view_update_announcement(storage_proxy& sp
         if (!old_view->is_view()) {
             co_await coroutine::return_exception(exceptions::invalid_request_exception("Cannot use ALTER MATERIALIZED VIEW on Table"));
         }
-        mlogger.info("Update view '{}.{}' From {} To {}", view->ks_name(), view->cf_name(), *old_view, *view);
+        LOGMACRO(mlogger, log_level::info, "Update view '{}.{}' From {} To {}", view->ks_name(), view->cf_name(), *old_view, *view);
         auto mutations = db::schema_tables::make_update_view_mutations(keyspace, view_ptr(old_view), std::move(view), ts, true);
         co_return co_await include_keyspace(sp, *keyspace, std::move(mutations));
     } catch (const std::out_of_range& e) {
@@ -887,7 +887,7 @@ future<std::vector<mutation>> prepare_view_drop_announcement(storage_proxy& sp, 
             throw exceptions::invalid_request_exception("Cannot use DROP MATERIALIZED VIEW on Index");
         }
         auto keyspace = db.find_keyspace(ks_name).metadata();
-        mlogger.info("Drop view '{}.{}'", view->ks_name(), view->cf_name());
+        LOGMACRO(mlogger, log_level::info, "Drop view '{}.{}'", view->ks_name(), view->cf_name());
         auto mutations = db::schema_tables::make_drop_view_mutations(keyspace, view_ptr(std::move(view)), ts);
         // notifiers must run in seastar thread
         co_await seastar::async([&] {
@@ -1023,7 +1023,7 @@ void migration_manager::passive_announce(table_schema_version version) {
 
 future<> migration_manager::passive_announce() {
     SCYLLA_ASSERT(this_shard_id() == 0);
-    mlogger.info("Gossiping my schema version {}", _schema_version_to_publish);
+    LOGMACRO(mlogger, log_level::info, "Gossiping my schema version {}", _schema_version_to_publish);
     return _gossiper.add_local_application_state(gms::application_state::SCHEMA, gms::versioned_value::schema(_schema_version_to_publish));
 }
 

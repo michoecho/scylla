@@ -217,7 +217,7 @@ future<> manager::start(shared_ptr<const gms::gossiper> gossiper_ptr) {
 }
 
 future<> manager::stop() {
-    manager_logger.info("Asked to stop a shard hint manager");
+    LOGMACRO(manager_logger, log_level::info, "Asked to stop a shard hint manager");
 
     set_stopping();
 
@@ -242,7 +242,7 @@ future<> manager::stop() {
         }).finally([this] {
             _ep_managers.clear();
             _hint_directory_manager.clear();
-            manager_logger.info("Shard hint manager has stopped");
+            LOGMACRO(manager_logger, log_level::info, "Shard hint manager has stopped");
         });
     });
 }
@@ -878,7 +878,7 @@ future<> manager::migrate_ip_directories() {
         std::filesystem::path new_name = _hints_dir / std::move(mapping.new_name);
 
         try {
-            manager_logger.info("Renaming hint directory {} to {}", old_name.native(), new_name.native());
+            LOGMACRO(manager_logger, log_level::info, "Renaming hint directory {} to {}", old_name.native(), new_name.native());
             co_await rename_file(old_name.native(), new_name.native());
         } catch (...) {
             manager_logger.warn("Renaming directory {} to {} has failed: {}",
@@ -921,7 +921,7 @@ future<> manager::perform_migration() {
         co_return;
     }
 
-    manager_logger.info("Migration of hinted handoff to host ID is starting");
+    LOGMACRO(manager_logger, log_level::info, "Migration of hinted handoff to host ID is starting");
     // Step 1. Prevent accepting incoming hints.
     _state.set(state::migrating);
 
@@ -966,7 +966,7 @@ future<> manager::perform_migration() {
     // Step 8. Once resource manager is working again, endpoint managers can be safely recreated.
     //         We won't modify the contents of the hint directory anymore.
     co_await initialize_endpoint_managers();
-    manager_logger.info("Migration of hinted handoff to host ID has finished successfully");
+    LOGMACRO(manager_logger, log_level::info, "Migration of hinted handoff to host ID has finished successfully");
 }
 
 // Technical note: This function obviously doesn't need to be a coroutine. However, it's better to impose

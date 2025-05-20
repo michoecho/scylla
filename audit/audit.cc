@@ -129,7 +129,7 @@ future<> audit::create_audit(const db::config& cfg, sharded<locator::shared_toke
         storage_helper_name = "audit_syslog_storage_helper";
     } else if (cfg.audit() == "none") {
         // Audit is off
-        logger.info("Audit is disabled");
+        LOGMACRO(logger, log_level::info, "Audit is disabled");
 
         return make_ready_future<>();
     } else {
@@ -139,7 +139,7 @@ future<> audit::create_audit(const db::config& cfg, sharded<locator::shared_toke
     std::map<sstring, std::set<sstring>> audited_tables = parse_audit_tables(cfg.audit_tables());
     std::set<sstring> audited_keyspaces = parse_audit_keyspaces(cfg.audit_keyspaces());
 
-    logger.info("Audit is enabled. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", and tables: \"{}\"",
+    LOGMACRO(logger, log_level::info, "Audit is enabled. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", and tables: \"{}\"",
                 cfg.audit(), cfg.audit_categories(), cfg.audit_keyspaces(), cfg.audit_tables());
 
     return audit_instance().start(std::ref(stm),
@@ -283,7 +283,7 @@ void audit::update_config(const sstring & new_value, std::function<T(const sstri
         });
     }) | std::views::join;
 
-    logger.info(
+    LOGMACRO(logger, log_level::info, 
         "Audit configuration is updated. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", and tables: \"{}\".",
         _cfg.audit(),
         fmt::join(std::views::transform(_audited_categories, category_to_string), ","),

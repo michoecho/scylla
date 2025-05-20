@@ -1982,11 +1982,11 @@ auto with_env_and_ticker(environment_config cfg, F f) {
 
             // We abort the environment before the ticker as the environment may require time to advance
             // in order to finish (e.g. some operations may need to timeout).
-            tlogger.info("aborting environment");
+            LOGMACRO(tlogger, log_level::info, "aborting environment");
             co_await env->abort();
-            tlogger.info("environment aborted, aborting ticker");
+            LOGMACRO(tlogger, log_level::info, "environment aborted, aborting ticker");
             co_await t->abort();
-            tlogger.info("ticker aborted");
+            LOGMACRO(tlogger, log_level::info, "ticker aborted");
         });
     });
 }
@@ -2482,7 +2482,7 @@ SEASTAR_TEST_CASE(remove_leader_with_forwarding_finishes) {
         // We want server 2 to either learn from server 1 about the removal,
         // or become a leader and learn from itself; in both cases the call should finish (no timeout).
         auto result = co_await env.modify_config(id2, std::vector<raft::server_id>{}, {id1}, timer.now() + 200_t, timer);
-        tlogger.info("env.modify_config result {}", result);
+        LOGMACRO(tlogger, log_level::info, "env.modify_config result {}", result);
         SCYLLA_ASSERT(std::holds_alternative<std::monostate>(result));
     });
 }
@@ -3294,7 +3294,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
                 .enable_forwarding = forwarding,
             };
 
-        tlogger.info("basic_generator_test: forwarding: {}, frequent snapshotting: {}", forwarding, frequent_snapshotting);
+        LOGMACRO(tlogger, log_level::info, "basic_generator_test: forwarding: {}, frequent snapshotting: {}", forwarding, frequent_snapshotting);
 
         auto leader_id = co_await env.new_server(true, srv_cfg);
 
@@ -3525,16 +3525,16 @@ SEASTAR_TEST_CASE(basic_generator_test) {
             tlogger.error("inconsistency: {}", e.what);
             env.for_each_server([&] (raft::server_id id, raft_server<AppendReg>* srv) {
                 if (srv) {
-                    tlogger.info("server {} state machine state: {}", id, srv->state());
+                    LOGMACRO(tlogger, log_level::info, "server {} state machine state: {}", id, srv->state());
                 } else {
-                    tlogger.info("node {} currently missing server", id);
+                    LOGMACRO(tlogger, log_level::info, "node {} currently missing server", id);
                 }
             });
 
             SCYLLA_ASSERT(false);
         }
 
-        tlogger.info("Finished generator run, time: {}, invocations: {}, successes: {}, failures: {}, total: {}",
+        LOGMACRO(tlogger, log_level::info, "Finished generator run, time: {}, invocations: {}, successes: {}, failures: {}, total: {}",
                 timer.now(), stats.invocations, stats.successes, stats.failures, stats.successes + stats.failures);
 
         // Liveness check: we must be able to obtain a final response after all the nemeses have stopped.
@@ -3545,7 +3545,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
         auto limit = timer.now() + 10000_t;
         size_t cnt = 0;
         for (; timer.now() < limit; ++cnt) {
-            tlogger.info("Trying to obtain last result: attempt number {}", cnt + 1);
+            LOGMACRO(tlogger, log_level::info, "Trying to obtain last result: attempt number {}", cnt + 1);
 
             auto now = timer.now();
             auto leader = co_await wait_for_leader<AppendReg>{}(env,
@@ -3556,7 +3556,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
             });
 
             if (env.is_leader(leader)) {
-                tlogger.info("Leader {} found after {} ticks", leader, timer.now() - now);
+                LOGMACRO(tlogger, log_level::info, "Leader {} found after {} ticks", leader, timer.now() - now);
             } else {
                 tlogger.warn("Leader {} found after {} ticks, but suddenly lost leadership", leader, timer.now() - now);
                 continue;
@@ -3564,24 +3564,24 @@ SEASTAR_TEST_CASE(basic_generator_test) {
 
             auto config = env.get_configuration(leader);
             SCYLLA_ASSERT(config);
-            tlogger.info("Leader {} configuration: current {} previous {}", leader, config->current, config->previous);
+            LOGMACRO(tlogger, log_level::info, "Leader {} configuration: current {} previous {}", leader, config->current, config->previous);
 
             for (auto& s: all_servers) {
                 if (env.is_leader(s) && s != leader) {
                     auto conf = env.get_configuration(s);
                     SCYLLA_ASSERT(conf);
-                    tlogger.info("There is another leader: {}, configuration: current {} previous {}", s, conf->current, conf->previous);
+                    LOGMACRO(tlogger, log_level::info, "There is another leader: {}, configuration: current {} previous {}", s, conf->current, conf->previous);
                 }
             }
 
-            tlogger.info("From the clients' point of view, the possible cluster members are: {}", known_config);
+            LOGMACRO(tlogger, log_level::info, "From the clients' point of view, the possible cluster members are: {}", known_config);
 
             auto [res, last_attempted_server] = co_await bouncing{[&timer, &env] (raft::server_id id) {
                 return env.call(id, AppendReg::append{-1}, timer.now() + 200_t, timer);
             }}(timer, known_config, leader, known_config.size() + 1, 10_t, 10_t);
 
             if (std::holds_alternative<typename AppendReg::ret>(res)) {
-                tlogger.info("Obtained last result");
+                LOGMACRO(tlogger, log_level::info, "Obtained last result");
                 LOGMACRO(tlogger, log_level::debug, "Last result: {}", res);
                 co_return;
             }

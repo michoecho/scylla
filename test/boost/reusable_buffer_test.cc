@@ -23,7 +23,7 @@ using namespace seastar;
 
 SEASTAR_TEST_CASE(test_get_linearized_view) {
     auto test = [] (size_t n, utils::reusable_buffer<manual_clock>& buffer) {
-        testlog.info("Testing buffer size {}", n);
+        LOGMACRO(testlog, log_level::info, "Testing buffer size {}", n);
         auto original = tests::random::get_bytes(n);
 
         bytes_ostream bo;
@@ -73,7 +73,7 @@ SEASTAR_TEST_CASE(test_get_linearized_view) {
 
 SEASTAR_TEST_CASE(test_make_buffer) {
     auto test = [] (size_t maximum, size_t actual, utils::reusable_buffer<manual_clock>& buffer) {
-        testlog.info("Testing maximum buffer size {}, actual: {} ", maximum, actual);
+        LOGMACRO(testlog, log_level::info, "Testing maximum buffer size {}, actual: {} ", maximum, actual);
 
         bytes original;
         auto make_buffer_fn = [&] (bytes_mutable_view view) {

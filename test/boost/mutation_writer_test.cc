@@ -357,7 +357,7 @@ SEASTAR_THREAD_TEST_CASE(test_timestamp_based_splitting_mutation_writer) {
             std::uniform_int_distribution<size_t>(2, 8));
     auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
 
-    testlog.info("Random schema:\n{}", random_schema.cql());
+    LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
     auto ts_gen = [&, underlying = tests::default_timestamp_generator()] (std::mt19937& engine,
             tests::timestamp_destination ts_dest, api::timestamp_type min_timestamp) -> api::timestamp_type {
@@ -429,7 +429,7 @@ SEASTAR_THREAD_TEST_CASE(test_timestamp_based_splitting_mutation_writer_abort) {
             std::uniform_int_distribution<size_t>(2, 8));
     auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
 
-    testlog.info("Random schema:\n{}", random_schema.cql());
+    LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
     auto ts_gen = [&, underlying = tests::default_timestamp_generator()] (std::mt19937& engine,
             tests::timestamp_destination ts_dest, api::timestamp_type min_timestamp) -> api::timestamp_type {
@@ -453,7 +453,7 @@ SEASTAR_THREAD_TEST_CASE(test_timestamp_based_splitting_mutation_writer_abort) {
     std::unordered_map<int64_t, std::vector<mutation>> buckets;
 
     int throw_after = tests::random::get_int(muts.size() - 1);
-    testlog.info("Will raise exception after {}/{} mutations", throw_after, muts.size());
+    LOGMACRO(testlog, log_level::info, "Will raise exception after {}/{} mutations", throw_after, muts.size());
     auto consumer = [&] (mutation_reader bucket_reader) {
         return with_closeable(std::move(bucket_reader), [&] (mutation_reader& rd) {
             return rd.consume(test_bucket_writer(random_schema.schema(), rd.permit(), classify_fn, buckets, throw_after));
@@ -494,7 +494,7 @@ SEASTAR_THREAD_TEST_CASE(test_partition_based_splitting_mutation_writer) {
     shuffled_input_mutations.emplace_back(*shuffled_input_mutations.begin()); // Have a duplicate partition as well.
     std::shuffle(shuffled_input_mutations.begin(), shuffled_input_mutations.end(), tests::random::gen());
 
-    testlog.info("input_mutations.size()={}", input_mutations.size());
+    LOGMACRO(testlog, log_level::info, "input_mutations.size()={}", input_mutations.size());
 
     std::vector<std::vector<mutation>> output_mutations;
     size_t next_index = 0;
@@ -542,12 +542,12 @@ SEASTAR_THREAD_TEST_CASE(test_partition_based_splitting_mutation_writer) {
     };
 
     for (const size_t max_memory : {1'000, 10'000, 1'000'000, 10'000'000, 100'000'000}) {
-        testlog.info("Segregating with in-memory method (max_memory={})", max_memory);
+        LOGMACRO(testlog, log_level::info, "Segregating with in-memory method (max_memory={})", max_memory);
         mutation_writer::segregate_by_partition(
                 make_mutation_reader_from_mutations(random_schema.schema(), semaphore.make_permit(), shuffled_input_mutations),
                 mutation_writer::segregate_config{max_memory},
                 consumer).get();
-        testlog.info("Done segregating with in-memory method (max_memory={}): input segregated into {} buckets", max_memory, output_mutations.size());
+        LOGMACRO(testlog, log_level::info, "Done segregating with in-memory method (max_memory={}): input segregated into {} buckets", max_memory, output_mutations.size());
         check_and_reset();
     }
 
@@ -563,7 +563,7 @@ SEASTAR_THREAD_TEST_CASE(test_token_group_based_splitting_mutation_writer) {
             std::uniform_int_distribution<size_t>(2, 8));
     auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
 
-    testlog.info("Random schema:\n{}", random_schema.cql());
+    LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
     size_t partition_count = many_partitions();
 
@@ -588,7 +588,7 @@ SEASTAR_THREAD_TEST_CASE(test_token_group_based_splitting_mutation_writer) {
 
     segregate_by_token_group(make_mutation_reader_from_mutations(random_schema.schema(), semaphore.make_permit(), muts), classify_fn, std::move(consumer)).get();
 
-    testlog.info("Data split into {} buckets: {}", buckets.size(), buckets | std::views::keys | std::ranges::to<std::vector>());
+    LOGMACRO(testlog, log_level::info, "Data split into {} buckets: {}", buckets.size(), buckets | std::views::keys | std::ranges::to<std::vector>());
 
     assert_that_segregator_produces_correct_data(buckets, muts, semaphore.make_permit(), random_schema);
 }

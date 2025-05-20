@@ -116,7 +116,7 @@ future<> controller::start_listening_on_tcp_sockets(sharded<cql_server>& cserver
         auto cred = std::make_shared<seastar::tls::credentials_builder>();
         utils::configure_tls_creds_builder(*cred, std::move(ceo)).get();
 
-        logger.info("Enabling encrypted CQL connections between client and server");
+        LOGMACRO(logger, log_level::info, "Enabling encrypted CQL connections between client and server");
 
         if (cfg.native_transport_port_ssl.is_set() &&
                 (!cfg.native_transport_port.is_set() ||
@@ -140,7 +140,7 @@ future<> controller::start_listening_on_tcp_sockets(sharded<cql_server>& cserver
     co_await parallel_for_each(configs, [&cserver, keepalive](const listen_cfg & cfg) -> future<> {
         co_await listen_on_all_shards(cserver, cfg.addr, cfg.cred, cfg.is_shard_aware, keepalive, std::nullopt);
 
-        logger.info("Starting listening for CQL clients on {} ({}, {})"
+        LOGMACRO(logger, log_level::info, "Starting listening for CQL clients on {} ({}, {})"
                 , cfg.addr, cfg.cred ? "encrypted" : "unencrypted", cfg.is_shard_aware ? "shard-aware" : "non-shard-aware"
         );
     });
@@ -173,7 +173,7 @@ future<> controller::start_listening_on_maintenance_socket(sharded<cql_server>& 
     auto addr = socket_address { unix_domain_addr { socket } };
     _listen_addresses.push_back(addr);
 
-    logger.info("Setting up maintenance socket on {}", socket);
+    LOGMACRO(logger, log_level::info, "Setting up maintenance socket on {}", socket);
 
     auto unix_domain_socket_permissions =
         file_permissions::user_read | file_permissions::user_write |
@@ -200,7 +200,7 @@ future<> controller::start_listening_on_maintenance_socket(sharded<cql_server>& 
         }
     }
 
-    logger.info("Starting listening for maintenance CQL clients on {} (unencrypted, non-shard-aware)"
+    LOGMACRO(logger, log_level::info, "Starting listening for maintenance CQL clients on {} (unencrypted, non-shard-aware)"
             , addr
     );
 }
@@ -321,7 +321,7 @@ future<> controller::do_stop_server() {
         std::rethrow_exception(std::move(ex));
     }
 
-    logger.info("CQL server stopped");
+    LOGMACRO(logger, log_level::info, "CQL server stopped");
 }
 
 future<> controller::subscribe_server(sharded<cql_server>& server) {

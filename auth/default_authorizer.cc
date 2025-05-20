@@ -76,7 +76,7 @@ future<bool> default_authorizer::legacy_any_granted() const {
 }
 
 future<> default_authorizer::migrate_legacy_metadata() {
-    alogger.info("Starting migration of legacy permissions metadata.");
+    LOGMACRO(alogger, log_level::info, "Starting migration of legacy permissions metadata.");
     static const sstring query = seastar::format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
     return _qp.execute_internal(
@@ -94,7 +94,7 @@ future<> default_authorizer::migrate_legacy_metadata() {
             });
         }).finally([results] {});
     }).then([] {
-        alogger.info("Finished migrating legacy permissions metadata.");
+        LOGMACRO(alogger, log_level::info, "Finished migrating legacy permissions metadata.");
     }).handle_exception([](std::exception_ptr ep) {
         alogger.error("Encountered an error during migration!");
         std::rethrow_exception(ep);

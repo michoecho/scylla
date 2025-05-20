@@ -189,16 +189,16 @@ future<> streaming_task_impl::run() {
     // If previous operation failed - restart it
     if (!_result || _result->failed()) {
         if (_result) {
-            service::rtlogger.info("retry streaming after previous attempt failed with {}", _result->get_future().get_exception());
+            service::LOGMACRO(rtlogger, log_level::info, "retry streaming after previous attempt failed with {}", _result->get_future().get_exception());
         } else {
-            service::rtlogger.info("start streaming");
+            service::LOGMACRO(rtlogger, log_level::info, "start streaming");
         }
         _result = _action();
     } else {
         service::LOGMACRO(rtlogger, log_level::debug, "already streaming");
     }
     co_await _result.value().get_future();
-    service::rtlogger.info("streaming completed");
+    service::LOGMACRO(rtlogger, log_level::info, "streaming completed");
 }
 
 task_manager_module::task_manager_module(tasks::task_manager& tm, service::storage_service& ss) noexcept

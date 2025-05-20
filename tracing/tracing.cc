@@ -159,12 +159,12 @@ future<> tracing::shutdown() {
         co_return;
     }
 
-    tracing_logger.info("Asked to shut down");
+    LOGMACRO(tracing_logger, log_level::info, "Asked to shut down");
     write_pending_records();
     _down = true;
     _write_timer.cancel();
     co_await _tracing_backend_helper_ptr->shutdown();
-    tracing_logger.info("Tracing is down");
+    LOGMACRO(tracing_logger, log_level::info, "Tracing is down");
 }
 
 future<> tracing::stop() {
@@ -179,7 +179,7 @@ void tracing::set_trace_probability(double p) {
     _trace_probability = p;
     _normalized_trace_probability = std::llround(_trace_probability * (_gen.max() + 1));
 
-    tracing_logger.info("Setting tracing probability to {} (normalized {})", _trace_probability, _normalized_trace_probability);
+    LOGMACRO(tracing_logger, log_level::info, "Setting tracing probability to {} (normalized {})", _trace_probability, _normalized_trace_probability);
 }
 
 one_session_records::one_session_records(trace_type type, std::chrono::seconds slow_query_ttl, std::chrono::seconds slow_query_rec_ttl,

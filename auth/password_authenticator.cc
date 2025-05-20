@@ -90,7 +90,7 @@ bool password_authenticator::legacy_metadata_exists() const {
 }
 
 future<> password_authenticator::migrate_legacy_metadata() const {
-    plogger.info("Starting migration of legacy authentication metadata.");
+    LOGMACRO(plogger, log_level::info, "Starting migration of legacy authentication metadata.");
     static const sstring query = seastar::format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
     return _qp.execute_internal(
@@ -110,7 +110,7 @@ future<> password_authenticator::migrate_legacy_metadata() const {
                     cql3::query_processor::cache_internal::no).discard_result();
         }).finally([results] {});
     }).then([] {
-       plogger.info("Finished migrating legacy authentication metadata.");
+       LOGMACRO(plogger, log_level::info, "Finished migrating legacy authentication metadata.");
     }).handle_exception([](std::exception_ptr ep) {
         plogger.error("Encountered an error during migration!");
         std::rethrow_exception(ep);
@@ -134,11 +134,11 @@ future<> password_authenticator::create_default_if_missing() {
             internal_distributed_query_state(),
             {salted_pwd, _superuser},
             cql3::query_processor::cache_internal::no);
-        plogger.info("Created default superuser authentication record.");
+        LOGMACRO(plogger, log_level::info, "Created default superuser authentication record.");
     } else {
         co_await announce_mutations(_qp, _group0_client, query,
             {salted_pwd, _superuser}, _as, ::service::raft_timeout{});
-        plogger.info("Created default superuser authentication record.");
+        LOGMACRO(plogger, log_level::info, "Created default superuser authentication record.");
     }
 }
 

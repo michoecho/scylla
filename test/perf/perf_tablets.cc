@@ -74,7 +74,7 @@ static future<> test_basic_operations(app_template& app) {
             ids[i] = add_table(e).get();
         }
 
-        testlog.info("Generating tablet metadata");
+        LOGMACRO(testlog, log_level::info, "Generating tablet metadata");
 
         for (int i = 0; i < nr_tables; ++i) {
             tablet_map tmap(tablets_per_table);
@@ -94,9 +94,9 @@ static future<> test_basic_operations(app_template& app) {
             tm.set_tablet_map(ids[i], std::move(tmap));
         }
 
-        testlog.info("Total tablet count: {}", total_tablets);
+        LOGMACRO(testlog, log_level::info, "Total tablet count: {}", total_tablets);
 
-        testlog.info("Size of tablet_metadata in memory: {} KiB",
+        LOGMACRO(testlog, log_level::info, "Size of tablet_metadata in memory: {} KiB",
                      (tm.external_memory_usage() + sizeof(tablet_metadata)) / 1024);
 
         tablet_metadata tm2;
@@ -104,49 +104,49 @@ static future<> test_basic_operations(app_template& app) {
             tm2 = tm.copy().get();
         });
 
-        testlog.info("Copied in {:.6f} [ms]", time_to_copy.count() * 1000);
+        LOGMACRO(testlog, log_level::info, "Copied in {:.6f} [ms]", time_to_copy.count() * 1000);
 
         auto time_to_clear = duration_in_seconds([&] {
             tm2.clear_gently().get();
         });
 
-        testlog.info("Cleared in {:.6f} [ms]", time_to_clear.count() * 1000);
+        LOGMACRO(testlog, log_level::info, "Cleared in {:.6f} [ms]", time_to_clear.count() * 1000);
 
         auto time_to_save = duration_in_seconds([&] {
             save_tablet_metadata(e.local_db(), tm, api::new_timestamp()).get();
         });
 
-        testlog.info("Saved in {:.6f} [ms]", time_to_save.count() * 1000);
+        LOGMACRO(testlog, log_level::info, "Saved in {:.6f} [ms]", time_to_save.count() * 1000);
 
         auto time_to_read = duration_in_seconds([&] {
             tm2 = read_tablet_metadata(e.local_qp()).get();
         });
         SCYLLA_ASSERT(tm == tm2);
 
-        testlog.info("Read in {:.6f} [ms]", time_to_read.count() * 1000);
+        LOGMACRO(testlog, log_level::info, "Read in {:.6f} [ms]", time_to_read.count() * 1000);
 
         std::vector<canonical_mutation> muts;
         auto time_to_read_muts = duration_in_seconds([&] {
             muts = replica::read_tablet_mutations(e.local_qp().proxy().get_db()).get();
         });
 
-        testlog.info("Read mutations in {:.6f} [ms]", time_to_read_muts.count() * 1000);
+        LOGMACRO(testlog, log_level::info, "Read mutations in {:.6f} [ms]", time_to_read_muts.count() * 1000);
 
         auto time_to_read_hosts = duration_in_seconds([&] {
             replica::read_required_hosts(e.local_qp()).get();
         });
 
-        testlog.info("Read required hosts in {:.6f} [ms]", time_to_read_hosts.count() * 1000);
+        LOGMACRO(testlog, log_level::info, "Read required hosts in {:.6f} [ms]", time_to_read_hosts.count() * 1000);
 
         auto cm_size = 0;
         for (auto&& cm : muts) {
             cm_size += cm.representation().size();
         }
 
-        testlog.info("Size of canonical mutations: {:.6f} [MiB]", double(cm_size) / MiB);
+        LOGMACRO(testlog, log_level::info, "Size of canonical mutations: {:.6f} [MiB]", double(cm_size) / MiB);
 
         auto&& tablets_table = e.local_db().find_column_family(db::system_keyspace::tablets());
-        testlog.info("Disk space used by system.tablets: {:.6f} [MiB]", double(tablets_table.get_stats().live_disk_space_used) / MiB);
+        LOGMACRO(testlog, log_level::info, "Disk space used by system.tablets: {:.6f} [MiB]", double(tablets_table.get_stats().live_disk_space_used) / MiB);
 
         locator::tablet_metadata_change_hint hint;
 
@@ -189,7 +189,7 @@ static future<> test_basic_operations(app_template& app) {
 
         assert(tm == tm_full_reload);
 
-        testlog.info("Tablet metadata reload:\nfull    {:>8.2f}ms\npartial {:>8.2f}ms", full_reload_duration.count(), partial_reload_duration.count());
+        LOGMACRO(testlog, log_level::info, "Tablet metadata reload:\nfull    {:>8.2f}ms\npartial {:>8.2f}ms", full_reload_duration.count(), partial_reload_duration.count());
     }, tablet_cql_test_config());
 }
 

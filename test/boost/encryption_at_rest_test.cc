@@ -84,7 +84,7 @@ static void do_create_and_insert(cql_test_env& env, const test_provider_args& ar
         try {
             env.execute_cql(fmt::format("insert into ks.t{} (pk, v) values ('{}', '{}')", i, pk, v)).get();
         } catch (...) {
-            testlog.info("Insert error {}. Notifying.", std::current_exception());
+            LOGMACRO(testlog, log_level::info, "Insert error {}. Notifying.", std::current_exception());
             args.on_insert_exception(env);
             throw;
         }
@@ -532,11 +532,11 @@ public:
     }
     void enable(bool b) {
         _do_proxy = b;
-        testlog.info("Set proxy {} enabled = {}", _address, b);
+        LOGMACRO(testlog, log_level::info, "Set proxy {} enabled = {}", _address, b);
     }
     future<> stop() {
         if (std::exchange(_go_on, false)) {
-            testlog.info("Stopping proxy {}", _address);
+            LOGMACRO(testlog, log_level::info, "Stopping proxy {}", _address);
             _socket.abort_accept();
             co_await std::move(_f);
         }

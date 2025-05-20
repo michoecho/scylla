@@ -191,7 +191,7 @@ future<> hint_sender::stop(drain should_drain) noexcept {
 }
 
 void hint_sender::cancel_draining() {
-    manager_logger.info("Draining of {} has been marked as canceled", _ep_key);
+    LOGMACRO(manager_logger, log_level::info, "Draining of {} has been marked as canceled", _ep_key);
     if (_state.contains(state::draining)) {
         _state.remove(state::draining);
     }

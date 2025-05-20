@@ -112,7 +112,7 @@ future<> view_update_generator::start() {
     _started = seastar::async([this]() mutable {
         auto drop_sstable_references = defer([&] () noexcept {
             // Clear sstable references so sstables_manager::stop() doesn't hang.
-            vug_logger.info("leaving {} unstaged sstables unprocessed",
+            LOGMACRO(vug_logger, log_level::info, "leaving {} unstaged sstables unprocessed",
                     _sstables_to_move.size(), _sstables_with_tables.size());
             _sstables_to_move.clear();
             _sstables_with_tables.clear();
@@ -151,7 +151,7 @@ future<> view_update_generator::start() {
                         input_size += sst->data_size();
                     }
 
-                    vug_logger.info("Processing {}.{}: {} in {} sstables",
+                    LOGMACRO(vug_logger, log_level::info, "Processing {}.{}: {} in {} sstables",
                                     s->ks_name(), s->cf_name(), utils::pretty_printed_data_size(input_size), sstables.size());
 
                     auto permit = _db.obtain_reader_permit(*t, "view_update_generator", db::no_timeout, {}).get();
@@ -202,7 +202,7 @@ future<> view_update_generator::start() {
 
                 auto end_time = db_clock::now();
                 auto duration = std::chrono::duration<float>(end_time - start_time);
-                vug_logger.info("Processed {}.{}: {} sstables in {}ms = {}", s->ks_name(), s->cf_name(), sstables.size(),
+                LOGMACRO(vug_logger, log_level::info, "Processed {}.{}: {} sstables in {}ms = {}", s->ks_name(), s->cf_name(), sstables.size(),
                                 std::chrono::duration_cast<std::chrono::milliseconds>(duration).count(),
                                 utils::pretty_printed_throughput(input_size, duration));
             }
@@ -241,7 +241,7 @@ void view_update_generator::do_abort() noexcept {
         return;
     }
 
-    vug_logger.info("Terminating background fiber");
+    LOGMACRO(vug_logger, log_level::info, "Terminating background fiber");
     _as.request_abort();
     _pending_sstables.signal();
 }

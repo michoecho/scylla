@@ -194,7 +194,7 @@ SEASTAR_TEST_CASE(test_memtable_flush_reader) {
                     mut.partition().compact_for_compaction(*mut.schema(), always_gc, mut.decorated_key(), now, tombstone_gc_state(nullptr));
                 }
 
-                testlog.info("Simple read");
+                LOGMACRO(testlog, log_level::info, "Simple read");
                 auto mt = make_memtable(mgr, table_shared_data, tbl_stats, muts);
 
                 assert_that(mt->make_flush_reader(gen.schema(), semaphore.make_permit()))
@@ -204,7 +204,7 @@ SEASTAR_TEST_CASE(test_memtable_flush_reader) {
                     .produces_compacted(compacted_muts[3], now)
                     .produces_end_of_stream();
 
-                testlog.info("Read with next_partition() calls between partition");
+                LOGMACRO(testlog, log_level::info, "Read with next_partition() calls between partition");
                 mt = make_memtable(mgr, table_shared_data, tbl_stats, muts);
                 assert_that(mt->make_flush_reader(gen.schema(), semaphore.make_permit()))
                     .next_partition()
@@ -218,7 +218,7 @@ SEASTAR_TEST_CASE(test_memtable_flush_reader) {
                     .next_partition()
                     .produces_end_of_stream();
 
-                testlog.info("Read with next_partition() calls inside partitions");
+                LOGMACRO(testlog, log_level::info, "Read with next_partition() calls inside partitions");
                 mt = make_memtable(mgr, table_shared_data, tbl_stats, muts);
                 assert_that(mt->make_flush_reader(gen.schema(), semaphore.make_permit()))
                     .produces_compacted(compacted_muts[0], now)
@@ -1541,7 +1541,7 @@ SEASTAR_TEST_CASE(memtable_reader_after_tablet_migration) {
 
             co_await db.apply(schema, fm, {}, db::commitlog_force_sync::no, db::no_timeout);
 
-            testlog.info("create reader -- first buffer fill");
+            LOGMACRO(testlog, log_level::info, "create reader -- first buffer fill");
 
             auto reader = tbl.make_mutation_reader(schema, co_await db.obtain_reader_permit(tbl, "read", db::no_timeout, {}), query::full_partition_range, schema->full_slice());
 
@@ -1571,7 +1571,7 @@ SEASTAR_TEST_CASE(memtable_reader_after_tablet_migration) {
 
         smp::submit_to(data_ptr.get_owner_shard(), [&data_ptr] {
             return async([&data_ptr] {
-                testlog.info("exhaust reader");
+                LOGMACRO(testlog, log_level::info, "exhaust reader");
 
                 auto data = data_ptr.release();
                 auto close_reader = deferred_close(data->reader);

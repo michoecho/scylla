@@ -261,7 +261,7 @@ future<> system_distributed_keyspace::create_tables(std::vector<schema_ptr> tabl
         bool tables_setup = std::all_of(tables.begin(), tables.end(), [db] (schema_ptr t) { return db.has_schema(t->ks_name(), t->cf_name()); } );
         bool service_levels_up_to_date = get_current_service_levels(db)->equal_columns(*get_updated_service_levels(db, workload_prioritization_enabled));
         if (keyspaces_setup && tables_setup && service_levels_up_to_date) {
-            dlogger.info("system_distributed(_everywhere) keyspaces and tables are up-to-date. Not creating");
+            LOGMACRO(dlogger, log_level::info, "system_distributed(_everywhere) keyspaces and tables are up-to-date. Not creating");
             _started = true;
             co_return;
         }
@@ -280,7 +280,7 @@ future<> system_distributed_keyspace::create_tables(std::vector<schema_ptr> tabl
             mutations = service::prepare_new_keyspace_announcement(db.real_database(), sd_ksm, ts);
             description += format(" create {} keyspace;", NAME);
         } else {
-            dlogger.info("{} keyspace is already present. Not creating", NAME);
+            LOGMACRO(dlogger, log_level::info, "{} keyspace is already present. Not creating", NAME);
         }
 
         auto sde_ksm = keyspace_metadata::new_keyspace(
@@ -293,7 +293,7 @@ future<> system_distributed_keyspace::create_tables(std::vector<schema_ptr> tabl
             std::move(sde_mutations.begin(), sde_mutations.end(), std::back_inserter(mutations));
             description += format(" create {} keyspace;", NAME_EVERYWHERE);
         } else {
-            dlogger.info("{} keyspace is already present. Not creating", NAME_EVERYWHERE);
+            LOGMACRO(dlogger, log_level::info, "{} keyspace is already present. Not creating", NAME_EVERYWHERE);
         }
 
         // Get mutations for creating and updating tables.
@@ -320,14 +320,14 @@ future<> system_distributed_keyspace::create_tables(std::vector<schema_ptr> tabl
         if (mutations.size() > num_keyspace_mutations) {
             description += " create and update system_distributed(_everywhere) tables";
         } else {
-            dlogger.info("All tables are present and up-to-date on start");
+            LOGMACRO(dlogger, log_level::info, "All tables are present and up-to-date on start");
         }
 
         if (!mutations.empty()) {
             try {
                 co_await _mm.announce(std::move(mutations), std::move(group0_guard), description);
             } catch (service::group0_concurrent_modification&) {
-                dlogger.info("Concurrent operation is detected while starting, retrying.");
+                LOGMACRO(dlogger, log_level::info, "Concurrent operation is detected while starting, retrying.");
                 continue;
             }
         }

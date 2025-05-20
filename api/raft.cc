@@ -54,13 +54,13 @@ void set_raft(http_context&, httpd::routes& r, sharded<service::raft_group_regis
             }
 
             found_srv = true;
-            apilog.info("Triggering Raft group {} snapshot", gid);
+            LOGMACRO(apilog, log_level::info, "Triggering Raft group {} snapshot", gid);
             auto srv = raft_gr.get_server_with_timeouts(gid);
             auto result = co_await srv.trigger_snapshot(nullptr, timeout);
             if (result) {
-                apilog.info("New snapshot for Raft group {} created", gid);
+                LOGMACRO(apilog, log_level::info, "New snapshot for Raft group {} created", gid);
             } else {
-                apilog.info("Could not create new snapshot for Raft group {}, no new entries applied", gid);
+                LOGMACRO(apilog, log_level::info, "Could not create new snapshot for Raft group {}, no new entries applied", gid);
             }
         });
 
@@ -134,7 +134,7 @@ void set_raft(http_context&, httpd::routes& r, sharded<service::raft_group_regis
         if (!req->query_parameters.contains("group_id")) {
             // Stepdown on group 0 by default
             co_await raft_gr.invoke_on(0, [timeout_dur] (service::raft_group_registry& raft_gr) {
-                apilog.info("Triggering stepdown for group0");
+                LOGMACRO(apilog, log_level::info, "Triggering stepdown for group0");
                 return raft_gr.group0().stepdown(timeout_dur);
             });
             co_return json_void{};
@@ -149,7 +149,7 @@ void set_raft(http_context&, httpd::routes& r, sharded<service::raft_group_regis
             }
 
             found_srv = true;
-            apilog.info("Triggering stepdown for group {}", gid);
+            LOGMACRO(apilog, log_level::info, "Triggering stepdown for group {}", gid);
             co_await srv->stepdown(timeout_dur);
         });
 

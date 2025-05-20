@@ -2358,7 +2358,7 @@ future<repair_flush_hints_batchlog_response> repair_service::repair_flush_hints_
             return rs.repair_flush_hints_batchlog_handler(from, std::move(req));
         });
     }
-    rlogger.info("repair[{}]: Started to process repair_flush_hints_batchlog_request from node={} hints_timeout={}s batchlog_timeout={}s",
+    LOGMACRO(rlogger, log_level::info, "repair[{}]: Started to process repair_flush_hints_batchlog_request from node={} hints_timeout={}s batchlog_timeout={}s",
             req.repair_uuid, from, req.hints_timeout.count(), req.batchlog_timeout.count());
     auto permit = co_await seastar::get_units(_flush_hints_batchlog_sem, 1);
     bool updated = false;
@@ -2377,13 +2377,13 @@ future<repair_flush_hints_batchlog_response> repair_service::repair_flush_hints_
             }
             co_await coroutine::all(
                 [this, &from, &req, &sync_point, &deadline] () -> future<> {
-                    rlogger.info("repair[{}]: Started to flush hints for repair_flush_hints_batchlog_request from node={}", req.repair_uuid, from);
+                    LOGMACRO(rlogger, log_level::info, "repair[{}]: Started to flush hints for repair_flush_hints_batchlog_request from node={}", req.repair_uuid, from);
                     co_await _sp.local().wait_for_hint_sync_point(std::move(sync_point), deadline);
-                    rlogger.info("repair[{}]: Finished to flush hints for repair_flush_hints_batchlog_request from node={}", req.repair_uuid, from);
+                    LOGMACRO(rlogger, log_level::info, "repair[{}]: Finished to flush hints for repair_flush_hints_batchlog_request from node={}", req.repair_uuid, from);
                     co_return;
                 },
                 [this, now, cache_disabled, &flush_time, &cache_time, &from, &req] () -> future<>  {
-                    rlogger.info("repair[{}]: Started to flush batchlog for repair_flush_hints_batchlog_request from node={}", req.repair_uuid, from);
+                    LOGMACRO(rlogger, log_level::info, "repair[{}]: Started to flush batchlog for repair_flush_hints_batchlog_request from node={}", req.repair_uuid, from);
                     auto last_replay = _bm.local().get_last_replay();
                     bool issue_flush = false;
                     if (cache_disabled) {
@@ -2412,7 +2412,7 @@ future<repair_flush_hints_batchlog_response> repair_service::repair_flush_hints_
                         co_await _bm.local().do_batch_log_replay(db::batchlog_manager::post_replay_cleanup::no);
                         utils::get_local_injector().set_parameter("repair_flush_hints_batchlog_handler", "issue_flush", fmt::to_string(flush_time));
                     }
-                    rlogger.info("repair[{}]: Finished to flush batchlog for repair_flush_hints_batchlog_request from node={}, flushed={}", req.repair_uuid, from, issue_flush);
+                    LOGMACRO(rlogger, log_level::info, "repair[{}]: Finished to flush batchlog for repair_flush_hints_batchlog_request from node={}, flushed={}", req.repair_uuid, from, issue_flush);
                 }
             );
         } catch (...) {
@@ -2428,7 +2428,7 @@ future<repair_flush_hints_batchlog_response> repair_service::repair_flush_hints_
         utils::get_local_injector().set_parameter("repair_flush_hints_batchlog_handler", "skip_flush", fmt::to_string(flush_time));
     }
     auto duration = std::chrono::duration<float>(gc_clock::now() - now);
-    rlogger.info("repair[{}]: Finished to process repair_flush_hints_batchlog_request from node={} updated={} flush_hints_batchlog_time={} flush_cache_time={} flush_duration={}",
+    LOGMACRO(rlogger, log_level::info, "repair[{}]: Finished to process repair_flush_hints_batchlog_request from node={} updated={} flush_hints_batchlog_time={} flush_cache_time={} flush_duration={}",
             req.repair_uuid, from, updated, _flush_hints_batchlog_time, cache_time, duration);
     repair_flush_hints_batchlog_response resp{ .flush_time = _flush_hints_batchlog_time };
     co_return resp;
@@ -3332,7 +3332,7 @@ future<> repair_service::stop() {
         co_await _gossiper.local().unregister_(_gossip_helper);
     }
     _stopped = true;
-    rlogger.info("Stopped repair_service");
+    LOGMACRO(rlogger, log_level::info, "Stopped repair_service");
   } catch (...) {
     on_fatal_internal_error(rlogger, format("Failed stopping repair_service: {}", std::current_exception()));
   }
@@ -3386,7 +3386,7 @@ future<> repair_service::load_history() {
         }
         auto permit = co_await seastar::get_units(_load_parallelism_semaphore, 1);
 
-        rlogger.info("Loading repair history for keyspace={}, table={}, table_uuid={}",
+        LOGMACRO(rlogger, log_level::info, "Loading repair history for keyspace={}, table={}, table_uuid={}",
                 table->schema()->ks_name(), table->schema()->cf_name(), table_uuid);
         co_await _sys_ks.local().get_repair_history(table_uuid, [this] (const auto& entry) -> future<> {
             get_repair_module().check_in_shutdown();

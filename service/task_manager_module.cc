@@ -135,7 +135,7 @@ future<std::optional<tasks::task_status>> tablet_virtual_task::wait(tasks::task_
         co_return std::nullopt;
     }
 
-    tasks::tmlogger.info("tablet_virtual_task: wait until tablet operation is finished");
+    tasks::LOGMACRO(tmlogger, log_level::info, "tablet_virtual_task: wait until tablet operation is finished");
     co_await _ss._topology_state_machine.event.wait([&] {
         auto& tmap = _ss.get_token_metadata().tablets().get_tablet_map(table);
         if (is_resize_task(task_type)) {    // Resize task.

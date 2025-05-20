@@ -275,21 +275,21 @@ static future<std::set<sstring>> merge_keyspaces(distributed<service::storage_pr
 
     auto& sharded_db = proxy.local().get_db();
     for (auto& name : created) {
-        slogger.info("Creating keyspace {}", name);
+        LOGMACRO(slogger, log_level::info, "Creating keyspace {}", name);
         auto sk_after_v = sk_after.contains(name) ? sk_after.at(name) : nullptr;
         auto ksm = co_await create_keyspace_from_schema_partition(proxy,
                 schema_result_value_type{name, after.at(name)}, sk_after_v);
         co_await replica::database::create_keyspace_on_all_shards(sharded_db, proxy, *ksm);
     }
     for (auto& name : altered) {
-        slogger.info("Altering keyspace {}", name);
+        LOGMACRO(slogger, log_level::info, "Altering keyspace {}", name);
         auto sk_after_v = sk_after.contains(name) ? sk_after.at(name) : nullptr;
         auto tmp_ksm = co_await create_keyspace_from_schema_partition(proxy,
                 schema_result_value_type{name, after.at(name)}, sk_after_v);
         co_await replica::database::update_keyspace_on_all_shards(sharded_db, *tmp_ksm);
     }
     for (auto& key : dropped) {
-        slogger.info("Dropping keyspace {}", key);
+        LOGMACRO(slogger, log_level::info, "Dropping keyspace {}", key);
     }
     co_return dropped;
 }
@@ -518,24 +518,24 @@ static schema_diff diff_table_or_view(distributed<service::storage_proxy>& proxy
     auto diff = difference(before, after);
     for (auto&& key : diff.entries_only_on_left) {
         auto&& s = proxy.local().get_db().local().find_schema(key);
-        slogger.info("Dropping {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
+        LOGMACRO(slogger, log_level::info, "Dropping {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
         d.dropped.emplace_back(schema_diff::dropped_schema{s});
     }
     for (auto&& key : diff.entries_only_on_right) {
         auto s = create_schema(std::move(after.at(key)), schema_diff_side::right);
-        slogger.info("Creating {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
+        LOGMACRO(slogger, log_level::info, "Creating {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
         d.created.emplace_back(s);
     }
     for (auto&& key : diff.entries_differing) {
         auto s_before = create_schema(std::move(before.at(key)), schema_diff_side::left);
         auto s = create_schema(std::move(after.at(key)), schema_diff_side::right);
-        slogger.info("Altering {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
+        LOGMACRO(slogger, log_level::info, "Altering {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
         d.altered.emplace_back(schema_diff::altered_schema{s_before, s});
     }
     if (reload) {
         for (auto&& key: diff.entries_in_common) {
             auto s = create_schema(std::move(after.at(key)), schema_diff_side::right);
-            slogger.info("Reloading {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
+            LOGMACRO(slogger, log_level::info, "Reloading {}.{} id={} version={}", s->ks_name(), s->cf_name(), s->id(), s->version());
             d.altered.emplace_back(schema_diff::altered_schema {s, s});
         }
     }
@@ -623,7 +623,7 @@ static future<> merge_tables_and_views(distributed<service::storage_proxy>& prox
     });
 
     if (tablet_hint) {
-        slogger.info("Tablet metadata changed");
+        LOGMACRO(slogger, log_level::info, "Tablet metadata changed");
         // We must do it after tables are dropped so that table snapshot doesn't experience missing tablet map,
         // and so that compaction groups are not destroyed altogether.
         // We must also do it before tables are created so that new tables see the tablet map.

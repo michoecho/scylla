@@ -616,7 +616,7 @@ future<> server::init(net::inet_address addr, std::optional<uint16_t> port, std:
                                 b.rebuild(*s._credentials);
                             }
                         });
-                        slogger.info("Reloaded {}", files);
+                        LOGMACRO(slogger, log_level::info, "Reloaded {}", files);
                     }
                 }).get();
             } else {

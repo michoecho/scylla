@@ -65,7 +65,7 @@ public:
 public:
     void init_handler() {
         ser::gossip_rpc_verbs::register_gossip_digest_syn(&ms, [this] (const rpc::client_info& cinfo, gms::gossip_digest_syn msg) {
-            test_logger.info("Server got syn msg = {}", msg);
+            LOGMACRO(test_logger, log_level::info, "Server got syn msg = {}", msg);
 
             auto from = cinfo.retrieve_auxiliary<locator::host_id>("host_id");
             auto ep1 = inet_address("1.1.1.1");
@@ -88,7 +88,7 @@ public:
         });
 
         ser::gossip_rpc_verbs::register_gossip_digest_ack(&ms, [this] (const rpc::client_info& cinfo, gms::gossip_digest_ack msg) {
-            test_logger.info("Server got ack msg = {}", msg);
+            LOGMACRO(test_logger, log_level::info, "Server got ack msg = {}", msg);
             auto from = cinfo.retrieve_auxiliary<locator::host_id>("host_id");
             // Prepare gossip_digest_ack2 message
             auto ep1 = inet_address("3.3.3.3");
@@ -105,17 +105,17 @@ public:
         });
 
         ser::gossip_rpc_verbs::register_gossip_digest_ack2(&ms, [] (const rpc::client_info& cinfo, gms::gossip_digest_ack2 msg) {
-            test_logger.info("Server got ack2 msg = {}", msg);
+            LOGMACRO(test_logger, log_level::info, "Server got ack2 msg = {}", msg);
             return make_ready_future<rpc::no_wait_type>(netw::messaging_service::no_wait());
         });
 
         ser::gossip_rpc_verbs::register_gossip_shutdown(&ms, [] (const rpc::client_info& cinfo, inet_address from, rpc::optional<int64_t> generation_number_opt) {
-            test_logger.info("Server got shutdown msg = {}", from);
+            LOGMACRO(test_logger, log_level::info, "Server got shutdown msg = {}", from);
             return make_ready_future<rpc::no_wait_type>(netw::messaging_service::no_wait());
         });
 
         ser::gossip_rpc_verbs::register_gossip_echo(&ms, [] (const rpc::client_info& cinfo, rpc::opt_time_point, rpc::optional<int64_t> gen_opt, rpc::optional<bool> notify_up) {
-            test_logger.info("Server got gossip echo msg");
+            LOGMACRO(test_logger, log_level::info, "Server got gossip echo msg");
             throw std::runtime_error("I'm throwing runtime_error exception");
             return make_ready_future<>();
         });
@@ -123,12 +123,12 @@ public:
 
     future<> deinit_handler() {
         co_await ser::gossip_rpc_verbs::unregister(&ms);
-        test_logger.info("tester deinit_hadler done");
+        LOGMACRO(test_logger, log_level::info, "tester deinit_hadler done");
     }
 
 public:
     future<> test_gossip_digest() {
-        test_logger.info("=== {} ===", __func__);
+        LOGMACRO(test_logger, log_level::info, "=== {} ===", __func__);
         // Prepare gossip_digest_syn message
         auto id = get_msg_addr();
         auto ep1 = inet_address("1.1.1.1");
@@ -140,23 +140,23 @@ public:
         digests.push_back(gms::gossip_digest(ep2, gen++, ver++));
         gms::gossip_digest_syn syn("my_cluster", "my_partition", digests, utils::null_uuid());
         return ser::gossip_rpc_verbs::send_gossip_digest_syn(&ms, id, std::move(syn)).then([this] {
-            test_logger.info("Sent gossip sigest syn. Waiting for digest_test_done...");
+            LOGMACRO(test_logger, log_level::info, "Sent gossip sigest syn. Waiting for digest_test_done...");
             return digest_test_done.get_future();
         });
     }
 
     future<> test_gossip_shutdown() {
-        test_logger.info("=== {} ===", __func__);
+        LOGMACRO(test_logger, log_level::info, "=== {} ===", __func__);
         inet_address from("127.0.0.1");
         int64_t gen = 0x1;
         return ser::gossip_rpc_verbs::send_gossip_shutdown(&ms, _server_id, from, gen).then([] () {
-            test_logger.info("Client sent gossip_shutdown got reply = void");
+            LOGMACRO(test_logger, log_level::info, "Client sent gossip_shutdown got reply = void");
             return make_ready_future<>();
         });
     }
 
     future<> test_echo() {
-        test_logger.info("=== {} ===", __func__);
+        LOGMACRO(test_logger, log_level::info, "=== {} ===", __func__);
         int64_t gen = 0x1;
         abort_source as;
         try {
@@ -217,7 +217,7 @@ int main(int ac, char ** av) {
             testers.start(std::ref(messaging)).get();
             auto stop_testers = deferred_stop(testers);
             auto port = testers.local().port();
-            test_logger.info("Messaging server listening on {} port {}", listen, port);
+            LOGMACRO(test_logger, log_level::info, "Messaging server listening on {} port {}", listen, port);
             testers.invoke_on_all(&tester::init_handler).get();
             auto deinit_testers = deferred_action([&testers] {
                 testers.invoke_on_all(&tester::deinit_handler).get();
@@ -229,12 +229,12 @@ int main(int ac, char ** av) {
                 auto t = &testers.local();
                 t->set_server_ip(ip);
                 t->set_server_cpuid(cpuid);
-                test_logger.info("=============TEST START===========");
-                test_logger.info("Sending to server ....");
+                LOGMACRO(test_logger, log_level::info, "=============TEST START===========");
+                LOGMACRO(test_logger, log_level::info, "Sending to server ....");
                 t->test_gossip_digest().get();
                 t->test_gossip_shutdown().get();
                 t->test_echo().get();
-                test_logger.info("=============TEST DONE===========");
+                LOGMACRO(test_logger, log_level::info, "=============TEST DONE===========");
             }
             while (stay_alive) {
                 seastar::sleep(1s).get();

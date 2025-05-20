@@ -97,17 +97,17 @@ private:
 
         while (true) {
             if (topo.tstate && *topo.tstate == service::topology::transition_state::lock) {
-                testlog.info("Topology is locked");
+                LOGMACRO(testlog, log_level::info, "Topology is locked");
                 return;
             }
 
             auto guard = client.start_operation(as).get();
 
             if (topo.tstate) {
-                testlog.info("Waiting for topology state machine to be idle");
+                LOGMACRO(testlog, log_level::info, "Waiting for topology state machine to be idle");
                 release_guard(std::move(guard));
                 _env.get_topology_state_machine().local().await_not_busy().get();
-                testlog.info("Woken up");
+                LOGMACRO(testlog, log_level::info, "Woken up");
                 continue;
             }
 
@@ -118,7 +118,7 @@ private:
             try {
                 client.add_entry(std::move(g0_cmd), std::move(guard), as).get();
             } catch (service::group0_concurrent_modification&) {
-                testlog.info("Concurrent modification detected while locking topology, retrying");
+                LOGMACRO(testlog, log_level::info, "Concurrent modification detected while locking topology, retrying");
             }
         }
     }
@@ -218,7 +218,7 @@ public:
             service::topology_change change({builder.build()});
             service::group0_command g0_cmd = client.prepare_command(std::move(change), guard,
                                                                     format("adding node {} to topology", id));
-            testlog.info("Adding node {}/{} dc={} rack={} to topology", id, ip, dc_rack.dc, dc_rack.rack);
+            LOGMACRO(testlog, log_level::info, "Adding node {}/{} dc={} rack={} to topology", id, ip, dc_rack.dc, dc_rack.rack);
             try {
                 client.add_entry(std::move(g0_cmd), std::move(guard), as).get();
                 break;
@@ -253,7 +253,7 @@ public:
             service::topology_change change({builder.build()});
             service::group0_command g0_cmd = client.prepare_command(std::move(change), guard,
                                                                     format("node {} state={}", id, state));
-            testlog.info("Changing node {} state={}", id, state);
+            LOGMACRO(testlog, log_level::info, "Changing node {} state={}", id, state);
             try {
                 client.add_entry(std::move(g0_cmd), std::move(guard), as).get();
                 break;

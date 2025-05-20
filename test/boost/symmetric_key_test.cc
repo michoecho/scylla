@@ -189,8 +189,8 @@ SEASTAR_TEST_CASE(test_cipher_defaults) {
                 key_info info{alg, s};
                 symmetric_key k(info);
 
-                BOOST_REQUIRE_EQUAL(info, k.info());
-                BOOST_REQUIRE_EQUAL(boost::lexical_cast<std::string>(info), boost::lexical_cast<std::string>(k.info()));
+                BOOST_REQUIRE_EQUAL(info, LOGMACRO(k, log_level::info, ));
+                BOOST_REQUIRE_EQUAL(boost::lexical_cast<std::string>(info), boost::lexical_cast<std::string>(LOGMACRO(k, log_level::info, )));
 
                 auto i = alg.find_last_of('/');
                 if (i != sstring::npos) {

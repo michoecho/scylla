@@ -821,7 +821,7 @@ future<> encryption::kms_host::impl::init() {
         auto response = co_await post("DescribeKey", _options.aws_assume_role_arn, query);
         LOGMACRO(kms_log, log_level::debug, "Master key exists");
     } else {
-        kms_log.info("No default master key configured. Not verifying.");
+        LOGMACRO(kms_log, log_level::info, "No default master key configured. Not verifying.");
     }
     _initialized = true;
 }

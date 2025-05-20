@@ -1029,7 +1029,7 @@ SEASTAR_TEST_CASE(test_update) {
         cache_tracker tracker;
         row_cache cache(s, snapshot_source_from_snapshot(cache_mt->as_data_source()), tracker, is_continuous::yes);
 
-        testlog.info("Check cache miss with populate");
+        LOGMACRO(testlog, log_level::info, "Check cache miss with populate");
 
         int partition_count = 1000;
 
@@ -1063,7 +1063,7 @@ SEASTAR_TEST_CASE(test_update) {
         std::copy(keys_not_in_cache.begin(), keys_not_in_cache.end(), std::back_inserter(keys_in_cache));
         keys_not_in_cache.clear();
 
-        testlog.info("Check cache miss with drop");
+        LOGMACRO(testlog, log_level::info, "Check cache miss with drop");
 
         auto mt2 = make_lw_shared<replica::memtable>(s);
 
@@ -1081,7 +1081,7 @@ SEASTAR_TEST_CASE(test_update) {
             verify_does_not_have(cache, key);
         }
 
-        testlog.info("Check cache hit with merge");
+        LOGMACRO(testlog, log_level::info, "Check cache hit with merge");
 
         auto mt3 = make_lw_shared<replica::memtable>(s);
 
@@ -2965,7 +2965,7 @@ SEASTAR_TEST_CASE(test_no_misses_when_read_is_repeated) {
 
         for (auto n_ranges : {1, 2, 4}) {
             auto ranges = gen.make_random_ranges(n_ranges);
-            testlog.info("Reading {{{}}}", ranges);
+            LOGMACRO(testlog, log_level::info, "Reading {{{}}}", ranges);
 
             populate_range(cache, pr, ranges);
             check_continuous(cache, pr, ranges);
@@ -4951,7 +4951,7 @@ void run_cache_tombstone_gc_overlap_checks_scenario(
         std::function<void(cql_test_env&, replica::table&, api::timestamp_type, tombstone, apply_delete_fn)> scenario,
         std::string_view scenario_name,
         apply_delete_fn apply_delete) {
-    testlog.info("Running scenario {}", scenario_name);
+    LOGMACRO(testlog, log_level::info, "Running scenario {}", scenario_name);
 
     const auto table_name = scenario_name;
 
@@ -5112,12 +5112,12 @@ void test_cache_tombstone_gc_overlap_checks_concurrent_scanning_reads_scenario(c
     db.apply({ freeze(mut1_v2), freeze(mut2_v2) }, db::no_timeout).get();
 
     // Make sure both partitions are in the cache
-    testlog.info("pre-populate partition {}", pk1);
+    LOGMACRO(testlog, log_level::info, "pre-populate partition {}", pk1);
     assert_that(env.execute_cql(format("SELECT * FROM ks.{} WHERE pk = {} AND ck1 = {} and ck2 = {}", table_name, pk1, ck1, 0)).get()).is_rows();
-    testlog.info("pre-populate partition {}", pk2);
+    LOGMACRO(testlog, log_level::info, "pre-populate partition {}", pk2);
     assert_that(env.execute_cql(format("SELECT * FROM ks.{} WHERE pk = {} AND ck1 = {} and ck2 = {}", table_name, pk2, ck1, 0)).get()).is_rows();
 
-    testlog.info("read 1");
+    LOGMACRO(testlog, log_level::info, "read 1");
     auto reader1 = tbl.make_mutation_reader(
             schema,
             db.obtain_reader_permit(tbl, "read1", db::no_timeout, {}).get(),
@@ -5127,7 +5127,7 @@ void test_cache_tombstone_gc_overlap_checks_concurrent_scanning_reads_scenario(c
 
     reader1.fill_buffer().get();
 
-    testlog.info("read 2");
+    LOGMACRO(testlog, log_level::info, "read 2");
     auto reader2 = tbl.make_mutation_reader(
             schema,
             db.obtain_reader_permit(tbl, "read2", db::no_timeout, {}).get(),
@@ -5140,7 +5140,7 @@ void test_cache_tombstone_gc_overlap_checks_concurrent_scanning_reads_scenario(c
     MemtableFlushPolicy flush_policy(db, table_name);
 
     // read 3
-    testlog.info("read 3");
+    LOGMACRO(testlog, log_level::info, "read 3");
     auto res = env.execute_cql(format("SELECT * FROM ks.{} WHERE pk = {}", table_name, pk2)).get();
 
     mutation expected_mut2(schema, dk2);
@@ -5170,7 +5170,7 @@ future<> test_cache_tombstone_gc_overlap_checks(apply_delete_fn apply_delete) {
 
     struct flush_completely_policy {
         flush_completely_policy(replica::database& db, std::string_view table_name) {
-            testlog.info("Creating flush_completely_policy");
+            LOGMACRO(testlog, log_level::info, "Creating flush_completely_policy");
             db.flush("ks", sstring(table_name)).get();
         }
     };
@@ -5181,7 +5181,7 @@ future<> test_cache_tombstone_gc_overlap_checks(apply_delete_fn apply_delete) {
         future<> _fut;
     public:
         flush_halfway_policy(replica::database& db, std::string_view table_name) : _fut(make_ready_future<>()) {
-            testlog.info("Creating flush_halfway_policy");
+            LOGMACRO(testlog, log_level::info, "Creating flush_halfway_policy");
 
             auto& err_inj = utils::get_local_injector();
 

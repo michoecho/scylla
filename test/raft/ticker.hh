@@ -51,7 +51,7 @@ private:
     future<> tick(on_tick_t fun, uint64_t limit) {
         for (uint64_t tick = 0; tick < limit; ++tick) {
             if (_stop) {
-                _logger.info("ticker: finishing after {} ticks", tick);
+                LOGMACRO(_logger, log_level::info, "ticker: finishing after {} ticks", tick);
                 co_return;
             }
 

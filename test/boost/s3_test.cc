@@ -79,37 +79,37 @@ using client_maker_function = std::function<shared_ptr<s3::client>(semaphore&)>;
 void client_put_get_object(const client_maker_function& client_maker) {
     const sstring name(fmt::format("/{}/testobject-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), ::getpid()));
 
-    testlog.info("Make client\n");
+    LOGMACRO(testlog, log_level::info, "Make client\n");
     semaphore mem(16 << 20);
     auto cln = client_maker(mem);
     auto close_client = deferred_close(*cln);
 
-    testlog.info("Put object {}\n", name);
+    LOGMACRO(testlog, log_level::info, "Put object {}\n", name);
     temporary_buffer<char> data = sstring("1234567890").release();
     cln->put_object(name, std::move(data)).get();
 
-    testlog.info("Get object size\n");
+    LOGMACRO(testlog, log_level::info, "Get object size\n");
     size_t sz = cln->get_object_size(name).get();
     BOOST_REQUIRE_EQUAL(sz, 10);
 
-    testlog.info("Get object stats\n");
+    LOGMACRO(testlog, log_level::info, "Get object stats\n");
     s3::stats st = cln->get_object_stats(name).get();
     BOOST_REQUIRE_EQUAL(st.size, 10);
     // forgive timezone difference as minio server is GMT by default
     BOOST_REQUIRE(std::difftime(st.last_modified, gc_clock::to_time_t(gc_clock::now())) < 24*3600);
 
-    testlog.info("Get object content\n");
+    LOGMACRO(testlog, log_level::info, "Get object content\n");
     temporary_buffer<char> res = cln->get_object_contiguous(name).get();
     BOOST_REQUIRE_EQUAL(to_sstring(std::move(res)), sstring("1234567890"));
 
-    testlog.info("Get object part\n");
+    LOGMACRO(testlog, log_level::info, "Get object part\n");
     res = cln->get_object_contiguous(name, s3::range{ 1, 3 }).get();
     BOOST_REQUIRE_EQUAL(to_sstring(std::move(res)), sstring("234"));
 
-    testlog.info("Delete object\n");
+    LOGMACRO(testlog, log_level::info, "Delete object\n");
     cln->delete_object(name).get();
 
-    testlog.info("Verify it's gone\n");
+    LOGMACRO(testlog, log_level::info, "Verify it's gone\n");
     BOOST_REQUIRE_EXCEPTION(cln->get_object_size(name).get(), storage_io_error, [] (const storage_io_error& ex) {
         return ex.code().value() == ENOENT;
     });
@@ -125,7 +125,7 @@ SEASTAR_THREAD_TEST_CASE(test_client_put_get_object_proxy) {
 
 static auto deferred_delete_object(shared_ptr<s3::client> client, sstring name) {
     return seastar::defer([client, name] {
-        testlog.info("Delete object: {}\n", name);
+        LOGMACRO(testlog, log_level::info, "Delete object: {}\n", name);
         client->delete_object(name).get();
     });
 }
@@ -133,12 +133,12 @@ static auto deferred_delete_object(shared_ptr<s3::client> client, sstring name) 
 void do_test_client_multipart_upload(const client_maker_function& client_maker, bool with_copy_upload) {
     const sstring name(fmt::format("/{}/test{}object-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), with_copy_upload ? "jumbo" : "large", ::getpid()));
 
-    testlog.info("Make client\n");
+    LOGMACRO(testlog, log_level::info, "Make client\n");
     semaphore mem(16<<20);
     auto cln = client_maker(mem);
     auto close_client = deferred_close(*cln);
 
-    testlog.info("Upload object (with copy = {})\n", with_copy_upload);
+    LOGMACRO(testlog, log_level::info, "Upload object (with copy = {})\n", with_copy_upload);
     auto out = output_stream<char>(
         // Make it 3 parts per piece, so that 128Mb buffer below
         // would be split into several 15Mb pieces
@@ -154,29 +154,29 @@ void do_test_client_multipart_upload(const client_maker_function& client_maker, 
         object_size += rnd.size();
     }
 
-    testlog.info("Flush multipart upload\n");
+    LOGMACRO(testlog, log_level::info, "Flush multipart upload\n");
     out.flush().get();
     auto delete_object = deferred_delete_object(cln, name);
 
-    testlog.info("Closing\n");
+    LOGMACRO(testlog, log_level::info, "Closing\n");
     close.close_now();
 
-    testlog.info("Checking file size\n");
+    LOGMACRO(testlog, log_level::info, "Checking file size\n");
     size_t sz = cln->get_object_size(name).get();
     BOOST_REQUIRE_EQUAL(sz, object_size);
 
-    testlog.info("Checking correctness\n");
+    LOGMACRO(testlog, log_level::info, "Checking correctness\n");
     for (int samples = 0; samples < 7; samples++) {
         uint64_t len = tests::random::get_int(1u, chunk_size);
         uint64_t off = tests::random::get_int(object_size - len);
 
         auto s_buf = cln->get_object_contiguous(name, s3::range{ off, len }).get();
         unsigned align = off % chunk_size;
-        testlog.info("Got [{}:{}) chunk\n", off, len);
-        testlog.info("Checking {} vs {} len {}\n", align, 0, std::min<uint64_t>(chunk_size - align, len));
+        LOGMACRO(testlog, log_level::info, "Got [{}:{}) chunk\n", off, len);
+        LOGMACRO(testlog, log_level::info, "Checking {} vs {} len {}\n", align, 0, std::min<uint64_t>(chunk_size - align, len));
         BOOST_REQUIRE_EQUAL(memcmp(rnd.begin() + align, s_buf.get(), std::min<uint64_t>(chunk_size - align, len)), 0);
         if (len > chunk_size - align) {
-            testlog.info("Checking {} vs {} len {}\n", 0, chunk_size - align, len - (chunk_size - align));
+            LOGMACRO(testlog, log_level::info, "Checking {} vs {} len {}\n", 0, chunk_size - align, len - (chunk_size - align));
             BOOST_REQUIRE_EQUAL(memcmp(rnd.begin(), s_buf.get() + (chunk_size - align), len - (chunk_size - align)), 0);
         }
     }
@@ -201,27 +201,27 @@ SEASTAR_THREAD_TEST_CASE(test_client_multipart_copy_upload_proxy) {
 void client_multipart_upload_fallback(const client_maker_function& client_maker) {
     const sstring name(fmt::format("/{}/testfbobject-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), ::getpid()));
 
-    testlog.info("Make client");
+    LOGMACRO(testlog, log_level::info, "Make client");
     semaphore mem(0);
     mem.broken(); // so that any attempt to use it throws
     auto cln = client_maker(mem);
     auto close_client = deferred_close(*cln);
 
-    testlog.info("Upload object");
+    LOGMACRO(testlog, log_level::info, "Upload object");
     auto out = output_stream<char>(cln->make_upload_sink(name));
     auto close = seastar::deferred_close(out);
 
     temporary_buffer<char> data = sstring("1A3B5C7890").release();
     out.write(reinterpret_cast<const char*>(data.begin()), data.size()).get();
 
-    testlog.info("Flush upload");
+    LOGMACRO(testlog, log_level::info, "Flush upload");
     out.flush().get(); // if it tries to do regular flush, memory claim would throw
     auto delete_object = deferred_delete_object(cln, name);
 
-    testlog.info("Closing");
+    LOGMACRO(testlog, log_level::info, "Closing");
     close.close_now();
 
-    testlog.info("Get object content");
+    LOGMACRO(testlog, log_level::info, "Get object content");
     temporary_buffer<char> res = cln->get_object_contiguous(name).get();
     BOOST_REQUIRE_EQUAL(to_sstring(std::move(res)), to_sstring(std::move(data)));
 }
@@ -345,12 +345,12 @@ SEASTAR_TEST_CASE(test_client_upload_file_single_part_proxy) {
 void client_readable_file(const client_maker_function& client_maker) {
     const sstring name(fmt::format("/{}/testroobject-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), ::getpid()));
 
-    testlog.info("Make client\n");
+    LOGMACRO(testlog, log_level::info, "Make client\n");
     semaphore mem(16<<20);
     auto cln = client_maker(mem);
     auto close_client = deferred_close(*cln);
 
-    testlog.info("Put object {}\n", name);
+    LOGMACRO(testlog, log_level::info, "Put object {}\n", name);
     temporary_buffer<char> data = sstring("1234567890ABCDEF").release();
     cln->put_object(name, std::move(data)).get();
     auto delete_object = deferred_delete_object(cln, name);
@@ -358,17 +358,17 @@ void client_readable_file(const client_maker_function& client_maker) {
     auto f = cln->make_readable_file(name);
     auto close_readable_file = deferred_close(f);
 
-    testlog.info("Check file size\n");
+    LOGMACRO(testlog, log_level::info, "Check file size\n");
     size_t sz = f.size().get();
     BOOST_REQUIRE_EQUAL(sz, 16);
 
-    testlog.info("Check buffer read\n");
+    LOGMACRO(testlog, log_level::info, "Check buffer read\n");
     char buffer[16];
     sz = f.dma_read(4, buffer, 7).get();
     BOOST_REQUIRE_EQUAL(sz, 7);
     BOOST_REQUIRE_EQUAL(sstring(buffer, 7), sstring("567890A"));
 
-    testlog.info("Check iovec read\n");
+    LOGMACRO(testlog, log_level::info, "Check iovec read\n");
     std::vector<iovec> iovs;
     iovs.push_back({buffer, 3});
     iovs.push_back({buffer + 3, 2});
@@ -379,7 +379,7 @@ void client_readable_file(const client_maker_function& client_maker) {
     BOOST_REQUIRE_EQUAL(sstring(buffer + 3, 2), sstring("78"));
     BOOST_REQUIRE_EQUAL(sstring(buffer + 5, 4), sstring("90AB"));
 
-    testlog.info("Check bulk read\n");
+    LOGMACRO(testlog, log_level::info, "Check bulk read\n");
     auto buf = f.dma_read_bulk<char>(5, 8).get();
     BOOST_REQUIRE_EQUAL(to_sstring(std::move(buf)), sstring("67890ABC"));
 }
@@ -395,12 +395,12 @@ SEASTAR_THREAD_TEST_CASE(test_client_readable_file_proxy) {
 void client_readable_file_stream(const client_maker_function& client_maker) {
     const sstring name(fmt::format("/{}/teststreamobject-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), ::getpid()));
 
-    testlog.info("Make client\n");
+    LOGMACRO(testlog, log_level::info, "Make client\n");
     semaphore mem(16<<20);
     auto cln = client_maker(mem);
     auto close_client = deferred_close(*cln);
 
-    testlog.info("Put object {}\n", name);
+    LOGMACRO(testlog, log_level::info, "Put object {}\n", name);
     sstring sample("1F2E3D4C5B6A70899807A6B5C4D3E2F1");
     temporary_buffer<char> data(sample.c_str(), sample.size());
     cln->put_object(name, std::move(data)).get();
@@ -411,7 +411,7 @@ void client_readable_file_stream(const client_maker_function& client_maker) {
     auto in = make_file_input_stream(f);
     auto close_stream = deferred_close(in);
 
-    testlog.info("Check input stream read\n");
+    LOGMACRO(testlog, log_level::info, "Check input stream read\n");
     auto res = seastar::util::read_entire_stream_contiguous(in).get();
     BOOST_REQUIRE_EQUAL(res, sample);
 }
@@ -491,7 +491,7 @@ void client_list_objects(const client_maker_function& client_maker) {
     auto close_lister = deferred_close(lister);
 
     while (auto de = lister.get().get()) {
-        testlog.info("-> [{}]", de->name);
+        LOGMACRO(testlog, log_level::info, "-> [{}]", de->name);
         auto it = names.find(de->name);
         BOOST_REQUIRE(it != names.end());
         names.erase(it);
@@ -588,7 +588,7 @@ SEASTAR_THREAD_TEST_CASE(test_object_reupload) {
     auto delete_object = deferred_delete_object(cln, name);
     constexpr std::string_view content{"1234567890"};
     for (auto i : {1, 2}) {
-        testlog.info("Put object {}, iteration {}", name, i);
+        LOGMACRO(testlog, log_level::info, "Put object {}, iteration {}", name, i);
         temporary_buffer<char> data = sstring(content).release();
         cln->put_object(name, std::move(data)).get();
 
@@ -601,7 +601,7 @@ SEASTAR_THREAD_TEST_CASE(test_object_reupload) {
 
     for (auto jumbo : {true, false}) {
         for (auto i : {1, 2}) {
-            testlog.info("Upload object {}, iteration {} (with copy = {})", name, i, jumbo);
+            LOGMACRO(testlog, log_level::info, "Upload object {}, iteration {} (with copy = {})", name, i, jumbo);
             auto out = output_stream<char>(
                 // Make it 3 parts per piece, so that 128Mb buffer below
                 // would be split into several 15Mb pieces
@@ -631,14 +631,14 @@ SEASTAR_THREAD_TEST_CASE(test_object_reupload) {
 void test_download_data_source(const client_maker_function& client_maker, unsigned chunks) {
     const sstring name(fmt::format("/{}/testdatasourceobject-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), ::getpid()));
 
-    testlog.info("Make client\n");
+    LOGMACRO(testlog, log_level::info, "Make client\n");
     semaphore mem(16<<20);
     auto cln = client_maker(mem);
     auto close_client = deferred_close(*cln);
     auto delete_object = deferred_delete_object(cln, name);
 
     static constexpr unsigned chunk_size = 1000;
-    testlog.info("Preparation: Upload object");
+    LOGMACRO(testlog, log_level::info, "Preparation: Upload object");
     auto rnd = tests::random::get_bytes(chunk_size);
     {
         auto out = output_stream<char>(cln->make_upload_sink(name));
@@ -650,7 +650,7 @@ void test_download_data_source(const client_maker_function& client_maker, unsign
         out.flush().get();
     }
 
-    testlog.info("Download object");
+    LOGMACRO(testlog, log_level::info, "Download object");
     auto in = input_stream<char>(cln->make_download_source(name, {}));
     auto close = seastar::deferred_close(in);
     for (unsigned ch = 0; ch < chunks; ch++) {
@@ -696,7 +696,7 @@ void test_object_copy(const client_maker_function& client_maker, size_t chunk_si
         auto range = s3::range{off, len};
         auto orig_buf = cln->get_object_contiguous(name, range).get();
         auto copy_buf = cln->get_object_contiguous(name_copy, range).get();
-        testlog.info("Got [{}:{}) chunk", off, len);
+        LOGMACRO(testlog, log_level::info, "Got [{}:{}) chunk", off, len);
         BOOST_REQUIRE_EQUAL(memcmp(copy_buf.get(), orig_buf.get(), len), 0);
     }
 }

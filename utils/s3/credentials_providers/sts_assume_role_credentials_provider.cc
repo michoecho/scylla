@@ -78,7 +78,7 @@ s3::aws_credentials sts_assume_role_credentials_provider::parse_creds(sstring& b
     const auto root = get_node_safe(doc.get(), "AssumeRoleResponse");
     const auto result = get_node_safe(root, "AssumeRoleResult");
     const auto assumed_role_user = get_node_safe(result, "AssumedRoleUser");
-    sts_logger.info("Assuming role for ARN: {}, Assumed Role ID: {}",
+    LOGMACRO(sts_logger, log_level::info, "Assuming role for ARN: {}, Assumed Role ID: {}",
                     assumed_role_user->first_node("Arn")->value(),
                     assumed_role_user->first_node("AssumedRoleId")->value());
 

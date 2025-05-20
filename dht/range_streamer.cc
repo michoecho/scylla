@@ -246,14 +246,14 @@ future<> range_streamer::stream_async() {
     _nr_ranges_remaining = nr_ranges_to_stream();
     _nr_total_ranges = _nr_ranges_remaining;
     _token_metadata_ptr = nullptr;
-    logger.info("{} starts, nr_ranges_remaining={}", _description, _nr_ranges_remaining);
+    LOGMACRO(logger, log_level::info, "{} starts, nr_ranges_remaining={}", _description, _nr_ranges_remaining);
     auto start = lowres_clock::now();
     return do_for_each(_to_stream, [this, description = _description] (auto& stream) {
         const auto& keyspace = stream.first;
         auto& ip_range_vec = stream.second;
         auto ips = ip_range_vec | std::views::keys | std::ranges::to<std::list>();
         // Fetch from or send to peer node in parallel
-        logger.info("{} with {} for keyspace={} started, nodes_to_stream={}", description, ips, keyspace, ip_range_vec.size());
+        LOGMACRO(logger, log_level::info, "{} with {} for keyspace={} started, nodes_to_stream={}", description, ips, keyspace, ip_range_vec.size());
         return parallel_for_each(ip_range_vec, [this, description, keyspace] (auto& ip_range) {
           auto& source = ip_range.first;
           auto& range_vec = ip_range.second;
@@ -270,7 +270,7 @@ future<> range_streamer::stream_async() {
                                           _reason, _topo_guard);
                     auto abort_listener = _abort_source.subscribe([&] () noexcept { sp.abort(); });
                     _abort_source.check();
-                    logger.info("{} with {} for keyspace={}, streaming [{}, {}) out of {} ranges",
+                    LOGMACRO(logger, log_level::info, "{} with {} for keyspace={}, streaming [{}, {}) out of {} ranges",
                             description, source, keyspace,
                             nr_ranges_streamed, nr_ranges_streamed + ranges_to_stream.size(), nr_ranges_total);
                     auto ranges_streamed = ranges_to_stream.size();
@@ -285,7 +285,7 @@ future<> range_streamer::stream_async() {
                     _nr_ranges_remaining -= ranges_streamed;
                     float percentage = _nr_total_ranges == 0 ? 1 : (_nr_total_ranges - _nr_ranges_remaining) / (float)_nr_total_ranges;
                     _stream_manager.local().update_finished_percentage(_reason, percentage);
-                    logger.info("Finished {} out of {} ranges for {}, finished percentage={}",
+                    LOGMACRO(logger, log_level::info, "Finished {} out of {} ranges for {}, finished percentage={}",
                             _nr_total_ranges - _nr_ranges_remaining, _nr_total_ranges, _reason, percentage);
                 };
                 dht::token_range_vector ranges_to_stream;
@@ -312,7 +312,7 @@ future<> range_streamer::stream_async() {
                     throw;
                 }
                 auto t = std::chrono::duration_cast<std::chrono::duration<float>>(lowres_clock::now() - start_time).count();
-                logger.info("{} with {} for keyspace={} succeeded, took {} seconds", description, source, keyspace, t);
+                LOGMACRO(logger, log_level::info, "{} with {} for keyspace={} succeeded, took {} seconds", description, source, keyspace, t);
               });
           });
         });
@@ -322,7 +322,7 @@ future<> range_streamer::stream_async() {
         if (nr_ranges_remaining) {
             logger.warn("{} failed, took {} seconds, nr_ranges_remaining={}", _description, t, nr_ranges_remaining);
         } else {
-            logger.info("{} succeeded, took {} seconds, nr_ranges_remaining={}", _description, t, nr_ranges_remaining);
+            LOGMACRO(logger, log_level::info, "{} succeeded, took {} seconds, nr_ranges_remaining={}", _description, t, nr_ranges_remaining);
         }
     });
 }

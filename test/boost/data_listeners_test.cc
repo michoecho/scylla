@@ -30,7 +30,7 @@ public:
             const query::partition_slice& slice, mutation_reader&& rd) override {
         if (s->cf_name() == _cf_name) {
             return make_filtering_reader(std::move(rd), [this, s = std::move(s)] (const dht::decorated_key& dk) {
-                testlog.info("listener {}: read {}", fmt::ptr(this), dk);
+                LOGMACRO(testlog, log_level::info, "listener {}: read {}", fmt::ptr(this), dk);
                 ++read;
                 return true;
             });
@@ -56,14 +56,14 @@ struct results {
 //---------------------------------------------------------------------------------------------
 
 results test_data_listeners(cql_test_env& e, sstring cf_name) {
-    testlog.info("starting test_data_listeners");
+    LOGMACRO(testlog, log_level::info, "starting test_data_listeners");
 
     std::vector<std::unique_ptr<table_listener>> listeners;
 
     e.db().invoke_on_all([&listeners, &cf_name] (replica::database& db) {
         auto listener = std::make_unique<table_listener>(cf_name);
         db.data_listeners().install(&*listener);
-        testlog.info("installed listener {}", fmt::ptr(&*listener));
+        LOGMACRO(testlog, log_level::info, "installed listener {}", fmt::ptr(&*listener));
         listeners.push_back(std::move(listener));
     }).get();
 
@@ -81,7 +81,7 @@ results test_data_listeners(cql_test_env& e, sstring cf_name) {
                     continue;
                 }
                 results res{li->read, li->write};
-                testlog.info("uninstalled listener {}: rd={} wr={}", fmt::ptr(li), li->read, li->write);
+                LOGMACRO(testlog, log_level::info, "uninstalled listener {}: rd={} wr={}", fmt::ptr(li), li->read, li->write);
                 db.data_listeners().uninstall(li);
                 return res;
             }
@@ -94,7 +94,7 @@ results test_data_listeners(cql_test_env& e, sstring cf_name) {
             return res;
         }).get();
 
-    testlog.info("test_data_listeners: rd={} wr={}", res.read, res.write);
+    LOGMACRO(testlog, log_level::info, "test_data_listeners: rd={} wr={}", res.read, res.write);
 
     return res;
 }

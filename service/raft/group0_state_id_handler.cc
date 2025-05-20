@@ -39,7 +39,7 @@ void group0_state_id_handler::refresh() {
         return members;
     });
     if (group0_members.empty()) {
-        slogger.info("Skipping due to empty group0");
+        LOGMACRO(slogger, log_level::info, "Skipping due to empty group0");
         return;
     }
 
@@ -63,12 +63,12 @@ void group0_state_id_handler::refresh() {
     }) | std::ranges::to<std::vector>();
 
     if (!group0_members_missing_endpoint.empty()) {
-        slogger.info("Skipping due to missing endpoints for members: {}", fmt::join(group0_members_missing_endpoint, ", "));
+        LOGMACRO(slogger, log_level::info, "Skipping due to missing endpoints for members: {}", fmt::join(group0_members_missing_endpoint, ", "));
         return;
     }
 
     if (!group0_members_missing_state_id.empty()) {
-        slogger.info("Skipping due to missing state id of some endpoints: {}", fmt::join(group0_members_missing_state_id, ", "));
+        LOGMACRO(slogger, log_level::info, "Skipping due to missing state id of some endpoints: {}", fmt::join(group0_members_missing_state_id, ", "));
         return;
     }
 
@@ -81,7 +81,7 @@ void group0_state_id_handler::refresh() {
     });
 
     if (_state_id_last_reconcile && utils::timeuuid_tri_compare(_state_id_last_reconcile, min_state_id) > 0) {
-        slogger.info("Skipping due to the stale minimum state id: {}", min_state_id);
+        LOGMACRO(slogger, log_level::info, "Skipping due to the stale minimum state id: {}", min_state_id);
         return;
     }
 
@@ -94,7 +94,7 @@ void group0_state_id_handler::refresh() {
                                    //   (and thus we don't want to GC these)
                                    - gc_clock::duration{1};
 
-    slogger.info("Setting reconcile time to {} (min id={})", tombstone_gc_time, min_state_id);
+    LOGMACRO(slogger, log_level::info, "Setting reconcile time to {} (min id={})", tombstone_gc_time, min_state_id);
 
     auto& gc_state = _local_db.get_compaction_manager().get_tombstone_gc_state();
     gc_state.update_group0_refresh_time(tombstone_gc_time);

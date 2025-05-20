@@ -100,7 +100,7 @@ void apply_resize_plan(token_metadata& tm, const migration_plan& plan) {
     }
     for (auto table_id : plan.resize_plan().finalize_resize) {
         auto& old_tmap = tm.tablets().get_tablet_map(table_id);
-        testlog.info("Setting new tablet map of size {}", old_tmap.tablet_count() * 2);
+        LOGMACRO(testlog, log_level::info, "Setting new tablet map of size {}", old_tmap.tablet_count() * 2);
         tablet_map tmap(old_tmap.tablet_count() * 2);
         tm.tablets().set_tablet_map(table_id, std::move(tmap));
     }
@@ -180,7 +180,7 @@ rebalance_stats rebalance_tablets(cql_test_env& e, locator::load_stats_ptr load_
             // causing test flakiness.
             save_tablet_metadata(e.local_db(), stm.get()->tablets(), guard.write_timestamp()).get();
             e.get_storage_service().local().load_tablet_metadata({}).get();
-            testlog.info("Rebalance took {:.3f} [s] after {} iteration(s)", stats.elapsed_time.count(), i + 1);
+            LOGMACRO(testlog, log_level::info, "Rebalance took {:.3f} [s] after {} iteration(s)", stats.elapsed_time.count(), i + 1);
             return stats;
         }
         stm.mutate_token_metadata([&] (token_metadata& tm) {
@@ -269,7 +269,7 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
             auto host = topo.add_node(service::node_state::normal, shard_count);
             hosts.push_back(host);
             stats.capacity[host] = default_target_tablet_size * shard_count;
-            testlog.info("Added new node: {}", host);
+            LOGMACRO(testlog, log_level::info, "Added new node: {}", host);
         };
 
         auto make_stats = [&] {
@@ -298,7 +298,7 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
                 throw std::runtime_error(format("Host {} still has replicas!", host));
             }
             topo.set_node_state(host, service::node_state::left);
-            testlog.info("Node decommissioned: {}", host);
+            LOGMACRO(testlog, log_level::info, "Node decommissioned: {}", host);
             hosts.erase(hosts.begin() + i);
         };
 
@@ -330,7 +330,7 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
                     auto overcommit = double(minmax.max()) / avg_shard_load;
                     shard_load_minmax.update(minmax.max());
                     shard_count += load.get_shard_count(h);
-                    testlog.info("Load on host {} for table {}: total={}, min={}, max={}, spread={}, avg={:.2f}, overcommit={:.2f}",
+                    LOGMACRO(testlog, log_level::info, "Load on host {} for table {}: total={}, min={}, max={}, spread={}, avg={:.2f}, overcommit={:.2f}",
                                  h, s->cf_name(), node_load, minmax.min(), minmax.max(), minmax.max() - minmax.min(), avg_shard_load, overcommit);
                     node_load_minmax.update(node_load);
                     sum_node_load += node_load;
@@ -340,12 +340,12 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
                 auto shard_overcommit = shard_load_minmax.max() / avg_shard_load;
                 // Overcommit given the best distribution of tablets given current number of tablets.
                 auto best_shard_overcommit = div_ceil(sum_node_load, shard_count) / avg_shard_load;
-                testlog.info("Shard overcommit: {:.2f}, best={:.2f}", shard_overcommit, best_shard_overcommit);
+                LOGMACRO(testlog, log_level::info, "Shard overcommit: {:.2f}, best={:.2f}", shard_overcommit, best_shard_overcommit);
 
                 auto node_imbalance = node_load_minmax.max() - node_load_minmax.min();
                 auto avg_node_load = double(sum_node_load) / hosts.size();
                 auto node_overcommit = node_load_minmax.max() / avg_node_load;
-                testlog.info("Node imbalance: min={}, max={}, spread={}, avg={:.2f}, overcommit={:.2f}",
+                LOGMACRO(testlog, log_level::info, "Node imbalance: min={}, max={}, spread={}, avg={:.2f}, overcommit={:.2f}",
                               node_load_minmax.min(), node_load_minmax.max(), node_imbalance, avg_node_load, node_overcommit);
 
                 res.tables[table_index++] = {
@@ -361,7 +361,7 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
                 global_res.worst.tables[i].node_overcommit = std::max(global_res.worst.tables[i].node_overcommit, t.node_overcommit);
             }
 
-            testlog.info("Overcommit: {}", res);
+            LOGMACRO(testlog, log_level::info, "Overcommit: {}", res);
             return res;
         };
 
@@ -387,17 +387,17 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
 }
 
 future<> run_simulation(const params& p, const sstring& name = "") {
-    testlog.info("[run {}] params: {}", name, p);
+    LOGMACRO(testlog, log_level::info, "[run {}] params: {}", name, p);
 
     auto total_tablet_count = p.tablets1.value_or(0) * p.rf1 + p.tablets2.value_or(0) * p.rf2;
-    testlog.info("[run {}] tablet count: {}", name, total_tablet_count);
-    testlog.info("[run {}] tablet count / shard: {:.3f}", name, double(total_tablet_count) / (p.nodes * p.shards));
+    LOGMACRO(testlog, log_level::info, "[run {}] tablet count: {}", name, total_tablet_count);
+    LOGMACRO(testlog, log_level::info, "[run {}] tablet count / shard: {:.3f}", name, double(total_tablet_count) / (p.nodes * p.shards));
 
     auto res = co_await test_load_balancing_with_many_tables(p, true);
-    testlog.info("[run {}] Overcommit       : init : {}", name, res.init);
-    testlog.info("[run {}] Overcommit       : worst: {}", name, res.worst);
-    testlog.info("[run {}] Overcommit       : last : {}", name, res.last);
-    testlog.info("[run {}] Overcommit       : time : {:.3f} [s], max={:.3f} [s], count={}", name,
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit       : init : {}", name, res.init);
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit       : worst: {}", name, res.worst);
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit       : last : {}", name, res.last);
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit       : time : {:.3f} [s], max={:.3f} [s], count={}", name,
                  res.stats.elapsed_time.count(), res.stats.max_rebalance_time.count(), res.stats.rebalance_count);
 
     if (res.stats.elapsed_time > seconds_double(1)) {
@@ -405,10 +405,10 @@ future<> run_simulation(const params& p, const sstring& name = "") {
     }
 
     auto old_res = co_await test_load_balancing_with_many_tables(p, false);
-    testlog.info("[run {}] Overcommit (old) : init : {}", name, old_res.init);
-    testlog.info("[run {}] Overcommit (old) : worst: {}", name, old_res.worst);
-    testlog.info("[run {}] Overcommit (old) : last : {}", name, old_res.last);
-    testlog.info("[run {}] Overcommit       : time : {:.3f} [s], max={:.3f} [s], count={}", name,
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit (old) : init : {}", name, old_res.init);
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit (old) : worst: {}", name, old_res.worst);
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit (old) : last : {}", name, old_res.last);
+    LOGMACRO(testlog, log_level::info, "[run {}] Overcommit       : time : {:.3f} [s], max={:.3f} [s], count={}", name,
                  old_res.stats.elapsed_time.count(), old_res.stats.max_rebalance_time.count(), old_res.stats.rebalance_count);
 
     for (int i = 0; i < nr_tables; ++i) {

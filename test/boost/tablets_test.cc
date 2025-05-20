@@ -630,7 +630,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_hint) {
 
         auto check_hint = [&] (locator::tablet_metadata_change_hint& incremental_hint, std::vector<canonical_mutation>& muts, mutation new_mut,
                 const locator::tablet_metadata_change_hint& expected_hint, std::source_location sl = std::source_location::current()) {
-            testlog.info("check_hint() called from {}:{}", sl.file_name(), sl.line());
+            LOGMACRO(testlog, log_level::info, "check_hint() called from {}:{}", sl.file_name(), sl.line());
 
             replica::update_tablet_metadata_change_hint(incremental_hint, new_mut);
 
@@ -695,7 +695,7 @@ SEASTAR_TEST_CASE(test_tablet_metadata_hint) {
         // Furthermore, if the partition had any row hints before, those should
         // be cleared, to force a full partition reload.
         auto check_delete_scenario = [&] (const char* scenario, std::function<void(table_id, mutation&, api::timestamp_type)> apply_delete) {
-            testlog.info("check_delete_scenario({})", scenario);
+            LOGMACRO(testlog, log_level::info, "check_delete_scenario({})", scenario);
 
             std::vector<canonical_mutation> muts;
             locator::tablet_metadata_change_hint hint;
@@ -2588,7 +2588,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_random_load) {
         }
 
         LOGMACRO(testlog, log_level::debug, "tablet metadata: {}", stm.get()->tablets());
-        testlog.info("Total tablet count: {}, hosts: {}", total_tablet_count, hosts.size());
+        LOGMACRO(testlog, log_level::info, "Total tablet count: {}, hosts: {}", total_tablet_count, hosts.size());
 
         check_tablet_invariants(stm.get()->tablets());
 
@@ -2603,7 +2603,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_random_load) {
             min_max_tracker<unsigned> min_max_load;
             for (auto h: hosts) {
                 auto l = load.get_avg_shard_load(h);
-                testlog.info("Load on host {}: {}", h, l);
+                LOGMACRO(testlog, log_level::info, "Load on host {}: {}", h, l);
                 min_max_load.update(l);
                 BOOST_REQUIRE_LE(load.get_shard_imbalance(h), 1);
             }
@@ -2649,7 +2649,7 @@ SEASTAR_THREAD_TEST_CASE(test_balancing_heterogeneous_cluster) {
 
         load_stats.set_size(table1, 0.9 * topo.get_capacity() / 3);
         rebalance_tablets(e, &load_stats);
-        testlog.info("Initial cluster ready");
+        LOGMACRO(testlog, log_level::info, "Initial cluster ready");
 
         std::unordered_map<host_id, double> initial_utilization;
         auto& hosts = topo.hosts();
@@ -2665,7 +2665,7 @@ SEASTAR_THREAD_TEST_CASE(test_balancing_heterogeneous_cluster) {
 
         topo.add_i4i_large(rack1);
         rebalance_tablets(e, &load_stats);
-        testlog.info("Expanded capacity in rack1");
+        LOGMACRO(testlog, log_level::info, "Expanded capacity in rack1");
 
         {
             load_sketch load(stm.get());
@@ -2682,7 +2682,7 @@ SEASTAR_THREAD_TEST_CASE(test_balancing_heterogeneous_cluster) {
 
         topo.add_i4i_large(rack2);
         rebalance_tablets(e, &load_stats);
-        testlog.info("Expanded capacity in rack2");
+        LOGMACRO(testlog, log_level::info, "Expanded capacity in rack2");
 
         {
             load_sketch load(stm.get());
@@ -2698,7 +2698,7 @@ SEASTAR_THREAD_TEST_CASE(test_balancing_heterogeneous_cluster) {
 
         topo.add_i4i_large(rack3);
         rebalance_tablets(e, &load_stats);
-        testlog.info("Expanded capacity in rack3");
+        LOGMACRO(testlog, log_level::info, "Expanded capacity in rack3");
 
         {
             load_sketch load(stm.get());
@@ -2741,13 +2741,13 @@ SEASTAR_THREAD_TEST_CASE(test_imbalance_in_hetero_cluster_with_two_tables) {
         auto ks_name = add_keyspace(e, {{topo.dc(), 3}}, 128);
         auto table1 = add_table(e, ks_name).get();
         load_stats.set_size(table1, 0);
-        testlog.info("Initial cluster ready");
+        LOGMACRO(testlog, log_level::info, "Initial cluster ready");
 
         topo.add_i4i_large(rack1);
         topo.add_i4i_large(rack2);
         topo.add_i4i_large(rack3);
         rebalance_tablets(e, &load_stats);
-        testlog.info("Expanded capacity");
+        LOGMACRO(testlog, log_level::info, "Expanded capacity");
 
         auto ks2_name = add_keyspace(e, {{topo.dc(), 3}}, 128);
         auto table2 = add_table(e, ks2_name).get();
@@ -2763,7 +2763,7 @@ SEASTAR_THREAD_TEST_CASE(test_imbalance_in_hetero_cluster_with_two_tables) {
             for (auto h: hosts) {
                 auto u = load.get_allocated_utilization(h, *topo.get_load_stats(), default_target_tablet_size);
                 BOOST_REQUIRE(u);
-                testlog.info("table2: {}: {}", h, u);
+                LOGMACRO(testlog, log_level::info, "table2: {}: {}", h, u);
                 node_utilization.update(*u);
             }
             // Initial allocation is not capacity-aware so we're still not perfect here.
@@ -2792,12 +2792,12 @@ SEASTAR_THREAD_TEST_CASE(test_imbalance_in_hetero_cluster_with_two_tables_imbala
         auto ks_name = add_keyspace(e, {{topo.dc(), 3}}, 512);
         auto table1 = add_table(e, ks_name).get();
         load_stats.set_size(table1, topo.get_capacity() * 0.8 / 3);
-        testlog.info("Initial cluster ready");
+        LOGMACRO(testlog, log_level::info, "Initial cluster ready");
 
         topo.add_i4i_large(rack1);
         topo.add_i4i_large(rack2);
         topo.add_i4i_large(rack3);
-        testlog.info("Expanded capacity");
+        LOGMACRO(testlog, log_level::info, "Expanded capacity");
 
         auto ks2_name = add_keyspace(e, {{topo.dc(), 3}});
         auto table2 = add_table(e, ks2_name).get();
@@ -2811,7 +2811,7 @@ SEASTAR_THREAD_TEST_CASE(test_imbalance_in_hetero_cluster_with_two_tables_imbala
             min_max_tracker<double> node_utilization;
             for (auto h : hosts) {
                 auto u = load.get_allocated_utilization(h, *topo.get_load_stats(), default_target_tablet_size);
-                testlog.info("table2: {}: {}", h, u);
+                LOGMACRO(testlog, log_level::info, "table2: {}: {}", h, u);
                 node_utilization.update(u.value_or(0));
             }
             BOOST_REQUIRE_LT(node_utilization.max() - node_utilization.min(), 0.13);
@@ -2867,7 +2867,7 @@ SEASTAR_THREAD_TEST_CASE(test_per_shard_goal_mixed_dc_rf) {
 
             for (auto h: hosts) {
                 auto l = load.get_shard_minmax(h);
-                testlog.info("Load on host {}: min={}, max={}", h, l.min(), l.max());
+                LOGMACRO(testlog, log_level::info, "Load on host {}: min={}, max={}", h, l.min(), l.max());
                 BOOST_REQUIRE_LE(l.max(), 2 * per_shard_goal);
             }
         }
@@ -2983,7 +2983,7 @@ SEASTAR_THREAD_TEST_CASE(test_creating_lots_of_tables_doesnt_overflow_metadata) 
         {
             load_sketch load(stm.get());
             load.populate().get();
-            testlog.info("max load: {}", load.get_shard_minmax(host1).max());
+            LOGMACRO(testlog, log_level::info, "max load: {}", load.get_shard_minmax(host1).max());
             // The value 415 was determined empirically. If there was lack of scaling, it would be 1'600.
             BOOST_REQUIRE(load.get_shard_minmax(host1).max() <= 415);
         }
@@ -2993,7 +2993,7 @@ SEASTAR_THREAD_TEST_CASE(test_creating_lots_of_tables_doesnt_overflow_metadata) 
         {
             load_sketch load(stm.get());
             load.populate().get();
-            testlog.info("max load: {}", load.get_shard_minmax(host1).max());
+            LOGMACRO(testlog, log_level::info, "max load: {}", load.get_shard_minmax(host1).max());
             BOOST_REQUIRE(load.get_shard_minmax(host1).max() <= 200);
         }
     }, cfg).get();
@@ -3048,14 +3048,14 @@ SEASTAR_THREAD_TEST_CASE(basic_tablet_storage_splitting_test) {
             return table.flush();
         }).get();
 
-        testlog.info("Splitting sstables...");
+        LOGMACRO(testlog, log_level::info, "Splitting sstables...");
         e.db().invoke_on_all([] (replica::database& db) {
             auto& table = db.find_column_family("ks", "cf");
-            testlog.info("sstable count: {}", table.sstables_count());
+            LOGMACRO(testlog, log_level::info, "sstable count: {}", table.sstables_count());
             return table.split_all_storage_groups(tasks::task_info{});
         }).get();
 
-        testlog.info("Verifying sstables are split...");
+        LOGMACRO(testlog, log_level::info, "Verifying sstables are split...");
         BOOST_REQUIRE_EQUAL(e.db().map_reduce0([] (replica::database& db) {
             auto& table = db.find_column_family("ks", "cf");
             return make_ready_future<bool>(table.all_storage_groups_split());
@@ -3078,7 +3078,7 @@ static void do_test_load_balancing_merge_colocation(cql_test_env& e, const int n
         topo.start_new_rack();
     }
 
-    testlog.info("merge colocation test - hosts={}, racks={}, rf={}, shard_count={}, initial_tablets={}", n_hosts, racks.size(), rf, shard_count, initial_tablets);
+    LOGMACRO(testlog, log_level::info, "merge colocation test - hosts={}, racks={}, rf={}, shard_count={}, initial_tablets={}", n_hosts, racks.size(), rf, shard_count, initial_tablets);
 
     hosts_by_rack_map hosts_by_rack;
 
@@ -3144,7 +3144,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_merge_colocation_with_random_load) 
         auto seed = tests::random::get_int<int32_t>();
         std::mt19937 random_engine{seed};
 
-        testlog.info("test_load_balancing_merge_colocation - seed {}", seed);
+        LOGMACRO(testlog, log_level::info, "test_load_balancing_merge_colocation - seed {}", seed);
 
         for (auto i = 0; i < 10; i++) {
             const int rf = tests::random::get_int<int>(3, 3);
@@ -3424,10 +3424,10 @@ SEASTAR_THREAD_TEST_CASE(test_tablet_range_splitter) {
         auto token_range = tmap.get_token_range(*tid);
         auto range = dht::to_partition_range(token_range);
         if (replica_it == tablet_info.replicas.end()) {
-            testlog.info("tablet#{}: {} (no replica on h1)", *tid, token_range);
+            LOGMACRO(testlog, log_level::info, "tablet#{}: {} (no replica on h1)", *tid, token_range);
             excluded_ranges.emplace_back(std::move(range));
         } else {
-            testlog.info("tablet#{}: {} (shard {})", *tid, token_range, replica_it->shard);
+            LOGMACRO(testlog, log_level::info, "tablet#{}: {} (shard {})", *tid, token_range, replica_it->shard);
             included_ranges.emplace_back(result{replica_it->shard, std::move(range)});
         }
     }
@@ -3436,7 +3436,7 @@ SEASTAR_THREAD_TEST_CASE(test_tablet_range_splitter) {
 
     auto check = [&] (const dht::partition_range_vector& ranges, std::vector<result> expected_result,
             std::source_location sl = std::source_location::current()) {
-        testlog.info("check() @ {}:{} ranges={}", sl.file_name(), sl.line(), ranges);
+        LOGMACRO(testlog, log_level::info, "check() @ {}:{} ranges={}", sl.file_name(), sl.line(), ranges);
         locator::tablet_range_splitter range_splitter{ss.schema(), tmap, h1, ranges};
         auto it = expected_result.begin();
         while (auto range_opt = range_splitter()) {

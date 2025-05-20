@@ -134,7 +134,7 @@ SEASTAR_TEST_CASE(test_tombstones_are_ignored_in_version_calculation) {
             auto old_node_version = e.db().local().get_version();
 
             {
-                testlog.info("Applying a no-op tombstone to v1 column definition");
+                LOGMACRO(testlog, log_level::info, "Applying a no-op tombstone to v1 column definition");
                 auto s = db::schema_tables::columns();
                 auto pkey = partition_key::from_singular(*s, table_schema->ks_name());
                 mutation m(s, pkey);
@@ -1105,16 +1105,16 @@ SEASTAR_TEST_CASE(test_schema_make_reversed) {
             .with_column("ck", bytes_type, column_kind::clustering_key)
             .with_column("v1", bytes_type)
             .build();
-    testlog.info("            schema->version(): {}", schema->version());
+    LOGMACRO(testlog, log_level::info, "            schema->version(): {}", schema->version());
 
     auto reversed_schema = schema->make_reversed();
-    testlog.info("   reversed_schema->version(): {}", reversed_schema->version());
+    LOGMACRO(testlog, log_level::info, "   reversed_schema->version(): {}", reversed_schema->version());
 
     BOOST_REQUIRE(schema->version() != reversed_schema->version());
     BOOST_REQUIRE(reversed(schema->version()) == reversed_schema->version());
 
     auto re_reversed_schema = reversed_schema->make_reversed();
-    testlog.info("re_reversed_schema->version(): {}", re_reversed_schema->version());
+    LOGMACRO(testlog, log_level::info, "re_reversed_schema->version(): {}", re_reversed_schema->version());
 
     BOOST_REQUIRE(schema->version() == re_reversed_schema->version());
     BOOST_REQUIRE(reversed_schema->version() != re_reversed_schema->version());
@@ -1132,8 +1132,8 @@ SEASTAR_TEST_CASE(test_schema_get_reversed) {
         schema = local_schema_registry().learn(schema);
         auto reversed_schema = schema->get_reversed();
 
-        testlog.info("        &schema: {}", fmt::ptr(schema.get()));
-        testlog.info("&reverse_schema: {}", fmt::ptr(reversed_schema.get()));
+        LOGMACRO(testlog, log_level::info, "        &schema: {}", fmt::ptr(schema.get()));
+        LOGMACRO(testlog, log_level::info, "&reverse_schema: {}", fmt::ptr(reversed_schema.get()));
 
         BOOST_REQUIRE_EQUAL(reversed_schema->get_reversed().get(), schema.get());
         BOOST_REQUIRE_EQUAL(schema->get_reversed().get(), reversed_schema.get());

@@ -1114,7 +1114,7 @@ void query_processor::migration_subscriber::on_update_column_family(
         const sstring& cf_name,
         bool columns_changed) {
     // #1255: Ignoring columns_changed deliberately.
-    log.info("Column definitions for {}.{} changed, invalidating related prepared statements", ks_name, cf_name);
+    LOGMACRO(log, log_level::info, "Column definitions for {}.{} changed, invalidating related prepared statements", ks_name, cf_name);
     remove_invalid_prepared_statements(ks_name, cf_name);
 }
 

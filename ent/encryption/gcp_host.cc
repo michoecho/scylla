@@ -822,7 +822,7 @@ future<> encryption::gcp_host::impl::init() {
         co_await create_key(k);
         LOGMACRO(gcp_log, log_level::debug, "Master key exists");
     } else {
-        gcp_log.info("No default master key configured. Not verifying.");
+        LOGMACRO(gcp_log, log_level::info, "No default master key configured. Not verifying.");
     }
     _initialized = true;
 }

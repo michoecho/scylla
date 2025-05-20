@@ -143,7 +143,7 @@ future<> controller::start_server() {
                     addr, alternator_port ? std::to_string(*alternator_port) : "OFF", alternator_https_port ? std::to_string(*alternator_https_port) : "OFF", ep);
             return stop_server().then([ep = std::move(ep)] { return make_exception_future<>(ep); });
         }).then([addr, alternator_port, alternator_https_port] {
-            logger.info("Alternator server listening on {}, HTTP port {}, HTTPS port {}",
+            LOGMACRO(logger, log_level::info, "Alternator server listening on {}, HTTP port {}, HTTPS port {}",
                     addr, alternator_port ? std::to_string(*alternator_port) : "OFF", alternator_https_port ? std::to_string(*alternator_https_port) : "OFF");
         }).get();
     });

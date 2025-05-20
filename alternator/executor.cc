@@ -802,7 +802,7 @@ future<executor::request_return_type> executor::delete_table(client_state& clien
                 co_await mm.announce(std::move(m), std::move(group0_guard), fmt::format("alternator-executor: delete {} table", table_name));
                 break;
             } catch (const service::group0_concurrent_modification& ex) {
-                elogger.info("Failed to execute DeleteTable {} due to concurrent schema modifications. {}.",
+                LOGMACRO(elogger, log_level::info, "Failed to execute DeleteTable {} due to concurrent schema modifications. {}.",
                         table_name, retries ? "Retrying" : "Number of retries exceeded, giving up");
                 if (retries--) {
                     continue;
@@ -1571,7 +1571,7 @@ static future<executor::request_return_type> create_table_on_shard0(service::cli
             co_await mm.announce(std::move(schema_mutations), std::move(group0_guard), fmt::format("alternator-executor: create {} table", table_name));
             break;
         }  catch (const service::group0_concurrent_modification& ex) {
-            elogger.info("Failed to execute CreateTable {} due to concurrent schema modifications. {}.",
+            LOGMACRO(elogger, log_level::info, "Failed to execute CreateTable {} due to concurrent schema modifications. {}.",
                     table_name, retries ? "Retrying" : "Number of retries exceeded, giving up");
             if (retries--) {
                 continue;
@@ -1848,7 +1848,7 @@ future<executor::request_return_type> executor::update_table(client_state& clien
                 co_await mm.announce(std::move(m), std::move(group0_guard), format("alternator-executor: update {} table", tab->cf_name()));
                 break;
             } catch (const service::group0_concurrent_modification& ex) {
-                elogger.info("Failed to execute UpdateTable {} due to concurrent schema modifications. {}.",
+                LOGMACRO(elogger, log_level::info, "Failed to execute UpdateTable {} due to concurrent schema modifications. {}.",
                         tab->cf_name(), retries ? "Retrying" : "Number of retries exceeded, giving up");
                 if (retries--) {
                     continue;

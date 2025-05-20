@@ -303,7 +303,7 @@ future<> messaging_service::start() {
                             b.rebuild(*ms._credentials);
                         }
                     });
-                    mlogger.info("Reloaded {}", files);
+                    LOGMACRO(mlogger, log_level::info, "Reloaded {}", files);
                 }
             });
         } else {
@@ -464,16 +464,16 @@ void messaging_service::do_start_listen() {
     // Do this on just cpu 0, to avoid duplicate logs.
     if (this_shard_id() == 0) {
         if (_server_tls[0]) {
-            mlogger.info("Starting Encrypted Messaging Service on SSL address {} port {}", _cfg.ip, _cfg.ssl_port);
+            LOGMACRO(mlogger, log_level::info, "Starting Encrypted Messaging Service on SSL address {} port {}", _cfg.ip, _cfg.ssl_port);
         }
         if (_server_tls[1]) {
-            mlogger.info("Starting Encrypted Messaging Service on SSL broadcast address {} port {}", broadcast_address, _cfg.ssl_port);
+            LOGMACRO(mlogger, log_level::info, "Starting Encrypted Messaging Service on SSL broadcast address {} port {}", broadcast_address, _cfg.ssl_port);
         }
         if (_server[0]) {
-            mlogger.info("Starting Messaging Service on address {} port {}", _cfg.ip, _cfg.port);
+            LOGMACRO(mlogger, log_level::info, "Starting Messaging Service on address {} port {}", _cfg.ip, _cfg.port);
         }
         if (_server[1]) {
-            mlogger.info("Starting Messaging Service on broadcast address {} port {}", broadcast_address, _cfg.port);
+            LOGMACRO(mlogger, log_level::info, "Starting Messaging Service on broadcast address {} port {}", broadcast_address, _cfg.port);
         }
     }
 }
@@ -545,11 +545,11 @@ msg_addr messaging_service::get_source(const rpc::client_info& cinfo) {
 messaging_service::~messaging_service() = default;
 
 static future<> do_with_servers(std::string_view what, std::array<std::unique_ptr<messaging_service::rpc_protocol_server_wrapper>, 2>& servers, auto method) {
-    mlogger.info("{} server", what);
+    LOGMACRO(mlogger, log_level::info, "{} server", what);
     co_await coroutine::parallel_for_each(
             servers | std::views::filter([] (auto& ptr) { return bool(ptr); }) | std::views::transform([] (auto& ptr) -> messaging_service::rpc_protocol_server_wrapper& { return *ptr; }),
             method);
-    mlogger.info("{} server - Done", what);
+    LOGMACRO(mlogger, log_level::info, "{} server - Done", what);
 }
 
 future<> messaging_service::shutdown_tls_server() {
@@ -569,7 +569,7 @@ future<> messaging_service::stop_nontls_server() {
 }
 
 future<> messaging_service::stop_client() {
-    auto d = defer([] { mlogger.info("Stopped clients"); });
+    auto d = defer([] { LOGMACRO(mlogger, log_level::info, "Stopped clients"); });
     auto stop_clients = [] (auto& clients) ->future<> {
         co_await coroutine::parallel_for_each(clients, [] (auto& m) -> future<> {
             auto d = defer([&m] {
@@ -578,9 +578,9 @@ future<> messaging_service::stop_client() {
                 m.clear();
             });
             co_await coroutine::parallel_for_each(m, [] (auto& c) -> future<> {
-                mlogger.info("Stopping client for address: {}", c.first);
+                LOGMACRO(mlogger, log_level::info, "Stopping client for address: {}", c.first);
                 co_await c.second.rpc_client->stop();
-                mlogger.info("Stopping client for address: {} - Done", c.first);
+                LOGMACRO(mlogger, log_level::info, "Stopping client for address: {} - Done", c.first);
             });
         });
     };
@@ -906,7 +906,7 @@ messaging_service::scheduling_group_for_isolation_cookie(const sstring& isolatio
         // name as one of the service levels it will be diverted to the default statement scheduling
         // group but it has a small chance of happening.
         service_level_name = isolation_cookie;
-        mlogger.info("Trying to allow an rpc connection from an older node for service level {}", service_level_name);
+        LOGMACRO(mlogger, log_level::info, "Trying to allow an rpc connection from an older node for service level {}", service_level_name);
     } else {
         // Client is using a new connection class that the server doesn't recognize yet.
         // Assume it's important, after server upgrade we'll recognize it.
@@ -923,7 +923,7 @@ messaging_service::scheduling_group_for_isolation_cookie(const sstring& isolatio
         // This also includes `$user` tenant which is used in OSS and may appear in mixed OSS/Enterprise cluster.
         return make_ready_future<scheduling_group>(_sl_controller.get_default_scheduling_group());
     } else {
-        mlogger.info("Service level {} is still unknown, will try to create it now and allow the RPC connection.", service_level_name);
+        LOGMACRO(mlogger, log_level::info, "Service level {} is still unknown, will try to create it now and allow the RPC connection.", service_level_name);
         // If the service level don't exist there are two possibilities, it is either created but still not known by this
         // node. Or it has been deleted and the initiating node hasn't caught up yet, in both cases it is safe to __try__ and
         // create a new service level (internally), it will naturally catch up eventually and by creating it here we prevent
@@ -1243,7 +1243,7 @@ void messaging_service::remove_rpc_client_with_ignored_topology(msg_addr id, loc
     for (auto& c : _clients) {
         find_and_remove_client(c, id, [id] (const auto& s) {
             if (s.topology_ignored) {
-                mlogger.info("Dropping connection to {} because it was created without topology information", id.addr);
+                LOGMACRO(mlogger, log_level::info, "Dropping connection to {} because it was created without topology information", id.addr);
             }
             return s.topology_ignored;
         });
@@ -1251,7 +1251,7 @@ void messaging_service::remove_rpc_client_with_ignored_topology(msg_addr id, loc
     for (auto& c : _clients_with_host_id) {
         find_and_remove_client(c, hid, [hid] (const auto& s) {
             if (s.topology_ignored) {
-                mlogger.info("Dropping connection to {} because it was created without topology information", hid);
+                LOGMACRO(mlogger, log_level::info, "Dropping connection to {} because it was created without topology information", hid);
             }
             return s.topology_ignored;
         });

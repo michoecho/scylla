@@ -125,7 +125,7 @@ future<> db::batchlog_manager::drain() {
         co_return;
     }
 
-    blogger.info("Asked to drain");
+    LOGMACRO(blogger, log_level::info, "Asked to drain");
     _stop.request_abort();
     if (this_shard_id() == 0) {
         // Abort do_batch_log_replay if waiting on the semaphore.
@@ -133,14 +133,14 @@ future<> db::batchlog_manager::drain() {
     }
 
     co_await std::move(_loop_done);
-    blogger.info("Drained");
+    LOGMACRO(blogger, log_level::info, "Drained");
 }
 
 future<> db::batchlog_manager::stop() {
-    blogger.info("Asked to stop");
+    LOGMACRO(blogger, log_level::info, "Asked to stop");
     co_await drain();
     co_await _gate.close();
-    blogger.info("Stopped");
+    LOGMACRO(blogger, log_level::info, "Stopped");
 }
 
 future<size_t> db::batchlog_manager::count_all_batches() const {

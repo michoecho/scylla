@@ -193,7 +193,7 @@ leveled_compaction_strategy::get_reshaping_job(std::vector<shared_sstable> input
     if (mode == reshape_mode::strict && level_info[0].size() >= offstrategy_threshold && level_info[0].size() == input.size() && l0_disjoint) {
         unsigned ideal_level = ideal_level_for_input(level_info[0], max_sstable_size_in_bytes);
 
-        leveled_manifest::logger.info("Reshaping {} disjoint sstables in level 0 into level {}", level_info[0].size(), ideal_level);
+        leveled_manifest::LOGMACRO(logger, log_level::info, "Reshaping {} disjoint sstables in level 0 into level {}", level_info[0].size(), ideal_level);
         compaction_descriptor desc(std::move(input), ideal_level, max_sstable_size_in_bytes);
         desc.options = compaction_type_options::make_reshape();
         return desc;

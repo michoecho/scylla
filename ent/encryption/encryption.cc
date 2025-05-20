@@ -561,10 +561,10 @@ public:
         try {
             co_await _provider->validate();
             auto k = co_await key_for_write();
-            logg.info("Added encryption extension to {}.{}", s.ks_name(), s.cf_name());
-            logg.info("   Options: {}", _options);
-            logg.info("   Key Algorithm: {}", _info);
-            logg.info("   Provider: {}", *_provider);
+            LOGMACRO(logg, log_level::info, "Added encryption extension to {}.{}", s.ks_name(), s.cf_name());
+            LOGMACRO(logg, log_level::info, "   Options: {}", _options);
+            LOGMACRO(logg, log_level::info, "   Key Algorithm: {}", _info);
+            LOGMACRO(logg, log_level::info, "   Provider: {}", *_provider);
 
             auto problems = std::get<0>(k)->validate_exact_info_result();
             if (!problems.empty()) {
@@ -875,7 +875,7 @@ public:
                     // #1681 if file system errors caused the options file to simply not exist,
                     // we can at least hope that the file itself is not very encrypted either. 
                     // But who knows. Will probably cause data corruption.
-                    logg.info("Commitlog segment {} has no encryption info. Opening unencrypted.", filename);
+                    LOGMACRO(logg, log_level::info, "Commitlog segment {} has no encryption info. Opening unencrypted.", filename);
                     return make_ready_future<file>(std::move(f));
                 }
                 return read_text_file_fully(cfg_file).then([f, this, filename](temporary_buffer<char> buf) {
@@ -900,7 +900,7 @@ public:
                     // properties now, since _our_ metadata is empty/truncated
                     if (!has_eof) {
                         // just return the unwrapped file.
-                        logg.info("Commitlog segment {} has incomplete encryption info. Opening unencrypted.", filename);
+                        LOGMACRO(logg, log_level::info, "Commitlog segment {} has incomplete encryption info. Opening unencrypted.", filename);
                         return make_ready_future<file>(std::move(f));
                     }
                     opt_bytes id;
@@ -985,7 +985,7 @@ future<seastar::shared_ptr<encryption_context>> register_extensions(const db::co
         auto opts = maybe_get_options(cfg.system_info_encryption(), "system table encryption");
 
         if (opts) {
-            logg.info("Adding system info encryption using {}", *opts);
+            LOGMACRO(logg, log_level::info, "Adding system info encryption using {}", *opts);
 
             exts.add_commitlog_file_extension(encryption_attribute, std::make_unique<encryption_commitlog_file_extension>(ctxt, *opts));
 
@@ -1036,7 +1036,7 @@ future<seastar::shared_ptr<encryption_context>> register_extensions(const db::co
         auto user_opts = maybe_get_options(cfg.user_info_encryption(), "user table encryption");
 
         if (user_opts) {
-            logg.info("Adding user info encryption using {}", *user_opts);
+            LOGMACRO(logg, log_level::info, "Adding user info encryption using {}", *user_opts);
             co_await smp::invoke_on_all([&user_opts, ctxt]()  {
                 auto ext = encryption_schema_extension::create(*ctxt, *user_opts);
                 ctxt->add_global_user_encryption(std::move(ext));

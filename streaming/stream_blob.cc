@@ -51,7 +51,7 @@ static future<> load_sstable_for_tablet(const file_stream_id& ops_id, replica::d
         auto sst = sstm.make_sstable(t.schema(), t.get_storage_options(), desc.generation, state, desc.version, desc.format);
         co_await sst->load(erm->get_sharder(*t.schema()));
         co_await t.add_sstable_and_update_cache(sst);
-        blogger.info("stream_sstables[{}] Loaded sstable {} successfully", ops_id, sst->toc_filename());
+        LOGMACRO(blogger, log_level::info, "stream_sstables[{}] Loaded sstable {} successfully", ops_id, sst->toc_filename());
     });
 }
 
@@ -138,7 +138,7 @@ future<> stream_blob_handler(replica::database& db,
     lw_shared_ptr<std::any> log_done;
     if (utils::get_local_injector().is_enabled("stream_mutation_fragments")) {
         log_done = make_lw_shared<std::any>(seastar::make_shared(seastar::defer([] {
-            blogger.info("stream_mutation_fragments: done (tablets)");
+            LOGMACRO(blogger, log_level::info, "stream_mutation_fragments: done (tablets)");
         })));
     }
 
@@ -171,12 +171,12 @@ future<> stream_blob_handler(replica::database& db,
             }
 
             co_await utils::get_local_injector().inject("stream_mutation_fragments", [&guard] (auto& handler) -> future<> {
-                blogger.info("stream_mutation_fragments: waiting (tablets)");
+                LOGMACRO(blogger, log_level::info, "stream_mutation_fragments: waiting (tablets)");
                 while (!handler.poll_for_message()) {
                     guard.check();
                     co_await sleep(std::chrono::milliseconds(5));
                 }
-                blogger.info("stream_mutation_fragments: released (tablets)");
+                LOGMACRO(blogger, log_level::info, "stream_mutation_fragments: released (tablets)");
             });
 
             stream_blob_cmd_data& cmd_data = std::get<0>(*opt);
@@ -290,7 +290,7 @@ future<> stream_blob_handler(replica::database& db,
             // Remove the file in case of error
             if (finish) {
                 co_await finish(store_result::failure);
-                blogger.info("fstream[{}] Follower removed partial file={}", meta.ops_id, meta.filename);
+                LOGMACRO(blogger, log_level::info, "fstream[{}] Follower removed partial file={}", meta.ops_id, meta.filename);
             }
         } catch (...) {
             blogger.warn("fstream[{}] Follower failed to remove partial file={}: {}",
@@ -654,7 +654,7 @@ future<stream_files_response> tablet_stream_files_handler(replica::database& db,
     size_t stream_bytes = co_await tablet_stream_files(ms, std::move(files), req.targets, req.table, req.ops_id, req.topo_guard);
     resp.stream_bytes = stream_bytes;
     auto duration = std::chrono::steady_clock::now() - ops_start_time;
-    blogger.info("stream_sstables[{}] Finished sending sstable_nr={} files_nr={} files={} range={} stream_bytes={} stream_time={} stream_bw={}",
+    LOGMACRO(blogger, log_level::info, "stream_sstables[{}] Finished sending sstable_nr={} files_nr={} files={} range={} stream_bytes={} stream_time={} stream_bw={}",
             req.ops_id, sstables.size(), files.size(), files, req.range, stream_bytes, duration, get_bw(stream_bytes, ops_start_time));
     co_return resp;
 }

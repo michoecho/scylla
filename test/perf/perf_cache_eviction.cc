@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
 
             timer<> completion_timer;
             completion_timer.set_callback([&] {
-                testlog.info("Test done.");
+                LOGMACRO(testlog, log_level::info, "Test done.");
                 cancelled = true;
             });
             completion_timer.arm(std::chrono::seconds(seconds));

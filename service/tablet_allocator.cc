@@ -937,7 +937,7 @@ public:
             return make_ready_future<>();
         });
         if (all_colocated) {
-            lblogger.info("All sibling tablets are co-located for table {}", table);
+            LOGMACRO(lblogger, log_level::info, "All sibling tablets are co-located for table {}", table);
         }
         co_return all_colocated;
     }
@@ -1130,7 +1130,7 @@ public:
                 }
                 apply_load(nodes, mig_streaming_info);
 
-                lblogger.info("Created migration for replica ({}, {}) to co-habit same shard as ({}, {})", t2_id, src, t1_id, dst);
+                LOGMACRO(lblogger, log_level::info, "Created migration for replica ({}, {}) to co-habit same shard as ({}, {})", t2_id, src, t1_id, dst);
                 plan.add(std::move(mig));
                 return make_ready_future<>();
             });
@@ -1482,7 +1482,7 @@ public:
             }
 
             auto resize_decision = cluster_resize_load::to_resize_decision(size_desc);
-            lblogger.info("Emitting resize decision of type {} for table {}, avg_tablet_size={} reason={}",
+            LOGMACRO(lblogger, log_level::info, "Emitting resize decision of type {} for table {}, avg_tablet_size={} reason={}",
                           resize_decision.type_name(), table, size_desc.avg_tablet_size, size_desc.reason);
             resize_plan.resize[table] = std::move(resize_decision);
             _stats.for_cluster().resizes_emitted++;
@@ -1500,7 +1500,7 @@ public:
             if (resize_load.table_needs_resize_cancellation(size_desc)) {
                 resize_plan.resize[table] = cluster_resize_load::revoke_resize_decision();
                 _stats.for_cluster().resizes_revoked++;
-                lblogger.info("Revoking resize decision for table {}, avg_tablet_size={} reason={}",
+                LOGMACRO(lblogger, log_level::info, "Revoking resize decision for table {}, avg_tablet_size={} reason={}",
                               table, size_desc.avg_tablet_size, size_desc.reason);
                 continue;
             }
@@ -1521,12 +1521,12 @@ public:
             // load balancer can emit finalize decision, for split to be completed.
             if (tmap.needs_split() && table_stats->split_ready_seq_number == tmap.resize_decision().sequence_number) {
                 finalize_decision();
-                lblogger.info("Finalizing resize decision for table {} as all replicas agree on sequence number {}",
+                LOGMACRO(lblogger, log_level::info, "Finalizing resize decision for table {} as all replicas agree on sequence number {}",
                               table, table_stats->split_ready_seq_number);
             // If all sibling tablets are co-located across all DCs, then merge can be finalized.
             } else if (tmap.needs_merge() && co_await all_sibling_tablet_replicas_colocated(table, tmap) && !bypass_merge_completion()) {
                 finalize_decision();
-                lblogger.info("Finalizing resize decision for table {} as all replicas are co-located", table);
+                LOGMACRO(lblogger, log_level::info, "Finalizing resize decision for table {} as all replicas are co-located", table);
             }
         }
 
@@ -2712,7 +2712,7 @@ public:
             // If there are 7 tablets and RF=3, each node must have 1 tablet replica.
             // So node3 will have average load of 1, and node1 and node2 will have
             // average shard load of 7.
-            lblogger.info("Not possible to achieve balance.");
+            LOGMACRO(lblogger, log_level::info, "Not possible to achieve balance.");
         }
 
         co_return std::move(plan);
@@ -2821,7 +2821,7 @@ public:
             if (node.get_state() == locator::node::state::normal || is_drained) {
                 if (is_drained) {
                     ensure_node(node.host_id());
-                    lblogger.info("Will drain node {} ({}) from DC {}", node.host_id(), node.get_state(), dc);
+                    LOGMACRO(lblogger, log_level::info, "Will drain node {} ({}) from DC {}", node.host_id(), node.get_state(), dc);
                     nodes_to_drain.emplace(node.host_id());
                     nodes[node.host_id()].drained = true;
                 } else if (node.is_excluded()) {
@@ -2894,7 +2894,7 @@ public:
 
         for (auto i = nodes_to_drain.begin(); i != nodes_to_drain.end();) {
             if (nodes[*i].tablet_count == 0) {
-                lblogger.info("Node {} is already drained, ignoring", *i);
+                LOGMACRO(lblogger, log_level::info, "Node {} is already drained, ignoring", *i);
                 nodes.erase(*i);
                 i = nodes_to_drain.erase(i);
             } else {
@@ -2910,7 +2910,7 @@ public:
                 continue;
             }
             if (!node.capacity) {
-                lblogger.info("Cannot balance because capacity of node {} (or more) is unknown", host);
+                LOGMACRO(lblogger, log_level::info, "Cannot balance because capacity of node {} (or more) is unknown", host);
                 co_return plan;
             }
         }
@@ -3053,7 +3053,7 @@ public:
 
         if (!nodes_to_drain.empty() || (_tm->tablets().balancing_enabled() && (shuffle || max_load != min_load))) {
             host_id target = *min_load_node;
-            lblogger.info("target node: {}, avg_load: {}, max: {}", target, min_load, max_load);
+            LOGMACRO(lblogger, log_level::info, "target node: {}, avg_load: {}, max: {}", target, min_load, max_load);
             plan.merge(co_await make_internode_plan(dc, nodes, nodes_to_drain, target));
         } else {
             _stats.for_dc(dc).stop_balance++;
@@ -3141,7 +3141,7 @@ public:
             auto plan = lb.make_sizing_plan(s.shared_from_this(), tablet_rs).get();
             auto& table_plan = plan.tables[s.id()];
             if (table_plan.target_tablet_count_aligned != table_plan.target_tablet_count) {
-                lblogger.info("Rounding up tablet count from {} to {} for table {}.{}", table_plan.target_tablet_count,
+                LOGMACRO(lblogger, log_level::info, "Rounding up tablet count from {} to {} for table {}.{}", table_plan.target_tablet_count,
                         table_plan.target_tablet_count_aligned, s.ks_name(), s.cf_name());
             }
             auto tablet_count = table_plan.target_tablet_count_aligned;
@@ -3203,7 +3203,7 @@ private:
             new_tablets.set_tablet(new_right_tid, tablet_info);
         }
 
-        lblogger.info("Split tablets for table {}, increasing tablet count from {} to {}",
+        LOGMACRO(lblogger, log_level::info, "Split tablets for table {}, increasing tablet count from {} to {}",
                       table, tablets.tablet_count(), new_tablets.tablet_count());
         co_return std::move(new_tablets);
     }
@@ -3243,7 +3243,7 @@ private:
             new_tablets.set_tablet(tid, *merged_tablet_info);
         }
 
-        lblogger.info("Merge tablets for table {}, decreasing tablet count from {} to {}",
+        LOGMACRO(lblogger, log_level::info, "Merge tablets for table {}, decreasing tablet count from {} to {}",
                       table, tablets.tablet_count(), new_tablets.tablet_count());
         co_return std::move(new_tablets);
     }

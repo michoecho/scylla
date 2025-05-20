@@ -28,7 +28,7 @@ public:
      * @param ready set to TRUE when scylla service becomes ready
      */
     static inline void notify(sstring msg, bool ready = false) {
-        startlog.info("{}", msg);
+        LOGMACRO(startlog, log_level::info, "{}", msg);
         try_notify_systemd(msg, ready);
     }
 

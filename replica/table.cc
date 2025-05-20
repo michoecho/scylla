@@ -1070,9 +1070,9 @@ future<> tablet_storage_group_manager::split_all_storage_groups(tasks::task_info
     sstables::compaction_type_options::split opt = split_compaction_options();
 
     co_await utils::get_local_injector().inject("split_storage_groups_wait", [] (auto& handler) -> future<> {
-        dblog.info("split_storage_groups_wait: waiting");
+        LOGMACRO(dblog, log_level::info, "split_storage_groups_wait: waiting");
         co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes{5});
-        dblog.info("split_storage_groups_wait: done");
+        LOGMACRO(dblog, log_level::info, "split_storage_groups_wait: done");
     }, false);
 
     co_await for_each_storage_group_gently([opt, tablet_split_task_info] (storage_group& storage_group) {
@@ -1219,11 +1219,11 @@ compaction_group& table::compaction_group_for_sstable(const sstables::shared_sst
 future<> table::parallel_foreach_compaction_group(std::function<future<>(compaction_group&)> action) {
     co_await _sg_manager->parallel_foreach_storage_group([&] (storage_group& sg) -> future<> {
         co_await utils::get_local_injector().inject("foreach_compaction_group_wait", [this, &sg] (auto& handler) -> future<> {
-            tlogger.info("foreach_compaction_group_wait: waiting");
+            LOGMACRO(tlogger, log_level::info, "foreach_compaction_group_wait: waiting");
             while (!handler.poll_for_message() && !_async_gate.is_closed() && !sg.async_gate().is_closed()) {
                 co_await sleep(std::chrono::milliseconds(5));
             }
-            tlogger.info("foreach_compaction_group_wait: released");
+            LOGMACRO(tlogger, log_level::info, "foreach_compaction_group_wait: released");
         });
 
         co_await coroutine::parallel_for_each(sg.compaction_groups(), [&] (compaction_group_ptr cg) -> future<> {
@@ -1681,10 +1681,10 @@ table::try_flush_memtable_to_sstable(compaction_group& cg, lw_shared_ptr<memtabl
                 co_await utils::get_local_injector().inject("replica_post_flush_after_update_cache", [this] (auto& handler) -> future<> {
                     const auto this_table_name = format("{}.{}", _schema->ks_name(), _schema->cf_name());
                     if (this_table_name == handler.get("table_name")) {
-                        tlogger.info("error injection handler replica_post_flush_after_update_cache: suspending flush for table {}", this_table_name);
+                        LOGMACRO(tlogger, log_level::info, "error injection handler replica_post_flush_after_update_cache: suspending flush for table {}", this_table_name);
                         handler.set("suspended", true);
                         co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes{5});
-                        tlogger.info("error injection handler replica_post_flush_after_update_cache: resuming flush for table {}", this_table_name);
+                        LOGMACRO(tlogger, log_level::info, "error injection handler replica_post_flush_after_update_cache: resuming flush for table {}", this_table_name);
                     }
                 });
 
@@ -2639,7 +2639,7 @@ future<> tablet_storage_group_manager::merge_completion_fiber() {
             tlogger.error("Failed to merge compaction groups for table {}.{}", schema()->ks_name(), schema()->cf_name());
         }
         utils::get_local_injector().inject("replica_merge_completion_wait", [] () {
-            tlogger.info("Merge completion fiber finished, about to sleep");
+            LOGMACRO(tlogger, log_level::info, "Merge completion fiber finished, about to sleep");
         });
         co_await _merge_completion_event.wait();
         LOGMACRO(tlogger, log_level::debug, "Merge completion fiber woke up for {}.{}", schema()->ks_name(), schema()->cf_name());
@@ -4018,7 +4018,7 @@ future<> compaction_group::cleanup() {
             });
             if (utils::get_local_injector().enter("tablet_cleanup_failure")) {
                 co_await sleep(std::chrono::seconds(1));
-                tlogger.info("Cleanup failed for tablet {}", _cg.group_id());
+                LOGMACRO(tlogger, log_level::info, "Cleanup failed for tablet {}", _cg.group_id());
                 throw std::runtime_error("tablet cleanup failure");
             }
         }
@@ -4047,7 +4047,7 @@ future<> compaction_group::cleanup() {
     // from the sstable sets.
     _sstables_compacted_but_not_deleted.clear();
     if (utils::get_local_injector().enter("tablet_cleanup_failure_post_deletion")) {
-        tlogger.info("Cleanup failed for tablet {}", group_id());
+        LOGMACRO(tlogger, log_level::info, "Cleanup failed for tablet {}", group_id());
         throw std::runtime_error("tablet cleanup failure");
     }
 }
@@ -4111,7 +4111,7 @@ future<> table::cleanup_compaction_groups(database& db, db::system_keyspace& sys
         co_await sys_ks.drop_old_commitlog_cleanup_records(db.commitlog()->min_position());
     }
 
-    tlogger.info("Cleaned up tablet {} of table {}.{} successfully.", tid, _schema->ks_name(), _schema->cf_name());
+    LOGMACRO(tlogger, log_level::info, "Cleaned up tablet {} of table {}.{} successfully.", tid, _schema->ks_name(), _schema->cf_name());
 }
 
 future<> table::cleanup_tablet(database& db, db::system_keyspace& sys_ks, locator::tablet_id tid) {

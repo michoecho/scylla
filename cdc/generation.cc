@@ -206,7 +206,7 @@ bool should_propose_first_generation(const locator::host_id& my_host_id, const g
 bool is_cdc_generation_optimal(const cdc::topology_description& gen, const locator::token_metadata& tm) {
     if (tm.sorted_tokens().size() != gen.entries().size()) {
         // We probably have garbage streams from old generations
-        cdc_log.info("Generation size does not match the token ring");
+        LOGMACRO(cdc_log, log_level::info, "Generation size does not match the token ring");
         return false;
     } else {
         std::unordered_set<dht::token> gen_ends;
@@ -418,14 +418,14 @@ future<cdc::generation_id> generation_service::legacy_make_new_generation(const 
     SCYLLA_ASSERT(normal_token_owners);
 
     if (_feature_service.cdc_generations_v2) {
-        cdc_log.info("Inserting new generation data at UUID {}", uuid);
+        LOGMACRO(cdc_log, log_level::info, "Inserting new generation data at UUID {}", uuid);
         // This may take a while.
         co_await _sys_dist_ks.local().insert_cdc_generation(uuid, gen, { normal_token_owners });
 
         // Begin the race.
         cdc::generation_id_v2 gen_id{new_generation_timestamp(add_delay, _cfg.ring_delay), uuid};
 
-        cdc_log.info("New CDC generation: {}", gen_id);
+        LOGMACRO(cdc_log, log_level::info, "New CDC generation: {}", gen_id);
         co_return gen_id;
     }
 
@@ -456,7 +456,7 @@ future<cdc::generation_id> generation_service::legacy_make_new_generation(const 
 
     co_await _sys_dist_ks.local().insert_cdc_topology_description(gen_id, std::move(gen), { normal_token_owners });
 
-    cdc_log.info("New CDC generation: {}", gen_id);
+    LOGMACRO(cdc_log, log_level::info, "New CDC generation: {}", gen_id);
     co_return gen_id;
 }
 
@@ -519,7 +519,7 @@ static future<> do_update_streams_description(
         db::system_distributed_keyspace& sys_dist_ks,
         db::system_distributed_keyspace::context ctx) {
     if (co_await sys_dist_ks.cdc_desc_exists(get_ts(gen_id), ctx)) {
-        cdc_log.info("Generation {}: streams description table already updated.", gen_id);
+        LOGMACRO(cdc_log, log_level::info, "Generation {}: streams description table already updated.", gen_id);
         co_return;
     }
 
@@ -531,7 +531,7 @@ static future<> do_update_streams_description(
     }
 
     co_await sys_dist_ks.create_cdc_desc(get_ts(gen_id), *topo, ctx);
-    cdc_log.info("CDC description table successfully updated with generation {}.", gen_id);
+    LOGMACRO(cdc_log, log_level::info, "CDC description table successfully updated with generation {}.", gen_id);
 }
 
 /* Inform CDC users about a generation of streams (identified by the given timestamp)
@@ -619,9 +619,9 @@ static future<std::optional<cdc::generation_id_v1>> rewrite_streams_descriptions
         shared_ptr<db::system_distributed_keyspace> sys_dist_ks,
         noncopyable_function<unsigned()> get_num_token_owners,
         abort_source& abort_src) {
-    cdc_log.info("Retrieving generation timestamps for rewriting...");
+    LOGMACRO(cdc_log, log_level::info, "Retrieving generation timestamps for rewriting...");
     auto tss = co_await get_cdc_desc_v1_timestamps(*sys_dist_ks, abort_src, get_num_token_owners);
-    cdc_log.info("Generation timestamps retrieved.");
+    LOGMACRO(cdc_log, log_level::info, "Generation timestamps retrieved.");
 
     // Find first generation timestamp such that some CDC log table may contain data before this timestamp.
     // This predicate is monotonic w.r.t the timestamps.
@@ -649,11 +649,11 @@ static future<std::optional<cdc::generation_id_v1>> rewrite_streams_descriptions
     }
 
     if (first == tss.end()) {
-        cdc_log.info("No generations to rewrite.");
+        LOGMACRO(cdc_log, log_level::info, "No generations to rewrite.");
         co_return std::nullopt;
     }
 
-    cdc_log.info("First generation to rewrite: {}", *first);
+    LOGMACRO(cdc_log, log_level::info, "First generation to rewrite: {}", *first);
 
     bool each_success = true;
     co_await max_concurrent_for_each(first, tss.end(), 10, [&] (db_clock::time_point ts) -> future<> {
@@ -672,9 +672,9 @@ static future<std::optional<cdc::generation_id_v1>> rewrite_streams_descriptions
     });
 
     if (each_success) {
-        cdc_log.info("Rewriting stream tables finished successfully.");
+        LOGMACRO(cdc_log, log_level::info, "Rewriting stream tables finished successfully.");
     } else {
-        cdc_log.info("Rewriting stream tables finished, but some generations could not be rewritten (check the logs).");
+        LOGMACRO(cdc_log, log_level::info, "Rewriting stream tables finished, but some generations could not be rewritten (check the logs).");
     }
 
     if (first != tss.end()) {
@@ -720,7 +720,7 @@ future<> generation_service::maybe_rewrite_streams_descriptions() {
 
     if (times_and_ttls.empty()) {
         // There's no point in rewriting old generations' streams (they don't contain any data).
-        cdc_log.info("No CDC log tables present, not rewriting stream tables.");
+        LOGMACRO(cdc_log, log_level::info, "No CDC log tables present, not rewriting stream tables.");
         co_return co_await _sys_ks.local().cdc_set_rewritten(std::nullopt);
     }
 
@@ -732,7 +732,7 @@ future<> generation_service::maybe_rewrite_streams_descriptions() {
     // it doesn't - we'll retry - but it's nice if we succeed without any warnings).
     co_await sleep_abortable(std::chrono::seconds(10), _abort_src);
 
-    cdc_log.info("Rewriting stream tables in the background...");
+    LOGMACRO(cdc_log, log_level::info, "Rewriting stream tables in the background...");
     auto last_rewritten = co_await rewrite_streams_descriptions(
             std::move(times_and_ttls),
             _sys_ks.local(),
@@ -872,7 +872,7 @@ future<> generation_service::check_and_repair_cdc_streams() {
     _gossiper.for_each_endpoint_state([&] (const gms::endpoint_state& state) {
         auto addr = state.get_host_id();
         if (_gossiper.is_left(addr)) {
-            cdc_log.info("check_and_repair_cdc_streams ignored node {} because it is in LEFT state", addr);
+            LOGMACRO(cdc_log, log_level::info, "check_and_repair_cdc_streams ignored node {} because it is in LEFT state", addr);
             return;
         }
         if (!_gossiper.is_normal(addr)) {
@@ -896,12 +896,12 @@ future<> generation_service::check_and_repair_cdc_streams() {
         should_regenerate = true;
     } else if (std::holds_alternative<cdc::generation_id_v1>(*latest)
             && _feature_service.cdc_generations_v2) {
-        cdc_log.info(
+        LOGMACRO(cdc_log, log_level::info, 
             "Cluster still using CDC generation storage format V1 (id: {}), even though it already understands the V2 format."
             " Creating a new generation using V2.", *latest);
         should_regenerate = true;
     } else {
-        cdc_log.info("check_and_repair_cdc_streams: last generation observed in gossip: {}", *latest);
+        LOGMACRO(cdc_log, log_level::info, "check_and_repair_cdc_streams: last generation observed in gossip: {}", *latest);
 
         static const auto timeout_msg = "Timeout while fetching CDC topology description";
         static const auto topology_read_error_note = "Note: this is likely caused by"
@@ -941,7 +941,7 @@ future<> generation_service::check_and_repair_cdc_streams() {
             should_regenerate = true;
         } else if (!is_cdc_generation_optimal(*gen, *tmptr)) {
             should_regenerate = true;
-            cdc_log.info("CDC generation {} needs repair, regenerating", latest);
+            LOGMACRO(cdc_log, log_level::info, "CDC generation {} needs repair, regenerating", latest);
         }
     }
 
@@ -949,7 +949,7 @@ future<> generation_service::check_and_repair_cdc_streams() {
         if (latest != _gen_id) {
             co_await legacy_do_handle_cdc_generation(*latest);
         }
-        cdc_log.info("CDC generation {} does not need repair", latest);
+        LOGMACRO(cdc_log, log_level::info, "CDC generation {} does not need repair", latest);
         co_return;
     }
 
@@ -989,7 +989,7 @@ future<> generation_service::handle_cdc_generation(cdc::generation_id_v2 gen_id)
     });
 
     if (using_this_gen) {
-        cdc_log.info("Started using generation {}.", gen_id);
+        LOGMACRO(cdc_log, log_level::info, "Started using generation {}.", gen_id);
     }
 }
 
@@ -1026,7 +1026,7 @@ future<> generation_service::legacy_handle_cdc_generation(std::optional<cdc::gen
     }
 
     if (using_this_gen) {
-        cdc_log.info("Starting to use generation {}", *gen_id);
+        LOGMACRO(cdc_log, log_level::info, "Starting to use generation {}", *gen_id);
         co_await update_streams_description(*gen_id, _sys_ks.local(), get_sys_dist_ks(),
                 [&tm = _token_metadata] { return tm.get()->count_normal_token_owners(); },
                 _abort_src);
@@ -1043,7 +1043,7 @@ void generation_service::legacy_async_handle_cdc_generation(cdc::generation_id g
             try {
                 bool using_this_gen = co_await svc->legacy_do_handle_cdc_generation_intercept_nonfatal_errors(gen_id);
                 if (using_this_gen) {
-                    cdc_log.info("Starting to use generation {}", gen_id);
+                    LOGMACRO(cdc_log, log_level::info, "Starting to use generation {}", gen_id);
                     co_await update_streams_description(gen_id, svc->_sys_ks.local(), svc->get_sys_dist_ks(),
                             [&tm = svc->_token_metadata] { return tm.get()->count_normal_token_owners(); },
                             svc->_abort_src);
@@ -1077,10 +1077,10 @@ future<> generation_service::legacy_scan_cdc_generations() {
     });
 
     if (latest) {
-        cdc_log.info("Latest generation seen during startup: {}", *latest);
+        LOGMACRO(cdc_log, log_level::info, "Latest generation seen during startup: {}", *latest);
         co_await legacy_handle_cdc_generation(latest);
     } else {
-        cdc_log.info("No generation seen during startup.");
+        LOGMACRO(cdc_log, log_level::info, "No generation seen during startup.");
     }
 }
 

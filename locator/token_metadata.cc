@@ -802,14 +802,14 @@ void token_metadata_impl::add_replacing_endpoint(host_id existing_node, host_id 
     if (existing_node == replacing_node) {
         on_internal_error(tlogger, seastar::format("Can't replace node {} with itself", existing_node));
     }
-    tlogger.info("Added node {} as pending replacing endpoint which replaces existing node {}",
+    LOGMACRO(tlogger, log_level::info, "Added node {} as pending replacing endpoint which replaces existing node {}",
             replacing_node, existing_node);
     _replacing_endpoints[existing_node] = replacing_node;
 }
 
 void token_metadata_impl::del_replacing_endpoint(host_id existing_node) {
     if (_replacing_endpoints.contains(existing_node)) {
-        tlogger.info("Removed node {} as pending replacing endpoint which replaces existing node {}",
+        LOGMACRO(tlogger, log_level::info, "Removed node {} as pending replacing endpoint which replaces existing node {}",
                 _replacing_endpoints[existing_node], existing_node);
     }
     _replacing_endpoints.erase(existing_node);

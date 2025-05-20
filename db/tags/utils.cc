@@ -74,7 +74,7 @@ future<> modify_tags(service::migration_manager& mm, sstring ks, sstring cf,
                 co_await mm.announce(std::move(m), std::move(group0_guard), format("Modify tags for {} table", cf));
                 break;
             }  catch (const service::group0_concurrent_modification& ex) {
-                tlogger.info("Failed to modify tags for table {} due to concurrent schema modifications. {}.",
+                LOGMACRO(tlogger, log_level::info, "Failed to modify tags for table {} due to concurrent schema modifications. {}.",
                     cf, retries ? "Retrying" : "Number of retries exceeded, giving up");
                 if (retries--) {
                     continue;

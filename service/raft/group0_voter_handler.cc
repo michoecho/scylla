@@ -605,7 +605,7 @@ group0_voter_calculator::voters_set_t group0_voter_calculator::distribute_voters
             return true;
         }
 
-        rvlogger.info("Node {} is not alive and non-voter, skipping", id);
+        LOGMACRO(rvlogger, log_level::info, "Node {} is not alive and non-voter, skipping", id);
         return false;
     }) | std::ranges::to<std::unordered_map>();
 

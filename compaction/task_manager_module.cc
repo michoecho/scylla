@@ -639,7 +639,7 @@ future<> table_reshaping_compaction_task_impl::run() {
 
     if (total_size > 0) {
         auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start);
-        dblog.info("Reshaped {} in {:.2f} seconds, {}", utils::pretty_printed_data_size(total_size), duration.count(), utils::pretty_printed_throughput(total_size, duration));
+        LOGMACRO(dblog, log_level::info, "Reshaped {} in {:.2f} seconds, {}", utils::pretty_printed_data_size(total_size), duration.count(), utils::pretty_printed_throughput(total_size, duration));
     }
 }
 
@@ -679,7 +679,7 @@ future<> shard_reshaping_compaction_task_impl::reshape_compaction_group(compacti
         }
 
         if (!_total_shard_size) {
-            dblog.info("Table {}.{} with compaction strategy {} found SSTables that need reshape. Starting reshape process", table.schema()->ks_name(), table.schema()->cf_name(), table.get_compaction_strategy().name());
+            LOGMACRO(dblog, log_level::info, "Table {}.{} with compaction strategy {} found SSTables that need reshape. Starting reshape process", table.schema()->ks_name(), table.schema()->cf_name(), table.get_compaction_strategy().name());
         }
 
         uint64_t reshaped_size = 0;
@@ -704,10 +704,10 @@ future<> shard_reshaping_compaction_task_impl::reshape_compaction_group(compacti
                 co_await dir.collect_output_unshared_sstables(std::move(result.new_sstables), sstables::sstable_directory::can_be_remote::no);
             }, info, throw_if_stopping::yes);
         } catch (sstables::compaction_stopped_exception& e) {
-            dblog.info("Table {}.{} with compaction strategy {} had reshape successfully aborted.", table.schema()->ks_name(), table.schema()->cf_name(), table.get_compaction_strategy().name());
+            LOGMACRO(dblog, log_level::info, "Table {}.{} with compaction strategy {} had reshape successfully aborted.", table.schema()->ks_name(), table.schema()->cf_name(), table.get_compaction_strategy().name());
             break;
         } catch (...) {
-            dblog.info("Reshape failed for Table {}.{} with compaction strategy {} due to {}", table.schema()->ks_name(), table.schema()->cf_name(), table.get_compaction_strategy().name(), std::current_exception());
+            LOGMACRO(dblog, log_level::info, "Reshape failed for Table {}.{} with compaction strategy {} due to {}", table.schema()->ks_name(), table.schema()->cf_name(), table.get_compaction_strategy().name(), std::current_exception());
             break;
         }
 
@@ -728,7 +728,7 @@ future<> table_resharding_compaction_task_impl::run() {
     }
 
     auto start = std::chrono::steady_clock::now();
-    dblog.info("Resharding {} for {}.{}", utils::pretty_printed_data_size(total_size), _status.keyspace, _status.table);
+    LOGMACRO(dblog, log_level::info, "Resharding {} for {}.{}", utils::pretty_printed_data_size(total_size), _status.keyspace, _status.table);
 
     co_await _db.invoke_on_all(coroutine::lambda([&] (replica::database& db) -> future<> {
         tasks::task_info parent_info{_status.id, _status.shard};
@@ -743,7 +743,7 @@ future<> table_resharding_compaction_task_impl::run() {
     }));
 
     auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start);
-    dblog.info("Resharded {} for {}.{} in {:.2f} seconds, {}", utils::pretty_printed_data_size(total_size), _status.keyspace, _status.table, duration.count(), utils::pretty_printed_throughput(total_size, duration));
+    LOGMACRO(dblog, log_level::info, "Resharded {} for {}.{} in {:.2f} seconds, {}", utils::pretty_printed_data_size(total_size), _status.keyspace, _status.table, duration.count(), utils::pretty_printed_throughput(total_size, duration));
 }
 
 future<> shard_resharding_compaction_task_impl::run() {

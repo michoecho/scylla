@@ -4029,28 +4029,28 @@ SEASTAR_TEST_CASE(test_int_sum_with_cast) {
 SEASTAR_TEST_CASE(test_float_sum_overflow) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         cquery_nofail(e, "create table cf (pk text, val float, primary key(pk));");
-        testlog.info("make sure we can sum close to the max value");
+        LOGMACRO(testlog, log_level::info, "make sure we can sum close to the max value");
         cquery_nofail(e, "insert into cf (pk, val) values ('a', 3.4028234e+38);");
         auto result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
             .is_rows()
             .with_size(1)
             .with_row({serialized(3.4028234e+38f)});
-        testlog.info("cause overflow");
+        LOGMACRO(testlog, log_level::info, "cause overflow");
         cquery_nofail(e, "insert into cf (pk, val) values ('b', 1e+38);");
         result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
             .is_rows()
             .with_size(1)
             .with_row({serialized(std::numeric_limits<float>::infinity())});
-        testlog.info("test maximum negative value");
+        LOGMACRO(testlog, log_level::info, "test maximum negative value");
         cquery_nofail(e, "insert into cf (pk, val) values ('a', -3.4028234e+38);");
         result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
             .is_rows()
             .with_size(1)
             .with_row({serialized(-2.4028234e+38f)});
-        testlog.info("cause negative overflow");
+        LOGMACRO(testlog, log_level::info, "cause negative overflow");
         cquery_nofail(e, "insert into cf (pk, val) values ('c', -2e+38);");
         result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
@@ -4063,28 +4063,28 @@ SEASTAR_TEST_CASE(test_float_sum_overflow) {
 SEASTAR_TEST_CASE(test_double_sum_overflow) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         cquery_nofail(e, "create table cf (pk text, val double, primary key(pk));");
-        testlog.info("make sure we can sum close to the max value");
+        LOGMACRO(testlog, log_level::info, "make sure we can sum close to the max value");
         cquery_nofail(e, "insert into cf (pk, val) values ('a', 1.79769313486231570814527423732e+308);");
         auto result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
             .is_rows()
             .with_size(1)
             .with_row({serialized(1.79769313486231570814527423732E308)});
-        testlog.info("cause overflow");
+        LOGMACRO(testlog, log_level::info, "cause overflow");
         cquery_nofail(e, "insert into cf (pk, val) values ('b', 0.5e+308);");
         result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
             .is_rows()
             .with_size(1)
             .with_row({serialized(std::numeric_limits<double>::infinity())});
-        testlog.info("test maximum negative value");
+        LOGMACRO(testlog, log_level::info, "test maximum negative value");
         cquery_nofail(e, "insert into cf (pk, val) values ('a', -1.79769313486231570814527423732e+308);");
         result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
             .is_rows()
             .with_size(1)
             .with_row({serialized(-1.29769313486231570814527423732e+308)});
-        testlog.info("cause negative overflow");
+        LOGMACRO(testlog, log_level::info, "cause negative overflow");
         cquery_nofail(e, "insert into cf (pk, val) values ('c', -1e+308);");
         result = e.execute_cql("select sum(val) from cf;").get();
         assert_that(result)
@@ -4453,7 +4453,7 @@ shared_ptr<cql_transport::messages::result_message> cql_func_require_nofail(
         } else {
             res = env.execute_cql(query).get();
         }
-        testlog.info("Query '{}' succeeded as expected", query);
+        LOGMACRO(testlog, log_level::info, "Query '{}' succeeded as expected", query);
     } catch (...) {
         BOOST_ERROR(format("query '{}' failed unexpectedly with error: {}\n{}:{}: originally from here",
                 query, std::current_exception(),
@@ -4480,7 +4480,7 @@ void cql_func_require_throw(
         BOOST_ERROR(format("query '{}' succeeded unexpectedly\n{}:{}: originally from here", query,
                 loc.file_name(), loc.line()));
     } catch (Exception& e) {
-        testlog.info("Query '{}' failed as expected with error: {}", query, e);
+        LOGMACRO(testlog, log_level::info, "Query '{}' failed as expected with error: {}", query, e);
     } catch (...) {
         BOOST_ERROR(format("query '{}' failed with unexpected error: {}\n{}:{}: originally from here",
                 query, std::current_exception(),
@@ -4800,7 +4800,7 @@ SEASTAR_TEST_CASE(test_select_serial_consistency) {
                 prepared_on_shard(e, query, {}, {}, db::consistency_level::SERIAL);
                 SCYLLA_ASSERT(false);
             } catch (const exceptions::invalid_request_exception& e) {
-                testlog.info("Query '{}' failed as expected with error: {}", query, e);
+                LOGMACRO(testlog, log_level::info, "Query '{}' failed as expected with error: {}", query, e);
             } catch (...) {
                 BOOST_ERROR(format("query '{}' failed with unexpected error: {}\n{}:{}: originally from here",
                     query, std::current_exception(),
@@ -4933,7 +4933,7 @@ SEASTAR_THREAD_TEST_CASE(test_query_limit) {
             for (auto is_reversed : {true, false}) {
                 for (auto scheduling_group : {groups.statement_scheduling_group, groups.streaming_scheduling_group, default_scheduling_group()}) {
                     const auto should_fail = !is_paged && scheduling_group == groups.statement_scheduling_group;
-                    testlog.info("checking: is_paged={}, is_reversed={}, scheduling_group={}, should_fail={}", is_paged, is_reversed, scheduling_group.name(), should_fail);
+                    LOGMACRO(testlog, log_level::info, "checking: is_paged={}, is_reversed={}, scheduling_group={}, should_fail={}", is_paged, is_reversed, scheduling_group.name(), should_fail);
                     const auto select_query = format("SELECT * FROM test WHERE pk = {} ORDER BY ck {};", pk, is_reversed ? "DESC" : "ASC");
 
                     int32_t page_size = is_paged ? 10000 : -1;
@@ -5169,14 +5169,14 @@ SEASTAR_THREAD_TEST_CASE(test_query_unselected_columns) {
         }
 
         {
-            testlog.info("Single partition scan");
+            LOGMACRO(testlog, log_level::info, "Single partition scan");
             auto qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, std::vector<cql3::raw_value>{},
                     cql3::query_options::specific_options{-1, nullptr, {}, api::new_timestamp()});
             assert_that(e.execute_cql("SELECT pk, ck FROM tbl WHERE pk = 0", std::move(qo)).get()).is_rows().with_size(num_rows);
         }
 
         {
-            testlog.info("Full scan");
+            LOGMACRO(testlog, log_level::info, "Full scan");
             auto qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, std::vector<cql3::raw_value>{},
                     cql3::query_options::specific_options{-1, nullptr, {}, api::new_timestamp()});
             assert_that(e.execute_cql("SELECT pk, ck FROM tbl", std::move(qo)).get()).is_rows().with_size(num_rows);

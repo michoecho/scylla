@@ -201,7 +201,7 @@ future<> sstables_manager::maybe_reclaim_components() {
         _total_reclaimable_memory -= memory_reclaimed;
         _reclaimed.insert(*sst_with_max_memory);
         // TODO: As of now only bloom filter is reclaimed. Print actual component names when adding support for more components.
-        smlogger.info("Reclaimed {} bytes of memory from components of {}. Total memory reclaimed so far is {} bytes",
+        LOGMACRO(smlogger, log_level::info, "Reclaimed {} bytes of memory from components of {}. Total memory reclaimed so far is {} bytes",
                 memory_reclaimed, sst_with_max_memory->get_filename(), _total_memory_reclaimed);
         }
         co_await coroutine::maybe_yield();

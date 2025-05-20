@@ -1466,7 +1466,7 @@ SEASTAR_TEST_CASE(test_query_digest) {
                 check_digests_equal(compacted(m1, now), m2);
                 check_digests_equal(m1, compacted(m2, now));
             } else {
-                testlog.info("If not equal, they should become so after applying diffs mutually");
+                LOGMACRO(testlog, log_level::info, "If not equal, they should become so after applying diffs mutually");
 
                 mutation_application_stats app_stats;
                 schema_ptr s = m1.schema();
@@ -2242,13 +2242,13 @@ SEASTAR_TEST_CASE(test_v2_merging_in_non_evictable_snapshot) {
             assert_that(gen.schema(), result_v2).is_equal_to_compacted(result_v1);
         };
 
-        testlog.info("always_preempt");
+        LOGMACRO(testlog, log_level::info, "always_preempt");
         check(always_preempt());
 
-        testlog.info("random_preempt");
+        LOGMACRO(testlog, log_level::info, "random_preempt");
         check(tests::random::random_preempt());
 
-        testlog.info("exhaustive check of all preemption points");
+        LOGMACRO(testlog, log_level::info, "exhaustive check of all preemption points");
         test_all_preemption_points([&] (preemption_check preempt) {
             check(std::move(preempt));
         });
@@ -2914,7 +2914,7 @@ SEASTAR_THREAD_TEST_CASE(test_compaction_data_stream_split) {
     tests::random_schema random_schema(tests::random::get_int<uint32_t>(), *spec);
     const auto& schema = *random_schema.schema();
 
-    testlog.info("Random schema:\n{}", random_schema.cql());
+    LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
     const auto query_time = gc_clock::now();
     const auto ttl = gc_clock::duration{schema.gc_grace_seconds().count() * 4};
@@ -2923,7 +2923,7 @@ SEASTAR_THREAD_TEST_CASE(test_compaction_data_stream_split) {
 
     // Random data
     {
-        testlog.info("Random data");
+        LOGMACRO(testlog, log_level::info, "Random data");
         const auto ts_gen = tests::default_timestamp_generator();
         // Half of the tombstones are gcable.
         // Half of the cells are expiring. Half of those is expired.
@@ -2947,7 +2947,7 @@ SEASTAR_THREAD_TEST_CASE(test_compaction_data_stream_split) {
 
     // All data is purged
     {
-        testlog.info("All data is purged");
+        LOGMACRO(testlog, log_level::info, "All data is purged");
         const auto ts_gen = [] (std::mt19937& engine, tests::timestamp_destination destination, api::timestamp_type min_timestamp) {
             static const api::timestamp_type tomb_ts_min = 10000;
             static const api::timestamp_type tomb_ts_max = 99999;
@@ -2982,7 +2982,7 @@ SEASTAR_THREAD_TEST_CASE(test_compaction_data_stream_split) {
 
     // No data is purged
     {
-        testlog.info("No data is purged");
+        LOGMACRO(testlog, log_level::info, "No data is purged");
         const auto ts_gen = [] (std::mt19937& engine, tests::timestamp_destination destination, api::timestamp_type min_timestamp) {
             static const api::timestamp_type tomb_ts_min = 100;
             static const api::timestamp_type tomb_ts_max = 999;
@@ -3072,7 +3072,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_consume) {
             std::uniform_int_distribution<size_t>(1, 10)).get();
 
 
-    testlog.info("Forward");
+    LOGMACRO(testlog, log_level::info, "Forward");
     {
         for (const auto& mut : muts) {
             mutation_rebuilder_v2 rebuilder(forward_schema);
@@ -3080,7 +3080,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_consume) {
             assert_that(std::move(rebuilt_mut)).is_equal_to(mut);
         }
     }
-    testlog.info("Reverse");
+    LOGMACRO(testlog, log_level::info, "Reverse");
     {
         for (const auto& mut : muts) {
             mutation_rebuilder_v2 rebuilder(reverse_schema);
@@ -3491,7 +3491,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
         }
     };
 
-    testlog.info("non-paged v2");
+    LOGMACRO(testlog, log_level::info, "non-paged v2");
     {
         mutation res_mut(s, pk);
         auto c = compact_for_query<consumer>(*s, query_time, s->full_slice(), max_rows, max_partitions, consumer{permit, res_mut, max_rows});
@@ -3503,7 +3503,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
         BOOST_REQUIRE_EQUAL(res_mut, ref_mut);
     }
 
-    testlog.info("limited pages v2");
+    LOGMACRO(testlog, log_level::info, "limited pages v2");
     {
         mutation res_mut(s, pk);
         auto compaction_state = make_lw_shared<compact_mutation_state<compact_for_sstables::no>>(*s, query_time, s->full_slice(), 1, max_partitions);
@@ -3519,7 +3519,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
         BOOST_REQUIRE_EQUAL(res_mut, ref_mut);
     }
 
-    testlog.info("short pages v2");
+    LOGMACRO(testlog, log_level::info, "short pages v2");
     {
         mutation res_mut(s, pk);
         auto compaction_state = make_lw_shared<compact_mutation_state<compact_for_sstables::no>>(*s, query_time, s->full_slice(), max_rows, max_partitions);
@@ -3535,7 +3535,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
         BOOST_REQUIRE_EQUAL(res_mut, ref_mut);
     }
 
-    testlog.info("limited pages - detach state v2");
+    LOGMACRO(testlog, log_level::info, "limited pages - detach state v2");
     {
         mutation res_mut(s, pk);
         auto reader = make_mutation_reader_from_fragments(s, permit, make_frags());
@@ -3556,7 +3556,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
         BOOST_REQUIRE_EQUAL(res_mut, ref_mut);
     }
 
-    testlog.info("short pages - detach state v2");
+    LOGMACRO(testlog, log_level::info, "short pages - detach state v2");
     {
         mutation res_mut(s, pk);
         auto reader = make_mutation_reader_from_fragments(s, permit, make_frags());
@@ -3880,7 +3880,7 @@ SEASTAR_TEST_CASE(test_compact_and_expire_cell_stats) {
     };
 
     const auto check = [&] (row_content rc, row_tombstone rt, compact_and_expire_result expected_res, std::source_location sl = std::source_location::current()) {
-        testlog.info("check() @ {}:{}", sl.file_name(), sl.line());
+        LOGMACRO(testlog, log_level::info, "check() @ {}:{}", sl.file_name(), sl.line());
         const static std::unordered_map<column_kind, std::array<bytes, 2>> column_names = {
             {column_kind::static_column, {"static_atomic", "static_collection"}},
             {column_kind::regular_column, {"regular_atomic", "regular_collection"}},

@@ -56,7 +56,7 @@ future<> sstables_format_selector::update_format(sstables::sstable_version_types
 }
 
 future<> sstables_format_selector::select_format(sstables::sstable_version_types format) {
-    logger.info("Selected {} sstables format", format);
+    LOGMACRO(logger, log_level::info, "Selected {} sstables format", format);
     _selected_format = format;
     co_await _db.invoke_on_all([this] (replica::database& db) {
         db.set_format(_selected_format);

@@ -439,7 +439,7 @@ future<> filesystem_storage::change_state(const sstable& sst, sstable_state stat
         co_return; // Already there
     }
 
-    sstlog.info("Moving sstable {} to {}", sst.get_filename(), path);
+    LOGMACRO(sstlog, log_level::info, "Moving sstable {} to {}", sst.get_filename(), path);
     co_await move(sst, path.native(), std::move(new_generation), delay_commit);
 }
 

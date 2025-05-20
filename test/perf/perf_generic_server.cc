@@ -140,11 +140,11 @@ int main(int argc, char** argv) {
         conf.server_port = app.configuration()["server-port"].as<uint16_t>();
 
         sharded<tester> test;
-        plog.info("Starting");
+        LOGMACRO(plog, log_level::info, "Starting");
         co_await test.start(std::cref(conf));
         co_await test.invoke_on_all(&tester::start);
         try {
-            plog.info("Running");
+            LOGMACRO(plog, log_level::info, "Running");
             co_await test.invoke_on_all(&tester::run);
         } catch (...) {
             plog.error("Error running: {}", std::current_exception());

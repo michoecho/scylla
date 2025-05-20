@@ -210,7 +210,7 @@ void sstable_directory::validate(sstables::shared_sstable sst, process_flags fla
     if (s->is_counter() && !sst->has_scylla_component()) {
         sstring error = "Direct loading non-Scylla SSTables containing counters is not supported.";
         if (flags.enable_dangerous_direct_import_of_cassandra_counters) {
-            dirlog.info("{} But trying to continue on user's request.", error);
+            LOGMACRO(dirlog, log_level::info, "{} But trying to continue on user's request.", error);
         } else {
             dirlog.error("{} Use sstableloader instead.", error);
             throw std::runtime_error(fmt::format("{} Use sstableloader instead.", error));
@@ -415,7 +415,7 @@ future<> sstable_directory::filesystem_components_lister::process(sstable_direct
         if (flags.throw_on_missing_toc) {
             throw sstables::malformed_sstable_exception(seastar::format("At directory: {}: no TOC found for SSTable {}!. Refusing to boot", _directory.native(), path.native()));
         } else {
-            dirlog.info("Found incomplete SSTable {} at directory {}. Removing", path.native(), _directory.native());
+            LOGMACRO(dirlog, log_level::info, "Found incomplete SSTable {} at directory {}. Removing", path.native(), _directory.native());
             _state->files_for_removal.insert(path.native());
         }
     }
@@ -464,7 +464,7 @@ future<> sstable_directory::commit_directory_changes() {
 future<> sstable_directory::filesystem_components_lister::commit() {
     // Remove all files scheduled for removal
     return parallel_for_each(std::exchange(_state->files_for_removal, {}), [] (sstring path) {
-        dirlog.info("Removing file {}", path);
+        LOGMACRO(dirlog, log_level::info, "Removing file {}", path);
         return remove_file(std::move(path));
     });
 }
@@ -484,7 +484,7 @@ future<> sstable_directory::sstables_registry_components_lister::garbage_collect
             co_return;
         }
 
-        dirlog.info("Removing dangling {} {} entry", desc.generation, status);
+        LOGMACRO(dirlog, log_level::info, "Removing dangling {} {} entry", desc.generation, status);
         gens_to_remove.insert(desc.generation);
         co_await st.remove_by_registry_entry(std::move(desc));
     }));
@@ -723,7 +723,7 @@ future<> sstable_directory::filesystem_components_lister::cleanup_column_family_
             // reading the next entry in the directory.
             fs::path dirpath = _directory / de->name;
             if (dirpath.extension().string() == tempdir_extension) {
-                dirlog.info("Found temporary sstable directory: {}, removing", dirpath);
+                LOGMACRO(dirlog, log_level::info, "Found temporary sstable directory: {}, removing", dirpath);
                 futures.push_back(io_check([dirpath = std::move(dirpath)] () { return lister::rmdir(dirpath); }));
             }
         }
@@ -749,10 +749,10 @@ future<> sstable_directory::filesystem_components_lister::handle_sstables_pendin
             // reading the next entry in the directory.
             fs::path file_path = pending_delete_dir / de->name;
             if (file_path.extension() == ".tmp") {
-                dirlog.info("Found temporary pending_delete log file: {}, deleting", file_path);
+                LOGMACRO(dirlog, log_level::info, "Found temporary pending_delete log file: {}, deleting", file_path);
                 futures.push_back(remove_file(file_path.string()));
             } else if (file_path.extension() == ".log") {
-                dirlog.info("Found pending_delete log file: {}, replaying", file_path);
+                LOGMACRO(dirlog, log_level::info, "Found pending_delete log file: {}, replaying", file_path);
                 auto f = replay_pending_delete_log(std::move(file_path));
                 futures.push_back(std::move(f));
             } else {

@@ -796,7 +796,7 @@ future<> update_schema_version_and_announce(sharded<db::system_keyspace>& sys_ks
     co_await proxy.local().get_db().invoke_on_all([uuid] (replica::database& db) {
         db.update_version(uuid);
     });
-    slogger.info("Schema version changed to {}", uuid);
+    LOGMACRO(slogger, log_level::info, "Schema version changed to {}", uuid);
 }
 
 future<std::optional<table_schema_version>> get_group0_schema_version(db::system_keyspace& sys_ks) {

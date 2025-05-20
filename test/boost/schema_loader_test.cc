@@ -146,11 +146,11 @@ enum class view_type {
     view
 };
 void check_views(std::vector<schema_ptr> schemas, std::vector<view_type> views_type, std::source_location sl = std::source_location::current()) {
-    testlog.info("Checking views built at {}:{}", sl.file_name(), sl.line());
+    LOGMACRO(testlog, log_level::info, "Checking views built at {}:{}", sl.file_name(), sl.line());
     BOOST_REQUIRE_EQUAL(schemas.size(), views_type.size() + 1);
 
     const auto base_schema = schemas.front();
-    testlog.info("Base table is {}.{}", base_schema->ks_name(), base_schema->cf_name());
+    LOGMACRO(testlog, log_level::info, "Base table is {}.{}", base_schema->ks_name(), base_schema->cf_name());
     BOOST_REQUIRE(!base_schema->is_view());
 
     auto schema_it = schemas.begin() + 1;
@@ -158,7 +158,7 @@ void check_views(std::vector<schema_ptr> schemas, std::vector<view_type> views_t
     while (schema_it != schemas.end() && view_type_it != views_type.end()) {
         auto schema = *schema_it;
         auto type = *view_type_it;
-        testlog.info("Checking view {}.{} is_index={}", schema->ks_name(), schema->cf_name(), type == view_type::index);
+        LOGMACRO(testlog, log_level::info, "Checking view {}.{} is_index={}", schema->ks_name(), schema->cf_name(), type == view_type::index);
         BOOST_REQUIRE(schema->is_view());
         BOOST_REQUIRE_EQUAL(base_schema->id(), schema->view_info()->base_id());
         if (type == view_type::index) {

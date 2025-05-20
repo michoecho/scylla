@@ -51,7 +51,7 @@ SEASTAR_TEST_CASE(test_abort_during_index_read) {
 SEASTAR_TEST_CASE(test_promoted_index_parsing_page_crossing_and_retries) {
     return test_env::do_with_async([](test_env& env) {
 #ifndef SCYLLA_ENABLE_ERROR_INJECTION
-        testlog.info("Skipped because error injection is not enabled");
+        LOGMACRO(testlog, log_level::info, "Skipped because error injection is not enabled");
 #else
         simple_schema ss;
         auto s = ss.schema();
@@ -104,7 +104,7 @@ SEASTAR_TEST_CASE(test_promoted_index_parsing_page_crossing_and_retries) {
                 auto pos = position_in_partition::for_key(keys[i]);
                 position_in_partition::equal_compare eq(*s);
 
-                testlog.info("Crossed page at block {}, offset [{}, {})", i, block_offset, next_block_offset);
+                LOGMACRO(testlog, log_level::info, "Crossed page at block {}, offset [{}, {})", i, block_offset, next_block_offset);
                 crossed_page++;
 
                 auto* block = cur->promoted_index().get_block(i, trace).get();
@@ -209,7 +209,7 @@ SEASTAR_TEST_CASE(test_no_data_file_read_on_missing_clustering_keys_with_dense_i
             auto cur = dynamic_cast<mc::bsearch_clustered_cursor*>(index->current_clustered_cursor());
             BOOST_REQUIRE(cur);
 
-            testlog.info("Testing missing key {}", key);
+            LOGMACRO(testlog, log_level::info, "Testing missing key {}", key);
             auto skip_lb = cur->advance_to(position_in_partition::before_key(key)).get();
             auto skip_ub = cur->probe_upper_bound(position_in_partition::after_key(*s, key)).get();
             uint64_t lb_offset = index->get_data_file_position();
@@ -231,7 +231,7 @@ SEASTAR_TEST_CASE(test_no_data_file_read_on_missing_clustering_keys_with_dense_i
             auto cur = dynamic_cast<mc::bsearch_clustered_cursor*>(index->current_clustered_cursor());
             BOOST_REQUIRE(cur);
 
-            testlog.info("Testing present key {}", key);
+            LOGMACRO(testlog, log_level::info, "Testing present key {}", key);
             auto skip_lb = cur->advance_to(position_in_partition::before_key(key)).get();
             auto skip_ub = cur->probe_upper_bound(position_in_partition::after_key(*s, key)).get();
             uint64_t lb_offset = index->get_data_file_position();

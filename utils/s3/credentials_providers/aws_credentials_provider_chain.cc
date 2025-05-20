@@ -20,7 +20,7 @@ seastar::future<s3::aws_credentials> aws_credentials_provider_chain::get_aws_cre
         try {
             auto creds = co_await provider->get_aws_credentials();
             if (creds) {
-                cpc_logger.info("AWS credentials were successfully retrieved by {}.", provider->get_name());
+                LOGMACRO(cpc_logger, log_level::info, "AWS credentials were successfully retrieved by {}.", provider->get_name());
                 co_return creds;
             }
             LOGMACRO(cpc_logger, log_level::debug, "Retrieving AWS credentials by credentials provider {} failed.", provider->get_name());

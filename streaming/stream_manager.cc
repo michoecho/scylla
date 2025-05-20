@@ -98,9 +98,9 @@ future<> stream_manager::update_io_throughput(uint32_t value_mbs) {
         if (f.failed()) {
             sslog.warn("Couldn't update streaming bandwidth: {}", f.get_exception());
         } else if (value_mbs != 0) {
-            sslog.info("Set streaming bandwidth to {}MB/s", value_mbs);
+            LOGMACRO(sslog, log_level::info, "Set streaming bandwidth to {}MB/s", value_mbs);
         } else {
-            sslog.info("Set unlimited streaming bandwidth");
+            LOGMACRO(sslog, log_level::info, "Set unlimited streaming bandwidth");
         }
     });
 }
@@ -157,7 +157,7 @@ void stream_manager::remove_stream(streaming::plan_id plan_id) {
     _receiving_streams.erase(plan_id);
     // FIXME: Do not ignore the future
     (void)remove_progress_on_all_shards(plan_id).handle_exception([plan_id] (auto ep) {
-        sslog.info("stream_manager: Fail to remove progress for plan_id={}: {}", plan_id, ep);
+        LOGMACRO(sslog, log_level::info, "stream_manager: Fail to remove progress for plan_id={}: {}", plan_id, ep);
     });
 }
 
@@ -320,7 +320,7 @@ future<> stream_manager::fail_stream_plan(streaming::plan_id plan_id) {
             for (auto session : sr->get_coordinator()->get_all_stream_sessions()) {
                 co_await seastar::coroutine::maybe_yield();
                 if (session->plan_id() == plan_id) {
-                    sslog.info("stream_manager: Failed stream_session for stream_plan plan_id={}", plan_id);
+                    LOGMACRO(sslog, log_level::info, "stream_manager: Failed stream_session for stream_plan plan_id={}", plan_id);
                     session->close_session(stream_session_state::FAILED);
                 }
             }
@@ -348,7 +348,7 @@ void stream_manager::fail_all_sessions() {
 
 future<> stream_manager::on_remove(inet_address endpoint, locator::host_id id, gms::permit_id) {
     if (has_peer(id)) {
-        sslog.info("stream_manager: Close all stream_session with peer = {}/{} in on_remove", endpoint, id);
+        LOGMACRO(sslog, log_level::info, "stream_manager: Close all stream_session with peer = {}/{} in on_remove", endpoint, id);
         //FIXME: discarded future.
         (void)container().invoke_on_all([id] (auto& sm) {
             sm.fail_sessions(id);
@@ -361,7 +361,7 @@ future<> stream_manager::on_remove(inet_address endpoint, locator::host_id id, g
 
 future<> stream_manager::on_restart(inet_address endpoint, locator::host_id id, endpoint_state_ptr ep_state, gms::permit_id) {
     if (has_peer(id)) {
-        sslog.info("stream_manager: Close all stream_session with peer = {}/{} in on_restart", endpoint, id);
+        LOGMACRO(sslog, log_level::info, "stream_manager: Close all stream_session with peer = {}/{} in on_restart", endpoint, id);
         //FIXME: discarded future.
         (void)container().invoke_on_all([id] (auto& sm) {
             sm.fail_sessions(id);
@@ -374,7 +374,7 @@ future<> stream_manager::on_restart(inet_address endpoint, locator::host_id id, 
 
 future<> stream_manager::on_dead(inet_address endpoint, locator::host_id id, endpoint_state_ptr ep_state, gms::permit_id) {
     if (has_peer(id)) {
-        sslog.info("stream_manager: Close all stream_session with peer = {}/{} in on_dead", endpoint, id);
+        LOGMACRO(sslog, log_level::info, "stream_manager: Close all stream_session with peer = {}/{} in on_dead", endpoint, id);
         //FIXME: discarded future.
         (void)container().invoke_on_all([id] (auto& sm) {
             sm.fail_sessions(id);

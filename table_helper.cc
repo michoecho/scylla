@@ -180,7 +180,7 @@ future<> table_helper::setup_keyspace(cql3::query_processor& qp, service::migrat
                 co_await mm.announce(service::prepare_new_keyspace_announcement(db.real_database(), ksm, ts),
                         std::move(group0_guard), seastar::format("table_helper: create {} keyspace", keyspace_name));
             } catch (service::group0_concurrent_modification&) {
-                tlogger.info("Concurrent operation is detected while creating {} keyspace, retrying.", keyspace_name);
+                LOGMACRO(tlogger, log_level::info, "Concurrent operation is detected while creating {} keyspace, retrying.", keyspace_name);
             }
         }
     }
@@ -207,7 +207,7 @@ future<> table_helper::setup_keyspace(cql3::query_processor& qp, service::migrat
             co_return co_await mm.announce(std::move(table_mutations), std::move(group0_guard),
                     seastar::format("table_helper: create tables for {} keyspace", keyspace_name));
         } catch (service::group0_concurrent_modification&) {
-            tlogger.info("Concurrent operation is detected while creating tables for {} keyspace, retrying.", keyspace_name);
+            LOGMACRO(tlogger, log_level::info, "Concurrent operation is detected while creating tables for {} keyspace, retrying.", keyspace_name);
         }
     }
 }

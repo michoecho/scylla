@@ -598,7 +598,7 @@ rest_toppartitions_generic(http_context& ctx, std::unique_ptr<http::request> req
         api::req_param<unsigned> capacity(*req, "capacity", 256);
         api::req_param<unsigned> list_size(*req, "list_size", 10);
 
-        apilog.info("toppartitions query: #table_filters={} #keyspace_filters={} duration={} list_size={} capacity={}",
+        LOGMACRO(apilog, log_level::info, "toppartitions query: #table_filters={} #keyspace_filters={} duration={} list_size={} capacity={}",
             !table_filters.empty() ? std::to_string(table_filters.size()) : "all", !keyspace_filters.empty() ? std::to_string(keyspace_filters.size()) : "all", duration.value, list_size.value, capacity.value);
 
         return seastar::do_with(db::toppartitions_query(ctx.db, std::move(table_filters), std::move(keyspace_filters), duration.value, list_size, capacity), [&ctx] (db::toppartitions_query& q) {
@@ -732,7 +732,7 @@ rest_force_compaction(http_context& ctx, std::unique_ptr<http::request> req) {
         params.process(*req);
         auto flush = params.get_as<bool>("flush_memtables").value_or(true);
         auto consider_only_existing_data = params.get_as<bool>("consider_only_existing_data").value_or(false);
-        apilog.info("force_compaction: flush={} consider_only_existing_data={}", flush, consider_only_existing_data);
+        LOGMACRO(apilog, log_level::info, "force_compaction: flush={} consider_only_existing_data={}", flush, consider_only_existing_data);
 
         auto& compaction_module = db.local().get_compaction_manager().get_task_manager_module();
         std::optional<flush_mode> fmopt;
@@ -765,7 +765,7 @@ rest_force_keyspace_compaction(http_context& ctx, std::unique_ptr<http::request>
         auto table_infos = parse_table_infos(keyspace, ctx, params.get("cf").value_or(""));
         auto flush = params.get_as<bool>("flush_memtables").value_or(true);
         auto consider_only_existing_data = params.get_as<bool>("consider_only_existing_data").value_or(false);
-        apilog.info("force_keyspace_compaction: keyspace={} tables={}, flush={} consider_only_existing_data={}", keyspace, table_infos, flush, consider_only_existing_data);
+        LOGMACRO(apilog, log_level::info, "force_keyspace_compaction: keyspace={} tables={}, flush={} consider_only_existing_data={}", keyspace, table_infos, flush, consider_only_existing_data);
 
         auto& compaction_module = db.local().get_compaction_manager().get_task_manager_module();
         std::optional<flush_mode> fmopt;
@@ -791,10 +791,10 @@ rest_force_keyspace_cleanup(http_context& ctx, sharded<service::storage_service>
         const auto& rs = db.local().find_keyspace(keyspace).get_replication_strategy();
         if (rs.get_type() == locator::replication_strategy_type::local || !rs.is_vnode_based()) {
             auto reason = rs.get_type() == locator::replication_strategy_type::local ? "require" : "support";
-            apilog.info("Keyspace {} does not {} cleanup", keyspace, reason);
+            LOGMACRO(apilog, log_level::info, "Keyspace {} does not {} cleanup", keyspace, reason);
             co_return json::json_return_type(0);
         }
-        apilog.info("force_keyspace_cleanup: keyspace={} tables={}", keyspace, table_infos);
+        LOGMACRO(apilog, log_level::info, "force_keyspace_cleanup: keyspace={} tables={}", keyspace, table_infos);
         if (!co_await ss.local().is_cleanup_allowed(keyspace)) {
             auto msg = "Can not perform cleanup operation when topology changes";
             apilog.warn("force_keyspace_cleanup: keyspace={} tables={}: {}", keyspace, table_infos, msg);
@@ -817,7 +817,7 @@ rest_force_keyspace_cleanup(http_context& ctx, sharded<service::storage_service>
 static
 future<json::json_return_type>
 rest_cleanup_all(http_context& ctx, sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
-        apilog.info("cleanup_all");
+        LOGMACRO(apilog, log_level::info, "cleanup_all");
         auto done = co_await ss.invoke_on(0, [] (service::storage_service& ss) -> future<bool> {
             if (!ss.is_topology_coordinator_enabled()) {
                 co_return false;
@@ -845,7 +845,7 @@ static
 future<json::json_return_type>
 rest_perform_keyspace_offstrategy_compaction(http_context& ctx, std::unique_ptr<http::request> req) {
         auto [keyspace, table_infos] = parse_table_infos(ctx, *req);
-        apilog.info("perform_keyspace_offstrategy_compaction: keyspace={} tables={}", keyspace, table_infos);
+        LOGMACRO(apilog, log_level::info, "perform_keyspace_offstrategy_compaction: keyspace={} tables={}", keyspace, table_infos);
         bool res = false;
         auto& compaction_module = ctx.db.local().get_compaction_manager().get_task_manager_module();
         auto task = co_await compaction_module.make_and_start_task<offstrategy_keyspace_compaction_task_impl>({}, std::move(keyspace), ctx.db, table_infos, &res);
@@ -866,7 +866,7 @@ rest_upgrade_sstables(http_context& ctx, std::unique_ptr<http::request> req) {
         auto [keyspace, table_infos] = parse_table_infos(ctx, *req);
         bool exclude_current_version = req_param<bool>(*req, "exclude_current_version", false);
 
-        apilog.info("upgrade_sstables: keyspace={} tables={} exclude_current_version={}", keyspace, table_infos, exclude_current_version);
+        LOGMACRO(apilog, log_level::info, "upgrade_sstables: keyspace={} tables={} exclude_current_version={}", keyspace, table_infos, exclude_current_version);
 
         auto& compaction_module = db.local().get_compaction_manager().get_task_manager_module();
         auto task = co_await compaction_module.make_and_start_task<upgrade_sstables_compaction_task_impl>({}, std::move(keyspace), db, table_infos, exclude_current_version);
@@ -883,7 +883,7 @@ rest_upgrade_sstables(http_context& ctx, std::unique_ptr<http::request> req) {
 static
 future<json::json_return_type>
 rest_force_flush(http_context& ctx, std::unique_ptr<http::request> req) {
-        apilog.info("flush all tables");
+        LOGMACRO(apilog, log_level::info, "flush all tables");
         co_await ctx.db.invoke_on_all([] (replica::database& db) {
             return db.flush_all_tables();
         });
@@ -894,7 +894,7 @@ static
 future<json::json_return_type>
 rest_force_keyspace_flush(http_context& ctx, std::unique_ptr<http::request> req) {
         auto [keyspace, table_infos] = parse_table_infos(ctx, *req);
-        apilog.info("perform_keyspace_flush: keyspace={} tables={}", keyspace, table_infos);
+        LOGMACRO(apilog, log_level::info, "perform_keyspace_flush: keyspace={} tables={}", keyspace, table_infos);
         auto& db = ctx.db;
         co_await replica::database::flush_tables_on_all_shards(db, std::move(table_infos));
         co_return json_void();
@@ -903,7 +903,7 @@ rest_force_keyspace_flush(http_context& ctx, std::unique_ptr<http::request> req)
 static
 future<json::json_return_type>
 rest_decommission(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
-        apilog.info("decommission");
+        LOGMACRO(apilog, log_level::info, "decommission");
         return ss.local().decommission().then([] {
             return make_ready_future<json::json_return_type>(json_void());
         });
@@ -923,7 +923,7 @@ future<json::json_return_type>
 rest_remove_node(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
         auto host_id = validate_host_id(req->get_query_param("host_id"));
         std::vector<sstring> ignore_nodes_strs = utils::split_comma_separated_list(req->get_query_param("ignore_nodes"));
-        apilog.info("remove_node: host_id={} ignore_nodes={}", host_id, ignore_nodes_strs);
+        LOGMACRO(apilog, log_level::info, "remove_node: host_id={} ignore_nodes={}", host_id, ignore_nodes_strs);
         locator::host_id_or_endpoint_list ignore_nodes;
         ignore_nodes.reserve(ignore_nodes_strs.size());
         for (const sstring& n : ignore_nodes_strs) {
@@ -1011,7 +1011,7 @@ rest_get_drain_progress(http_context& ctx, std::unique_ptr<http::request> req) {
 static
 future<json::json_return_type>
 rest_drain(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
-        apilog.info("drain");
+        LOGMACRO(apilog, log_level::info, "drain");
         return ss.local().drain().then([] {
             return make_ready_future<json::json_return_type>(json_void());
         });
@@ -1042,7 +1042,7 @@ rest_get_keyspaces(http_context& ctx, const_req req) {
 static
 future<json::json_return_type>
 rest_stop_gossiping(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
-        apilog.info("stop_gossiping");
+        LOGMACRO(apilog, log_level::info, "stop_gossiping");
         return ss.local().stop_gossiping().then([] {
             return make_ready_future<json::json_return_type>(json_void());
         });
@@ -1051,7 +1051,7 @@ rest_stop_gossiping(sharded<service::storage_service>& ss, std::unique_ptr<http:
 static
 future<json::json_return_type>
 rest_start_gossiping(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
-        apilog.info("start_gossiping");
+        LOGMACRO(apilog, log_level::info, "start_gossiping");
         return ss.local().start_gossiping().then([] {
             return make_ready_future<json::json_return_type>(json_void());
         });
@@ -1153,7 +1153,7 @@ rest_rebuild(sharded<service::storage_service>& ss, std::unique_ptr<http::reques
             }
             source_dc.set_force();
         }
-        apilog.info("rebuild: source_dc={}", source_dc);
+        LOGMACRO(apilog, log_level::info, "rebuild: source_dc={}", source_dc);
         return ss.local().rebuild(std::move(source_dc)).then([] {
             return make_ready_future<json::json_return_type>(json_void());
         });
@@ -1198,7 +1198,7 @@ static
 future<json::json_return_type>
 rest_reset_local_schema(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
         // FIXME: We should truncate schema tables if more than one node in the cluster.
-        apilog.info("reset_local_schema");
+        LOGMACRO(apilog, log_level::info, "reset_local_schema");
         co_await ss.local().reload_schema();
         co_return json_void();
 }
@@ -1207,7 +1207,7 @@ static
 future<json::json_return_type>
 rest_set_trace_probability(std::unique_ptr<http::request> req) {
         auto probability = req->get_query_param("probability");
-        apilog.info("set_trace_probability: probability={}", probability);
+        LOGMACRO(apilog, log_level::info, "set_trace_probability: probability={}", probability);
         return futurize_invoke([probability] {
             double real_prob = std::stod(probability.c_str());
             return tracing::tracing::tracing_instance().invoke_on_all([real_prob] (auto& local_tracing) {
@@ -1251,7 +1251,7 @@ rest_set_slow_query(std::unique_ptr<http::request> req) {
         auto ttl = req->get_query_param("ttl");
         auto threshold = req->get_query_param("threshold");
         auto fast = req->get_query_param("fast");
-        apilog.info("set_slow_query: enable={} ttl={} threshold={} fast={}", enable, ttl, threshold, fast);
+        LOGMACRO(apilog, log_level::info, "set_slow_query: enable={} ttl={} threshold={} fast={}", enable, ttl, threshold, fast);
         try {
             return tracing::tracing::tracing_instance().invoke_on_all([enable, ttl, threshold, fast] (auto& local_tracing) {
                 if (threshold != "") {
@@ -1647,7 +1647,7 @@ rest_reload_raft_topology_state(sharded<service::storage_service>& ss, service::
 static
 future<json::json_return_type>
 rest_upgrade_to_raft_topology(sharded<service::storage_service>& ss, std::unique_ptr<http::request> req) {
-        apilog.info("Requested to schedule upgrade to raft topology");
+        LOGMACRO(apilog, log_level::info, "Requested to schedule upgrade to raft topology");
         try {
             co_await ss.invoke_on(0, [] (auto& ss) {
                 return ss.start_upgrade_to_raft_topology();
@@ -2051,7 +2051,7 @@ void set_snapshot(http_context& ctx, routes& r, sharded<db::snapshot_ctl>& snap_
     });
 
     ss::take_snapshot.set(r, [&snap_ctl](std::unique_ptr<http::request> req) -> future<json::json_return_type> {
-        apilog.info("take_snapshot: {}", req->query_parameters);
+        LOGMACRO(apilog, log_level::info, "take_snapshot: {}", req->query_parameters);
         auto tag = req->get_query_param("tag");
         auto column_families = split(req->get_query_param("cf"), ",");
         auto sfopt = req->get_query_param("sf");
@@ -2078,7 +2078,7 @@ void set_snapshot(http_context& ctx, routes& r, sharded<db::snapshot_ctl>& snap_
     });
 
     ss::del_snapshot.set(r, [&snap_ctl](std::unique_ptr<http::request> req) -> future<json::json_return_type> {
-        apilog.info("del_snapshot: {}", req->query_parameters);
+        LOGMACRO(apilog, log_level::info, "del_snapshot: {}", req->query_parameters);
         auto tag = req->get_query_param("tag");
         auto column_family = req->get_query_param("cf");
 

@@ -142,7 +142,7 @@ future<tasks::task_id> snapshot_ctl::start_backup(sstring endpoint, sstring buck
     }
 
     co_await coroutine::switch_to(_config.backup_sched_group);
-    snap_log.info("Backup sstables from {}({}) to {}", keyspace, snapshot_name, endpoint);
+    LOGMACRO(snap_log, log_level::info, "Backup sstables from {}({}) to {}", keyspace, snapshot_name, endpoint);
     auto global_table = co_await get_table_on_all_shards(_db, keyspace, table);
     auto& storage_options = global_table->get_storage_options();
     if (!storage_options.is_local_type()) {

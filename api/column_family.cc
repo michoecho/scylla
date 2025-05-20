@@ -99,7 +99,7 @@ public:
 };
 
 static future<json::json_return_type> set_tables_autocompaction(http_context& ctx, std::vector<table_info> tables, bool enabled) {
-    apilog.info("set_tables_autocompaction: enabled={} tables={}", enabled, tables);
+    LOGMACRO(apilog, log_level::info, "set_tables_autocompaction: enabled={} tables={}", enabled, tables);
 
     return ctx.db.invoke_on(0, [&ctx, tables = std::move(tables), enabled] (replica::database& db) {
         auto g = autocompaction_toggle_guard(db);
@@ -115,7 +115,7 @@ static future<json::json_return_type> set_tables_autocompaction(http_context& ct
 }
 
 static future<json::json_return_type> set_tables_tombstone_gc(http_context& ctx, std::vector<table_info> tables, bool enabled) {
-    apilog.info("set_tables_tombstone_gc: enabled={} tables={}", enabled, tables);
+    LOGMACRO(apilog, log_level::info, "set_tables_tombstone_gc: enabled={} tables={}", enabled, tables);
     return for_tables_on_all_shards(ctx, std::move(tables), [enabled] (replica::table& t) {
         t.set_tombstone_gc_enabled(enabled);
         return make_ready_future<>();
@@ -890,26 +890,26 @@ void set_column_family(http_context& ctx, routes& r, sharded<db::system_keyspace
     });
 
     cf::enable_auto_compaction.set(r, [&ctx](std::unique_ptr<http::request> req) {
-        apilog.info("column_family/enable_auto_compaction: name={}", req->get_path_param("name"));
+        LOGMACRO(apilog, log_level::info, "column_family/enable_auto_compaction: name={}", req->get_path_param("name"));
         auto ti = parse_table_info(req->get_path_param("name"), ctx.db.local());
         return set_tables_autocompaction(ctx, {std::move(ti)}, true);
     });
 
     cf::disable_auto_compaction.set(r, [&ctx](std::unique_ptr<http::request> req) {
-        apilog.info("column_family/disable_auto_compaction: name={}", req->get_path_param("name"));
+        LOGMACRO(apilog, log_level::info, "column_family/disable_auto_compaction: name={}", req->get_path_param("name"));
         auto ti = parse_table_info(req->get_path_param("name"), ctx.db.local());
         return set_tables_autocompaction(ctx, {std::move(ti)}, false);
     });
 
     ss::enable_auto_compaction.set(r, [&ctx](std::unique_ptr<http::request> req) {
         auto [keyspace, tables] = parse_table_infos(ctx, *req);
-        apilog.info("enable_auto_compaction: keyspace={} tables={}", keyspace, tables);
+        LOGMACRO(apilog, log_level::info, "enable_auto_compaction: keyspace={} tables={}", keyspace, tables);
         return set_tables_autocompaction(ctx, std::move(tables), true);
     });
 
     ss::disable_auto_compaction.set(r, [&ctx](std::unique_ptr<http::request> req) {
         auto [keyspace, tables] = parse_table_infos(ctx, *req);
-        apilog.info("disable_auto_compaction: keyspace={} tables={}", keyspace, tables);
+        LOGMACRO(apilog, log_level::info, "disable_auto_compaction: keyspace={} tables={}", keyspace, tables);
         return set_tables_autocompaction(ctx, std::move(tables), false);
     });
 
@@ -920,26 +920,26 @@ void set_column_family(http_context& ctx, routes& r, sharded<db::system_keyspace
     });
 
     cf::enable_tombstone_gc.set(r, [&ctx](std::unique_ptr<http::request> req) {
-        apilog.info("column_family/enable_tombstone_gc: name={}", req->get_path_param("name"));
+        LOGMACRO(apilog, log_level::info, "column_family/enable_tombstone_gc: name={}", req->get_path_param("name"));
         auto ti = parse_table_info(req->get_path_param("name"), ctx.db.local());
         return set_tables_tombstone_gc(ctx, {std::move(ti)}, true);
     });
 
     cf::disable_tombstone_gc.set(r, [&ctx](std::unique_ptr<http::request> req) {
-        apilog.info("column_family/disable_tombstone_gc: name={}", req->get_path_param("name"));
+        LOGMACRO(apilog, log_level::info, "column_family/disable_tombstone_gc: name={}", req->get_path_param("name"));
         auto ti = parse_table_info(req->get_path_param("name"), ctx.db.local());
         return set_tables_tombstone_gc(ctx, {std::move(ti)}, false);
     });
 
     ss::enable_tombstone_gc.set(r, [&ctx](std::unique_ptr<http::request> req) {
         auto [keyspace, tables] = parse_table_infos(ctx, *req);
-        apilog.info("enable_tombstone_gc: keyspace={} tables={}", keyspace, tables);
+        LOGMACRO(apilog, log_level::info, "enable_tombstone_gc: keyspace={} tables={}", keyspace, tables);
         return set_tables_tombstone_gc(ctx, std::move(tables), true);
     });
 
     ss::disable_tombstone_gc.set(r, [&ctx](std::unique_ptr<http::request> req) {
         auto [keyspace, tables] = parse_table_infos(ctx, *req);
-        apilog.info("disable_tombstone_gc: keyspace={} tables={}", keyspace, tables);
+        LOGMACRO(apilog, log_level::info, "disable_tombstone_gc: keyspace={} tables={}", keyspace, tables);
         return set_tables_tombstone_gc(ctx, std::move(tables), false);
     });
 
@@ -1007,7 +1007,7 @@ void set_column_family(http_context& ctx, routes& r, sharded<db::system_keyspace
     cf::set_compaction_strategy_class.set(r, [&ctx](std::unique_ptr<http::request> req) {
         auto ti = parse_table_info(req->get_path_param("name"), ctx.db.local());
         sstring strategy = req->get_query_param("class_name");
-        apilog.info("column_family/set_compaction_strategy_class: name={} strategy={}", req->get_path_param("name"), strategy);
+        LOGMACRO(apilog, log_level::info, "column_family/set_compaction_strategy_class: name={} strategy={}", req->get_path_param("name"), strategy);
         return for_tables_on_all_shards(ctx, {std::move(ti)}, [strategy] (replica::table& cf) {
             cf.set_compaction_strategy(sstables::compaction_strategy::type(strategy));
             return make_ready_future<>();
@@ -1063,7 +1063,7 @@ void set_column_family(http_context& ctx, routes& r, sharded<db::system_keyspace
         api::req_param<unsigned> capacity(*req, "capacity", 256);
         api::req_param<unsigned> list_size(*req, "list_size", 10);
 
-        apilog.info("toppartitions query: name={} duration={} list_size={} capacity={}",
+        LOGMACRO(apilog, log_level::info, "toppartitions query: name={} duration={} list_size={} capacity={}",
             name, duration.value, list_size.value, capacity.value);
 
         return seastar::do_with(db::toppartitions_query(ctx.db, {{ks, cf}}, {}, duration.value, list_size, capacity), [&ctx] (db::toppartitions_query& q) {
@@ -1085,7 +1085,7 @@ void set_column_family(http_context& ctx, routes& r, sharded<db::system_keyspace
         auto [ks, cf] = parse_fully_qualified_cf_name(*params.get("name"));
         auto flush = params.get_as<bool>("flush_memtables").value_or(true);
         auto consider_only_existing_data = params.get_as<bool>("consider_only_existing_data").value_or(false);
-        apilog.info("column_family/force_major_compaction: name={} flush={} consider_only_existing_data={}", req->get_path_param("name"), flush, consider_only_existing_data);
+        LOGMACRO(apilog, log_level::info, "column_family/force_major_compaction: name={} flush={} consider_only_existing_data={}", req->get_path_param("name"), flush, consider_only_existing_data);
 
         auto keyspace = validate_keyspace(ctx, ks);
         std::vector<table_info> table_infos = {table_info{

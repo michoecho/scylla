@@ -91,7 +91,7 @@ public:
     }
 
     future<> run_contiguous_get() {
-        plog.info("Running GET-s");
+        LOGMACRO(plog, log_level::info, "Running GET-s");
         auto until = now() + _duration;
         uint64_t off = 0;
         do {
@@ -107,7 +107,7 @@ public:
     }
 
     future<> run_download() {
-        plog.info("Downloading with input_stream");
+        LOGMACRO(plog, log_level::info, "Downloading with input_stream");
         auto in = input_stream<char>(_client->make_download_source(_object_name, s3::range{0, _object_size}));
         auto start = now();
         uint64_t sz = 0;
@@ -121,11 +121,11 @@ public:
         });
         co_await in.close();
         auto time = std::chrono::duration_cast<std::chrono::duration<double>>(now() - start);
-        plog.info("Downloaded {}MB in {}s, speed {}MB/s", sz >> 20, time.count(), (sz >> 20) / time.count());
+        LOGMACRO(plog, log_level::info, "Downloaded {}MB in {}s, speed {}MB/s", sz >> 20, time.count(), (sz >> 20) / time.count());
     }
 
     future<> run_upload() {
-        plog.info("Uploading");
+        LOGMACRO(plog, log_level::info, "Uploading");
         auto file_name = fs::path(_object_name);
         auto sz = co_await seastar::file_size(file_name.native());
         _object_name = fmt::format("/{}/{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), file_name.filename().native());
@@ -133,7 +133,7 @@ public:
         auto start = now();
         co_await _client->upload_file(file_name, _object_name, {}, _part_size_mb << 20);
         auto time = std::chrono::duration_cast<std::chrono::duration<double>>(now() - start);
-        plog.info("Uploaded {}MB in {}s, speed {}MB/s", sz >> 20, time.count(), (sz >> 20) / time.count());
+        LOGMACRO(plog, log_level::info, "Uploaded {}MB in {}s, speed {}MB/s", sz >> 20, time.count(), (sz >> 20) / time.count());
     }
 
     future<> stop() {
@@ -153,7 +153,7 @@ public:
                 hist.percentile(1.0)
             );
         };
-        plog.info("requests total: {:5}, errors: {:5}; latencies: {}", _latencies._count, _errors, print_percentiles(_latencies));
+        LOGMACRO(plog, log_level::info, "requests total: {:5}, errors: {:5}; latencies: {}", _latencies._count, _errors, print_percentiles(_latencies));
     }
 };
 
@@ -177,12 +177,12 @@ int main(int argc, char** argv) {
         auto osz = app.configuration()["object_size"].as<size_t>();
         auto operation = app.configuration()["operation"].as<sstring>();
         sharded<tester> test;
-        plog.info("Creating");
+        LOGMACRO(plog, log_level::info, "Creating");
         co_await test.start(dur, sks, part_size, oname, osz);
         try {
-            plog.info("Starting");
+            LOGMACRO(plog, log_level::info, "Starting");
             co_await test.invoke_on_all(&tester::start);
-            plog.info("Running");
+            LOGMACRO(plog, log_level::info, "Running");
             if (operation == "upload") {
                 co_await test.invoke_on_all(&tester::run_upload);
             } else if (operation == "get") {
@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
         } catch (...) {
             plog.error("Error running: {}", std::current_exception());
         }
-        plog.info("Stopping (and printing results)");
+        LOGMACRO(plog, log_level::info, "Stopping (and printing results)");
         co_await test.stop();
     });
 }

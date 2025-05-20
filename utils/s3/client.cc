@@ -93,7 +93,7 @@ client::client(std::string host, endpoint_config_ptr cfg, semaphore& mem, global
         , _creds_invalidation_timer([this] {
             std::ignore = [this]() -> future<> {
                 auto units = co_await get_units(_creds_sem, 1);
-                s3l.info("Credentials update attempt in background failed. Outdated credentials will be discarded, triggering synchronous re-obtainment"
+                LOGMACRO(s3l, log_level::info, "Credentials update attempt in background failed. Outdated credentials will be discarded, triggering synchronous re-obtainment"
                          " attempts for future requests.");
                 _credentials = {};
             }();
@@ -101,7 +101,7 @@ client::client(std::string host, endpoint_config_ptr cfg, semaphore& mem, global
         , _creds_update_timer([this] {
             std::ignore = [this]() -> future<> {
                 auto units = co_await get_units(_creds_sem, 1);
-                s3l.info("Update creds in the background");
+                LOGMACRO(s3l, log_level::info, "Update creds in the background");
                 try {
                     co_await update_credentials_and_rearm();
                 } catch (...) {
@@ -151,7 +151,7 @@ future<> client::authorize(http::request& req) {
     if (!_credentials) [[unlikely]] {
         auto units = co_await get_units(_creds_sem, 1);
         if (!_credentials) {
-            s3l.info("Update creds synchronously");
+            LOGMACRO(s3l, log_level::info, "Update creds synchronously");
             co_await update_credentials_and_rearm();
         }
     }

@@ -20,7 +20,7 @@ static logging::logger alogger("lsa-api");
 
 void set_lsa(http_context& ctx, routes& r) {
     httpd::lsa_json::lsa_compact.set(r, [](std::unique_ptr<request> req) {
-        alogger.info("Triggering compaction");
+        LOGMACRO(alogger, log_level::info, "Triggering compaction");
         return smp::invoke_on_all([] {
             logalloc::shard_tracker().reclaim(std::numeric_limits<size_t>::max());
         }).then([] {

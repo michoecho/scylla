@@ -257,7 +257,7 @@ SEASTAR_THREAD_TEST_CASE(test_combined_reader_range_tombstone_change_merging) {
         std::vector<range_tombstone_change> rtcs;
     };
     auto check = [&] (const char* desc, std::vector<input> in, output out, seastar::compat::source_location sl = seastar::compat::source_location::current()) {
-        testlog.info("check() {} @ {}:{}", desc, sl.file_name(), sl.line());
+        LOGMACRO(testlog, log_level::info, "check() {} @ {}:{}", desc, sl.file_name(), sl.line());
         std::vector<mutation_reader> readers;
         for (auto& i : in) {
             std::deque<mutation_fragment_v2> fragments;
@@ -2036,7 +2036,7 @@ SEASTAR_THREAD_TEST_CASE(test_multishard_combining_reader_only_reads_from_needed
             expected_shards_touched[shard] = false;
         }
 
-        testlog.info("{}: including {} additional shards out of a total of {}, with an {} end", get_name(), additional_shards, smp::count,
+        LOGMACRO(testlog, log_level::info, "{}: including {} additional shards out of a total of {}, with an {} end", get_name(), additional_shards, smp::count,
                 inclusive_end ? "inclusive" : "exclusive");
 
         assert_that(make_multishard_combining_reader(
@@ -2049,7 +2049,7 @@ SEASTAR_THREAD_TEST_CASE(test_multishard_combining_reader_only_reads_from_needed
             .produces_end_of_stream();
 
         for (unsigned i = 0; i < smp::count; ++i) {
-            testlog.info("[{}]: {} == {}", i, shards_touched[i], expected_shards_touched[i]);
+            LOGMACRO(testlog, log_level::info, "[{}]: {} == {}", i, shards_touched[i], expected_shards_touched[i]);
             BOOST_CHECK(shards_touched[i] == expected_shards_touched[i]);
         }
 
@@ -2279,7 +2279,7 @@ SEASTAR_THREAD_TEST_CASE(test_multishard_combining_reader_next_partition) {
             return dht::ring_position_tri_compare(*schema, a, b) < 0;
         });
 
-        testlog.info("Start test");
+        LOGMACRO(testlog, log_level::info, "Start test");
 
         auto assertions = assert_that(std::move(reader));
         for (int i = 0; i < partition_count; ++i) {
@@ -2924,7 +2924,7 @@ void check_evictable_reader_validation_is_triggered(
         std::deque<mutation_fragment_v2> second_buffer,
         size_t max_buffer_size) {
 
-    testlog.info("check_evictable_reader_validation_is_triggered(): checking {} test case: {}", error_prefix.empty() ? "positive" : "negative", test_name);
+    LOGMACRO(testlog, log_level::info, "check_evictable_reader_validation_is_triggered(): checking {} test case: {}", error_prefix.empty() ? "positive" : "negative", test_name);
 
     auto rd = create_evictable_reader_and_evict_after_first_buffer(std::move(schema), std::move(permit), prange, slice, std::move(first_buffer),
             last_fragment_position, std::move(second_buffer), max_buffer_size);
@@ -3382,7 +3382,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_drop_flags) {
                 false);
     };
 
-    testlog.info("Same partition, with static row");
+    LOGMACRO(testlog, log_level::info, "Same partition, with static row");
     {
         buffer first_buffer(s, permit, pkey1);
         first_buffer.add_static_row();
@@ -3407,7 +3407,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_drop_flags) {
             .produces_end_of_stream();
     }
 
-    testlog.info("Same partition, no static row");
+    LOGMACRO(testlog, log_level::info, "Same partition, no static row");
     {
         buffer first_buffer(s, permit, pkey1);
         const auto buf_size = first_buffer.add_clustering_rows(0, second_buffer_ck);
@@ -3429,7 +3429,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_drop_flags) {
             .produces_end_of_stream();
     }
 
-    testlog.info("Same partition as expected, no static row, next partition has static row (#8923)");
+    LOGMACRO(testlog, log_level::info, "Same partition as expected, no static row, next partition has static row (#8923)");
     {
         buffer second_buffer(s, permit, pkey1);
         second_buffer.add_clustering_rows(second_buffer_ck, second_buffer_ck + second_buffer_ck / 2);
@@ -3466,7 +3466,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_drop_flags) {
             .produces_end_of_stream();
     }
 
-    testlog.info("Next partition, with no static row");
+    LOGMACRO(testlog, log_level::info, "Next partition, with no static row");
     {
         buffer first_buffer(s, permit, pkey1);
         const auto buf_size = first_buffer.add_clustering_rows(0, second_buffer_ck);
@@ -3488,7 +3488,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_drop_flags) {
             .produces_end_of_stream();
     }
 
-    testlog.info("Next partition, with static row");
+    LOGMACRO(testlog, log_level::info, "Next partition, with static row");
     {
         buffer first_buffer(s, permit, pkey1);
         const auto buf_size = first_buffer.add_clustering_rows(0, second_buffer_ck);
@@ -3623,7 +3623,7 @@ SEASTAR_THREAD_TEST_CASE(test_evictable_reader_clear_tombstone_in_discontinued_p
     auto prange = dht::partition_range::make_open_ended_both_sides();
 
     auto check = [&] (const std::deque<mutation_fragment_v2>& second_buffer, const char* scenario) {
-        testlog.info("check() scenario {}", scenario);
+        LOGMACRO(testlog, log_level::info, "check() scenario {}", scenario);
         auto ms = mutation_source([&buffer_size, &first_buffer, &second_buffer, first = true] (
                 schema_ptr schema,
                 reader_permit permit,
@@ -4457,7 +4457,7 @@ SEASTAR_TEST_CASE(test_multishard_reader_buffer_hint_large_partitions) {
 
         auto run_test = [&] (size_t buffer_size, multishard_reader_buffer_hint buffer_hint,
                 seastar::compat::source_location sl = seastar::compat::source_location::current()) {
-            testlog.info("run_test(): buffer_size: {}, buffer_hint: {} @ {}:{}", buffer_size, bool(buffer_hint), sl.file_name(), sl.line());
+            LOGMACRO(testlog, log_level::info, "run_test(): buffer_size: {}, buffer_hint: {} @ {}:{}", buffer_size, bool(buffer_hint), sl.file_name(), sl.line());
 
             auto reader = make_multishard_combining_reader_for_tests(
                     *sharder,

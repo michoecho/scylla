@@ -190,7 +190,7 @@ SEASTAR_THREAD_TEST_CASE(test_ring_position_ordering) {
     keys[2]._token = keys[3]._token = keys[4]._token;
     std::sort(keys.begin() + 2, keys.begin() + 5, dht::ring_position_less_comparator(*table.schema()));
 
-    testlog.info("Keys: {}", keys);
+    LOGMACRO(testlog, log_level::info, "Keys: {}", keys);
 
     auto positions = keys | std::ranges::to<std::vector<dht::ring_position>>();
     auto ext_positions = keys | std::ranges::to<std::vector<dht::ring_position_ext>>();

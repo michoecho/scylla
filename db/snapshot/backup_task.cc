@@ -91,7 +91,7 @@ future<> backup_task_impl::worker::upload_component(sstring name) {
     try {
         co_await _client->upload_file(component_name, destination, _task._progress_per_shard[this_shard_id()], &_as);
     } catch (const abort_requested_exception&) {
-        snap_log.info("Upload aborted per requested: {}", component_name.native());
+        LOGMACRO(snap_log, log_level::info, "Upload aborted per requested: {}", component_name.native());
         throw;
     } catch (...) {
         snap_log.error("Error uploading {}: {}", component_name.native(), std::current_exception());
@@ -325,7 +325,7 @@ future<> backup_task_impl::run() {
     co_await _snap_ctl.run_snapshot_modify_operation([this] {
         return do_backup();
     });
-    snap_log.info("Finished backup");
+    LOGMACRO(snap_log, log_level::info, "Finished backup");
 }
 
 } // db::snapshot namespace

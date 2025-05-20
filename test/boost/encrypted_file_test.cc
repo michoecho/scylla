@@ -346,7 +346,7 @@ SEASTAR_TEST_CASE(test_truncating_extend) {
 SEASTAR_TEST_CASE(test_read_from_padding) {
     key_info kinfo {"AES/CBC/PKCSPadding", 128};
     shared_ptr<symmetric_key> k = make_shared<symmetric_key>(kinfo);
-    testlog.info("Created symmetric key: info={} key={} ", k->info(), k->key());
+    LOGMACRO(testlog, log_level::info, "Created symmetric key: info={} key={} ", k->info(), k->key());
 
     size_t block_size;
     size_t buf_size;
@@ -354,7 +354,7 @@ SEASTAR_TEST_CASE(test_read_from_padding) {
     constexpr auto& filename = "encrypted_file";
     const auto& filepath = dir.path() / filename;
 
-    testlog.info("Creating encrypted file {}", filepath.string());
+    LOGMACRO(testlog, log_level::info, "Creating encrypted file {}", filepath.string());
     {
         auto [file, _] = co_await make_file(filename, open_flags::create | open_flags::wo, k);
         auto ostream = co_await make_file_output_stream(file);
@@ -364,13 +364,13 @@ SEASTAR_TEST_CASE(test_read_from_padding) {
 
         auto wbuf = seastar::temporary_buffer<char>::aligned(file.memory_dma_alignment(), buf_size);
         co_await ostream.write(wbuf.get(), wbuf.size());
-        testlog.info("Wrote {} bytes to encrypted file {}", wbuf.size(), filepath.string());
+        LOGMACRO(testlog, log_level::info, "Wrote {} bytes to encrypted file {}", wbuf.size(), filepath.string());
 
         co_await ostream.close();
-        testlog.info("Length of {}: {} bytes", filename, co_await file.size());
+        LOGMACRO(testlog, log_level::info, "Length of {}: {} bytes", filename, co_await file.size());
     }
 
-    testlog.info("Testing DMA reads from padding area of file {}", filepath.string());
+    LOGMACRO(testlog, log_level::info, "Testing DMA reads from padding area of file {}", filepath.string());
     {
         auto [file, _] = co_await make_file(filename, open_flags::ro, k);
 

@@ -362,7 +362,7 @@ SEASTAR_TEST_CASE(test_uncompressed_filtering_and_forwarding_read) {
     session.execute(query_static, [1, 777])
 
     for i in range(1024):
-        log.info("inserting row %d" % i)
+        LOGMACRO(log, log_level::info, "inserting row %d" % i)
         session.execute(query, [1, i, "%s%d" %('b' * 1024, i)])
 
     query_static2 = SimpleStatement("""
@@ -378,7 +378,7 @@ SEASTAR_TEST_CASE(test_uncompressed_filtering_and_forwarding_read) {
     session.execute(query_static2, [2, 999])
 
     for i in range(1024):
-        log.info("inserting row %d" % i)
+        LOGMACRO(log, log_level::info, "inserting row %d" % i)
         session.execute(query2, [2, i, "%s%d" %('b' * 1024, i)])
 
     The index file contains promoted indices for two partitions, each consisting
@@ -630,14 +630,14 @@ SEASTAR_TEST_CASE(test_uncompressed_skip_using_index_rows) {
     session.execute(query_static, [1, 777])
 
     for i in range(1, 1024 * 128, 3):
-        log.info("inserting row %d" % i)
+        LOGMACRO(log, log_level::info, "inserting row %d" % i)
         session.execute(query, [1, i, i, i])
 	session.execute(query_del, [1, i + 1, i + 2])
 
     session.execute(query_static, [2, 999])
 
     for i in range(1, 1024 * 128, 3):
-        log.info("inserting row %d" % i)
+        LOGMACRO(log, log_level::info, "inserting row %d" % i)
         session.execute(query, [2, i, i, i])
 	session.execute(query_del, [2, i + 1, i + 2])
  *

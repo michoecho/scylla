@@ -53,7 +53,7 @@ public:
             : _t(std::bind(&stats_collector::capture_snapshot, std::ref(sc))) {
             if (period.count()) {
                 _t.arm_periodic(period);
-                testlog.info("Start collecting stats");
+                LOGMACRO(testlog, log_level::info, "Start collecting stats");
                 sc.capture_snapshot();
             }
         }
@@ -61,7 +61,7 @@ public:
         friend class stats_collector;
     public:
         ~collect_guard() {
-            testlog.info("Finish collecting stats");
+            LOGMACRO(testlog, log_level::info, "Finish collecting stats");
         }
     };
 
@@ -138,7 +138,7 @@ public:
 
             os.close().get();
 
-            testlog.info("Stats written to {}", _params->output_file);
+            LOGMACRO(testlog, log_level::info, "Stats written to {}", _params->output_file);
         });
     }
 };
@@ -230,7 +230,7 @@ void test_main_thread(cql_test_env& env) {
         return m;
     };
 
-    testlog.info("Populating");
+    LOGMACRO(testlog, log_level::info, "Populating");
 
     for (uint64_t i = 0; i < sstables; ++i) {
         auto m = gen(sstable_size);
@@ -241,10 +241,10 @@ void test_main_thread(cql_test_env& env) {
 
     env.local_db().flush_all_memtables().get();
 
-    testlog.info("Live disk space used: {}", tab.get_stats().live_disk_space_used);
-    testlog.info("Live sstables: {}", tab.get_stats().live_sstable_count);
+    LOGMACRO(testlog, log_level::info, "Live disk space used: {}", tab.get_stats().live_disk_space_used);
+    LOGMACRO(testlog, log_level::info, "Live sstables: {}", tab.get_stats().live_sstable_count);
 
-    testlog.info("Preparing dummy cache");
+    LOGMACRO(testlog, log_level::info, "Preparing dummy cache");
     memtable_snapshot_source underlying(s);
     cache_tracker& tr = env.local_db().row_cache_tracker();
     row_cache c(s, snapshot_source([&] { return underlying(); }), tr, is_continuous::yes);
@@ -257,11 +257,11 @@ void test_main_thread(cql_test_env& env) {
     }
 
     auto prev_occupancy = logalloc::shard_tracker().occupancy();
-    testlog.info("Occupancy before: {}", prev_occupancy);
+    LOGMACRO(testlog, log_level::info, "Occupancy before: {}", prev_occupancy);
 
     auto& sem = env.local_db().get_reader_concurrency_semaphore();
 
-    testlog.info("Reading");
+    LOGMACRO(testlog, log_level::info, "Reading");
     stats_collector sc(sem, stats_collector_params);
     try {
         auto _ = sc.collect();
@@ -277,9 +277,9 @@ void test_main_thread(cql_test_env& env) {
     sc.write_stats().get();
 
     auto occupancy = logalloc::shard_tracker().occupancy();
-    testlog.info("Occupancy after: {}", occupancy);
-    testlog.info("Max demand: {}", prev_occupancy.total_space() - occupancy.total_space());
-    testlog.info("Max sstables per read: {}", tab.get_stats().estimated_sstable_per_read.max());
+    LOGMACRO(testlog, log_level::info, "Occupancy after: {}", occupancy);
+    LOGMACRO(testlog, log_level::info, "Max demand: {}", prev_occupancy.total_space() - occupancy.total_space());
+    LOGMACRO(testlog, log_level::info, "Max sstables per read: {}", tab.get_stats().estimated_sstable_per_read.max());
 }
 
 } // anonymous namespace

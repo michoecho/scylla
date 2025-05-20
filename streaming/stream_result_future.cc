@@ -27,7 +27,7 @@ future<stream_state> stream_result_future::init_sending_side(stream_manager& mgr
         sr->add_event_listener(listener);
     }
 
-    sslog.info("[Stream #{}] Executing streaming plan for {} with peers={}, master", plan_id_,  description_, coordinator_->get_peers());
+    LOGMACRO(sslog, log_level::info, "[Stream #{}] Executing streaming plan for {} with peers={}, master", plan_id_,  description_, coordinator_->get_peers());
 
     // Initialize and start all sessions
     for (auto& session : coordinator_->get_all_stream_sessions()) {
@@ -46,7 +46,7 @@ shared_ptr<stream_result_future> stream_result_future::init_receiving_side(strea
         sslog.warn("{}", err);
         throw std::runtime_error(err);
     }
-    sslog.info("[Stream #{}] Executing streaming plan for {} with peers={}, slave", plan_id, description, from);
+    LOGMACRO(sslog, log_level::info, "[Stream #{}] Executing streaming plan for {} with peers={}, slave", plan_id, description, from);
     bool is_receiving = true;
     sr = ::make_shared<stream_result_future>(mgr, plan_id, description, is_receiving);
     mgr.register_receiving(sr);
@@ -110,7 +110,7 @@ void stream_result_future::maybe_complete() {
                 sslog.warn("[Stream #{}] Streaming plan for {} failed, peers={}, {}", plan_id, description, _coordinator->get_peers(), *stats);
                 _done.set_exception(stream_exception(final_state, "Stream failed"));
             } else {
-                sslog.info("[Stream #{}] Streaming plan for {} succeeded, peers={}, {}", plan_id, description, _coordinator->get_peers(), *stats);
+                LOGMACRO(sslog, log_level::info, "[Stream #{}] Streaming plan for {} succeeded, peers={}, {}", plan_id, description, _coordinator->get_peers(), *stats);
                 _done.set_value(final_state);
             }
         });

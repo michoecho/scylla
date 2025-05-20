@@ -312,7 +312,7 @@ server::listen(socket_address addr, std::shared_ptr<seastar::tls::credentials_bu
                         });
 
                     }
-                    _logger.info("Reloaded {}", files);
+                    LOGMACRO(_logger, log_level::info, "Reloaded {}", files);
                 }
             });
         } else {
@@ -381,7 +381,7 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
                 try {
                     f.get();
                 } catch (...) {
-                    _logger.info("exception while advertising new connection: {}", std::current_exception());
+                    LOGMACRO(_logger, log_level::info, "exception while advertising new connection: {}", std::current_exception());
                 }
                 // Block while monitoring for lifetime/errors.
                 return conn->process().then_wrapped([this, conn] (auto f) {
@@ -392,7 +392,7 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
                         if (!is_broken_pipe_or_connection_reset(ep)) {
                             // some exceptions are expected if another side closes a connection
                             // or we're shutting down
-                            _logger.info("exception while processing connection: {}", ep);
+                            LOGMACRO(_logger, log_level::info, "exception while processing connection: {}", ep);
                         }
                     }
                     return unadvertise_connection(conn);

@@ -125,7 +125,7 @@ SEASTAR_THREAD_TEST_CASE(test_find_mutation_timestamp) {
 
 SEASTAR_THREAD_TEST_CASE(test_generate_timeuuid) {
     auto seed = std::random_device{}();
-    testlog.info("test_generate_timeuuid seed: {}", seed);
+    LOGMACRO(testlog, log_level::info, "test_generate_timeuuid seed: {}", seed);
 
     std::mt19937 rnd_engine(seed);
     std::uniform_int_distribution<api::timestamp_type> dist(1505959942168984, 1649959942168984);
@@ -206,7 +206,7 @@ SEASTAR_THREAD_TEST_CASE(test_detecting_conflict_of_cdc_log_table_with_existing_
 SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_log_table) {
     do_with_cql_env_thread([] (cql_test_env& e) {
         auto assert_unauthorized = [&e] (const sstring& stmt) {
-            testlog.info("Must throw unauthorized_exception: {}", stmt);
+            LOGMACRO(testlog, log_level::info, "Must throw unauthorized_exception: {}", stmt);
             BOOST_REQUIRE_THROW(e.execute_cql(stmt).get(), exceptions::unauthorized_exception);
         };
 
@@ -250,7 +250,7 @@ SEASTAR_THREAD_TEST_CASE(test_disallow_cdc_on_materialized_view) {
 SEASTAR_THREAD_TEST_CASE(test_permissions_of_cdc_description) {
     do_with_cql_env_thread([] (cql_test_env& e) {
         auto assert_unauthorized = [&e] (const sstring& stmt) {
-            testlog.info("Must throw unauthorized_exception: {}", stmt);
+            LOGMACRO(testlog, log_level::info, "Must throw unauthorized_exception: {}", stmt);
             BOOST_REQUIRE_THROW(e.execute_cql(stmt).get(), exceptions::unauthorized_exception);
         };
 

@@ -418,7 +418,7 @@ future<std::vector<task_identity>> task_manager::virtual_task::impl::get_childre
 
     auto nodes = module->get_nodes();
     co_await utils::get_local_injector().inject("tasks_vt_get_children", [] (auto& handler) -> future<> {
-        tmlogger.info("tasks_vt_get_children: waiting");
+        LOGMACRO(tmlogger, log_level::info, "tasks_vt_get_children: waiting");
         co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::seconds{10});
     });
     co_return co_await map_reduce(nodes, [ms, parent_id, is_host_alive = std::move(is_host_alive)] (auto host_id) -> future<std::vector<task_identity>> {
@@ -607,7 +607,7 @@ void task_manager::module::unregister_task(task_id id) noexcept {
 }
 
 future<> task_manager::module::stop() noexcept {
-    tmlogger.info("Stopping module {}", _name);
+    LOGMACRO(tmlogger, log_level::info, "Stopping module {}", _name);
     abort_source().request_abort();
     co_await _gate.close();
     if (this_shard_id() == 0) {
@@ -788,12 +788,12 @@ std::chrono::seconds task_manager::get_user_task_ttl() const noexcept {
 
 void task_manager::register_module(std::string name, module_ptr module) {
     _modules[name] = module;
-    tmlogger.info("Registered module {}", name);
+    LOGMACRO(tmlogger, log_level::info, "Registered module {}", name);
 }
 
 void task_manager::unregister_module(std::string name) noexcept {
     _modules.erase(name);
-    tmlogger.info("Unregistered module {}", name);
+    LOGMACRO(tmlogger, log_level::info, "Unregistered module {}", name);
 }
 
 void task_manager::register_task(task_ptr task) {

@@ -463,10 +463,10 @@ public:
 private:
     static auto defer_verbose_shutdown(const char* what, std::function<void()> func) {
         return defer([what, func = std::move(func)] {
-            testlog.info("Shutting down {}", what);
+            LOGMACRO(testlog, log_level::info, "Shutting down {}", what);
             try {
                 func();
-                testlog.info("Shutting down {} was successful", what);
+                LOGMACRO(testlog, log_level::info, "Shutting down {} was successful", what);
             } catch (...) {
                 testlog.error("Unexpected error shutting down {}: {}", what, std::current_exception());
                 throw;
@@ -1060,9 +1060,9 @@ private:
             }
 
             if (cfg->rf_rack_valid_keyspaces()) {
-                startlog.info("Verifying that all of the keyspaces are RF-rack-valid");
+                LOGMACRO(startlog, log_level::info, "Verifying that all of the keyspaces are RF-rack-valid");
                 _db.local().check_rf_rack_validity(_token_metadata.local().get());
-                startlog.info("All keyspaces are RF-rack-valid");
+                LOGMACRO(startlog, log_level::info, "All keyspaces are RF-rack-valid");
             }
 
             utils::loading_cache_config perm_cache_config;

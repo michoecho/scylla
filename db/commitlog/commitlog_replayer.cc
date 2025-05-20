@@ -329,7 +329,7 @@ future<db::commitlog_replayer> db::commitlog_replayer::create_replayer(seastar::
 future<> db::commitlog_replayer::recover(std::vector<sstring> files, sstring fname_prefix) {
     using shard_file_map = std::unordered_multimap<unsigned, commitlog::descriptor>;
 
-    rlogger.info("Replaying {}", fmt::join(files, ", "));
+    LOGMACRO(rlogger, log_level::info, "Replaying {}", fmt::join(files, ", "));
 
     // pre-compute work per shard already.
     shard_file_map map;
@@ -382,7 +382,7 @@ future<> db::commitlog_replayer::recover(std::vector<sstring> files, sstring fna
             });
         }, impl::stats(), std::plus<impl::stats>());
             
-        rlogger.info("Log replay complete, {} replayed mutations ({} invalid, {} skipped)"
+        LOGMACRO(rlogger, log_level::info, "Log replay complete, {} replayed mutations ({} invalid, {} skipped)"
                         , totals.applied_mutations
                         , totals.invalid_mutations
                         , totals.skipped_mutations

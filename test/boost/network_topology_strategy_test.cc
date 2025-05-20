@@ -531,7 +531,7 @@ SEASTAR_THREAD_TEST_CASE(NetworkTopologyStrategy_tablets_test) {
 // Called in a seastar thread
 static void test_random_balancing(sharded<snitch_ptr>& snitch, gms::inet_address my_address) {
     auto seed = tests::random::get_int<int64_t>();
-    testlog.info("test_random_balancing: seed={}", seed);
+    LOGMACRO(testlog, log_level::info, "test_random_balancing: seed={}", seed);
     std::default_random_engine rand(seed);
 
     locator::token_metadata::config tm_cfg;

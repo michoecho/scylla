@@ -75,7 +75,7 @@ std::unordered_set<token> boot_strapper::get_random_bootstrap_tokens(const token
     }
 
     auto tokens = get_random_tokens(std::move(tmptr), num_tokens);
-    blogger.info("Get random bootstrap_tokens={}", tokens);
+    LOGMACRO(blogger, log_level::info, "Get random bootstrap_tokens={}", tokens);
     return tokens;
 }
 
@@ -106,7 +106,7 @@ std::unordered_set<token> boot_strapper::get_bootstrap_tokens(const token_metada
             }
             tokens.insert(token);
         }
-        blogger.info("Get manually specified bootstrap_tokens={}", tokens);
+        LOGMACRO(blogger, log_level::info, "Get manually specified bootstrap_tokens={}", tokens);
         return tokens;
     }
     return get_random_bootstrap_tokens(tmptr, num_tokens);

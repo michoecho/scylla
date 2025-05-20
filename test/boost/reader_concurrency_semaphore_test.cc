@@ -324,7 +324,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_forward_progress) {
         readers.emplace_back(std::make_unique<reader>(s.schema(), semaphore, memory_only, evictable));
     }
 
-    testlog.info("Created {} readers, memory_only={}, admitted={}, evictable={}", readers.size(), nr_memory_only, nr_admitted, nr_evictable);
+    LOGMACRO(testlog, log_level::info, "Created {} readers, memory_only={}, admitted={}, evictable={}", readers.size(), nr_memory_only, nr_admitted, nr_evictable);
 
     bool watchdog_touched = false;
     auto watchdog = timer<db::timeout_clock>([&semaphore, &watchdog_touched] {
@@ -630,8 +630,8 @@ SEASTAR_THREAD_TEST_CASE(reader_concurrency_semaphore_dump_reader_diganostics) {
         }
     }
 
-    testlog.info("With max-lines=4: {}", semaphore.dump_diagnostics(4));
-    testlog.info("With no max-lines: {}", semaphore.dump_diagnostics(0));
+    LOGMACRO(testlog, log_level::info, "With max-lines=4: {}", semaphore.dump_diagnostics(4));
+    LOGMACRO(testlog, log_level::info, "With no max-lines: {}", semaphore.dump_diagnostics(0));
 
     std::exception_ptr ex;
 
@@ -955,7 +955,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_need_cpu_awaits) {
     auto permit = semaphore.obtain_permit(nullptr, get_name(), 1024, db::no_timeout, {}).get();
 
     for (auto scenario = 0; scenario < 5; ++scenario) {
-        testlog.info("Running scenario {}", scenario);
+        LOGMACRO(testlog, log_level::info, "Running scenario {}", scenario);
 
         std::vector<reader_permit::need_cpu_guard> need_cpu;
         std::vector<reader_permit::awaits_guard> awaits;
@@ -1522,7 +1522,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_memory_limit_no_leaks
 
         seastar::thread::yield();
     }
-    testlog.info("{}", semaphore.dump_diagnostics());
+    LOGMACRO(testlog, log_level::info, "{}", semaphore.dump_diagnostics());
     parallel_for_each(readers.begin(), readers.end(), [] (allocating_reader& rd) {
         return rd.close();
     }).get();
@@ -1699,8 +1699,8 @@ SEASTAR_TEST_CASE(test_reader_concurrency_semaphore_memory_limit_engages) {
             });
         }).get();
 
-        testlog.info("total reads: {} ({} successful, {} failed)", num_reads, successful_reads, failed_reads);
-        testlog.info("{}", semaphore.dump_diagnostics());
+        LOGMACRO(testlog, log_level::info, "total reads: {} ({} successful, {} failed)", num_reads, successful_reads, failed_reads);
+        LOGMACRO(testlog, log_level::info, "{}", semaphore.dump_diagnostics());
 
         // There should be both successful and failed reads.
         // If there is only one or the other, the test is not testing anything.
@@ -1735,7 +1735,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_request_memory_preser
     uint64_t reads_enqueued_for_memory = 0;
 
     auto do_check = [&] (reader_permit& permit, uint64_t need_cpu, uint64_t awaits, seastar::compat::source_location sl) {
-        testlog.info("do_check() {}:{}", sl.file_name(), sl.line());
+        LOGMACRO(testlog, log_level::info, "do_check() {}:{}", sl.file_name(), sl.line());
 
         BOOST_REQUIRE_EQUAL(semaphore.get_stats().current_permits, 2);
         BOOST_REQUIRE_EQUAL(semaphore.get_stats().need_cpu_permits, need_cpu);

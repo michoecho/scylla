@@ -396,7 +396,7 @@ future<> sstable_streamer::stream_sstables(const dht::partition_range& pr, std::
         sstables.erase(sstables.end() - batch_sst_nr, sstables.end());
 
         auto ops_uuid = streaming::plan_id{utils::make_random_uuid()};
-        llog.info("load_and_stream: started ops_uuid={}, process [{}-{}] out of {} sstables=[{}]",
+        LOGMACRO(llog, log_level::info, "load_and_stream: started ops_uuid={}, process [{}-{}] out of {} sstables=[{}]",
             ops_uuid, nr_sst_current, nr_sst_current + sst_processed.size(), nr_sst_total,
             fmt::join(sst_processed | std::views::transform([] (auto sst) { return sst->get_filename(); }), ", "));
         nr_sst_current += sst_processed.size();
@@ -491,13 +491,13 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
     }
     auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start_time).count();
     for (auto& [node, meta] : metas) {
-        llog.info("load_and_stream: ops_uuid={}, ks={}, table={}, target_node={}, num_partitions_sent={}, num_bytes_sent={}",
+        LOGMACRO(llog, log_level::info, "load_and_stream: ops_uuid={}, ks={}, table={}, target_node={}, num_partitions_sent={}, num_bytes_sent={}",
                 ops_uuid, s->ks_name(), s->cf_name(), node, meta.num_partitions_sent(), meta.num_bytes_sent());
     }
     auto partition_rate = std::fabs(duration) > FLT_EPSILON ? num_partitions_processed / duration : 0;
     auto bytes_rate = std::fabs(duration) > FLT_EPSILON ? num_bytes_read / duration / 1024 / 1024 : 0;
     auto status = failed ? "failed" : "succeeded";
-    llog.info("load_and_stream: finished ops_uuid={}, ks={}, table={}, partitions_processed={} partitions, bytes_processed={} bytes, partitions_per_second={} partitions/s, bytes_per_second={} MiB/s, duration={} s, status={}",
+    LOGMACRO(llog, log_level::info, "load_and_stream: finished ops_uuid={}, ks={}, table={}, partitions_processed={} partitions, bytes_processed={} bytes, partitions_per_second={} partitions/s, bytes_per_second={} MiB/s, duration={} s, status={}",
             ops_uuid, s->ks_name(), s->cf_name(), num_partitions_processed, num_bytes_read, partition_rate, bytes_rate, duration, status);
     if (failed) {
         std::rethrow_exception(eptr);
@@ -548,7 +548,7 @@ future<> sstables_loader::load_new_sstables(sstring ks_name, sstring cf_name,
         throw std::runtime_error("Skipping cleanup is not possible when doing load-and-stream");
     }
 
-    llog.info("Loading new SSTables for keyspace={}, table={}, load_and_stream={}, primary_replica_only={}",
+    LOGMACRO(llog, log_level::info, "Loading new SSTables for keyspace={}, table={}, load_and_stream={}, primary_replica_only={}",
             ks_name, cf_name, load_and_stream_desc, primary_replica_only);
     try {
         if (load_and_stream) {
@@ -572,7 +572,7 @@ future<> sstables_loader::load_new_sstables(sstring ks_name, sstring cf_name,
         _loading_new_sstables = false;
         throw;
     }
-    llog.info("Done loading new SSTables for keyspace={}, table={}, load_and_stream={}, primary_replica_only={}, status=succeeded",
+    LOGMACRO(llog, log_level::info, "Done loading new SSTables for keyspace={}, table={}, load_and_stream={}, primary_replica_only={}, status=succeeded",
             ks_name, cf_name, load_and_stream, primary_replica_only);
     _loading_new_sstables = false;
     co_return;
@@ -756,7 +756,7 @@ future<tasks::task_id> sstables_loader::download_new_sstables(sstring ks_name, s
     if (!_storage_manager.is_known_endpoint(endpoint)) {
         throw std::invalid_argument(format("endpoint {} not found", endpoint));
     }
-    llog.info("Restore sstables from {}({}) to {}", endpoint, prefix, ks_name);
+    LOGMACRO(llog, log_level::info, "Restore sstables from {}({}) to {}", endpoint, prefix, ks_name);
 
     auto task = co_await _task_manager_module->make_and_start_task<download_task_impl>({}, container(), std::move(endpoint), std::move(bucket), std::move(ks_name), std::move(cf_name), std::move(prefix), std::move(sstables), scope);
     co_return task->id();

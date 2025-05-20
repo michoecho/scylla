@@ -198,7 +198,7 @@ future<> standard_role_manager::create_default_role_if_missing() {
         } else {
             co_await announce_mutations(_qp, _group0_client, query, {_superuser}, _as, ::service::raft_timeout{});
         }
-        log.info("Created default superuser role '{}'.", _superuser);
+        LOGMACRO(log, log_level::info, "Created default superuser role '{}'.", _superuser);
     } catch(const exceptions::unavailable_exception& e) {
         log.warn("Skipped default role setup: some nodes were not ready; will retry");
         throw e;
@@ -212,7 +212,7 @@ bool standard_role_manager::legacy_metadata_exists() {
 }
 
 future<> standard_role_manager::migrate_legacy_metadata() {
-    log.info("Starting migration of legacy user metadata.");
+    LOGMACRO(log, log_level::info, "Starting migration of legacy user metadata.");
     static const sstring query = seastar::format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
     return _qp.execute_internal(
@@ -234,7 +234,7 @@ future<> standard_role_manager::migrate_legacy_metadata() {
             });
         }).finally([results] {});
     }).then([] {
-        log.info("Finished migrating legacy user metadata.");
+        LOGMACRO(log, log_level::info, "Finished migrating legacy user metadata.");
     }).handle_exception([](std::exception_ptr ep) {
         log.error("Encountered an error during migration!");
         std::rethrow_exception(ep);

@@ -341,7 +341,7 @@ process_forced_rebounce(unsigned shard, query_processor& qp, const query_options
 
     const auto prev_counter_value = counter;
     if (prev_counter_value <= 1) {
-        logger.info("Disabling forced_bounce_to_shard_counter.");
+        LOGMACRO(logger, log_level::info, "Disabling forced_bounce_to_shard_counter.");
         co_await utils::error_injection_type::disable_on_all("forced_bounce_to_shard_counter");
         counter = 0;
     } else {
@@ -364,7 +364,7 @@ process_forced_rebounce(unsigned shard, query_processor& qp, const query_options
         shard = target_shard;
     }
 
-    logger.info("Applying forced_bounce_to_shard_counter, re-bouncing to shard {}.", shard);
+    LOGMACRO(logger, log_level::info, "Applying forced_bounce_to_shard_counter, re-bouncing to shard {}.", shard);
     co_return co_await make_ready_future<shared_ptr<cql_transport::messages::result_message>>(
         qp.bounce_to_shard(shard, std::move(const_cast<cql3::query_options&>(options).take_cached_pk_function_calls())));
 }

@@ -339,7 +339,7 @@ future<compaction_manager::compaction_stats_opt> compaction_manager::perform_tas
         LOGMACRO(cmlog, log_level::debug, "{}: done", *task);
         co_return res;
     } catch (sstables::compaction_stopped_exception& e) {
-        cmlog.info("{}: stopped, reason: {}", *task, e.what());
+        LOGMACRO(cmlog, log_level::info, "{}: stopped, reason: {}", *task, e.what());
         if (do_throw_if_stopping) {
             throw;
         }
@@ -445,7 +445,7 @@ future<sstables::compaction_result> compaction_task_executor::compact_sstables(s
             }
         }
         if (!sstables_requiring_cleanup.empty()) {
-            cmlog.info("The following SSTables require cleanup in this compaction: {}", sstables_requiring_cleanup);
+            LOGMACRO(cmlog, log_level::info, "The following SSTables require cleanup in this compaction: {}", sstables_requiring_cleanup);
             if (!cs.owned_ranges_ptr) {
                 on_internal_error_noexcept(cmlog, "SSTables require cleanup but compaction state has null owned ranges");
             }
@@ -572,11 +572,11 @@ protected:
         lock_holder.return_all();
 
         co_await utils::get_local_injector().inject("major_compaction_wait", [this] (auto& handler) -> future<> {
-            cmlog.info("major_compaction_wait: waiting");
+            LOGMACRO(cmlog, log_level::info, "major_compaction_wait: waiting");
             while (!handler.poll_for_message() && !_compaction_data.is_stop_requested()) {
                 co_await sleep(std::chrono::milliseconds(5));
             }
-            cmlog.info("major_compaction_wait: released");
+            LOGMACRO(cmlog, log_level::info, "major_compaction_wait: released");
         });
 
         co_await compact_sstables_and_update_history(std::move(descriptor), _compaction_data, on_replace);
@@ -695,7 +695,7 @@ future<> compaction_manager::run_custom_job(table_state& t, sstables::compaction
 }
 
 future<> compaction_manager::update_static_shares(float static_shares) {
-    cmlog.info("Updating static shares to {}", static_shares);
+    LOGMACRO(cmlog, log_level::info, "Updating static shares to {}", static_shares);
     return _compaction_controller.update_static_shares(static_shares);
 }
 
@@ -984,9 +984,9 @@ future<> compaction_manager::update_throughput(uint32_t value_mbs) {
         if (f.failed()) {
             cmlog.warn("Couldn't update compaction bandwidth: {}", f.get_exception());
         } else if (value_mbs != 0) {
-            cmlog.info("Set compaction bandwidth to {}MB/s", value_mbs);
+            LOGMACRO(cmlog, log_level::info, "Set compaction bandwidth to {}MB/s", value_mbs);
         } else {
-            cmlog.info("Set unlimited compaction bandwidth");
+            LOGMACRO(cmlog, log_level::info, "Set unlimited compaction bandwidth");
         }
     });
 }
@@ -1120,7 +1120,7 @@ future<> compaction_manager::stop_ongoing_compactions(sstring reason, table_stat
 }
 
 future<> compaction_manager::drain() {
-    cmlog.info("Asked to drain");
+    LOGMACRO(cmlog, log_level::info, "Asked to drain");
     if (_state == state::enabled) {
         // This is a drain request and not a shutdown request.
         // Disable the state so that it can be enabled later if requested.
@@ -1128,7 +1128,7 @@ future<> compaction_manager::drain() {
     }
     // Stop ongoing compactions, if the request has not been sent already and wait for them to stop.
     co_await stop_ongoing_compactions("drain");
-    cmlog.info("Drained");
+    LOGMACRO(cmlog, log_level::info, "Drained");
 }
 
 future<> compaction_manager::stop() {
@@ -1142,7 +1142,7 @@ future<> compaction_manager::stop() {
 }
 
 future<> compaction_manager::really_do_stop() noexcept {
-    cmlog.info("Asked to stop");
+    LOGMACRO(cmlog, log_level::info, "Asked to stop");
     // Reset the metrics registry
     _metrics.clear();
     co_await stop_ongoing_compactions("shutdown");
@@ -1162,7 +1162,7 @@ future<> compaction_manager::really_do_stop() noexcept {
     co_await _compaction_controller.shutdown();
     co_await _throughput_updater.join();
     co_await _update_compaction_static_shares_action.join();
-    cmlog.info("Stopped");
+    LOGMACRO(cmlog, log_level::info, "Stopped");
 }
 
 // Should return immediately when _state == state::none.
@@ -1209,7 +1209,7 @@ future<stop_iteration> compaction_task_executor::maybe_retry(std::exception_ptr 
     try {
         std::rethrow_exception(err);
     } catch (sstables::compaction_stopped_exception& e) {
-        cmlog.info("{}: {}: stopping", *this, e.what());
+        LOGMACRO(cmlog, log_level::info, "{}: {}: stopping", *this, e.what());
     } catch (sstables::compaction_aborted_exception& e) {
         cmlog.error("{}: {}: stopping", *this, e.what());
         _cm._stats.errors++;
@@ -1516,10 +1516,10 @@ protected:
                     finish_compaction();
                     co_return std::nullopt;
                 }
-                cmlog.info("Starting off-strategy compaction for {}, {} candidates were found", t, size);
+                LOGMACRO(cmlog, log_level::info, "Starting off-strategy compaction for {}, {} candidates were found", t, size);
                 co_await run_offstrategy_compaction(_compaction_data);
                 finish_compaction();
-                cmlog.info("Done with off-strategy compaction for {}", t);
+                LOGMACRO(cmlog, log_level::info, "Done with off-strategy compaction for {}", t);
                 co_return std::nullopt;
             } catch (...) {
                 ex = std::current_exception();
@@ -1688,11 +1688,11 @@ protected:
 
     future<sstables::compaction_result> rewrite_sstable(const sstables::shared_sstable sst) override {
         co_await utils::get_local_injector().inject("split_sstable_rewrite", [this] (auto& handler) -> future<> {
-            cmlog.info("split_sstable_rewrite: waiting");
+            LOGMACRO(cmlog, log_level::info, "split_sstable_rewrite: waiting");
             while (!handler.poll_for_message() && !_compaction_data.is_stop_requested()) {
                 co_await sleep(std::chrono::milliseconds(5));
             }
-            cmlog.info("split_sstable_rewrite: released");
+            LOGMACRO(cmlog, log_level::info, "split_sstable_rewrite: released");
             if (_compaction_data.is_stop_requested()) {
                 throw make_compaction_stopped_exception();
             }

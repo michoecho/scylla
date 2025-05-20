@@ -1074,7 +1074,7 @@ future<global_table_ptr> get_table_on_all_shards(sharded<database>& sharded_db, 
 future<> database::drop_table_on_all_shards(sharded<database>& sharded_db, sharded<db::system_keyspace>& sys_ks,
         sstring ks_name, sstring cf_name, bool with_snapshot) {
     auto auto_snapshot = sharded_db.local().get_config().auto_snapshot();
-    dblog.info("Dropping {}.{} {}snapshot", ks_name, cf_name, with_snapshot && auto_snapshot ? "with auto-" : "without ");
+    LOGMACRO(dblog, log_level::info, "Dropping {}.{} {}snapshot", ks_name, cf_name, with_snapshot && auto_snapshot ? "with auto-" : "without ");
 
     auto uuid = sharded_db.local().find_uuid(ks_name, cf_name);
     auto table_shards = co_await get_table_on_all_shards(sharded_db, uuid);
@@ -2357,14 +2357,14 @@ future<> database::stop() {
     }
     // try to ensure that CL has done disk flushing
     if (_commitlog) {
-        dblog.info("Shutting down commitlog");
+        LOGMACRO(dblog, log_level::info, "Shutting down commitlog");
         co_await _commitlog->shutdown();
-        dblog.info("Shutting down commitlog complete");
+        LOGMACRO(dblog, log_level::info, "Shutting down commitlog complete");
     }
     if (_schema_commitlog) {
-        dblog.info("Shutting down schema commitlog");
+        LOGMACRO(dblog, log_level::info, "Shutting down schema commitlog");
         co_await _schema_commitlog->shutdown();
-        dblog.info("Shutting down schema commitlog complete");
+        LOGMACRO(dblog, log_level::info, "Shutting down schema commitlog complete");
     }
     co_await _view_update_concurrency_sem.wait(max_memory_pending_view_updates());
     if (_commitlog) {
@@ -2373,25 +2373,25 @@ future<> database::stop() {
     if (_schema_commitlog) {
         co_await _schema_commitlog->release();
     }
-    dblog.info("Shutting down system dirty memory manager");
+    LOGMACRO(dblog, log_level::info, "Shutting down system dirty memory manager");
     co_await _system_dirty_memory_manager.shutdown();
-    dblog.info("Shutting down dirty memory manager");
+    LOGMACRO(dblog, log_level::info, "Shutting down dirty memory manager");
     co_await _dirty_memory_manager.shutdown();
-    dblog.info("Shutting down memtable controller");
+    LOGMACRO(dblog, log_level::info, "Shutting down memtable controller");
     co_await _memtable_controller.shutdown();
-    dblog.info("Stopping querier cache");
+    LOGMACRO(dblog, log_level::info, "Stopping querier cache");
     co_await _querier_cache.stop();
-    dblog.info("Closing user sstables manager");
+    LOGMACRO(dblog, log_level::info, "Closing user sstables manager");
     co_await _user_sstables_manager->close();
-    dblog.info("Closing system sstables manager");
+    LOGMACRO(dblog, log_level::info, "Closing system sstables manager");
     co_await _system_sstables_manager->close();
-    dblog.info("Stopping concurrency semaphores");
+    LOGMACRO(dblog, log_level::info, "Stopping concurrency semaphores");
     co_await _reader_concurrency_semaphores_group.stop();
     co_await _view_update_read_concurrency_semaphores_group.stop();
     co_await _streaming_concurrency_sem.stop();
     co_await _compaction_concurrency_sem.stop();
     co_await _system_read_concurrency_sem.stop();
-    dblog.info("Joining memtable update action");
+    LOGMACRO(dblog, log_level::info, "Joining memtable update action");
     co_await _update_memtable_flush_static_shares_action.join();
 }
 
@@ -2467,7 +2467,7 @@ future<> database::flush_keyspace_on_all_shards(sharded<database>& sharded_db, s
 
 future<> database::flush_all_tables() {
     // see above
-    dblog.info("Forcing new commitlog segment and flushing all tables");
+    LOGMACRO(dblog, log_level::info, "Forcing new commitlog segment and flushing all tables");
     co_await _commitlog->force_new_active_segment();
     co_await get_tables_metadata().parallel_for_each_table([] (table_id, lw_shared_ptr<table> t) {
         return t->flush();
@@ -2550,7 +2550,7 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
         with_snapshot = false;
     }
 
-    dblog.info("Truncating {}.{} {}snapshot", s->ks_name(), s->cf_name(), with_snapshot ? "with auto-" : "without ");
+    LOGMACRO(dblog, log_level::info, "Truncating {}.{} {}snapshot", s->ks_name(), s->cf_name(), with_snapshot ? "with auto-" : "without ");
 
     std::vector<foreign_ptr<std::unique_ptr<table_truncate_state>>> table_states;
     table_states.resize(smp::count);
@@ -2580,9 +2580,9 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
     });
 
     co_await utils::get_local_injector().inject("truncate_compaction_disabled_wait", [] (auto& handler) -> future<> {
-        dblog.info("truncate_compaction_disabled_wait: wait");
+        LOGMACRO(dblog, log_level::info, "truncate_compaction_disabled_wait: wait");
         co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes{5});
-        dblog.info("truncate_compaction_disabled_wait: done");
+        LOGMACRO(dblog, log_level::info, "truncate_compaction_disabled_wait: done");
     }, false);
 
     const auto should_flush = with_snapshot && cf.can_flush();
@@ -2642,7 +2642,7 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
 
         return db.truncate(sys_ks.local(), cf, st);
     });
-    dblog.info("Truncated {}.{}", s->ks_name(), s->cf_name());
+    LOGMACRO(dblog, log_level::info, "Truncated {}.{}", s->ks_name(), s->cf_name());
 }
 
 future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, const table_truncate_state& st) {
@@ -2813,7 +2813,7 @@ future<> database::clear_snapshot(sstring tag, std::vector<sstring> keyspace_nam
                     auto has_snapshots = file_exists(snapshots_dir.native()).get();
                     if (has_snapshots) {
                         if (tag.empty()) {
-                            dblog.info("Removing {}", snapshots_dir);
+                            LOGMACRO(dblog, log_level::info, "Removing {}", snapshots_dir);
                             recursive_remove_directory(std::move(snapshots_dir)).get();
                             has_snapshots = false;
                         } else {
@@ -2825,7 +2825,7 @@ future<> database::clear_snapshot(sstring tag, std::vector<sstring> keyspace_nam
                             while (auto snapshot_ent = snapshots_dir_lister.get().get()) {
                                 if (snapshot_ent->name == tag) {
                                     auto snapshot_dir = snapshots_dir / snapshot_ent->name;
-                                    dblog.info("Removing {}", snapshot_dir);
+                                    LOGMACRO(dblog, log_level::info, "Removing {}", snapshot_dir);
                                     recursive_remove_directory(std::move(snapshot_dir)).get();
                                 } else {
                                     has_snapshots = true;
@@ -2842,7 +2842,7 @@ future<> database::clear_snapshot(sstring tag, std::vector<sstring> keyspace_nam
                         auto id_opt = _tables_metadata.get_table_id_if_exists(std::make_pair(ks_name, cf_name));
                         auto dropped = !id_opt || (cf_uuid != id_opt);
                         if (dropped) {
-                            dblog.info("Removing dropped table dir {}", table_dir);
+                            LOGMACRO(dblog, log_level::info, "Removing dropped table dir {}", table_dir);
                             sstables::remove_table_directory_if_has_no_snapshots(table_dir).get();
                         }
                     }
@@ -2863,14 +2863,14 @@ future<> database::flush_non_system_column_families() {
     _drain_progress.total_cfs = total_cfs;
     _drain_progress.remaining_cfs = total_cfs;
     // flush
-    dblog.info("Flushing non-system tables");
+    LOGMACRO(dblog, log_level::info, "Flushing non-system tables");
     return parallel_for_each(non_system_cfs, [this] (auto&& uuid_and_cf) {
         auto cf = uuid_and_cf.second;
         return cf->flush().then([this] {
             _drain_progress.remaining_cfs--;
         });
     }).finally([] {
-        dblog.info("Flushed non-system tables");
+        LOGMACRO(dblog, log_level::info, "Flushed non-system tables");
     });
 }
 
@@ -2880,12 +2880,12 @@ future<> database::flush_system_column_families() {
         auto& ks = cf->schema()->ks_name();
         return is_system_keyspace(ks) || _cfg.extensions().is_extension_internal_keyspace(ks);
     });
-    dblog.info("Flushing system tables");
+    LOGMACRO(dblog, log_level::info, "Flushing system tables");
     return parallel_for_each(system_cfs, [] (auto&& uuid_and_cf) {
         auto cf = uuid_and_cf.second;
         return cf->flush();
     }).finally([] {
-        dblog.info("Flushed system tables");
+        LOGMACRO(dblog, log_level::info, "Flushed system tables");
     });
 }
 

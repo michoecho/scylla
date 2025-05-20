@@ -60,7 +60,7 @@ void large_data_handler::start() {
 future<> large_data_handler::stop() {
     if (running()) {
         _running = false;
-        large_data_logger.info("Waiting for {} background handlers", max_concurrency - _sem.available_units());
+        LOGMACRO(large_data_logger, log_level::info, "Waiting for {} background handlers", max_concurrency - _sem.available_units());
         co_await _sem.wait(max_concurrency);
         co_await _sys_ks.close();
     }

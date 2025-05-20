@@ -46,7 +46,7 @@ public:
         // The listener should be registered on every shard.
         // Write the message on INFO level only on shard 0 so we don't spam the logs.
         if (this_shard_id() == 0) {
-            rslog.info(msg, raft_id);
+            LOGMACRO(rslog, log_level::info, msg, raft_id);
         } else {
             LOGMACRO(rslog, log_level::debug, msg, raft_id);
         }
@@ -62,7 +62,7 @@ public:
 
         // As above.
         if (this_shard_id() == 0) {
-            rslog.info(msg, raft_id);
+            LOGMACRO(rslog, log_level::info, msg, raft_id);
         } else {
             LOGMACRO(rslog, log_level::debug, msg, raft_id);
         }

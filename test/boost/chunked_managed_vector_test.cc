@@ -249,7 +249,7 @@ SEASTAR_TEST_CASE(test_chunk_reserve) {
     {
         with_allocator(region.allocator(), [&] {
             auto [reserve_size, push_count] = conf;
-            testlog.info("Testing reserve({}), {}x emplace_back()", reserve_size, push_count);
+            LOGMACRO(testlog, log_level::info, "Testing reserve({}), {}x emplace_back()", reserve_size, push_count);
             lsa::chunked_managed_vector<managed_ref<uint64_t>> v;
             v.reserve(reserve_size);
             uint64_t seed = rand();

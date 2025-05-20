@@ -10,6 +10,8 @@
 #include "aws_error.hh"
 #include "utils/log.hh"
 
+using seastar::log_level;
+
 using namespace std::chrono_literals;
 
 namespace aws {
@@ -22,7 +24,7 @@ s3_retry_strategy::s3_retry_strategy(credentials_refresher creds_refresher, unsi
 
 seastar::future<bool> s3_retry_strategy::should_retry(const aws_error& error, unsigned attempted_retries) const {
     if (attempted_retries < _max_retries && error.get_error_type() == aws_error_type::EXPIRED_TOKEN) {
-        s3_retry_logger.info("Credentials are expired, renewing");
+        LOGMACRO(s3_retry_logger, log_level::info, "Credentials are expired, renewing");
         co_await _creds_refresher();
         co_return true;
     }

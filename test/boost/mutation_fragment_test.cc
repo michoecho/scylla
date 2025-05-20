@@ -451,7 +451,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
             auto _ = std::vector<mutation_fragment_v2*>{&mfs.emplace_back(*ss.schema(), permit, std::move(mf))..., };
         }
 
-        testlog.info("Checking scenario {} with validator", desc);
+        LOGMACRO(testlog, log_level::info, "Checking scenario {} with validator", desc);
         {
             unsigned i = 0;
             mutation_fragment_stream_validator validator(*ss.schema());
@@ -476,7 +476,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator) {
             }
         }
 
-        testlog.info("Checking scenario {} with validating filter", desc);
+        LOGMACRO(testlog, log_level::info, "Checking scenario {} with validating filter", desc);
         {
             unsigned i = 0;
             mutation_fragment_stream_validating_filter validator(get_name(), *ss.schema(), mutation_fragment_stream_validation_level::clustering_key);
@@ -669,7 +669,7 @@ SEASTAR_THREAD_TEST_CASE(test_mutation_fragment_stream_validator_validation_leve
     const auto pe_pos = position_in_partition_view(position_in_partition_view::end_of_partition_tag_t{});
 
     for (const auto validation_level : {vl::none, vl::partition_region, vl::token, vl::partition_key, vl::clustering_key}) {
-        testlog.info("valiation_level={}", static_cast<int>(validation_level));
+        LOGMACRO(testlog, log_level::info, "valiation_level={}", static_cast<int>(validation_level));
 
         mutation_fragment_stream_validating_filter validator("test", *ss.schema(), validation_level, false);
 

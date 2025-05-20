@@ -295,7 +295,7 @@ private:
             for (auto& sstable : get_level(i)) {
                 auto r = ::wrapping_interval<dht::decorated_key>::make(sstable->get_first_decorated_key(), sstable->get_last_decorated_key());
                 if (boundaries.contains(r, dht::ring_position_comparator(*_schema))) {
-                    logger.info("Adding high-level (L{}) {} to candidates", sstable->get_sstable_level(), sstable->get_filename());
+                    LOGMACRO(logger, log_level::info, "Adding high-level (L{}) {} to candidates", sstable->get_sstable_level(), sstable->get_filename());
                     candidates.push_back(sstable);
                     break;
                 }
@@ -440,7 +440,7 @@ private:
         // invariant to be restored.
         auto overlapping_current_level = overlapping_sstables(level);
         if (!overlapping_current_level.empty()) {
-            logger.info("Leveled compaction strategy is restoring invariant of level {} by compacting {} sstables on behalf of {}.{}",
+            LOGMACRO(logger, log_level::info, "Leveled compaction strategy is restoring invariant of level {} by compacting {} sstables on behalf of {}.{}",
                 level, overlapping_current_level.size(), s.ks_name(), s.cf_name());
             return { overlapping_current_level, false };
         }

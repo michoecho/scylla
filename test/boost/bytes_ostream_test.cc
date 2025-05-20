@@ -287,7 +287,7 @@ BOOST_AUTO_TEST_CASE(test_append_big_and_small_chunks) {
 
 BOOST_AUTO_TEST_CASE(test_remove_suffix) {
     auto test = [] (size_t length, size_t suffix) {
-        testlog.info("Testing buffer size {}  and suffix size {}", length, suffix);
+        LOGMACRO(testlog, log_level::info, "Testing buffer size {}  and suffix size {}", length, suffix);
 
         auto data = tests::random::get_bytes(length);
         bytes_view view = data;

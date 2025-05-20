@@ -559,7 +559,7 @@ SEASTAR_THREAD_TEST_CASE(test_view_update_generator_deadlock) {
         auto sponge_permit = sem.make_tracking_only_permit(s, "sponge", db::no_timeout, {});
         auto resources = sponge_permit.consume_resources(sem.available_resources() - reader_resources{1, replica::new_reader_base_cost});
 
-        testlog.info("res = [.count={}, .memory={}]", sem.available_resources().count, sem.available_resources().memory);
+        LOGMACRO(testlog, log_level::info, "res = [.count={}, .memory={}]", sem.available_resources().count, sem.available_resources().memory);
 
         BOOST_REQUIRE_EQUAL(sem.get_stats().permit_based_evictions, 0);
 

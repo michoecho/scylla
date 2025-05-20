@@ -101,7 +101,7 @@ static generated_table create_test_table(
     auto random_schema_spec = std::make_unique<random_schema_specification>(ks_name, tbl_name, force_clustering_column);
     auto random_schema = tests::random_schema(seed, *random_schema_spec);
 
-    testlog.info("\n{}", random_schema.cql());
+    LOGMACRO(testlog, log_level::info, "\n{}", random_schema.cql());
 
     random_schema.create_with_cql(env).get();
 
@@ -176,7 +176,7 @@ static uint64_t aggregate_querier_cache_stat(distributed<replica::database>& db,
 
 static void check_cache_population(distributed<replica::database>& db, size_t queriers,
         seastar::compat::source_location sl = seastar::compat::source_location::current()) {
-    testlog.info("{}() called from {}() {}:{:d}", __FUNCTION__, sl.function_name(), sl.file_name(), sl.line());
+    LOGMACRO(testlog, log_level::info, "{}() called from {}() {}:{:d}", __FUNCTION__, sl.function_name(), sl.file_name(), sl.line());
 
     parallel_for_each(std::views::iota(0u, smp::count), [queriers, &db] (unsigned shard) {
         return db.invoke_on(shard, [queriers] (replica::database& local_db) {
@@ -188,7 +188,7 @@ static void check_cache_population(distributed<replica::database>& db, size_t qu
 
 static void require_eventually_empty_caches(distributed<replica::database>& db,
         seastar::compat::source_location sl = seastar::compat::source_location::current()) {
-    testlog.info("{}() called from {}() {}:{:d}", __FUNCTION__, sl.function_name(), sl.file_name(), sl.line());
+    LOGMACRO(testlog, log_level::info, "{}() called from {}() {}:{:d}", __FUNCTION__, sl.function_name(), sl.file_name(), sl.line());
 
     auto aggregated_population_is_zero = [&] () mutable {
         return aggregate_querier_cache_stat(db, &query::querier_cache::stats::population) == 0;
@@ -616,7 +616,7 @@ SEASTAR_THREAD_TEST_CASE(test_read_all_multi_range) {
 
         const auto slice = s->full_slice();
 
-        testlog.info("pkeys.size()={}", pkeys.size());
+        LOGMACRO(testlog, log_level::info, "pkeys.size()={}", pkeys.size());
 
         for (const auto step : {1ul, pkeys.size() / 4u, pkeys.size() / 2u}) {
             if (!step) {
@@ -1146,7 +1146,7 @@ SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
     do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
         // REPLACE RANDOM SEED HERE.
         const auto seed = tests::random::get_int<uint32_t>();
-        testlog.info("fuzzy test seed: {}", seed);
+        LOGMACRO(testlog, log_level::info, "fuzzy test seed: {}", seed);
 
         const auto ks = create_vnodes_keyspace(env);
 
@@ -1174,7 +1174,7 @@ SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
         auto cfg = fuzzy_test_config{seed, std::chrono::seconds{2}, 4, 8};
 #endif
 
-        testlog.info("Running test workload with configuration: seed={}, timeout={}s, concurrency={}, scans={}", cfg.seed, cfg.timeout.count(),
+        LOGMACRO(testlog, log_level::info, "Running test workload with configuration: seed={}, timeout={}s, concurrency={}, scans={}", cfg.seed, cfg.timeout.count(),
                 cfg.concurrency, cfg.scans);
 
         smp::invoke_on_all([cfg, db = &env.db(), gs = global_schema_ptr(tbl.schema), &compacted_frozen_mutations = tbl.compacted_frozen_mutations] {

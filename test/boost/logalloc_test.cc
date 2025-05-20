@@ -499,22 +499,22 @@ SEASTAR_TEST_CASE(test_zone_reclaiming_preserves_free_size) {
                 objs.emplace_back(managed_bytes(managed_bytes::initialized_later(), 1024));
             }
 
-            testlog.info("non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
-            testlog.info("region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
+            LOGMACRO(testlog, log_level::info, "non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
+            LOGMACRO(testlog, log_level::info, "region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
 
             while (logalloc::shard_tracker().region_occupancy().used_space() >= logalloc::segment_size * 2) {
                 objs.pop_front();
             }
 
-            testlog.info("non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
-            testlog.info("region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
+            LOGMACRO(testlog, log_level::info, "non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
+            LOGMACRO(testlog, log_level::info, "region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
 
             auto before = logalloc::shard_tracker().non_lsa_used_space();
             logalloc::shard_tracker().reclaim(logalloc::segment_size);
             auto after = logalloc::shard_tracker().non_lsa_used_space();
 
-            testlog.info("non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
-            testlog.info("region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
+            LOGMACRO(testlog, log_level::info, "non_lsa_used_space = {}", logalloc::shard_tracker().non_lsa_used_space());
+            LOGMACRO(testlog, log_level::info, "region_occupancy = {}", logalloc::shard_tracker().region_occupancy());
 
             BOOST_REQUIRE(after <= before);
         });

@@ -229,7 +229,7 @@ distributed_loader::process_upload_dir(distributed<replica::database>& db, shard
             return make_sstables_available(dir, db, vb, use_view_update_path, ks, cf);
         }, size_t(0), std::plus<size_t>()).get();
 
-        dblog.info("Loaded {} SSTables", loaded);
+        LOGMACRO(dblog, log_level::info, "Loaded {} SSTables", loaded);
     });
 }
 
@@ -450,7 +450,7 @@ future<> table_populator::populate_subdir(sharded<sstables::sstable_directory>& 
 future<> distributed_loader::populate_keyspace(distributed<replica::database>& db,
         sharded<db::system_keyspace>& sys_ks, keyspace& ks, sstring ks_name)
 {
-    dblog.info("Populating Keyspace {}", ks_name);
+    LOGMACRO(dblog, log_level::info, "Populating Keyspace {}", ks_name);
 
     co_await coroutine::parallel_for_each(ks.metadata()->cf_meta_data() | std::views::values, [&] (schema_ptr s) -> future<> {
         auto uuid = s->id();
@@ -458,7 +458,7 @@ future<> distributed_loader::populate_keyspace(distributed<replica::database>& d
         auto gtable = co_await get_table_on_all_shards(db, ks_name, cfname);
         auto& cf = *gtable;
 
-        dblog.info("Keyspace {}: Reading CF {} id={} version={} storage={}", ks_name, cfname, uuid, s->version(), cf.get_storage_options());
+        LOGMACRO(dblog, log_level::info, "Keyspace {}: Reading CF {} id={} version={} storage={}", ks_name, cfname, uuid, s->version(), cf.get_storage_options());
 
         auto metadata = table_populator(gtable, db, ks_name, cfname);
         std::exception_ptr ex;

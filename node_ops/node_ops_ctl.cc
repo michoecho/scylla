@@ -43,7 +43,7 @@ const node_ops_id& node_ops_ctl::uuid() const noexcept {
 void node_ops_ctl::start(sstring desc_, std::function<bool(locator::host_id)> sync_to_node) {
     desc = std::move(desc_);
 
-    nlogger.info("{}[{}]: Started {} operation: node={}/{}", desc, uuid(), desc, host_id, endpoint);
+    LOGMACRO(nlogger, log_level::info, "{}[{}]: Started {} operation: node={}/{}", desc, uuid(), desc, host_id, endpoint);
 
     refresh_sync_nodes(std::move(sync_to_node));
 }
@@ -83,7 +83,7 @@ void node_ops_ctl::refresh_sync_nodes(std::function<bool(locator::host_id)> sync
         throw std::runtime_error(msg);
     }
 
-    nlogger.info("{}[{}]: sync_nodes={}, ignore_nodes={}", desc, uuid(), sync_nodes, ignore_nodes);
+    LOGMACRO(nlogger, log_level::info, "{}[{}]: sync_nodes={}, ignore_nodes={}", desc, uuid(), sync_nodes, ignore_nodes);
 }
 
 future<> node_ops_ctl::stop() noexcept {
@@ -146,7 +146,7 @@ future<> node_ops_ctl::send_to_all(node_ops_cmd cmd) {
             std::views::transform([&] (locator::host_id id) { return ss.gossiper().get_address_map().get(id); }) |
             std::ranges::to<std::list>();
     sstring op_desc = ::format("{}", cmd);
-    nlogger.info("{}[{}]: Started {}", desc, uuid(), req);
+    LOGMACRO(nlogger, log_level::info, "{}[{}]: Started {}", desc, uuid(), req);
     auto cmd_category = categorize_node_ops_cmd(cmd);
     co_await coroutine::parallel_for_each(sync_nodes, [&] (const locator::host_id& node) -> future<> {
         if (nodes_unknown_verb.contains(node) || nodes_down.contains(node) ||
@@ -189,11 +189,11 @@ future<> node_ops_ctl::send_to_all(node_ops_cmd cmd) {
     if (!errors.empty()) {
         co_await coroutine::return_exception(std::runtime_error(fmt::to_string(fmt::join(errors, "; "))));
     }
-    nlogger.info("{}[{}]: Finished {}", desc, uuid(), req);
+    LOGMACRO(nlogger, log_level::info, "{}[{}]: Finished {}", desc, uuid(), req);
 }
 
 future<> node_ops_ctl::heartbeat_updater(node_ops_cmd cmd) {
-    nlogger.info("{}[{}]: Started heartbeat_updater (interval={}s)", desc, uuid(), heartbeat_interval.count());
+    LOGMACRO(nlogger, log_level::info, "{}[{}]: Started heartbeat_updater (interval={}s)", desc, uuid(), heartbeat_interval.count());
     while (!as.abort_requested()) {
         auto req = node_ops_cmd_request{cmd, uuid(), {}, {}, {}};
         co_await coroutine::parallel_for_each(sync_nodes, [&] (const locator::host_id& node) -> future<> {
@@ -206,5 +206,5 @@ future<> node_ops_ctl::heartbeat_updater(node_ops_cmd cmd) {
         });
         co_await sleep_abortable(heartbeat_interval, as).handle_exception([] (std::exception_ptr) {});
     }
-    nlogger.info("{}[{}]: Stopped heartbeat_updater", desc, uuid());
+    LOGMACRO(nlogger, log_level::info, "{}[{}]: Stopped heartbeat_updater", desc, uuid());
 }

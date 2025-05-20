@@ -2280,7 +2280,7 @@ future<> view_builder::drain() {
     if (_as.abort_requested()) {
         co_return;
     }
-    vlogger.info("Draining view builder");
+    LOGMACRO(vlogger, log_level::info, "Draining view builder");
     _as.request_abort();
     co_await std::move(_started);
     co_await _mnotifier.unregister_listener(this);
@@ -2294,7 +2294,7 @@ future<> view_builder::drain() {
 }
 
 future<> view_builder::stop() {
-    vlogger.info("Stopping view builder");
+    LOGMACRO(vlogger, log_level::info, "Stopping view builder");
     return drain();
 }
 
@@ -3280,7 +3280,7 @@ future<> view_builder::maybe_mark_view_as_built(view_ptr view, dht::token next_t
                     return make_ready_future<>();
                 }
                 auto view = builder._db.find_schema(view_id);
-                vlogger.info("Finished building view {}.{}", view->ks_name(), view->cf_name());
+                LOGMACRO(vlogger, log_level::info, "Finished building view {}.{}", view->ks_name(), view->cf_name());
                 return builder.mark_as_built(view_ptr(view)).then([&builder, view] {
                     // The view is built, so shard 0 can remove the entry in the build progress system table on
                     // behalf of all shards. It is guaranteed to have a higher timestamp than the per-shard entries.

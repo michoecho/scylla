@@ -279,7 +279,7 @@ bool partitioned_sstable_set::store_as_unleveled(const shared_sstable& sst) cons
         if (_schema->cf_name() != table_name) {
             return;
         }
-        sstlog.info("SSTable {}, as_unleveled={}, expect_unleveled={}, sst_tr={}, overlap_ratio={}",
+        LOGMACRO(sstlog, log_level::info, "SSTable {}, as_unleveled={}, expect_unleveled={}, sst_tr={}, overlap_ratio={}",
             sst->generation(), as_unleveled, expect_unleveled, sst_tr, dht::overlap_ratio(_token_range, sst_tr));
         SCYLLA_ASSERT(as_unleveled == expect_unleveled);
     });

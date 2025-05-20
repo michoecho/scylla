@@ -220,7 +220,7 @@ feature& feature::operator=(feature&& other) {
 void feature::enable() {
     if (!_enabled) {
         if (this_shard_id() == 0) {
-            logger.info("Feature {} is enabled", name());
+            LOGMACRO(logger, log_level::info, "Feature {} is enabled", name());
         }
         _enabled = true;
         _s();

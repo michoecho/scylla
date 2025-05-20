@@ -525,7 +525,7 @@ public:
     }
 
     future<> drop_legacy_tables() {
-        mlogger.info("Dropping legacy schema tables");
+        LOGMACRO(mlogger, log_level::info, "Dropping legacy schema tables");
         auto with_snapshot = !_keyspaces.empty();
         return parallel_for_each(legacy_schema_tables, [this, with_snapshot](const sstring& cfname) {
             return replica::database::drop_table_on_all_shards(_db, _sys_ks, db::system_keyspace::NAME, cfname, with_snapshot);
@@ -533,7 +533,7 @@ public:
     }
 
     future<> store_keyspaces_in_new_schema_tables() {
-        mlogger.info("Moving {} keyspaces from legacy schema tables to the new schema keyspace ({})",
+        LOGMACRO(mlogger, log_level::info, "Moving {} keyspaces from legacy schema tables to the new schema keyspace ({})",
                         _keyspaces.size(), db::schema_tables::v3::NAME);
 
         std::vector<mutation> mutations;
@@ -570,7 +570,7 @@ public:
             return store_keyspaces_in_new_schema_tables()
                                                 .then(std::bind(&migrator::flush_schemas, this))
                                                 .then(std::bind(&migrator::drop_legacy_tables, this))
-                                                .then([] { mlogger.info("Completed migration of legacy schema tables"); });
+                                                .then([] { LOGMACRO(mlogger, log_level::info, "Completed migration of legacy schema tables"); });
         });
     }
 

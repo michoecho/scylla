@@ -134,7 +134,7 @@ SEASTAR_THREAD_TEST_CASE(test_no_crash_on_dtor_after_oom) {
         BOOST_REQUIRE_EQUAL(tf.contents.substr(0, page_size * 32),
                             read_to_string(f, 0, page_size * 32));
     } catch (...) {
-        testlog.info("exception caught: {}", std::current_exception());
+        LOGMACRO(testlog, log_level::info, "exception caught: {}", std::current_exception());
     }
 }
 

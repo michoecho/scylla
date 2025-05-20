@@ -49,7 +49,7 @@ std::set<gms::inet_address> get_seeds_from_db_config(const db::config& cfg,
     if (seeds.empty()) {
         seeds.emplace(gms::inet_address("127.0.0.1"));
     }
-    startlog.info("seeds={{{}}}, listen_address={}, broadcast_address={}",
+    LOGMACRO(startlog, log_level::info, "seeds={{{}}}, listen_address={}, broadcast_address={}",
             fmt::join(seeds, ", "), listen, broadcast_address);
     if (broadcast_address != listen && seeds.contains(listen)) {
         startlog.error("Use broadcast_address instead of listen_address for seeds list");

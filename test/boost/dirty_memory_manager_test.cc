@@ -231,32 +231,32 @@ SEASTAR_TEST_CASE(test_region_groups_basic_throttling) {
         big_region->alloc();
 
         // We should not be permitted to go forward with a new allocation now...
-        testlog.info("now = {}", lowres_clock::now().time_since_epoch().count());
+        LOGMACRO(testlog, log_level::info, "now = {}", lowres_clock::now().time_since_epoch().count());
         fut = simple.run_when_memory_available([&simple_region] { simple_region->alloc_small(); }, db::no_timeout);
         BOOST_REQUIRE_EQUAL(fut.available(), false);
         BOOST_REQUIRE_GT(simple.unspooled_memory_used(), logalloc::segment_size);
 
-        testlog.info("now = {}", lowres_clock::now().time_since_epoch().count());
-        testlog.info("used = {}", simple.unspooled_memory_used());
+        LOGMACRO(testlog, log_level::info, "now = {}", lowres_clock::now().time_since_epoch().count());
+        LOGMACRO(testlog, log_level::info, "used = {}", simple.unspooled_memory_used());
 
-        testlog.info("Resetting");
+        LOGMACRO(testlog, log_level::info, "Resetting");
 
         // But when we remove the big bytes allocator from the region, then we should.
         // Internally, we can't guarantee that just freeing the object will give the segment back,
         // that's up to the internal policies. So to make sure we need to remove the whole region.
         big_region.reset();
 
-        testlog.info("used = {}", simple.unspooled_memory_used());
-        testlog.info("now = {}", lowres_clock::now().time_since_epoch().count());
+        LOGMACRO(testlog, log_level::info, "used = {}", simple.unspooled_memory_used());
+        LOGMACRO(testlog, log_level::info, "now = {}", lowres_clock::now().time_since_epoch().count());
         try {
             quiesce(std::move(fut));
         } catch (...) {
-            testlog.info("Aborting: {}", std::current_exception());
-            testlog.info("now = {}", lowres_clock::now().time_since_epoch().count());
-            testlog.info("used = {}", simple.unspooled_memory_used());
+            LOGMACRO(testlog, log_level::info, "Aborting: {}", std::current_exception());
+            LOGMACRO(testlog, log_level::info, "now = {}", lowres_clock::now().time_since_epoch().count());
+            LOGMACRO(testlog, log_level::info, "used = {}", simple.unspooled_memory_used());
             abort();
         }
-        testlog.info("now = {}", lowres_clock::now().time_since_epoch().count());
+        LOGMACRO(testlog, log_level::info, "now = {}", lowres_clock::now().time_since_epoch().count());
     });
 }
 

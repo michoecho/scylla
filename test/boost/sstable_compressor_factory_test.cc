@@ -22,7 +22,7 @@
 // 6. Check that the number of dictionary copies is equal to number of NUMA nodes.
 // 7. Repeat this a few times for both lz4 and zstd.
 void test_one_numa_topology(std::span<unsigned> shard_to_numa_mapping) {
-    testlog.info("Testing NUMA topology {}", shard_to_numa_mapping);
+    LOGMACRO(testlog, log_level::info, "Testing NUMA topology {}", shard_to_numa_mapping);
 
     // Create a compressor factory.
     SCYLLA_ASSERT(shard_to_numa_mapping.size() == smp::count);

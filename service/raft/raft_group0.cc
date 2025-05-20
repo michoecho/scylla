@@ -432,7 +432,7 @@ future<> raft_group0::start_server_for_group0(raft::group_id group0_id, service:
     // The address map may miss our own id in case we connect
     // to an existing Raft Group 0 leader.
     auto my_id = load_my_id();
-    group0_log.info("Server {} is starting group 0 with id {}", my_id, group0_id);
+    LOGMACRO(group0_log, log_level::info, "Server {} is starting group 0 with id {}", my_id, group0_id);
     auto srv_for_group0 = create_server_for_group0(group0_id, my_id, ss, qp, mm, topology_change_enabled);
     auto& persistence = srv_for_group0.persistence;
     auto& server = *srv_for_group0.server;
@@ -447,11 +447,11 @@ future<> raft_group0::start_server_for_group0(raft::group_id group0_id, service:
     // so bootstrapping nodes will receive a snapshot transfer.
     auto snap = co_await persistence.load_snapshot_descriptor();
     if (snap.idx == raft::index_t{0}) {
-        group0_log.info("Detected snapshot with index=0, id={}, triggering new snapshot", snap.id);
+        LOGMACRO(group0_log, log_level::info, "Detected snapshot with index=0, id={}, triggering new snapshot", snap.id);
         bool created = co_await server.trigger_snapshot(&_abort_source);
         if (created) {
             snap = co_await persistence.load_snapshot_descriptor();
-            group0_log.info("New snapshot created, index={} id={}", snap.idx, snap.id);
+            LOGMACRO(group0_log, log_level::info, "New snapshot created, index={} id={}", snap.idx, snap.id);
         } else {
             group0_log.warn("Could not create new snapshot, there are no entries applied");
         }
@@ -471,10 +471,10 @@ future<> raft_group0::leadership_monitor_fiber() {
             while (!group0_server().is_leader()) {
                 co_await group0_server().wait_for_state_change(&_leadership_monitor_as);
             }
-            group0_log.info("gaining leadership");
+            LOGMACRO(group0_log, log_level::info, "gaining leadership");
             _leadership_observable.set(true);
             co_await group0_server().wait_for_state_change(&_leadership_monitor_as);
-            group0_log.info("losing leadership");
+            LOGMACRO(group0_log, log_level::info, "losing leadership");
             _leadership_observable.set(false);
         }
     } catch (...) {
@@ -502,10 +502,10 @@ future<> raft_group0::join_group0(std::vector<gms::inet_address> seeds, shared_p
 
     raft::server* server = nullptr;
     auto my_id = load_my_id();
-    group0_log.info("server {} found no local group 0. Discovering...", my_id);
+    LOGMACRO(group0_log, log_level::info, "server {} found no local group 0. Discovering...", my_id);
     while (true) {
         auto g0_info = co_await discover_group0(seeds, qp);
-        group0_log.info("server {} found group 0 with group id {}, leader {}", my_id, g0_info.group0_id, g0_info.id);
+        LOGMACRO(group0_log, log_level::info, "server {} found group 0 with group id {}, leader {}", my_id, g0_info.group0_id, g0_info.id);
 
         if (server && group0_id != g0_info.group0_id) {
             // `server` is not `nullptr` so we finished discovery in an earlier iteration and found a group 0 ID.
@@ -527,7 +527,7 @@ future<> raft_group0::join_group0(std::vector<gms::inet_address> seeds, shared_p
             if (g0_info.id == my_id) {
                 // We were chosen as the discovery leader.
                 // We should start a new group with this node as voter.
-                group0_log.info("Server {} chosen as discovery leader; bootstrapping group 0 from scratch", my_id);
+                LOGMACRO(group0_log, log_level::info, "Server {} chosen as discovery leader; bootstrapping group 0 from scratch", my_id);
                 initial_configuration.current.emplace(my_addr, true);
 
                 // Initializes system tables for the first group 0 member. Nodes joining group 0 henceforth would apply them via snapshots.
@@ -577,7 +577,7 @@ future<> raft_group0::join_group0(std::vector<gms::inet_address> seeds, shared_p
         SCYLLA_ASSERT(server);
         if (server->get_configuration().contains(my_id)) {
             // True if we started a new group or completed a configuration change initiated earlier.
-            group0_log.info("server {} already in group 0 (id {}) as {}", my_id, group0_id,
+            LOGMACRO(group0_log, log_level::info, "server {} already in group 0 (id {}) as {}", my_id, group0_id,
                     server->get_configuration().can_vote(my_id)? "voter" : "non-voter");
             break;
         }
@@ -599,7 +599,7 @@ future<> raft_group0::join_group0(std::vector<gms::inet_address> seeds, shared_p
         return make_ready_future<>();
     });
 
-    group0_log.info("server {} joined group 0 with group id {}", my_id, group0_id);
+    LOGMACRO(group0_log, log_level::info, "server {} joined group 0 with group id {}", my_id, group0_id);
 }
 
 shared_ptr<service::group0_handshaker> raft_group0::make_legacy_handshaker(can_vote can_vote) {
@@ -686,7 +686,7 @@ future<> raft_group0::setup_group0_if_exist(db::system_keyspace& sys_ks, service
         // -- it will be done after we start gossiping, in `setup_group0`.
         // Because of this we already want to disable schema pulls so they're done exclusively
         // through group 0 from the first moment we join the cluster.
-        group0_log.info("Disabling migration_manager schema pulls because Raft is enabled and we're bootstrapping.");
+        LOGMACRO(group0_log, log_level::info, "Disabling migration_manager schema pulls because Raft is enabled and we're bootstrapping.");
         co_await mm.disable_schema_pulls();
         co_return;
     }
@@ -694,7 +694,7 @@ future<> raft_group0::setup_group0_if_exist(db::system_keyspace& sys_ks, service
     auto group0_id = raft::group_id{co_await sys_ks.get_raft_group0_id()};
     if (group0_id) {
         // Group 0 ID is present => we've already joined group 0 earlier.
-        group0_log.info("setup_group0: group 0 ID present. Starting existing Raft server.");
+        LOGMACRO(group0_log, log_level::info, "setup_group0: group 0 ID present. Starting existing Raft server.");
         co_await start_server_for_group0(group0_id, ss, qp, mm, false);
 
         // Start group 0 leadership monitor fiber.
@@ -704,7 +704,7 @@ future<> raft_group0::setup_group0_if_exist(db::system_keyspace& sys_ks, service
         // migration_manager schema pulls.
         auto start_state = (co_await _client.get_group0_upgrade_state()).second;
         if (start_state == group0_upgrade_state::use_post_raft_procedures) {
-            group0_log.info(
+            LOGMACRO(group0_log, log_level::info, 
                 "Disabling migration_manager schema pulls because Raft is fully functioning in this cluster.");
             co_await mm.disable_schema_pulls();
         } else {
@@ -716,7 +716,7 @@ future<> raft_group0::setup_group0_if_exist(db::system_keyspace& sys_ks, service
         // Upgrade will start through a feature listener created after we enter NORMAL state.
         //
         // See `raft_group0::finish_setup_after_join`.
-        upgrade_log.info(
+        LOGMACRO(upgrade_log, log_level::info, 
             "setup_group0: Scylla bootstrap completed before but group 0 ID not present."
             " Internal upgrade-to-raft procedure will automatically start after every node finishes"
             " upgrading to the new Scylla version.");
@@ -750,9 +750,9 @@ future<> raft_group0::setup_group0(
 
     std::vector<gms::inet_address> seeds(initial_contact_nodes.begin(), initial_contact_nodes.end());
 
-    group0_log.info("setup_group0: joining group 0...");
+    LOGMACRO(group0_log, log_level::info, "setup_group0: joining group 0...");
     co_await join_group0(std::move(seeds), std::move(handshaker), ss, qp, mm, sys_ks, topology_change_enabled, params);
-    group0_log.info("setup_group0: successfully joined group 0.");
+    LOGMACRO(group0_log, log_level::info, "setup_group0: successfully joined group 0.");
 
     // Start group 0 leadership monitor fiber.
     _leadership_monitor = leadership_monitor_fiber();
@@ -766,7 +766,7 @@ future<> raft_group0::setup_group0(
     // every member of group 0 (now including us) needs to enter `synchronize` state.
     co_await _client.set_group0_upgrade_state(group0_upgrade_state::synchronize);
 
-    group0_log.info("setup_group0: ensuring that the cluster has fully upgraded to use Raft...");
+    LOGMACRO(group0_log, log_level::info, "setup_group0: ensuring that the cluster has fully upgraded to use Raft...");
     auto& group0_server = _raft_gr.group0();
     group0_members members0{group0_server};
 
@@ -775,9 +775,9 @@ future<> raft_group0::setup_group0(
 
     auto cfg = group0_server.get_configuration();
     if (!cfg.is_joint() && cfg.current.size() == 1) {
-        group0_log.info("setup_group0: we're the only member of the cluster.");
+        LOGMACRO(group0_log, log_level::info, "setup_group0: we're the only member of the cluster.");
     } else if (ss.raft_topology_change_enabled()) {
-        group0_log.info("setup_group0: cluster uses raft for topology. No need to sync schema.");
+        LOGMACRO(group0_log, log_level::info, "setup_group0: cluster uses raft for topology. No need to sync schema.");
     } else {
         // We're joining an existing cluster - we're not the only member.
         //
@@ -786,7 +786,7 @@ future<> raft_group0::setup_group0(
         //
         // In a fully upgraded cluster this should finish immediately (if the network works well) - everyone is in `use_post_raft_procedures`.
         // In a cluster that is currently in the middle of `upgrade_to_group0`, this will cause us to wait until the procedure finishes.
-        group0_log.info("setup_group0: waiting for peers to synchronize state...");
+        LOGMACRO(group0_log, log_level::info, "setup_group0: waiting for peers to synchronize state...");
         if (co_await wait_for_peers_to_enter_synchronize_state(members0, _ms.local(), _abort_source, _shutdown_gate.hold())) {
             // Everyone entered `synchronize` state. That means we're bootstrapping in the middle of `upgrade_to_group0`.
             // We need to finish upgrade as others do.
@@ -796,13 +796,13 @@ future<> raft_group0::setup_group0(
     }
 
 
-    group0_log.info("setup_group0: the cluster is ready to use Raft. Finishing.");
+    LOGMACRO(group0_log, log_level::info, "setup_group0: the cluster is ready to use Raft. Finishing.");
     co_await _client.set_group0_upgrade_state(group0_upgrade_state::use_post_raft_procedures);
 }
 
 future<> raft_group0::finish_setup_after_join(service::storage_service& ss, cql3::query_processor& qp, service::migration_manager& mm, bool topology_change_enabled) {
     if (joined_group0()) {
-        group0_log.info("finish_setup_after_join: group 0 ID present, loading server info.");
+        LOGMACRO(group0_log, log_level::info, "finish_setup_after_join: group 0 ID present, loading server info.");
         auto my_id = load_my_id();
         if (!_raft_gr.group0().get_configuration().can_vote(my_id)) {
             if (!ss.raft_topology_change_enabled() || !_feat.group0_limited_voters) {
@@ -810,7 +810,7 @@ future<> raft_group0::finish_setup_after_join(service::storage_service& ss, cql3
                 // - need to become a voter in here
                 utils::get_local_injector().inject("stop_before_becoming_raft_voter",
                     [] { std::raise(SIGSTOP); });
-                group0_log.info("finish_setup_after_join: becoming a voter in the group 0 configuration...");
+                LOGMACRO(group0_log, log_level::info, "finish_setup_after_join: becoming a voter in the group 0 configuration...");
                 // Just bootstrapped and joined as non-voter. Become a voter.
                 auto pause_shutdown = _shutdown_gate.hold();
                 raft::server_address my_addr{my_id, {}};
@@ -818,12 +818,12 @@ future<> raft_group0::finish_setup_after_join(service::storage_service& ss, cql3
                     try {
                         co_await _raft_gr.group0().modify_config({{my_addr, true}}, {}, &_abort_source);
                     } catch (const raft::commit_status_unknown& e) {
-                        group0_log.info("finish_setup_after_join({}): modify_config returned \"{}\", retrying", my_addr, e);
+                        LOGMACRO(group0_log, log_level::info, "finish_setup_after_join({}): modify_config returned \"{}\", retrying", my_addr, e);
                         co_return operation_result::failure;
                     }
                     co_return operation_result::success;
                 }, "finish_setup_after_join->modify_config", {});
-                group0_log.info("finish_setup_after_join: became a group 0 voter.");
+                LOGMACRO(group0_log, log_level::info, "finish_setup_after_join: became a group 0 voter.");
             }
 
             // No need to run `upgrade_to_group0()` since we must have bootstrapped with Raft
@@ -842,13 +842,13 @@ future<> raft_group0::finish_setup_after_join(service::storage_service& ss, cql3
     // has already finished or we restarted in the middle after a crash.
 
     if (!_feat.supports_raft_cluster_mgmt) {
-        group0_log.info("finish_setup_after_join: SUPPORTS_RAFT feature not yet enabled, scheduling upgrade to start when it is.");
+        LOGMACRO(group0_log, log_level::info, "finish_setup_after_join: SUPPORTS_RAFT feature not yet enabled, scheduling upgrade to start when it is.");
     }
 
     // The listener may fire immediately, create a thread for that case.
     co_await seastar::async([this, &ss, &qp, &mm, topology_change_enabled] {
         _raft_support_listener = _feat.supports_raft_cluster_mgmt.when_enabled([this, &ss, &qp, &mm, topology_change_enabled] {
-            group0_log.info("finish_setup_after_join: SUPPORTS_RAFT feature enabled. Starting internal upgrade-to-raft procedure.");
+            LOGMACRO(group0_log, log_level::info, "finish_setup_after_join: SUPPORTS_RAFT feature enabled. Starting internal upgrade-to-raft procedure.");
             upgrade_to_group0(ss, qp, mm, topology_change_enabled).get();
         });
     });
@@ -898,19 +898,19 @@ future<> raft_group0::modify_voters(const std::unordered_set<raft::server_id>& v
     }
 
     if (!voters_add.empty()) {
-        group0_log.info("making servers {} voters ...", voters_add);
+        LOGMACRO(group0_log, log_level::info, "making servers {} voters ...", voters_add);
     }
     if (!voters_del.empty()) {
-        group0_log.info("making servers {} non-voters ...", voters_del);
+        LOGMACRO(group0_log, log_level::info, "making servers {} non-voters ...", voters_del);
     }
 
     co_await modify_raft_voter_status(voters_add, voters_del, as, timeout);
 
     if (!voters_add.empty()) {
-        group0_log.info("servers {} are now voters.", voters_add);
+        LOGMACRO(group0_log, log_level::info, "servers {} are now voters.", voters_add);
     }
     if (!voters_del.empty()) {
-        group0_log.info("servers {} are now non-voters.", voters_del);
+        LOGMACRO(group0_log, log_level::info, "servers {} are now non-voters.", voters_del);
     }
 }
 
@@ -921,11 +921,11 @@ future<> raft_group0::leave_group0() {
 
     auto my_id = load_my_id();
 
-    group0_log.info("leaving group 0 (my id = {})...", my_id);
+    LOGMACRO(group0_log, log_level::info, "leaving group 0 (my id = {})...", my_id);
     // Note: if this gets stuck due to a failure, the DB admin can abort.
     // FIXME: this gets stuck without failures if we're the leader (#10833)
     co_return co_await remove_from_raft_config(my_id);
-    group0_log.info("left group 0.");
+    LOGMACRO(group0_log, log_level::info, "left group 0.");
 }
 
 future<> raft_group0::remove_from_group0(raft::server_id node) {
@@ -933,11 +933,11 @@ future<> raft_group0::remove_from_group0(raft::server_id node) {
         on_internal_error(group0_log, "called remove_from_group0 before Raft upgrade finished");
     }
 
-    group0_log.info("remove_from_group0({}): removing the server from group 0 configuration...", node);
+    LOGMACRO(group0_log, log_level::info, "remove_from_group0({}): removing the server from group 0 configuration...", node);
 
     co_await remove_from_raft_config(node);
 
-    group0_log.info("remove_from_group0({}): finished removing from group 0 configuration.", node);
+    LOGMACRO(group0_log, log_level::info, "remove_from_group0({}): finished removing from group 0 configuration.", node);
 }
 
 future<bool> raft_group0::wait_for_raft() {
@@ -979,9 +979,9 @@ future<bool> raft_group0::wait_for_raft() {
         // Note: in theory it could happen that a node is removed/leaves the cluster immediately after
         // it finishes upgrade, causing others to get stuck (trying to contact the node that left).
         // It's unlikely and can be recovered from using the manual group 0 recovery procedure.
-        group0_log.info("Waiting until cluster fully upgrades to use Raft before proceeding...");
+        LOGMACRO(group0_log, log_level::info, "Waiting until cluster fully upgrades to use Raft before proceeding...");
         co_await _client.wait_until_group0_upgraded(_abort_source);
-        group0_log.info("Cluster finished Raft upgrade procedure.");
+        LOGMACRO(group0_log, log_level::info, "Cluster finished Raft upgrade procedure.");
     }
 
     // We're fully upgraded, we must have joined group 0.
@@ -990,9 +990,9 @@ future<bool> raft_group0::wait_for_raft() {
             "We're fully upgraded to use Raft but didn't join group 0. Please report a bug.");
     }
 
-    group0_log.info("Performing a group 0 read barrier...");
+    LOGMACRO(group0_log, log_level::info, "Performing a group 0 read barrier...");
     co_await _raft_gr.group0().read_barrier(&_abort_source);
-    group0_log.info("Finished group 0 read barrier.");
+    LOGMACRO(group0_log, log_level::info, "Finished group 0 read barrier.");
 
     co_return true;
 }
@@ -1024,7 +1024,7 @@ future<> raft_group0::modify_raft_voter_status(const std::unordered_set<raft::se
         try {
             co_await _raft_gr.group0_with_timeouts().modify_config(std::move(add), {}, &as, timeout);
         } catch (const raft::commit_status_unknown& e) {
-            group0_log.info("modify_raft_voter_status({}, {}): modify_config returned \"{}\", retrying", voters_add, voters_del, e);
+            LOGMACRO(group0_log, log_level::info, "modify_raft_voter_status({}, {}): modify_config returned \"{}\", retrying", voters_add, voters_del, e);
             co_return operation_result::failure;
         }
         co_return operation_result::success;
@@ -1036,7 +1036,7 @@ future<> raft_group0::remove_from_raft_config(raft::server_id id) {
         try {
             co_await _raft_gr.group0_with_timeouts().modify_config({}, {id}, &_abort_source, raft_timeout{});
         } catch (const raft::commit_status_unknown& e) {
-            group0_log.info("remove_from_raft_config({}): modify_config returned \"{}\", retrying", id, e);
+            LOGMACRO(group0_log, log_level::info, "remove_from_raft_config({}): modify_config returned \"{}\", retrying", id, e);
             co_return operation_result::failure;
         }
         co_return operation_result::success;
@@ -1252,7 +1252,7 @@ struct sleep_with_exponential_backoff {
     static constexpr std::chrono::seconds _max_retry_period{16};
     future<> operator()(abort_source& as,
                         seastar::compat::source_location loc = seastar::compat::source_location::current()) {
-        upgrade_log.info("{}: sleeping for {} seconds before retrying...", loc.function_name(), _retry_period);
+        LOGMACRO(upgrade_log, log_level::info, "{}: sleeping for {} seconds before retrying...", loc.function_name(), _retry_period);
         co_await sleep_abortable(_retry_period, as);
         _retry_period = std::min(_retry_period * 2, _max_retry_period);
     }
@@ -1285,11 +1285,11 @@ static future<> wait_until_every_peer_joined_group0(db::system_keyspace& sys_ks,
                 co_return;
             }
 
-            upgrade_log.info("group 0 configuration is joint: {}.", current_config);
+            LOGMACRO(upgrade_log, log_level::info, "group 0 configuration is joint: {}.", current_config);
             continue;
         }
 
-        upgrade_log.info(
+        LOGMACRO(upgrade_log, log_level::info, 
             "group 0 configuration does not contain all peers yet."
             " Missing peers: {}. Current group 0 config: {}.",
             missing_peers, current_config);
@@ -1342,7 +1342,7 @@ static future<> check_remote_group0_upgrade_state_dry_run(
         bool retry = false;
         co_await max_concurrent_for_each(cluster_config, max_concurrency, [&] (const locator::host_id& node) -> future<> {
             try {
-                upgrade_log.info("check_remote_group0_upgrade_state_dry_run: `send_get_group0_upgrade_state({})`", node);
+                LOGMACRO(upgrade_log, log_level::info, "check_remote_group0_upgrade_state_dry_run: `send_get_group0_upgrade_state({})`", node);
                 co_await with_timeout(as, rpc_timeout, std::bind_front(send_get_group0_upgrade_state, std::ref(ms), node));
             } catch (abort_requested_exception&) {
                 upgrade_log.warn("check_remote_group0_upgrade_state_dry_run: abort requested during `send_get_group0_upgrade_state({})`", node);
@@ -1376,7 +1376,7 @@ future<> raft_group0::wait_for_all_nodes_to_finish_upgrade(abort_source& as) {
         std::unordered_set<locator::host_id> pending_nodes{current_config.begin(), current_config.end()};
         co_await max_concurrent_for_each(current_config, max_concurrency, [&] (const locator::host_id& node) -> future<> {
             try {
-                upgrade_log.info("wait_for_everybody_to_finish_upgrade: `send_get_group0_upgrade_state({})`", node);
+                LOGMACRO(upgrade_log, log_level::info, "wait_for_everybody_to_finish_upgrade: `send_get_group0_upgrade_state({})`", node);
                 const auto upgrade_state = co_await with_timeout(as, rpc_timeout, std::bind_front(send_get_group0_upgrade_state, std::ref(_ms.local()), node));
                 if (upgrade_state == group0_upgrade_state::use_post_raft_procedures) {
                     pending_nodes.erase(node);
@@ -1453,14 +1453,14 @@ static future<bool> wait_for_peers_to_enter_synchronize_state(
 
                     switch (state) {
                         case group0_upgrade_state::use_post_raft_procedures:
-                            upgrade_log.info("wait_for_peers_to_enter_synchronize_state: {} confirmed that they finished upgrade.", node);
+                            LOGMACRO(upgrade_log, log_level::info, "wait_for_peers_to_enter_synchronize_state: {} confirmed that they finished upgrade.", node);
                             tracker.set_value(true);
                             break;
                         case group0_upgrade_state::synchronize:
                             entered_synchronize->insert(node);
                             break;
                         default:
-                            upgrade_log.info("wait_for_peers_to_enter_synchronize_state: node {} not in synchronize state yet...", node);
+                            LOGMACRO(upgrade_log, log_level::info, "wait_for_peers_to_enter_synchronize_state: node {} not in synchronize state yet...", node);
                             *retry = true;
                     }
                 } catch (abort_requested_exception&) {
@@ -1518,7 +1518,7 @@ collect_schema_versions_from_group0_members(
             }
 
             try {
-                upgrade_log.info("synchronize_schema: `send_schema_check({})`", node);
+                LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: `send_schema_check({})`", node);
                 versions.emplace(node,
                     co_await with_timeout(as, rpc_timeout, [&ms, node] (abort_source& as) mutable {
                             return ser::migration_manager_rpc_verbs::send_schema_check(&ms, node, as);
@@ -1541,13 +1541,13 @@ collect_schema_versions_from_group0_members(
             co_return versions;
         }
 
-        upgrade_log.info("synchronize_schema: checking if we can finish early before retrying...");
+        LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: checking if we can finish early before retrying...");
 
         if (co_await can_finish_early()) {
             co_return std::nullopt;
         }
 
-        upgrade_log.info("synchronize_schema: could not finish early.");
+        LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: could not finish early.");
     }
 }
 
@@ -1576,22 +1576,22 @@ static future<bool> synchronize_schema(
     size_t num_attempts_after_successful_pull = 0;
 
     for (sleep_with_exponential_backoff sleep;; co_await sleep(as)) {
-        upgrade_log.info("synchronize_schema: collecting schema versions from group 0 members...");
+        LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: collecting schema versions from group 0 members...");
         auto remote_versions = co_await collect_schema_versions_from_group0_members(ms, members0, can_finish_early, as);
         if (!remote_versions) {
-            upgrade_log.info("synchronize_schema: finished early.");
+            LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: finished early.");
             co_return false;
         }
-        upgrade_log.info("synchronize_schema: collected remote schema versions.");
+        LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: collected remote schema versions.");
 
         auto my_version = db.get_version();
-        upgrade_log.info("synchronize_schema: my version: {}", my_version);
+        LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: my version: {}", my_version);
 
         auto matched = std::erase_if(*remote_versions, [my_version] (const auto& p) { return p.second == my_version; });
-        upgrade_log.info("synchronize_schema: schema mismatches: {}. {} nodes had a matching version.", *remote_versions, matched);
+        LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: schema mismatches: {}. {} nodes had a matching version.", *remote_versions, matched);
 
         if (remote_versions->empty()) {
-            upgrade_log.info("synchronize_schema: finished.");
+            LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: finished.");
             co_return true;
         }
 
@@ -1618,7 +1618,7 @@ static future<bool> synchronize_schema(
             auto& [addr, _] = p;
 
             try {
-                upgrade_log.info("synchronize_schema: `merge_schema_from({})`", addr);
+                LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: `merge_schema_from({})`", addr);
                 co_await mm.merge_schema_from(addr);
             } catch (const rpc::closed_error& e) {
                 upgrade_log.warn("synchronize_schema: `merge_schema_from({})` failed due to connection error: {}", addr, e);
@@ -1642,7 +1642,7 @@ static future<bool> synchronize_schema(
         });
 
         if (co_await can_finish_early()) {
-            upgrade_log.info("synchronize_schema: finishing early.");
+            LOGMACRO(upgrade_log, log_level::info, "synchronize_schema: finishing early.");
             co_return false;
         }
     }
@@ -1681,10 +1681,10 @@ future<> raft_group0::upgrade_to_group0(service::storage_service& ss, cql3::quer
     auto start_state = (co_await _client.get_group0_upgrade_state()).second;
     switch (start_state) {
         case group0_upgrade_state::recovery:
-            upgrade_log.info("RECOVERY mode. Not attempting upgrade.");
+            LOGMACRO(upgrade_log, log_level::info, "RECOVERY mode. Not attempting upgrade.");
             co_return;
         case group0_upgrade_state::use_post_raft_procedures:
-            upgrade_log.info("Already upgraded.");
+            LOGMACRO(upgrade_log, log_level::info, "Already upgraded.");
             co_return;
         case group0_upgrade_state::synchronize:
             upgrade_log.warn(
@@ -1692,7 +1692,7 @@ future<> raft_group0::upgrade_to_group0(service::storage_service& ss, cql3::quer
                 " A previous upgrade attempt must have been interrupted or failed.");
             break;
         case group0_upgrade_state::use_pre_raft_procedures:
-            upgrade_log.info("starting in `use_pre_raft_procedures` state.");
+            LOGMACRO(upgrade_log, log_level::info, "starting in `use_pre_raft_procedures` state.");
             break;
     }
 
@@ -1702,7 +1702,7 @@ future<> raft_group0::upgrade_to_group0(service::storage_service& ss, cql3::quer
         try {
             co_await self.do_upgrade_to_group0(start_state, ss, qp, mm, topology_change_enabled);
             co_await self._client.set_group0_upgrade_state(group0_upgrade_state::use_post_raft_procedures);
-            upgrade_log.info("Raft upgrade finished. Disabling migration_manager schema pulls.");
+            LOGMACRO(upgrade_log, log_level::info, "Raft upgrade finished. Disabling migration_manager schema pulls.");
             co_await mm.disable_schema_pulls();
         } catch (...) {
             upgrade_log.error(
@@ -1731,7 +1731,7 @@ future<> raft_group0::do_upgrade_to_group0(group0_upgrade_state start_state, ser
     // once a node is selected as one of the seeds of the discovery algorithm, it must answer. This 'dry run'
     // step, on the other hand, allows nodes to leave and will unblock as soon as all remaining peers are
     // ready to answer.
-    upgrade_log.info("Waiting until everyone is ready to start upgrade...");
+    LOGMACRO(upgrade_log, log_level::info, "Waiting until everyone is ready to start upgrade...");
     auto get_host_ids = [this]() -> future<std::vector<locator::host_id>> {
         auto current_config = co_await _sys_ks.load_peers_ids();
         current_config.push_back(_gossiper.my_host_id());
@@ -1740,11 +1740,11 @@ future<> raft_group0::do_upgrade_to_group0(group0_upgrade_state start_state, ser
     co_await check_remote_group0_upgrade_state_dry_run(get_host_ids, _ms.local(), _abort_source);
 
     if (!joined_group0()) {
-        upgrade_log.info("Joining group 0...");
+        LOGMACRO(upgrade_log, log_level::info, "Joining group 0...");
         auto handshaker = make_legacy_handshaker(can_vote::yes); // Voter
         co_await join_group0(co_await _sys_ks.load_peers(), std::move(handshaker), ss, qp, mm, _sys_ks, topology_change_enabled, join_node_request_params{});
     } else {
-        upgrade_log.info(
+        LOGMACRO(upgrade_log, log_level::info, 
             "We're already a member of group 0."
             " Apparently we're restarting after a previous upgrade attempt failed.");
     }
@@ -1762,9 +1762,9 @@ future<> raft_group0::do_upgrade_to_group0(group0_upgrade_state start_state, ser
     // and we won't do anything harmful to other nodes while in `synchronize`, worst case being
     // that we get stuck.
 
-    upgrade_log.info("Waiting until every peer has joined Raft group 0...");
+    LOGMACRO(upgrade_log, log_level::info, "Waiting until every peer has joined Raft group 0...");
     co_await wait_until_every_peer_joined_group0(_sys_ks, members0, _abort_source);
-    upgrade_log.info("Every peer is a member of Raft group 0.");
+    LOGMACRO(upgrade_log, log_level::info, "Every peer is a member of Raft group 0.");
 
     if (start_state == group0_upgrade_state::use_pre_raft_procedures) {
         // We perform a schema synchronization step before entering `synchronize` upgrade state.
@@ -1775,7 +1775,7 @@ future<> raft_group0::do_upgrade_to_group0(group0_upgrade_state start_state, ser
         // However, it's good for reducing the chance that we get stuck later. If we manage to ensure that schema
         // is synchronized now, there's a high chance that after entering `synchronize` state we won't have
         // to do any additional schema pulls (only verify quickly that the schema is still in sync).
-        upgrade_log.info("Waiting for schema to synchronize across all nodes in group 0...");
+        LOGMACRO(upgrade_log, log_level::info, "Waiting for schema to synchronize across all nodes in group 0...");
         auto can_finish_early = [] { return make_ready_future<bool>(false); };
         co_await synchronize_schema(qp.db().real_database(), _ms.local(), members0, mm, can_finish_early, _abort_source);
 
@@ -1785,7 +1785,7 @@ future<> raft_group0::do_upgrade_to_group0(group0_upgrade_state start_state, ser
         // causing later steps to fail, but if network/RPC module is already broken, better to detect
         // it now than after entering `synchronize` state. And if this steps succeeds, then there's
         // a very high chance that the following steps succeed as well (we would need to be very unlucky otherwise).
-        upgrade_log.info("Performing a dry run of remote `get_group0_upgrade_state` calls...");
+        LOGMACRO(upgrade_log, log_level::info, "Performing a dry run of remote `get_group0_upgrade_state` calls...");
         co_await check_remote_group0_upgrade_state_dry_run(
                 [members0] {
                     return make_ready_future<std::vector<locator::host_id>>(members0.get_host_ids());
@@ -1794,26 +1794,26 @@ future<> raft_group0::do_upgrade_to_group0(group0_upgrade_state start_state, ser
         utils::get_local_injector().inject("group0_upgrade_before_synchronize",
             [] { throw std::runtime_error("error injection before group 0 upgrade enters synchronize"); });
 
-        upgrade_log.info("Entering synchronize state.");
+        LOGMACRO(upgrade_log, log_level::info, "Entering synchronize state.");
         upgrade_log.warn("Schema changes are disabled in synchronize state."
                 " If a failure makes us unable to proceed, manual recovery will be required.");
         co_await _client.set_group0_upgrade_state(group0_upgrade_state::synchronize);
     }
 
-    upgrade_log.info("Waiting for all peers to enter synchronize state...");
+    LOGMACRO(upgrade_log, log_level::info, "Waiting for all peers to enter synchronize state...");
     if (!(co_await wait_for_peers_to_enter_synchronize_state(members0, _ms.local(), _abort_source, _shutdown_gate.hold()))) {
-        upgrade_log.info("Another node already finished upgrade. We can finish early.");
+        LOGMACRO(upgrade_log, log_level::info, "Another node already finished upgrade. We can finish early.");
         co_return;
     }
 
-    upgrade_log.info("All peers in synchronize state. Waiting for schema to synchronize...");
+    LOGMACRO(upgrade_log, log_level::info, "All peers in synchronize state. Waiting for schema to synchronize...");
     auto can_finish_early = std::bind_front(anyone_finished_upgrade, std::cref(members0), std::ref(_ms.local()), std::ref(_abort_source));
     if (!(co_await synchronize_schema(qp.db().real_database(), _ms.local(), members0, mm, can_finish_early, _abort_source))) {
-        upgrade_log.info("Another node already finished upgrade. We can finish early.");
+        LOGMACRO(upgrade_log, log_level::info, "Another node already finished upgrade. We can finish early.");
         co_return;
     }
 
-    upgrade_log.info("Schema synchronized.");
+    LOGMACRO(upgrade_log, log_level::info, "Schema synchronized.");
 }
 
 void raft_group0::register_metrics() {

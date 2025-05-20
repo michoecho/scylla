@@ -288,7 +288,7 @@ future<bool> ldap_role_manager::exists(std::string_view role_name) {
     // The role set will always contains at least a single entry (the role itself),
     // so auto-creation is only triggered if at least one more external role is assigned.
     if (roles.size() > 1) {
-        mylog.info("Auto-creating user {}", role_name);
+        LOGMACRO(mylog, log_level::info, "Auto-creating user {}", role_name);
         try {
             co_await create_role(role_name);
             exists = true;

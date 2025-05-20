@@ -261,11 +261,11 @@ future<> service_level_controller::update_service_levels_cache(qos::query_contex
 
             for (auto&& sl : service_levels_for_delete) {
                 do_remove_service_level(sl.first, false).get();
-                sl_logger.info("service level \"{}\" was deleted.", sl.first.c_str());
+                LOGMACRO(sl_logger, log_level::info, "service level \"{}\" was deleted.", sl.first.c_str());
             }
             for (auto&& sl : service_levels_for_update) {
                 do_add_service_level(sl.first, sl.second).get();
-                sl_logger.info("service level \"{}\" was updated. New values: (timeout: {}, workload_type: {}, shares: {})",
+                LOGMACRO(sl_logger, log_level::info, "service level \"{}\" was updated. New values: (timeout: {}, workload_type: {}, shares: {})",
                         sl.first, sl.second.timeout, sl.second.workload, sl.second.shares);
             }
             _effective_service_levels_db.clear();
@@ -274,7 +274,7 @@ future<> service_level_controller::update_service_levels_cache(qos::query_contex
                 std::map<sstring, service_level>::reverse_iterator it;
                 try {
                     do_add_service_level(sl.first, sl.second).get();
-                    sl_logger.info("service level \"{}\" was added.", sl.first.c_str());
+                    LOGMACRO(sl_logger, log_level::info, "service level \"{}\" was added.", sl.first.c_str());
                 } catch (service_level_scheduling_groups_exhausted &ex) {
                     it = _service_levels_db.rbegin();
                     if (it->first == default_service_level_name) {
@@ -570,7 +570,7 @@ void service_level_controller::maybe_start_legacy_update_from_distributed_data(s
     }
 
     if (_global_controller_db->distributed_data_update.available()) {
-        sl_logger.info("start_legacy_update_from_distributed_data: starting configuration polling loop");
+        LOGMACRO(sl_logger, log_level::info, "start_legacy_update_from_distributed_data: starting configuration polling loop");
         _logged_intervals = 0;
         _global_controller_db->distributed_data_update = repeat([this, interval_f = std::move(interval_f), &storage_service] {
             return sleep_abortable<steady_clock_type>(interval_f(),
@@ -580,7 +580,7 @@ void service_level_controller::maybe_start_legacy_update_from_distributed_data(s
                     
                     if (storage_service.get_topology_upgrade_state() == service::topology::upgrade_state_type::done) {
                         stop_legacy_update_from_distributed_data();
-                        sl_logger.info("update_from_distributed_data: Update loop has been shutdown. Now service levels cache will be updated immediately while applying raft group0 log.");
+                        LOGMACRO(sl_logger, log_level::info, "update_from_distributed_data: Update loop has been shutdown. Now service levels cache will be updated immediately while applying raft group0 log.");
                         return make_ready_future<stop_iteration>(stop_iteration::yes);
                     }
 
@@ -604,7 +604,7 @@ void service_level_controller::maybe_start_legacy_update_from_distributed_data(s
                         return stop_iteration::no;
                     });
                 } catch (const sleep_aborted& e) {
-                    sl_logger.info("start_legacy_update_from_distributed_data: configuration polling loop aborted");
+                    LOGMACRO(sl_logger, log_level::info, "start_legacy_update_from_distributed_data: configuration polling loop aborted");
                     return make_ready_future<seastar::bool_class<seastar::stop_iteration_tag>>(stop_iteration::yes);
                 }
             });

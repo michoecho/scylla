@@ -148,7 +148,7 @@ static compaction_descriptor get_sstables_for_compaction(CompactionStrategy& cs,
 }
 
 static void assert_table_sstable_count(table_for_tests& t, size_t expected_count) {
-    testlog.info("sstable_set_size={}, live_sstable_count={}, expected={}", t->get_sstables()->size(), t->get_stats().live_sstable_count, expected_count);
+    LOGMACRO(testlog, log_level::info, "sstable_set_size={}, live_sstable_count={}, expected={}", t->get_sstables()->size(), t->get_stats().live_sstable_count, expected_count);
     BOOST_REQUIRE(t->get_sstables()->size() == expected_count);
     BOOST_REQUIRE(uint64_t(t->get_stats().live_sstable_count) == expected_count);
 }
@@ -534,9 +534,9 @@ static void compact_corrupted_by_compression_mode(const std::string& tname,
         auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
         auto schema = random_schema.schema();
 
-        testlog.info("Random schema:\n{}", random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
-        testlog.info("Compacting {}compressed SSTable with invalid checksums", compress ? "" : "un");
+        LOGMACRO(testlog, log_level::info, "Compacting {}compressed SSTable with invalid checksums", compress ? "" : "un");
 
         const auto muts = tests::generate_random_mutations(random_schema, 2).get();
         auto sst = make_sstable_containing(env.make_sstable(schema), muts);
@@ -551,7 +551,7 @@ static void compact_corrupted_by_compression_mode(const std::string& tname,
         }
         test_failing_compact(schema, {sst}, error_msg, "failed checksum");
 
-        testlog.info("Compacting {}compressed SSTable with invalid digest", compress ? "" : "un");
+        LOGMACRO(testlog, log_level::info, "Compacting {}compressed SSTable with invalid digest", compress ? "" : "un");
 
         sst = make_sstable_containing(env.make_sstable(schema), muts);
         {
@@ -1105,7 +1105,7 @@ SEASTAR_TEST_CASE(tombstone_purge_test) {
         auto make_insert = [&] (partition_key key) {
             mutation m(s, key);
             auto timestamp = next_timestamp();
-            testlog.info("make_insert: key={} timestamp={}", dht::decorate_key(*s, key), timestamp);
+            LOGMACRO(testlog, log_level::info, "make_insert: key={} timestamp={}", dht::decorate_key(*s, key), timestamp);
             m.set_clustered_cell(clustering_key::make_empty(), bytes("value"), data_value(int32_t(1)), timestamp);
             return m;
         };
@@ -1113,7 +1113,7 @@ SEASTAR_TEST_CASE(tombstone_purge_test) {
         auto make_expiring = [&] (partition_key key, int ttl) {
             mutation m(s, key);
             auto timestamp = next_timestamp();
-            testlog.info("make_expliring: key={} ttl={} timestamp={}", dht::decorate_key(*s, key), ttl, timestamp);
+            LOGMACRO(testlog, log_level::info, "make_expliring: key={} ttl={} timestamp={}", dht::decorate_key(*s, key), ttl, timestamp);
             m.set_clustered_cell(clustering_key::make_empty(), bytes("value"), data_value(int32_t(1)),
                 timestamp, gc_clock::duration(ttl));
             return m;
@@ -1122,7 +1122,7 @@ SEASTAR_TEST_CASE(tombstone_purge_test) {
         auto make_delete = [&] (partition_key key, gc_clock::time_point deletion_time = gc_clock::now()) {
             mutation m(s, key);
             tombstone tomb(next_timestamp(), deletion_time);
-            testlog.info("make_delete: {}", tomb);
+            LOGMACRO(testlog, log_level::info, "make_delete: {}", tomb);
             m.partition().apply(tomb);
             return m;
         };
@@ -1402,7 +1402,7 @@ SEASTAR_TEST_CASE(mv_tombstone_purge_test) {
                 created_at = next_timestamp();
             }
             auto c_key = clustering_key::from_single_value(*s, int32_type->decompose(data_value(ck)));
-            testlog.info("make_insert: key={} ck={} timestamp={} created_at={}", dht::decorate_key(*s, key), ck, *timestamp, *created_at);
+            LOGMACRO(testlog, log_level::info, "make_insert: key={} ck={} timestamp={} created_at={}", dht::decorate_key(*s, key), ck, *timestamp, *created_at);
             m.set_clustered_cell(
                     c_key,
                     bytes("value"),
@@ -1419,7 +1419,7 @@ SEASTAR_TEST_CASE(mv_tombstone_purge_test) {
             }
             shadowable_tombstone shadowable(*deleted_at, deletion_time);
             auto c_key = clustering_key::from_single_value(*s, int32_type->decompose(data_value(ck)));
-            testlog.info("make_delete_row: key={} ck={} shadowable_tombstone={}", dht::decorate_key(*s, key), ck, shadowable);
+            LOGMACRO(testlog, log_level::info, "make_delete_row: key={} ck={} shadowable_tombstone={}", dht::decorate_key(*s, key), ck, shadowable);
             m.partition().clustered_row(*s, c_key).apply(shadowable);
             return m;
         };
@@ -2337,7 +2337,7 @@ public:
         , _random_schema(_seed, *_random_schema_spec)
     {
         _env.start(test_env_config(), std::ref(*scf)).get();
-        testlog.info("random_schema: {}", _random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "random_schema: {}", _random_schema.cql());
     }
 
     ~scrub_test_framework() {
@@ -2616,35 +2616,35 @@ void scrub_validate_valid(compress_sstable compress) {
 
 SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_corrupted_content) {
     for (const auto& compress : {compress_sstable::no, compress_sstable::yes}) {
-        testlog.info("Validating {}compressed SSTable with content-level corruption...", compress == compress_sstable::no ? "un" : "");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable with content-level corruption...", compress == compress_sstable::no ? "un" : "");
         scrub_validate_corrupted_content(compress);
     }
 }
 
 SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_corrupted_file) {
     for (const auto& compress : {compress_sstable::no, compress_sstable::yes}) {
-        testlog.info("Validating {}compressed SSTable with invalid checksums...", compress == compress_sstable::no ? "un" : "");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable with invalid checksums...", compress == compress_sstable::no ? "un" : "");
         scrub_validate_corrupted_file(compress);
     }
 }
 
 SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_corrupted_file_digest) {
     for (const auto& compress : {compress_sstable::no, compress_sstable::yes}) {
-        testlog.info("Validating {}compressed SSTable with invalid digest...", compress == compress_sstable::no ? "un" : "");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable with invalid digest...", compress == compress_sstable::no ? "un" : "");
         scrub_validate_corrupted_digest(compress);
     }
 }
 
 SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_no_digest) {
     for (const auto& compress : {compress_sstable::no, compress_sstable::yes}) {
-        testlog.info("Validating {}compressed SSTable with no digest...", compress == compress_sstable::no ? "un" : "");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable with no digest...", compress == compress_sstable::no ? "un" : "");
         scrub_validate_no_digest(compress);
     }
 }
 
 SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_valid_sstable) {
     for (const auto& compress : {compress_sstable::no, compress_sstable::yes}) {
-        testlog.info("Validating {}compressed SSTable...", compress == compress_sstable::no ? "un" : "");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable...", compress == compress_sstable::no ? "un" : "");
         scrub_validate_valid(compress);
     }
 }
@@ -2787,7 +2787,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_valid_sstable_cassandr
             std::pair{compression_parameters::no_compression(), "uncompressed"},
             {compression_parameters(compression_parameters::algorithm::lz4), "lz4"}
         }) {
-        testlog.info("Validating {}compressed SSTable from Cassandra...", cp.compression_enabled() ? "" : "un");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable from Cassandra...", cp.compression_enabled() ? "" : "un");
         scrub_validate_cassandra_compat(
                 cp,
                 seastar::format("test/resource/sstables/3.x/{}/partition_key_with_values_of_different_types", subdir),
@@ -2803,7 +2803,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_corrupted_file_cassand
             std::pair{compression_parameters::no_compression(), "uncompressed"},
             {compression_parameters(compression_parameters::algorithm::lz4), "lz4"}
         }) {
-        testlog.info("Validating {}compressed SSTable from Cassandra with invalid checksums...", cp.compression_enabled() ? "" : "un");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable from Cassandra with invalid checksums...", cp.compression_enabled() ? "" : "un");
         scrub_validate_cassandra_compat(
                 cp,
                 seastar::format("test/resource/sstables/3.x/{}/integrity_check/invalid_checksums", subdir),
@@ -2819,7 +2819,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_validate_mode_test_corrupted_file_digest_
             std::pair{compression_parameters::no_compression(), "uncompressed"},
             {compression_parameters(compression_parameters::algorithm::lz4), "lz4"}
         }) {
-        testlog.info("Validating {}compressed SSTable from Cassandra with invalid digest...", cp.compression_enabled() ? "" : "un");
+        LOGMACRO(testlog, log_level::info, "Validating {}compressed SSTable from Cassandra with invalid digest...", cp.compression_enabled() ? "" : "un");
         scrub_validate_cassandra_compat(
                 cp,
                 seastar::format("test/resource/sstables/3.x/{}/integrity_check/invalid_digest", subdir),
@@ -2981,7 +2981,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_abort_mode_test) {
         BOOST_REQUIRE(sstables.size() == 1);
         auto sst = sstables.front();
 
-        testlog.info("Scrub in abort mode");
+        LOGMACRO(testlog, log_level::info, "Scrub in abort mode");
 
         // We expect the scrub with mode=srub::mode::abort to stop on the first invalid fragment.
         sstables::compaction_type_options::scrub opts = {};
@@ -3027,7 +3027,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_skip_mode_test) {
         BOOST_REQUIRE(sstables.size() == 1);
         auto sst = sstables.front();
 
-        testlog.info("Scrub in skip mode");
+        LOGMACRO(testlog, log_level::info, "Scrub in skip mode");
 
         // We expect the scrub with mode=srub::mode::skip to get rid of all invalid data.
         sstables::compaction_type_options::scrub opts = {};
@@ -3068,14 +3068,14 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_segregate_mode_test) {
     test.run(schema, std::move(corrupt_fragments), [&] (table_for_tests& table, compaction::table_state& ts, std::vector<sstables::shared_sstable> sstables) {
         BOOST_REQUIRE(sstables.size() == 1);
 
-        testlog.info("Scrub in segregate mode");
+        LOGMACRO(testlog, log_level::info, "Scrub in segregate mode");
 
         // We expect the scrub with mode=srub::mode::segregate to fix all out-of-order data.
         sstables::compaction_type_options::scrub opts = {};
         opts.operation_mode = sstables::compaction_type_options::scrub::mode::segregate;
         table->get_compaction_manager().perform_sstable_scrub(ts, opts, tasks::task_info{}).get();
 
-        testlog.info("Scrub resulted in {} sstables", in_strategy_sstables(ts).size());
+        LOGMACRO(testlog, log_level::info, "Scrub resulted in {} sstables", in_strategy_sstables(ts).size());
         BOOST_REQUIRE(in_strategy_sstables(ts).size() > 1);
         verify_fragments(in_strategy_sstables(ts), test.env().make_reader_permit(), explode(test.env().make_reader_permit(), muts));
     });
@@ -3103,14 +3103,14 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_quarantine_mode_test) {
         sstables::compaction_type_options::scrub::quarantine_mode::only,
     };
     for (auto qmode : quarantine_modes) {
-        testlog.info("Checking qurantine mode {}", qmode);
+        LOGMACRO(testlog, log_level::info, "Checking qurantine mode {}", qmode);
         test.run(schema, corrupt_muts, [&] (table_for_tests& table, compaction::table_state& ts, std::vector<sstables::shared_sstable> sstables) {
             BOOST_REQUIRE(sstables.size() == 1);
             auto sst = sstables.front();
 
             auto permit = test.env().make_reader_permit();
 
-            testlog.info("Scrub in validate mode");
+            LOGMACRO(testlog, log_level::info, "Scrub in validate mode");
 
             // We expect the scrub with mode=scrub::mode::validate to quarantine the sstable.
             sstables::compaction_type_options::scrub opts = {};
@@ -3121,7 +3121,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_quarantine_mode_test) {
             BOOST_REQUIRE(sst->is_quarantined());
             verify_fragments({sst}, permit, corrupt_fragments);
 
-            testlog.info("Scrub in segregate mode with quarantine_mode {}", qmode);
+            LOGMACRO(testlog, log_level::info, "Scrub in segregate mode with quarantine_mode {}", qmode);
 
             // We expect the scrub with mode=scrub::mode::segregate to fix all out-of-order data.
             opts.operation_mode = sstables::compaction_type_options::scrub::mode::segregate;
@@ -3132,7 +3132,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_quarantine_mode_test) {
             case sstables::compaction_type_options::scrub::quarantine_mode::include:
             case sstables::compaction_type_options::scrub::quarantine_mode::only:
                 // The sstable should be found and scrubbed when scrub::quarantine_mode is scrub::quarantine_mode::{include,only}
-                testlog.info("Scrub resulted in {} sstables", in_strategy_sstables(ts).size());
+                LOGMACRO(testlog, log_level::info, "Scrub resulted in {} sstables", in_strategy_sstables(ts).size());
                 BOOST_REQUIRE(in_strategy_sstables(ts).size() > 1);
                 verify_fragments(in_strategy_sstables(ts), permit, scrubbed_fragments);
                 break;
@@ -3221,7 +3221,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
         for (const auto& part : expected_partitions) {
             rows += part.second.clustering_rows.size();
         }
-        testlog.info("Generated {} partitions (with {} double and {} missing partition ends), {} rows and {} fragments total", expected_partitions.size(), double_partition_end, missing_partition_end, rows, all_fragments.size());
+        LOGMACRO(testlog, log_level::info, "Generated {} partitions (with {} double and {} missing partition ends), {} rows and {} fragments total", expected_partitions.size(), double_partition_end, missing_partition_end, rows, all_fragments.size());
     }
 
     auto copy_fragments = [&schema, &semaphore] (const std::deque<mutation_fragment_v2>& frags) {
@@ -3249,9 +3249,9 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
         });
     }).get();
 
-    testlog.info("Segregation resulted in {} fragment streams", segregated_fragment_streams.size());
+    LOGMACRO(testlog, log_level::info, "Segregation resulted in {} fragment streams", segregated_fragment_streams.size());
 
-    testlog.info("Checking position monotonicity of segregated streams");
+    LOGMACRO(testlog, log_level::info, "Checking position monotonicity of segregated streams");
     {
         size_t i = 0;
         for (const auto& segregated_fragment_stream : segregated_fragment_streams) {
@@ -3261,7 +3261,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
         }
     }
 
-    testlog.info("Checking position monotonicity of re-combined stream");
+    LOGMACRO(testlog, log_level::info, "Checking position monotonicity of re-combined stream");
     {
         std::vector<mutation_reader> readers;
         readers.reserve(segregated_fragment_streams.size());
@@ -3273,7 +3273,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
         assert_that(make_combined_reader(schema, permit, std::move(readers))).has_monotonic_positions();
     }
 
-    testlog.info("Checking content of re-combined stream");
+    LOGMACRO(testlog, log_level::info, "Checking content of re-combined stream");
     {
         std::vector<mutation_reader> readers;
         readers.reserve(segregated_fragment_streams.size());
@@ -3380,7 +3380,7 @@ SEASTAR_THREAD_TEST_CASE(sstable_scrub_reader_test) {
     auto r = assert_that(make_scrubbing_reader(make_mutation_reader_from_fragments(schema, permit, std::move(corrupt_fragments)),
                 compaction_type_options::scrub::mode::skip, validation_errors));
     for (const auto& mf : scrubbed_fragments) {
-       testlog.info("Expecting {}", mutation_fragment_v2::printer(*schema, mf));
+       LOGMACRO(testlog, log_level::info, "Expecting {}", mutation_fragment_v2::printer(*schema, mf));
        r.produces(*schema, mf);
     }
     r.produces_end_of_stream();
@@ -3479,11 +3479,11 @@ SEASTAR_TEST_CASE(sstable_run_based_compaction_test) {
             do_replace(old_sstables, new_sstables);
 
             observers.push_back(old_sstable->add_on_closed_handler([&] (sstable& sst) {
-                testlog.info("Closing sstable of generation {}", sst.generation());
+                LOGMACRO(testlog, log_level::info, "Closing sstable of generation {}", sst.generation());
                 closed_sstables_tracker++;
             }));
 
-            testlog.info("Removing sstable of generation {}, refcnt: {}", old_sstable->generation(), old_sstable.use_count());
+            LOGMACRO(testlog, log_level::info, "Removing sstable of generation {}, refcnt: {}", old_sstable->generation(), old_sstable.use_count());
         };
 
         auto do_compaction = [&] (size_t expected_input, size_t expected_output) mutable -> std::vector<shared_sstable> {
@@ -4361,7 +4361,7 @@ future<> test_twcs_interposer_on_memtable_flush(bool split_during_flush) {
         cf->flush().get();
 
         auto expected_ssts = (split_during_flush) ? target_windows_span : 1;
-        testlog.info("split_during_flush={}, actual={}, expected={}", split_during_flush, cf->get_sstables()->size(), expected_ssts);
+        LOGMACRO(testlog, log_level::info, "split_during_flush={}, actual={}, expected={}", split_during_flush, cf->get_sstables()->size(), expected_ssts);
         assert_table_sstable_count(cf, expected_ssts);
   });
 }
@@ -5249,7 +5249,7 @@ future<> run_controller_test(sstables::compaction_strategy_type compaction_strat
         for (auto target_table_count : target_table_count_s) {
             const uint64_t per_table_max_disk_usage = std::ceil(all_tables_disk_usage / target_table_count);
 
-            testlog.info("Creating tables, with max size={}", utils::pretty_printed_data_size(per_table_max_disk_usage));
+            LOGMACRO(testlog, log_level::info, "Creating tables, with max size={}", utils::pretty_printed_data_size(per_table_max_disk_usage));
 
             std::vector<table_for_tests> tables;
             uint64_t tables_total_size = 0;
@@ -5281,7 +5281,7 @@ future<> run_controller_test(sstables::compaction_strategy_type compaction_strat
             }
         }
         for (auto& r : results) {
-            testlog.info("Tables={} with max size={} -> NormalizedBacklog={}", r.table_count, utils::pretty_printed_data_size(r.per_table_max_disk_usage), r.normalized_backlog);
+            LOGMACRO(testlog, log_level::info, "Tables={} with max size={} -> NormalizedBacklog={}", r.table_count, utils::pretty_printed_data_size(r.per_table_max_disk_usage), r.normalized_backlog);
             // Expect 0 backlog as tiers are all perfectly compacted
             // With LCS, the size of levels *set up by the test* can slightly exceed their target size,
             // so let's account for the microscopical amount of backlog returned.
@@ -5357,10 +5357,10 @@ SEASTAR_TEST_CASE(test_compaction_strategy_cleanup_method) {
         };
 
         auto run_cleanup_strategy_test = [&] (sstables::compaction_strategy_type compaction_strategy_type, size_t per_job_files, auto&&... args) {
-            testlog.info("Running cleanup test for strategy type {}", compaction_strategy::name(compaction_strategy_type));
+            LOGMACRO(testlog, log_level::info, "Running cleanup test for strategy type {}", compaction_strategy::name(compaction_strategy_type));
             size_t target_job_count = all_files / per_job_files;
             auto [candidates, descriptors] = get_cleanup_jobs(compaction_strategy_type, std::forward<decltype(args)>(args)...);
-            testlog.info("get_cleanup_jobs() returned {} descriptors; expected={}", descriptors.size(), target_job_count);
+            LOGMACRO(testlog, log_level::info, "get_cleanup_jobs() returned {} descriptors; expected={}", descriptors.size(), target_job_count);
             BOOST_REQUIRE(descriptors.size() == target_job_count);
             auto generations = candidates | std::views::transform(std::mem_fn(&sstables::sstable::generation)) | std::ranges::to<std::unordered_set<generation_type>>();
             auto check_desc = [&] (const auto& desc) {
@@ -5472,7 +5472,7 @@ SEASTAR_TEST_CASE(test_large_partition_splitting_on_compaction) {
 
         auto ret = compact_sstables(env, std::move(desc), cf, sst_gen, replacer_fn_no_op(), can_purge_tombstones::no).get();
 
-        testlog.info("Large partition splitting on compaction created {} sstables", ret.new_sstables.size());
+        LOGMACRO(testlog, log_level::info, "Large partition splitting on compaction created {} sstables", ret.new_sstables.size());
         BOOST_REQUIRE(ret.new_sstables.size() > 1);
 
         sstable_run sst_run;
@@ -5500,7 +5500,7 @@ SEASTAR_TEST_CASE(test_large_partition_splitting_on_compaction) {
             auto& cdef = *s->get_column_definition("value");
             BOOST_REQUIRE(cells.cell_at(cdef.id).as_atomic_cell(cdef).is_live());
 
-            testlog.info("SSTable of generation {} has position range [{}, {}]", sst->generation(), sst->first_partition_first_position(), sst->last_partition_last_position());
+            LOGMACRO(testlog, log_level::info, "SSTable of generation {} has position range [{}, {}]", sst->generation(), sst->first_partition_first_position(), sst->last_partition_last_position());
 
             // Check that if we split partition with active range tombstone, check we will issue properly
             // the end bound in fragment A and re-emit it as start bound in fragment B.
@@ -5509,16 +5509,16 @@ SEASTAR_TEST_CASE(test_large_partition_splitting_on_compaction) {
             // assuming the split happened when last position was r2.
             auto& current_first_rt = *m->partition().row_tombstones().begin();
             if (auto previous_last_rt = std::exchange(last_rt, *m->partition().row_tombstones().rbegin())) {
-                testlog.info("\tprevious last rt's end bound: {}", previous_last_rt->end_bound());
-                testlog.info("\tcurrent first rt's start bound: {}", current_first_rt.start_bound());
+                LOGMACRO(testlog, log_level::info, "\tprevious last rt's end bound: {}", previous_last_rt->end_bound());
+                LOGMACRO(testlog, log_level::info, "\tcurrent first rt's start bound: {}", current_first_rt.start_bound());
                 BOOST_REQUIRE(previous_last_rt->end_bound().prefix() == current_first_rt.start_bound().prefix());
                 BOOST_REQUIRE(previous_last_rt->end_bound().kind() == bound_kind::incl_end);
                 BOOST_REQUIRE(current_first_rt.start_bound().kind() == bound_kind::excl_start);
             }
             const auto& current_first_pos = sst->first_partition_first_position();
             if (auto previous_last_pos = std::exchange(last_pos, sst->last_partition_last_position())) {
-                testlog.info("\tprevious last pos: {}", previous_last_pos);
-                testlog.info("\tcurrent first pos: {}", current_first_pos);
+                LOGMACRO(testlog, log_level::info, "\tprevious last pos: {}", previous_last_pos);
+                LOGMACRO(testlog, log_level::info, "\tcurrent first pos: {}", current_first_pos);
                 BOOST_REQUIRE(pos_tri_cmp(*previous_last_pos, current_first_pos) == 0);
             }
 
@@ -5564,13 +5564,13 @@ SEASTAR_THREAD_TEST_CASE(compaction_manager_stop_and_drain_race_test) {
     auto stop_cm = deferred_stop(cm);
     cm.enable();
 
-    testlog.info("requesting abort");
+    LOGMACRO(testlog, log_level::info, "requesting abort");
     as.request_abort();
 
-    testlog.info("draining compaction manager");
+    LOGMACRO(testlog, log_level::info, "draining compaction manager");
     cm.drain().get();
 
-    testlog.info("stopping compaction manager");
+    LOGMACRO(testlog, log_level::info, "stopping compaction manager");
     stop_cm.stop_now();
 }
 
@@ -5805,7 +5805,7 @@ static future<> run_incremental_compaction_test(sstables::offstrategy offstrateg
             const dht::token_range_vector empty_owned_ranges;
             for (auto&& sst : ssts) {
                 t->add_sstable_and_update_cache(sst, offstrategy).get();
-                testlog.info("run id {}, refcount = {}", sst->run_identifier(), sst.use_count());
+                LOGMACRO(testlog, log_level::info, "run id {}, refcount = {}", sst->run_identifier(), sst.use_count());
                 column_family_test::update_sstables_known_generation(*t, sst->generation());
                 observers.push_back(sst->add_on_closed_handler([&] (sstable& sst) mutable {
                     auto sstables = t->get_sstables();
@@ -5813,7 +5813,7 @@ static future<> run_incremental_compaction_test(sstables::offstrategy offstrateg
                         return gens.count(sst->generation());
                     });
 
-                    testlog.info("Closing sstable of generation {}, table set size: {}", sst.generation(), input_sstable_count);
+                    LOGMACRO(testlog, log_level::info, "Closing sstable of generation {}, table set size: {}", sst.generation(), input_sstable_count);
                     sstables_closed++;
                     if (std::cmp_less(input_sstable_count, last_input_sstable_count)) {
                         sstables_closed_during_cleanup++;
@@ -5825,14 +5825,14 @@ static future<> run_incremental_compaction_test(sstables::offstrategy offstrateg
             auto owned_ranges_ptr = make_lw_shared<const dht::token_range_vector>(std::move(owned_token_ranges));
             run_compaction(t, std::move(owned_ranges_ptr)).get();
             BOOST_REQUIRE(cm.sstables_requiring_cleanup(t->try_get_table_state_with_static_sharding()).empty());
-            testlog.info("Cleanup has finished");
+            LOGMACRO(testlog, log_level::info, "Cleanup has finished");
         }
 
         while (sstables_closed != sstables_nr) {
             yield().get();
         }
 
-        testlog.info("Closed sstables {}, Closed during cleanup {}", sstables_closed, sstables_closed_during_cleanup);
+        LOGMACRO(testlog, log_level::info, "Closed sstables {}, Closed during cleanup {}", sstables_closed, sstables_closed_during_cleanup);
 
         BOOST_REQUIRE(sstables_closed == sstables_nr);
         BOOST_REQUIRE(sstables_closed_during_cleanup >= sstables_nr / 2);
@@ -5915,17 +5915,17 @@ SEASTAR_TEST_CASE(cleanup_during_offstrategy_incremental_compaction_test) {
             t->disable_auto_compaction().get();
             const dht::token_range_vector empty_owned_ranges;
             for (auto&& sst : ssts) {
-                testlog.info("run id {}", sst->run_identifier());
+                LOGMACRO(testlog, log_level::info, "run id {}", sst->run_identifier());
                 column_family_test(t).add_sstable(sst, sstables::offstrategy::yes).get();
                 observers.push_back(sst->add_on_closed_handler([&] (sstable& sst) mutable {
                     auto sstables = t->get_sstables();
-                    testlog.info("Closing sstable of generation {}, table set size: {}", sst.generation(), sstables->size());
+                    LOGMACRO(testlog, log_level::info, "Closing sstable of generation {}, table set size: {}", sst.generation(), sstables->size());
                     sstables_closed++;
                 }));
                 observers.push_back(sst->add_on_delete_handler([&] (sstable& sst) mutable {
                     // ATTN -- the _on_delete callback is not necessarily running in thread
                     auto missing = (::access(fmt::to_string(sst.get_filename()).c_str(), F_OK) != 0);
-                    testlog.info("Deleting sstable of generation {}: missing={}", sst.generation(), missing);
+                    LOGMACRO(testlog, log_level::info, "Deleting sstable of generation {}: missing={}", sst.generation(), missing);
                     sstables_missing_on_delete += missing;
                 }));
             }
@@ -5933,14 +5933,14 @@ SEASTAR_TEST_CASE(cleanup_during_offstrategy_incremental_compaction_test) {
             auto owned_ranges_ptr = make_lw_shared<const dht::token_range_vector>(std::move(owned_token_ranges));
             t->perform_cleanup_compaction(std::move(owned_ranges_ptr), tasks::task_info{}).get();
             BOOST_REQUIRE(cm.sstables_requiring_cleanup(t->try_get_table_state_with_static_sharding()).empty());
-            testlog.info("Cleanup has finished");
+            LOGMACRO(testlog, log_level::info, "Cleanup has finished");
         }
 
         while (sstables_closed != sstables_nr) {
             yield().get();
         }
 
-        testlog.info("Closed sstables {}, missing on delete {}", sstables_closed, sstables_missing_on_delete);
+        LOGMACRO(testlog, log_level::info, "Closed sstables {}, missing on delete {}", sstables_closed, sstables_missing_on_delete);
 
         BOOST_REQUIRE_EQUAL(sstables_closed, sstables_nr);
         BOOST_REQUIRE_EQUAL(sstables_missing_on_delete, 0);
@@ -5977,7 +5977,7 @@ future<> test_sstables_excluding_staging_correctness(test_env_config cfg) {
         t->add_sstable_and_update_cache(regular_sst).get();
 
         {
-            testlog.info("table::as_mutation_source_excluding_staging()");
+            LOGMACRO(testlog, log_level::info, "table::as_mutation_source_excluding_staging()");
             auto ms_excluding_staging = t->as_mutation_source_excluding_staging();
             assert_that(ms_excluding_staging.make_mutation_reader(s, env.make_reader_permit(), query::full_partition_range))
                 .produces(*sorted_muts.rbegin())
@@ -5985,7 +5985,7 @@ future<> test_sstables_excluding_staging_correctness(test_env_config cfg) {
         }
 
         {
-            testlog.info("table::as_mutation_source()");
+            LOGMACRO(testlog, log_level::info, "table::as_mutation_source()");
             auto ms_inclusive = t->as_mutation_source();
             assert_that(ms_inclusive.make_mutation_reader(s, env.make_reader_permit(), query::full_partition_range))
                     .produces(*sorted_muts.begin())
@@ -6038,7 +6038,7 @@ SEASTAR_TEST_CASE(produces_optimal_filter_by_estimating_correctly_partitions_per
         }
         auto sst = make_sstable_containing(sst_gen, std::move(muts));
 
-        testlog.info("index size: {}, data_size: {}", sst->index_size(), sst->ondisk_data_size());
+        LOGMACRO(testlog, log_level::info, "index size: {}, data_size: {}", sst->index_size(), sst->ondisk_data_size());
 
         uint64_t max_sstable_size = std::ceil(double(sst->ondisk_data_size()) / 10);
         auto ret = compact({sst}, max_sstable_size);
@@ -6049,7 +6049,7 @@ SEASTAR_TEST_CASE(produces_optimal_filter_by_estimating_correctly_partitions_per
         auto comp = ret.new_sstables.front()->get_open_info().get();
 
         // Filter for SSTable generated cannot be lower than the one expected
-        testlog.info("filter size: actual={}, expected>={}", comp.components->filter->memory_size(), filter->memory_size());
+        LOGMACRO(testlog, log_level::info, "filter size: actual={}, expected>={}", comp.components->filter->memory_size(), filter->memory_size());
         BOOST_REQUIRE(comp.components->filter->memory_size() >= filter->memory_size());
     });
 }
@@ -6098,7 +6098,7 @@ SEASTAR_TEST_CASE(splitting_compaction_test) {
         auto classify_fn = [&groups] (dht::token t) -> mutation_writer::token_group_id {
             auto r = dht::compaction_group_of(1, t);
             if (groups.insert(r).second) {
-                testlog.info("Group {} detected!", r);
+                LOGMACRO(testlog, log_level::info, "Group {} detected!", r);
             }
             return r;
         };
@@ -6115,7 +6115,7 @@ SEASTAR_TEST_CASE(splitting_compaction_test) {
 
         // Assert that data was segregated both by token and timestamp.
         for (auto& sst : ret.new_sstables) {
-            testlog.info("{}: token_groups: [{}, {}], windows: [{}, {}]",
+            LOGMACRO(testlog, log_level::info, "{}: token_groups: [{}, {}], windows: [{}, {}]",
                          sst->get_filename(),
                          classify_fn(sst->get_first_decorated_key().token()),
                          classify_fn(sst->get_last_decorated_key().token()),

@@ -123,12 +123,12 @@ void do_test_client_multipart_upload(failure_policy policy, bool is_jumbo = fals
     const sstring name(fmt::format("/{}/testobject-{}-{}", "test", is_jumbo ? "jumbo" : "large", ::getpid()));
 
     register_policy(name, policy);
-    testlog.info("Make client");
+    LOGMACRO(testlog, log_level::info, "Make client");
     semaphore mem(16 << 20);
     auto cln = s3::client::make(get_address(), make_minio_config(), mem);
     auto close_client = deferred_close(*cln);
 
-    testlog.info("Upload object");
+    LOGMACRO(testlog, log_level::info, "Upload object");
     auto out = output_stream<char>(is_jumbo ? cln->make_upload_jumbo_sink(name, 3) : cln->make_upload_sink(name));
     auto close_stream = deferred_close(out);
 
@@ -138,7 +138,7 @@ void do_test_client_multipart_upload(failure_policy policy, bool is_jumbo = fals
         out.write(reinterpret_cast<char*>(rnd.begin()), rnd.size()).get();
     }
 
-    testlog.info("Flush multipart upload");
+    LOGMACRO(testlog, log_level::info, "Flush multipart upload");
     out.flush().get();
 }
 

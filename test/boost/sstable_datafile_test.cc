@@ -1677,7 +1677,7 @@ SEASTAR_TEST_CASE(test_repeated_tombstone_skipping) {
             auto ck1 = table.make_ckey(1);
             auto ck2 = table.make_ckey((1 + i) / 2);
             auto ck3 = table.make_ckey(i);
-            testlog.info("checking {} {}", ck2, ck3);
+            LOGMACRO(testlog, log_level::info, "checking {} {}", ck2, ck3);
             auto slice = partition_slice_builder(*table.schema())
                 .with_range(query::clustering_range::make_singular(ck1))
                 .with_range(query::clustering_range::make_singular(ck2))
@@ -2466,7 +2466,7 @@ SEASTAR_TEST_CASE(sstable_run_clustering_disjoint_invariant_test) {
 
             BOOST_REQUIRE(sst->min_position().key() == first_ckey_prefix);
             BOOST_REQUIRE(sst->max_position().key() == last_ckey_prefix);
-            testlog.info("sstable: {} {} -> {} {}", first_ckey_idx, last_ckey_idx, sst->first_partition_first_position(), sst->last_partition_last_position());
+            LOGMACRO(testlog, log_level::info, "sstable: {} {} -> {} {}", first_ckey_idx, last_ckey_idx, sst->first_partition_first_position(), sst->last_partition_last_position());
 
             return sst;
         };
@@ -2579,7 +2579,7 @@ SEASTAR_TEST_CASE(test_zero_estimated_partitions) {
         ss.add_row(mut, ss.make_ckey(0), "val");
 
         for (const auto version : writable_sstable_versions) {
-            testlog.info("version={}", version);
+            LOGMACRO(testlog, log_level::info, "version={}", version);
 
             auto mr = make_mutation_reader_from_mutations(ss.schema(), env.make_reader_permit(), mut);
             sstable_writer_config cfg = env.manager().configure_writer();
@@ -2642,7 +2642,7 @@ SEASTAR_TEST_CASE(test_missing_partition_end_fragment) {
         auto enable_aborts = defer([] { set_abort_on_internal_error(true); }); // FIXME: restore to previous value
 
         for (const auto version : writable_sstable_versions) {
-            testlog.info("version={}", version);
+            LOGMACRO(testlog, log_level::info, "version={}", version);
 
             std::deque<mutation_fragment_v2> frags;
             frags.push_back(mutation_fragment_v2(*s, env.make_reader_permit(), partition_start(pkeys[0], tombstone())));
@@ -2663,7 +2663,7 @@ SEASTAR_TEST_CASE(test_missing_partition_end_fragment) {
                 mr.consume_in_thread(std::move(wr));
                 BOOST_FAIL("write_components() should have failed");
             } catch (const std::runtime_error&) {
-                testlog.info("failed as expected: {}", std::current_exception());
+                LOGMACRO(testlog, log_level::info, "failed as expected: {}", std::current_exception());
             }
         }
     });
@@ -2777,7 +2777,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
         auto schema = random_schema.schema();
         auto permit = env.make_reader_permit();
 
-        testlog.info("Random schema:\n{}", random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
         const auto muts = tests::generate_random_mutations(random_schema).get();
 
@@ -2795,16 +2795,16 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
         const std::map<sstring, sstring> lz4_compression_params = {{compression_parameters::SSTABLE_COMPRESSION, "LZ4Compressor"}};
 
         for (const auto version : writable_sstable_versions) {
-            testlog.info("version={}", version);
+            LOGMACRO(testlog, log_level::info, "version={}", version);
             for (const auto& compression_params : {no_compression_params, lz4_compression_params}) {
-                testlog.info("compression={}", compression_params);
+                LOGMACRO(testlog, log_level::info, "compression={}", compression_params);
                 auto sst_schema = schema_builder(schema).set_compressor_params(compression_params).build();
                 auto sst = make_sstable(sst_schema, version);
                 sst->load(sst->get_schema()->get_sharder()).get();
 
                 validate_checksums_result res;
 
-                testlog.info("Validating intact {}", sst->get_filename());
+                LOGMACRO(testlog, log_level::info, "Validating intact {}", sst->get_filename());
 
                 res = sstables::validate_checksums(sst, permit).get();
                 BOOST_REQUIRE(res.status == validate_checksums_status::valid);
@@ -2813,7 +2813,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 auto sst_file = open_file_dma(test(sst).filename(sstables::component_type::Data).native(), open_flags::wo).get();
                 auto close_sst_file = defer([&sst_file] { sst_file.close().get(); });
 
-                testlog.info("Validating digest-corrupted {}", sst->get_filename());
+                LOGMACRO(testlog, log_level::info, "Validating digest-corrupted {}", sst->get_filename());
                 auto valid_digest = sst->read_digest().get();
                 BOOST_REQUIRE(valid_digest.has_value());
                 sstables::test(sst).set_digest(valid_digest.value() + 1);
@@ -2823,7 +2823,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 BOOST_REQUIRE(res.has_digest);
                 sstables::test(sst).set_digest(valid_digest); // restore it for next test cases
 
-                testlog.info("Validating checksum-corrupted {}", sst->get_filename());
+                LOGMACRO(testlog, log_level::info, "Validating checksum-corrupted {}", sst->get_filename());
 
                 { // corrupt the sstable
                     const auto size = std::min(sst->ondisk_data_size() / 2, uint64_t(1024));
@@ -2836,7 +2836,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 BOOST_REQUIRE(res.status == validate_checksums_status::invalid);
                 BOOST_REQUIRE(res.has_digest);
 
-                testlog.info("Validating post-load minor truncation (last byte removed) on {}", sst->get_filename());
+                LOGMACRO(testlog, log_level::info, "Validating post-load minor truncation (last byte removed) on {}", sst->get_filename());
 
                 { // truncate the sstable
                     sst_file.truncate(sst->ondisk_data_size() - 1).get();
@@ -2846,7 +2846,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 BOOST_REQUIRE(res.status == validate_checksums_status::invalid);
                 BOOST_REQUIRE(res.has_digest);
 
-                testlog.info("Validating post-load major truncation (half of data removed) on {}", sst->get_filename());
+                LOGMACRO(testlog, log_level::info, "Validating post-load major truncation (half of data removed) on {}", sst->get_filename());
 
                 { // truncate the sstable
                     sst_file.truncate(sst->ondisk_data_size() / 2).get();
@@ -2856,7 +2856,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 BOOST_REQUIRE(res.status == validate_checksums_status::invalid);
                 BOOST_REQUIRE(res.has_digest);
 
-                testlog.info("Validating with no digest {}", sst->get_filename());
+                LOGMACRO(testlog, log_level::info, "Validating with no digest {}", sst->get_filename());
 
                 sstables::test(sst).set_digest(std::nullopt);
                 sstables::test(sst).rewrite_toc_without_component(component_type::Digest);
@@ -2865,7 +2865,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 BOOST_REQUIRE(!res.has_digest);
 
                 if (compression_params == no_compression_params) {
-                    testlog.info("Validating with no checksums {}", sst->get_filename());
+                    LOGMACRO(testlog, log_level::info, "Validating with no checksums {}", sst->get_filename());
                     sstables::test(sst).rewrite_toc_without_component(component_type::CRC);
                     auto res = sstables::validate_checksums(sst, permit).get();
                     BOOST_REQUIRE(res.status == validate_checksums_status::no_checksum);
@@ -2875,7 +2875,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 { // truncate the sstable
                     auto sst = make_sstable(sst_schema, version);
 
-                    testlog.info("Validating pre-load minor truncation (last byte removed) on {}", sst->get_filename());
+                    LOGMACRO(testlog, log_level::info, "Validating pre-load minor truncation (last byte removed) on {}", sst->get_filename());
 
                     auto sst_file = open_file_dma(test(sst).filename(sstables::component_type::Data).native(), open_flags::wo).get();
                     auto close_sst_file = defer([&sst_file] { sst_file.close().get(); });
@@ -2891,7 +2891,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 { // truncate the sstable
                     auto sst = make_sstable(sst_schema, version);
 
-                    testlog.info("Validating pre-load major truncation (half of data removed) on {}", sst->get_filename());
+                    LOGMACRO(testlog, log_level::info, "Validating pre-load major truncation (half of data removed) on {}", sst->get_filename());
 
                     auto sst_file = open_file_dma(test(sst).filename(sstables::component_type::Data).native(), open_flags::wo).get();
                     auto close_sst_file = defer([&sst_file] { sst_file.close().get(); });
@@ -2907,7 +2907,7 @@ SEASTAR_TEST_CASE(test_validate_checksums) {
                 { // append data to the sstable
                     auto sst = make_sstable(sst_schema, version);
 
-                    testlog.info("Validating appended {}", sst->get_filename());
+                    LOGMACRO(testlog, log_level::info, "Validating appended {}", sst->get_filename());
 
                     auto sst_file = open_file_dma(test(sst).filename(sstables::component_type::Data).native(), open_flags::rw).get();
                     auto close_sst_file = defer([&sst_file] { sst_file.close().get(); });
@@ -2958,7 +2958,7 @@ SEASTAR_TEST_CASE(test_index_fast_forwarding_after_eof) {
         auto schema = random_schema.schema();
         auto permit = env.make_reader_permit();
 
-        testlog.info("Random schema:\n{}", random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
         const auto muts = tests::generate_random_mutations(random_schema, 2).get();
 
@@ -2992,7 +2992,7 @@ SEASTAR_TEST_CASE(test_index_fast_forwarding_after_eof) {
         auto& region = env.manager().get_cache_tracker().region();
 
         for (auto it = std::next(prs.begin()); it != prs.end(); ++it) {
-            testlog.info("fast_forward_to({})", *it);
+            LOGMACRO(testlog, log_level::info, "fast_forward_to({})", *it);
             reader.fast_forward_to(*it).get();
             while (reader().get());
             // Make sure the index page linked into LRU after EOF is evicted.
@@ -3030,7 +3030,7 @@ SEASTAR_TEST_CASE(test_full_scan_reader_random_schema_random_mutations) {
         auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
         auto schema = random_schema.schema();
 
-        testlog.info("Random schema:\n{}", random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
         const auto muts = tests::generate_random_mutations(random_schema, 20).get();
 
@@ -3056,7 +3056,7 @@ SEASTAR_TEST_CASE(find_first_position_in_partition_from_sstable_test) {
         using with_static_row = bool_class<with_static_row_tag>;
 
         auto check_sstable_first_and_last_positions = [&] (size_t partitions, with_range_tombstone with_range_tombstone, with_static_row with_static_row) {
-            testlog.info("check_sstable_first_and_last_positions: partitions={}, with_range_tombstone={}, with_static_row={}",
+            LOGMACRO(testlog, log_level::info, "check_sstable_first_and_last_positions: partitions={}, with_range_tombstone={}, with_static_row={}",
                 partitions, bool(with_range_tombstone), bool(with_static_row));
             simple_schema ss;
             auto s = ss.schema();
@@ -3143,7 +3143,7 @@ future<> test_sstable_bytes_correctness(sstring tname, test_env_config cfg) {
         auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
         auto schema = random_schema.schema();
 
-        testlog.info("Random schema:\n{}", random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
         const auto muts = tests::generate_random_mutations(random_schema, 20).get();
 
@@ -3151,7 +3151,7 @@ future<> test_sstable_bytes_correctness(sstring tname, test_env_config cfg) {
 
         auto free_space = sst->get_storage().free_space().get();
         BOOST_REQUIRE(free_space > 0);
-        testlog.info("prefix: {}, free space: {}", sst->get_storage().prefix(), free_space);
+        LOGMACRO(testlog, log_level::info, "prefix: {}, free space: {}", sst->get_storage().prefix(), free_space);
 
         auto get_bytes_on_disk_from_storage = [&] (const sstables::shared_sstable& sst) {
             uint64_t bytes_on_disk = 0;
@@ -3165,7 +3165,7 @@ future<> test_sstable_bytes_correctness(sstring tname, test_env_config cfg) {
 
         auto expected_bytes_on_disk = get_bytes_on_disk_from_storage(sst);
 
-        testlog.info("expected={}, actual={}", expected_bytes_on_disk, sst->bytes_on_disk());
+        LOGMACRO(testlog, log_level::info, "expected={}, actual={}", expected_bytes_on_disk, sst->bytes_on_disk());
 
         BOOST_REQUIRE(sst->bytes_on_disk() == expected_bytes_on_disk);
     }, std::move(cfg));
@@ -3190,7 +3190,7 @@ SEASTAR_TEST_CASE(test_sstable_set_predicate) {
         auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
         auto s = random_schema.schema();
 
-        testlog.info("Random schema:\n{}", random_schema.cql());
+        LOGMACRO(testlog, log_level::info, "Random schema:\n{}", random_schema.cql());
 
         const auto muts = tests::generate_random_mutations(random_schema, 20).get();
 
@@ -3244,9 +3244,9 @@ SEASTAR_TEST_CASE(test_sstable_set_predicate) {
                 return false;
             };
 
-            testlog.info("excluding_pred: point query");
+            LOGMACRO(testlog, log_level::info, "excluding_pred: point query");
             verify_reader_result(make_point_query_reader(excluding_pred), true);
-            testlog.info("excluding_pred: range query");
+            LOGMACRO(testlog, log_level::info, "excluding_pred: range query");
             verify_reader_result(make_full_scan_reader(excluding_pred), true);
         }
 
@@ -3255,9 +3255,9 @@ SEASTAR_TEST_CASE(test_sstable_set_predicate) {
                 return true;
             };
 
-            testlog.info("inclusive_pred: point query");
+            LOGMACRO(testlog, log_level::info, "inclusive_pred: point query");
             verify_reader_result(make_point_query_reader(inclusive_pred), false);
-            testlog.info("inclusive_pred: range query");
+            LOGMACRO(testlog, log_level::info, "inclusive_pred: range query");
             verify_reader_result(make_full_scan_reader(inclusive_pred), false);
         }
     });

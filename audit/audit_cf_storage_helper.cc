@@ -83,7 +83,7 @@ future<> audit_cf_storage_helper::migrate_audit_table(service::group0_guard grou
                         std::move(group0_guard), format("audit: Alter {} keyspace", KEYSPACE_NAME));
                 break;
             } catch (::service::group0_concurrent_modification &) {
-                logger.info("Concurrent operation is detected while altering {} keyspace, retrying.", KEYSPACE_NAME);
+                LOGMACRO(logger, log_level::info, "Concurrent operation is detected while altering {} keyspace, retrying.", KEYSPACE_NAME);
             }
             group0_guard = co_await _mm.start_group0_operation();
         } else {

@@ -465,9 +465,9 @@ public:
     // \param wfm -- the wait_for_message instance that describes details of the pause
     future<> inject(const std::string_view& name, utils::wait_for_message wfm) {
         co_await inject(name, [name, wfm] (injection_handler& handler) -> future<> {
-            errinj_logger.info("{}: waiting for message", name);
+            LOGMACRO(errinj_logger, log_level::info, "{}: waiting for message", name);
             co_await handler.wait_for_message(std::chrono::steady_clock::now() + wfm.timeout);
-            errinj_logger.info("{}: message received", name);
+            LOGMACRO(errinj_logger, log_level::info, "{}: message received", name);
         });
     }
 

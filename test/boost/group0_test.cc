@@ -139,8 +139,8 @@ SEASTAR_TEST_CASE(test_group0_history_clearing_old_entries) {
         // The first entry corresponds to the last schema change.
         auto last_ts = timestamps2.front();
 
-        testlog.info("timestamps1: {}", timestamps1);
-        testlog.info("timestamps2: {}", timestamps2);
+        LOGMACRO(testlog, log_level::info, "timestamps1: {}", timestamps1);
+        LOGMACRO(testlog, log_level::info, "timestamps2: {}", timestamps2);
 
         // All entries in `timestamps2` except `last_ts` should be present in `timestamps1`.
         BOOST_REQUIRE(std::includes(timestamps1.begin(), timestamps1.end(), timestamps2.begin()+1, timestamps2.end(), std::greater{}));
@@ -152,7 +152,7 @@ SEASTAR_TEST_CASE(test_group0_history_clearing_old_entries) {
             return last_ts - ts > sleep_dur;
         });
 
-        testlog.info("older by sleep_dur: {}", older_by_sleep_dur);
+        LOGMACRO(testlog, log_level::info, "older by sleep_dur: {}", older_by_sleep_dur);
 
         // That last change should have cleared exactly those older than `sleep_dur` entries.
         // Therefore `timestamps2` should contain all in `timestamps1` minus those changes plus one (`last_ts`).

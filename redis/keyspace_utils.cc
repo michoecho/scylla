@@ -171,7 +171,7 @@ future<> create_keyspace_if_not_exists_impl(seastar::sharded<service::storage_pr
         });
 
         if (schema_ok) {
-            logger.info("Redis schema is already up-to-date");
+            LOGMACRO(logger, log_level::info, "Redis schema is already up-to-date");
             co_return; // if schema is created already do nothing
         }
 
@@ -212,7 +212,7 @@ future<> create_keyspace_if_not_exists_impl(seastar::sharded<service::storage_pr
                 co_return;
             }
 
-            logger.info("Create keyspace: {}, table: {} for redis.", ksm.name(), cf_name);
+            LOGMACRO(logger, log_level::info, "Create keyspace: {}, table: {} for redis.", ksm.name(), cf_name);
             co_await service::prepare_new_column_family_announcement(mutations, sp, ksm, schema, ts);
         }, db, std::ref(proxy.local()), std::ref(mutations), ts);
 
@@ -230,7 +230,7 @@ future<> create_keyspace_if_not_exists_impl(seastar::sharded<service::storage_pr
             co_return co_await mml.announce(std::move(mutations), std::move(group0_guard),
                     "keyspace-utils: create default keyspaces and databases for redis");
         } catch (service::group0_concurrent_modification&) {
-            logger.info("Concurrent operation is detected while creating default databases for redis, retrying.");
+            LOGMACRO(logger, log_level::info, "Concurrent operation is detected while creating default databases for redis, retrying.");
         }
     }
 }

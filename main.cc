@@ -243,7 +243,7 @@ class sighup_handler {
 public:
     // Installs the signal handler. Must call stop() (and wait for it) before destruction.
     sighup_handler(bpo::variables_map& opts, db::config& cfg) : _opts(opts), _cfg(cfg) {
-        startlog.info("installing SIGHUP handler");
+        LOGMACRO(startlog, log_level::info, "installing SIGHUP handler");
         handle_signal(SIGHUP, [this] { reread_config(); });
     }
 private:
@@ -267,10 +267,10 @@ private:
                     } else if (_pending) {
                         _pending = false;
                         try {
-                            startlog.info("re-reading configuration file");
+                            LOGMACRO(startlog, log_level::info, "re-reading configuration file");
                             read_config(_opts, _cfg).get();
                             _cfg.broadcast_to_all_shards().get();
-                            startlog.info("completed re-reading configuration file");
+                            LOGMACRO(startlog, log_level::info, "completed re-reading configuration file");
                         } catch (...) {
                             startlog.error("failed to re-read configuration file: {}", std::current_exception());
                         }
@@ -312,10 +312,10 @@ class sigquit_handler {
 
             try {
                 co_await _db.invoke_on_all([] (replica::database& db) -> future<> {
-                    diaglog.info("Diagnostics dump requested via SIGQUIT:\n{}", memory::generate_memory_diagnostics_report());
+                    LOGMACRO(diaglog, log_level::info, "Diagnostics dump requested via SIGQUIT:\n{}", memory::generate_memory_diagnostics_report());
 
                     co_await db.foreach_reader_concurrency_semaphore([] (reader_concurrency_semaphore& semaphore) {
-                        diaglog.info("Diagnostics dump requested via SIGQUIT:\n{}", semaphore.dump_diagnostics());
+                        LOGMACRO(diaglog, log_level::info, "Diagnostics dump requested via SIGQUIT:\n{}", semaphore.dump_diagnostics());
                         return make_ready_future<>();
                     });
                 });
@@ -504,10 +504,10 @@ static void checkpoint(stop_signal& stop, sstring what, bool ready = false) {
 template <typename Func>
 static auto defer_verbose_shutdown(const char* what, Func&& func) {
     auto vfunc = [what, func = std::forward<Func>(func)] () mutable {
-        startlog.info("Shutting down {}", what);
+        LOGMACRO(startlog, log_level::info, "Shutting down {}", what);
         try {
             func();
-            startlog.info("Shutting down {} was successful", what);
+            LOGMACRO(startlog, log_level::info, "Shutting down {} was successful", what);
         } catch (...) {
             auto ex = std::current_exception();
             bool do_abort = true;
@@ -591,7 +591,7 @@ static locator::host_id initialize_local_info_thread(sharded<db::system_keyspace
     }
     if (!linfo.host_id) {
         linfo.host_id = locator::host_id::create_random_id();
-        startlog.info("Setting local host id to {}", linfo.host_id);
+        LOGMACRO(startlog, log_level::info, "Setting local host id to {}", linfo.host_id);
     }
 
     linfo.listen_address = listen_address;
@@ -605,7 +605,7 @@ extern "C" void __attribute__((weak)) __llvm_profile_dump();
 [[gnu::noinline]]
 void dump_performance_profiles() {
     if (__llvm_profile_dump) {
-        startlog.info("Calling __llvm_profile_dump()");
+        LOGMACRO(startlog, log_level::info, "Calling __llvm_profile_dump()");
         __llvm_profile_dump();
     }
 }
@@ -836,7 +836,7 @@ sharded<locator::shared_token_metadata> token_metadata;
             logalloc::prime_segment_pool(memory::stats().total_memory(), memory::min_free_memory()).get();
             logging::apply_settings(cfg->logging_settings(app.options().log_opts));
 
-            startlog.info(startup_msg, scylla_version(), get_build_id());
+            LOGMACRO(startlog, log_level::info, startup_msg, scylla_version(), get_build_id());
 
             // Set the default scheduling_group, i.e., the main scheduling
             // group to a lower shares. Subsystems needs higher shares
@@ -1351,7 +1351,7 @@ sharded<locator::shared_token_metadata> token_metadata;
             with_scheduling_group(maintenance_scheduling_group, [&] {
                 return ctx.http_server.listen(socket_address{api_addr, cfg->api_port()});
             }).get();
-            startlog.info("Scylla API server listening on {}:{} ...", api_addr, cfg->api_port());
+            LOGMACRO(startlog, log_level::info, "Scylla API server listening on {}:{} ...", api_addr, cfg->api_port());
 
             api::set_server_config(ctx, *cfg).get();
             auto stop_config_api = defer_verbose_shutdown("config API", [&ctx] {
@@ -1420,7 +1420,7 @@ sharded<locator::shared_token_metadata> token_metadata;
                   checkpoint(stop_signal, "replaying schema commit log");
                   auto rp = db::commitlog_replayer::create_replayer(db, sys_ks).get();
                   rp.recover(paths, db::schema_tables::COMMITLOG_FILENAME_PREFIX).get();
-                  startlog.info("replaying schema commit log - flushing memtables");
+                  LOGMACRO(startlog, log_level::info, "replaying schema commit log - flushing memtables");
                   // The schema commitlog lives only on the null shard.
                   // This is enforced when the table is marked to use
                   // it - schema_static_props::enable_schema_commitlog function
@@ -1899,7 +1899,7 @@ sharded<locator::shared_token_metadata> token_metadata;
                     checkpoint(stop_signal, "replaying commit log");
                     auto rp = db::commitlog_replayer::create_replayer(db, sys_ks).get();
                     rp.recover(paths, db::commitlog::descriptor::FILENAME_PREFIX).get();
-                    startlog.info("replaying commit log - flushing memtables");
+                    LOGMACRO(startlog, log_level::info, "replaying commit log - flushing memtables");
                     db.invoke_on_all(&replica::database::flush_all_memtables).get();
                     supervisor::notify("replaying commit log - removing old commitlog segments");
 
@@ -2088,11 +2088,11 @@ sharded<locator::shared_token_metadata> token_metadata;
                     });
 
                     stop_signal.ready();
-                    startlog.info("Scylla version {} initialization completed (maintenance mode).", scylla_version());
+                    LOGMACRO(startlog, log_level::info, "Scylla version {} initialization completed (maintenance mode).", scylla_version());
                     stop_signal.wait().get();
-                    startlog.info("Signal received; shutting down");
+                    LOGMACRO(startlog, log_level::info, "Signal received; shutting down");
                 }
-                startlog.info("Scylla version {} shutdown complete.", scylla_version());
+                LOGMACRO(startlog, log_level::info, "Scylla version {} shutdown complete.", scylla_version());
                 _exit(0);
                 return 0;
             }
@@ -2182,9 +2182,9 @@ sharded<locator::shared_token_metadata> token_metadata;
             // At this point, `locator::topology` should be stable, i.e. we should have complete information
             // about the layout of the cluster (= list of nodes along with the racks/DCs).
             if (cfg->rf_rack_valid_keyspaces()) {
-                startlog.info("Verifying that all of the keyspaces are RF-rack-valid");
+                LOGMACRO(startlog, log_level::info, "Verifying that all of the keyspaces are RF-rack-valid");
                 db.local().check_rf_rack_validity(token_metadata.local().get());
-                startlog.info("All keyspaces are RF-rack-valid");
+                LOGMACRO(startlog, log_level::info, "All keyspaces are RF-rack-valid");
             }
 
             dictionary_service dict_service(
@@ -2222,7 +2222,7 @@ sharded<locator::shared_token_metadata> token_metadata;
                 tracing.invoke_on_all(&tracing::tracing::shutdown).get();
             });
 
-            startlog.info("SSTable data integrity checker is {}.",
+            LOGMACRO(startlog, log_level::info, "SSTable data integrity checker is {}.",
                     cfg->enable_sstable_data_integrity_check() ? "enabled" : "disabled");
 
             // This implicitly depends on node joining the cluster (join_cluster())
@@ -2326,7 +2326,7 @@ sharded<locator::shared_token_metadata> token_metadata;
             });
 
             if (!ss.local().raft_topology_change_enabled()) {
-                startlog.info("Waiting for gossip to settle before accepting client requests...");
+                LOGMACRO(startlog, log_level::info, "Waiting for gossip to settle before accepting client requests...");
                 gossiper.local().wait_for_gossip_to_settle().get();
             }
 
@@ -2452,21 +2452,21 @@ sharded<locator::shared_token_metadata> token_metadata;
             stop_signal.ready();
             supervisor::notify("serving");
 
-            startlog.info("Scylla version {} initialization completed.", scylla_version());
+            LOGMACRO(startlog, log_level::info, "Scylla version {} initialization completed.", scylla_version());
             if (after_init_func) {
                 after_init_func(cfg);
             }
             stop_signal.wait().get();
-            startlog.info("Signal received; shutting down");
+            LOGMACRO(startlog, log_level::info, "Signal received; shutting down");
 	    // At this point, all objects destructors and all shutdown hooks registered with defer() are executed
           } catch (const sleep_aborted&) {
-            startlog.info("Startup interrupted");
+            LOGMACRO(startlog, log_level::info, "Startup interrupted");
             // This happens when scylla gets SIGINT in the middle of join_cluster(), so
             // just ignore it and exit normally
             _exit(0);
             return 0;
           } catch (const abort_requested_exception&) {
-            startlog.info("Startup interrupted");
+            LOGMACRO(startlog, log_level::info, "Startup interrupted");
             // This happens when scylla gets SIGINT in the middle of join_cluster(), so
             // just ignore it and exit normally
             _exit(0);
@@ -2478,7 +2478,7 @@ sharded<locator::shared_token_metadata> token_metadata;
             _exit(1);
             return 1;
           }
-          startlog.info("Scylla version {} shutdown complete.", scylla_version());
+          LOGMACRO(startlog, log_level::info, "Scylla version {} shutdown complete.", scylla_version());
 
           // With -fprofile-generate, LLVM inserts an exit hook which saves the profile counters to disk.
           // So does BOLT's instrumentation.

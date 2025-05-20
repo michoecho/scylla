@@ -469,7 +469,7 @@ public:
         auto s = _sp.local_db().find_schema(keyspace, cfname);
         auto erm_ptr = s->table().get_effective_replication_map();
         if (!std::ranges::all_of(erm_ptr->get_token_metadata().get_normal_token_owners(), std::bind_front(&storage_proxy::is_alive, &_sp, std::cref(*erm_ptr)))) {
-            slogger.info("Cannot perform truncate, some hosts are down");
+            LOGMACRO(slogger, log_level::info, "Cannot perform truncate, some hosts are down");
             // Since the truncate operation is so aggressive and is typically only
             // invoked by an admin, for simplicity we require that all nodes are up
             // to perform the operation.
@@ -843,9 +843,9 @@ private:
             if (s->cf_name() != cf_name) {
                 co_return;
             }
-            slogger.info("storage_proxy::handle_read injection hit");
+            LOGMACRO(slogger, log_level::info, "storage_proxy::handle_read injection hit");
             co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes{1});
-            slogger.info("storage_proxy::handle_read injection done");
+            LOGMACRO(slogger, log_level::info, "storage_proxy::handle_read injection done");
         });
 
         auto pr2 = ::compat::unwrap(std::move(pr), *s);
@@ -1084,7 +1084,7 @@ private:
                         const auto topology_requests_entry = co_await _sys_ks.local().get_topology_request_entry(ongoing_global_request_id, true);
                         if (topology_requests_entry.truncate_table_id == table_id) {
                             global_request_id = ongoing_global_request_id;
-                            slogger.info("Ongoing TRUNCATE for table {}.{} (global request ID {}) detected; waiting for it to complete",
+                            LOGMACRO(slogger, log_level::info, "Ongoing TRUNCATE for table {}.{} (global request ID {}) detected; waiting for it to complete",
                                                 ks_name, cf_name, global_request_id);
                             break;
                         }
@@ -1110,7 +1110,7 @@ private:
                                     .set("start_time", db_clock::now())
                                     .build());
 
-            slogger.info("Creating TRUNCATE global topology request for table {}.{}", ks_name, cf_name);
+            LOGMACRO(slogger, log_level::info, "Creating TRUNCATE global topology request for table {}.{}", ks_name, cf_name);
 
             topology_change change{std::move(updates)};
             sstring reason = "Truncating table";

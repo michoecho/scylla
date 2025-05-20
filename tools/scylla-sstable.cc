@@ -146,7 +146,7 @@ partition_set get_partitions(schema_ptr schema, const bpo::variables_map& app_co
     }
 
     if (!partitions.empty()) {
-        sst_log.info("filtering enabled, {} partition(s) to filter for", partitions.size());
+        LOGMACRO(sst_log, log_level::info, "filtering enabled, {} partition(s) to filter for", partitions.size());
     }
 
     return partitions;
@@ -788,10 +788,10 @@ public:
     }
     virtual future<> consume_stream_end() override {
         if (_histogram.empty()) {
-            sst_log.info("Histogram empty, no data to write");
+            LOGMACRO(sst_log, log_level::info, "Histogram empty, no data to write");
             co_return;
         }
-        sst_log.info("Histogram has {} entries, collected from {} partitions, {} rows, {} cells: {} timestamps total", _histogram.size(), _partitions, _rows, _cells, _timestamps);
+        LOGMACRO(sst_log, log_level::info, "Histogram has {} entries, collected from {} partitions, {} rows, {} cells: {} timestamps total", _histogram.size(), _partitions, _rows, _cells, _timestamps);
 
         const auto filename = "histogram.json";
 
@@ -819,7 +819,7 @@ public:
 
         co_await fstream.close();
 
-        sst_log.info("Histogram written to {}", filename);
+        LOGMACRO(sst_log, log_level::info, "Histogram written to {}", filename);
 
         co_return;
     }
@@ -1004,7 +1004,7 @@ void validate_operation(schema_ptr schema, reader_permit permit, const std::vect
     json_writer writer(json_output_stream);
     writer.StartStream();
     for (const auto& sst : sstables) {
-        const auto errors = sst->validate(permit, abort, [] (sstring what) { sst_log.info("{}", what); }).get();
+        const auto errors = sst->validate(permit, abort, [] (sstring what) { LOGMACRO(sst_log, log_level::info, "{}", what); }).get();
         writer.Key(fmt::to_string(sst->get_filename()));
         writer.StartObject();
         writer.Key("errors");
@@ -1698,7 +1698,7 @@ void decompress_operation(schema_ptr schema, reader_permit permit, const std::ve
 
     for (const auto& sst : sstables) {
         if (!sst->get_compression()) {
-            sst_log.info("Sstable {} is not compressed, nothing to do", sst->get_filename());
+            LOGMACRO(sst_log, log_level::info, "Sstable {} is not compressed, nothing to do", sst->get_filename());
             continue;
         }
 
@@ -1720,7 +1720,7 @@ void decompress_operation(schema_ptr schema, reader_permit permit, const std::ve
         }).get();
         ostream.flush().get();
 
-        sst_log.info("Sstable {} decompressed into {}", sst->get_filename(), output_filename);
+        LOGMACRO(sst_log, log_level::info, "Sstable {} decompressed into {}", sst->get_filename(), output_filename);
     }
 }
 

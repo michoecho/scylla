@@ -77,7 +77,7 @@ SEASTAR_TEST_CASE(test_topological_sorting) {
         };
 
         for (size_t i = 0; i < tests.size(); i++) {
-            testlog.info("Testing case index: {}", i);
+            LOGMACRO(testlog, log_level::info, "Testing case index: {}", i);
             if (tests[i].expect_error) {
                 BOOST_REQUIRE_THROW(utils::topological_sort(all_nodes, tests[i].adjacent_map).get(), std::runtime_error);
             } else {

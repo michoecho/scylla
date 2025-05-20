@@ -764,7 +764,7 @@ SEASTAR_THREAD_TEST_CASE(test_user_datadir_layout) {
     do_with_cql_env_thread([&] (cql_test_env& e) {
         e.execute_cql(format("create table {}.{} (p text PRIMARY KEY, c int)", ks, cf)).get();
         tbl_dirname = table_dirname(e, data_dir.path(), ks, cf);
-        testlog.info("Checking {}.{}: {}", ks, cf, tbl_dirname);
+        LOGMACRO(testlog, log_level::info, "Checking {}.{}: {}", ks, cf, tbl_dirname);
     }, cfg).get();
 
     BOOST_REQUIRE(file_exists(tbl_dirname.native()).get());
@@ -788,14 +788,14 @@ SEASTAR_THREAD_TEST_CASE(test_system_datadir_layout) {
 
     do_with_cql_env_thread([&] (cql_test_env& e) {
         auto tbl_dirname = table_dirname(e, data_dir.path(), "system", "local");
-        testlog.info("Checking system.local: {}", tbl_dirname);
+        LOGMACRO(testlog, log_level::info, "Checking system.local: {}", tbl_dirname);
 
         BOOST_REQUIRE(file_exists(tbl_dirname.native()).get());
         BOOST_REQUIRE(file_exists((tbl_dirname / sstables::upload_dir).native()).get());
         BOOST_REQUIRE(file_exists((tbl_dirname / sstables::staging_dir).native()).get());
 
         tbl_dirname = table_dirname(e, data_dir.path(), "system", "config");
-        testlog.info("Checking system.config: {}", tbl_dirname);
+        LOGMACRO(testlog, log_level::info, "Checking system.config: {}", tbl_dirname);
 
         BOOST_REQUIRE(!file_exists(tbl_dirname.native()).get());
     }, cfg).get();

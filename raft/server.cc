@@ -1363,7 +1363,7 @@ future<> server_impl::applier_fiber() {
                     try {
                         co_await _state_machine->apply(std::move(commands));
                     } catch (abort_requested_exception& e) {
-                        logger.info("[{}] applier fiber stopped because state machine was aborted: {}", _id, e);
+                        LOGMACRO(logger, log_level::info, "[{}] applier fiber stopped because state machine was aborted: {}", _id, e);
                         throw stop_apply_fiber{};
                     } catch (...) {
                         std::throw_with_nested(raft::state_machine_error{});
@@ -1934,7 +1934,7 @@ future<> server_impl::override_snapshot_thresholds() {
             if (from) {
                 try {
                     target = boost::lexical_cast<std::remove_reference_t<decltype(target)>>(*from);
-                    logger.info("Applied _config.{}={}", name, *from);
+                    LOGMACRO(logger, log_level::info, "Applied _config.{}={}", name, *from);
                 } catch (const boost::bad_lexical_cast& e) {
                     on_internal_error(
                         logger, fmt::format("Could not apply a snapshot threshold param: {}, value: {}, error: {}",

@@ -829,7 +829,7 @@ future<> sstable::read_toc() noexcept {
                     _recognized_components.insert(reverse_map(c, sstable_version_constants::get_component_map(_version)));
                 } catch (std::out_of_range& oor) {
                     _unrecognized_components.push_back(c);
-                    sstlog.info("Unrecognized TOC component was found: {} in sstable {}", c, toc_filename());
+                    LOGMACRO(sstlog, log_level::info, "Unrecognized TOC component was found: {} in sstable {}", c, toc_filename());
                 }
             }
             if (!_recognized_components.size()) {
@@ -1463,7 +1463,7 @@ void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
 
     // Create a new filter that can optimally represent the given num_partitions.
     auto optimal_filter = utils::i_filter::get_filter(num_partitions, _schema->bloom_filter_fp_chance(), get_filter_format(_version));
-    sstlog.info("Rebuilding bloom filter {}: resizing bitset from {} bytes to {} bytes. sstable origin: {}", filename(component_type::Filter), curr_bitset_size,
+    LOGMACRO(sstlog, log_level::info, "Rebuilding bloom filter {}: resizing bitset from {} bytes to {} bytes. sstable origin: {}", filename(component_type::Filter), curr_bitset_size,
                 downcast_ptr<utils::filter::bloom_filter>(optimal_filter.get())->bits().memory_size(), _origin);
 
     auto index_file = open_file(component_type::Index, open_flags::ro).get();
@@ -1540,7 +1540,7 @@ future<> sstable::reload_reclaimed_components() {
     co_await read_filter();
     _total_reclaimable_memory.reset();
     _total_memory_reclaimed -= _components->filter->memory_size();
-    sstlog.info("Reloaded bloom filter of {}", get_filename());
+    LOGMACRO(sstlog, log_level::info, "Reloaded bloom filter of {}", get_filename());
 }
 
 void sstable::disable_component_memory_reload() {
@@ -1872,7 +1872,7 @@ sstable::write_scylla_metadata(shard_id shard, struct run_identifier identifier,
         sid = sstable_id(generation().as_uuid());
     } else {
         sid = sstable_id(utils::UUID_gen::get_time_UUID());
-        sstlog.info("SSTable {} has numerical generation. SSTable identifier in scylla_metadata set to {}", get_filename(), sid);
+        LOGMACRO(sstlog, log_level::info, "SSTable {} has numerical generation. SSTable identifier in scylla_metadata set to {}", get_filename(), sid);
     }
     _components->scylla_metadata->data.set<scylla_metadata_type::SSTableIdentifier>(scylla_metadata::sstable_identifier{sid});
 
@@ -2043,7 +2043,7 @@ future<> sstable::generate_summary() {
         co_return;
     }
 
-    sstlog.info("Summary file {} not found. Generating Summary...", filename(component_type::Summary));
+    LOGMACRO(sstlog, log_level::info, "Summary file {} not found. Generating Summary...", filename(component_type::Summary));
     class summary_generator {
         const dht::i_partitioner& _partitioner;
         summary& _summary;
@@ -3348,7 +3348,7 @@ future<> remove_table_directory_if_has_no_snapshots(fs::path table_dir) {
         // while other subdirectories are removed recusresively.
         auto ec = co_await remove_dir(table_dir / subdir, subdir != sstables::snapshots_dir);
         if (subdir == sstables::snapshots_dir && ec == EEXIST) {
-            sstlog.info("Leaving table directory {} behind as it has snapshots", table_dir);
+            LOGMACRO(sstlog, log_level::info, "Leaving table directory {} behind as it has snapshots", table_dir);
         }
         if (!error) {
             error = ec;
