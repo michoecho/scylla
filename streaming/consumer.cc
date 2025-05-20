@@ -60,7 +60,7 @@ mutation_reader_consumer make_streaming_consumer(sstring origin,
                     return sst->open_data();
                 }).then([cf, sst, offstrategy, origin] {
                     if (offstrategy && sstables::repair_origin == origin) {
-                        sstables::LOGMACRO(sstlog, log_level::debug, "Enabled automatic off-strategy trigger for table {}.{}",
+                        LOGMACRO(sstables::sstlog, log_level::debug, "Enabled automatic off-strategy trigger for table {}.{}",
                                 cf->schema()->ks_name(), cf->schema()->cf_name());
                         cf->enable_off_strategy_trigger();
                     }

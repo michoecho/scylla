@@ -1509,34 +1509,34 @@ BOOST_AUTO_TEST_CASE(test_reordered_reject) {
     // fsm1 sends append_entries with idx=2 to fsm2 (again)
     auto append_idx2_2 = fsm1.get_output();
 
-    raft::LOGMACRO(logger, log_level::trace, "delivering first append idx=2");
+    LOGMACRO(raft::logger, log_level::trace, "delivering first append idx=2");
     deliver(routes, fsm1.id(), std::move(append_idx2_1.messages));
 
     // fsm2 rejects the first idx=2 append
     auto reject_1 = fsm2.get_output();
 
-    raft::LOGMACRO(logger, log_level::trace, "delivering second append idx=2");
+    LOGMACRO(raft::logger, log_level::trace, "delivering second append idx=2");
     deliver(routes, fsm1.id(), std::move(append_idx2_2.messages));
 
     // fsm2 rejects the second idx=2 append
     auto reject_2 = fsm2.get_output();
 
-    raft::LOGMACRO(logger, log_level::trace, "delivering first reject");
+    LOGMACRO(raft::logger, log_level::trace, "delivering first reject");
     deliver(routes, fsm2.id(), std::move(reject_1.messages));
 
     // fsm1 sends append_entries with idx=1 to fsm2
     auto append_idx1 = fsm1.get_output();
 
-    raft::LOGMACRO(logger, log_level::trace, "delivering append idx=1");
+    LOGMACRO(raft::logger, log_level::trace, "delivering append idx=1");
     deliver(routes, fsm1.id(), std::move(append_idx1.messages));
 
     // fsm2 accepts the idx=1 append
     auto accept = fsm2.get_output();
 
-    raft::LOGMACRO(logger, log_level::trace, "delivering accept for append idx=1");
+    LOGMACRO(raft::logger, log_level::trace, "delivering accept for append idx=1");
     deliver(routes, fsm2.id(), std::move(accept.messages));
 
-    raft::LOGMACRO(logger, log_level::trace, "delivering second reject");
+    LOGMACRO(raft::logger, log_level::trace, "delivering second reject");
     deliver(routes, fsm2.id(), std::move(reject_2.messages));
 }
 

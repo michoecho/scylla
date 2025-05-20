@@ -191,7 +191,7 @@ struct table_tasks_info {
 
 future<> run_on_table(sstring op, replica::database& db, std::string keyspace, table_info ti, std::function<future<> (replica::table&)> func) {
     std::exception_ptr ex;
-    tasks::LOGMACRO(tmlogger, log_level::debug, "Starting {} on {}.{}", op, keyspace, ti.name);
+    LOGMACRO(tasks::tmlogger, log_level::debug, "Starting {} on {}.{}", op, keyspace, ti.name);
     try {
         auto& t = db.find_column_family(ti.id);
         auto holder = t.hold();

@@ -157,7 +157,8 @@ public:
         return _count >= _match.size()/2 + 1;
     }
     Index commit_idx() {
-        LOGMACRO(logger, log_level::trace, "{}: check committed count {} cluster size {}", std::is_same_v<Index, index_t> ? "commit" : "read barrier", _count, _match.size());
+        constexpr static std::string x = std::is_same_v<Index, index_t> ? "commit" : "read barrier";
+        LOGMACRO(logger, log_level::trace, "{}: check committed count {} cluster size {}", x, _count, _match.size());
         // The index of the pivot node is selected so that all nodes
         // with a larger match index plus the pivot form a majority,
         // for example:

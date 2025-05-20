@@ -2445,7 +2445,7 @@ public:
             if (lblogger.is_enabled(seastar::log_level::debug)) {
                 shard_id shard = 0;
                 for (auto&& shard_load : node_load.shards) {
-                    LOGMACRO(lblogger, log_level::debug, "shard {}: load: {}, tablets: {}, candidates: {}, tables: {}", tablet_replica {host, shard},
+                    LOGMACRO(lblogger, log_level::debug, "shard {}: load: {}, tablets: {}, candidates: {}, tables: {}", tablet_replica (host, shard),
                                    node_load.shard_load(shard, _target_tablet_size), shard_load.tablet_count,
                                    shard_load.candidate_count(), shard_load.tablet_count_per_table);
                     shard++;
@@ -2597,7 +2597,7 @@ public:
             if (lblogger.is_enabled(seastar::log_level::trace)) {
                 shard_id shard = 0;
                 for (auto&& shard_load : target_info.shards) {
-                    LOGMACRO(lblogger, log_level::trace, "shard {}: load: {}, tablets: {}, candidates: {}, tables: {}", tablet_replica{dst.host, shard},
+                    LOGMACRO(lblogger, log_level::trace, "shard {}: load: {}, tablets: {}, candidates: {}, tables: {}", tablet_replica(dst.host, shard),
                                    target_info.shard_load(shard, _target_tablet_size), shard_load.tablet_count,
                                    shard_load.candidate_count(), shard_load.tablet_count_per_table);
                     shard++;

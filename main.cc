@@ -836,7 +836,7 @@ sharded<locator::shared_token_metadata> token_metadata;
             logalloc::prime_segment_pool(memory::stats().total_memory(), memory::min_free_memory()).get();
             logging::apply_settings(cfg->logging_settings(app.options().log_opts));
 
-            LOGMACRO(startlog, log_level::info, startup_msg, scylla_version(), get_build_id());
+            startlog.info(startup_msg, scylla_version(), get_build_id());
 
             // Set the default scheduling_group, i.e., the main scheduling
             // group to a lower shares. Subsystems needs higher shares

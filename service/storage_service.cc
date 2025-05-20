@@ -6485,7 +6485,7 @@ future<std::unordered_map<sstring, sstring>> storage_service::add_repair_tablet_
             auto& req_id = tinfo.repair_task_info.tablet_task_id;
             if (req_id) {
                 throw std::runtime_error(fmt::format("Tablet {} is already in repair by tablet_task_id={}",
-                        locator::global_tablet_id{table, tid}, req_id));
+                        locator::global_tablet_id(table, tid), req_id));
             }
             auto last_token = tmap.get_last_token(tid);
             updates.emplace_back(
@@ -6839,7 +6839,7 @@ future<> storage_service::transit_tablet(table_id table, dht::token token, nonco
             topology_mutation_builder builder(guard.write_timestamp());
 
             if (topology_busy) {
-                LOGMACRO(rtlogger, log_level::debug, "transit_tablet({}): topology busy, keeping transition state", locator::global_tablet_id{table, tid});
+                LOGMACRO(rtlogger, log_level::debug, "transit_tablet({}): topology busy, keeping transition state", locator::global_tablet_id(table, tid));
             } else {
                 builder.set_transition_state(topology::transition_state::tablet_migration);
             }

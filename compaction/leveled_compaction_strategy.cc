@@ -32,7 +32,7 @@ compaction_descriptor leveled_compaction_strategy::get_sstables_for_compaction(t
     auto candidate = manifest.get_compaction_candidates(*state.last_compacted_keys, state.compaction_counter);
 
     if (!candidate.sstables.empty()) {
-        leveled_manifest::LOGMACRO(logger, log_level::debug, "leveled: Compacting {} out of {} sstables", candidate.sstables.size(), table_s.main_sstable_set().all()->size());
+        LOGMACRO(leveled_manifest::logger, log_level::debug, "leveled: Compacting {} out of {} sstables", candidate.sstables.size(), table_s.main_sstable_set().all()->size());
         return candidate;
     }
 
@@ -106,7 +106,7 @@ void leveled_compaction_strategy::notify_completion(table_state& table_s, const 
 
     if (leveled_manifest::logger.level() == logging::log_level::debug) {
         for (auto j = 0U; j < state.compaction_counter.size(); j++) {
-            leveled_manifest::LOGMACRO(logger, log_level::debug, "CompactionCounter: {}: {}", j, state.compaction_counter[j]);
+            LOGMACRO(leveled_manifest::logger, log_level::debug, "CompactionCounter: {}: {}", j, state.compaction_counter[j]);
         }
     }
 }
@@ -193,7 +193,7 @@ leveled_compaction_strategy::get_reshaping_job(std::vector<shared_sstable> input
     if (mode == reshape_mode::strict && level_info[0].size() >= offstrategy_threshold && level_info[0].size() == input.size() && l0_disjoint) {
         unsigned ideal_level = ideal_level_for_input(level_info[0], max_sstable_size_in_bytes);
 
-        leveled_manifest::LOGMACRO(logger, log_level::info, "Reshaping {} disjoint sstables in level 0 into level {}", level_info[0].size(), ideal_level);
+        LOGMACRO(leveled_manifest::logger, log_level::info, "Reshaping {} disjoint sstables in level 0 into level {}", level_info[0].size(), ideal_level);
         compaction_descriptor desc(std::move(input), ideal_level, max_sstable_size_in_bytes);
         desc.options = compaction_type_options::make_reshape();
         return desc;

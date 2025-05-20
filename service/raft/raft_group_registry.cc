@@ -38,34 +38,22 @@ public:
     }
 
     future<> mark_alive(direct_failure_detector::pinger::endpoint_id id) override {
-        static constexpr auto msg = "marking Raft server {} as alive for raft groups";
-
         auto raft_id = raft::server_id{id};
         _alive_set.insert(raft_id);
 
         // The listener should be registered on every shard.
         // Write the message on INFO level only on shard 0 so we don't spam the logs.
-        if (this_shard_id() == 0) {
-            LOGMACRO(rslog, log_level::info, msg, raft_id);
-        } else {
-            LOGMACRO(rslog, log_level::debug, msg, raft_id);
-        }
+        LOGMACRO(rslog, this_shard_id() == 0 ? log_level::info : log_level::debug, "marking Raft server {} as alive for raft groups", raft_id);
 
         co_return;
     }
 
     future<> mark_dead(direct_failure_detector::pinger::endpoint_id id) override {
-        static constexpr auto msg = "marking Raft server {} as dead for raft groups";
 
         auto raft_id = raft::server_id{id};
         _alive_set.erase(raft_id);
 
-        // As above.
-        if (this_shard_id() == 0) {
-            LOGMACRO(rslog, log_level::info, msg, raft_id);
-        } else {
-            LOGMACRO(rslog, log_level::debug, msg, raft_id);
-        }
+        LOGMACRO(rslog, this_shard_id() == 0 ? log_level::info : log_level::debug, "marking Raft server {} as alive for raft groups", raft_id);
 
         co_return;
     }

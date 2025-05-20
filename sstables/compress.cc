@@ -340,7 +340,7 @@ public:
                 on_internal_error(sstables::sstlog, "Requested digest check but no digest was provided.");
             }
             if (_end_pos - _pos < _compression_metadata->uncompressed_file_length()) {
-                sstables::LOGMACRO(sstlog, log_level::debug, "Compressed reader cannot calculate digest with partial read: current pos={}, end pos={}, uncompressed file len={}. Disabling digest check.",
+                LOGMACRO(sstables::sstlog, log_level::debug, "Compressed reader cannot calculate digest with partial read: current pos={}, end pos={}, uncompressed file len={}. Disabling digest check.",
                         _pos, _end_pos, _compression_metadata->uncompressed_file_length());
                 _digests = {false};
             } else {
@@ -435,7 +435,7 @@ public:
     virtual future<temporary_buffer<char>> skip(uint64_t n) override {
         if constexpr (check_digest) {
             if (_digests.can_calculate_digest) {
-                sstables::LOGMACRO(sstlog, log_level::debug, "Compressed reader cannot calculate digest with skipped data: current pos={}, end pos={}, skip len={}. Disabling digest check.", _pos, _end_pos, n);
+                LOGMACRO(sstables::sstlog, log_level::debug, "Compressed reader cannot calculate digest with skipped data: current pos={}, end pos={}, skip len={}. Disabling digest check.", _pos, _end_pos, n);
                 _digests.can_calculate_digest = false;
             }
         }
