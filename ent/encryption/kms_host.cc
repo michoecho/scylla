@@ -362,7 +362,7 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
         static const std::string ec2_meta_host(get_env_def("AWS_EC2_METADATA_ADDRESS", "169.254.169.254"));
         static const int ec2_meta_port = std::stoi(get_env_def("AWS_EC2_METADATA_PORT", "80").data());
 
-        kms_log.debug("Query ec2 metadata");
+        LOGMACRO(kms_log, log_level::debug, "Query ec2 metadata");
 
         httpclient client(ec2_meta_host, ec2_meta_port);
 
@@ -442,11 +442,11 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
         auto key_id = std::getenv("AWS_ACCESS_KEY_ID");
         auto key = std::getenv("AWS_SECRET_ACCESS_KEY");
         if (_options.aws_access_key_id.empty() && key_id) {
-            kms_log.debug("No aws id specified. Using environment AWS_ACCESS_KEY_ID");
+            LOGMACRO(kms_log, log_level::debug, "No aws id specified. Using environment AWS_ACCESS_KEY_ID");
             _options.aws_access_key_id = key_id;
         }
         if (_options.aws_secret_access_key.empty() && key) {
-            kms_log.debug("No aws secret specified. Using environment AWS_SECRET_ACCESS_KEY");
+            LOGMACRO(kms_log, log_level::debug, "No aws secret specified. Using environment AWS_SECRET_ACCESS_KEY");
             _options.aws_secret_access_key = key;
         }
     }
@@ -459,7 +459,7 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
             auto credentials = std::string(home) + "/.aws/credentials";
             auto credentials_exists = co_await seastar::file_exists(credentials);
             if (credentials_exists) {
-                kms_log.debug("No aws id/secret specified. Trying to read credentials from {}", credentials);
+                LOGMACRO(kms_log, log_level::debug, "No aws id/secret specified. Trying to read credentials from {}", credentials);
                 try {
                     auto buf = co_await read_text_file_fully(credentials);
                     std::string profile;
@@ -496,12 +496,12 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
                     if (_options.aws_access_key_id.empty() || _options.aws_secret_access_key.empty()) {
                         throw configuration_error(fmt::format("Could not find credentials for profile {}", _options.aws_profile));
                     }
-                    kms_log.debug("Read credentials from {} ({}:{}{})", credentials, _options.aws_access_key_id                    
+                    LOGMACRO(kms_log, log_level::debug, "Read credentials from {} ({}:{}{})", credentials, _options.aws_access_key_id                    
                         , _options.aws_secret_access_key.substr(0, 2)
                         , std::string(_options.aws_secret_access_key.size()-2, '-')
                     );
                 } catch (...) {
-                    kms_log.debug("Could not read credentials: {}", std::current_exception());
+                    LOGMACRO(kms_log, log_level::debug, "Could not read credentials: {}", std::current_exception());
                 }
             }
         }
@@ -539,7 +539,7 @@ future<rjson::value> encryption::kms_host::impl::post(std::string_view target, s
         auto rs_id = utils::UUID_gen::get_time_UUID(std::chrono::system_clock::time_point(now.time_since_epoch()));
         auto role_session = fmt::format("ScyllaDB-{}", rs_id);
 
-        kms_log.debug("Assume role: {} (RoleSessionID={})", aws_assume_role_arn, role_session);
+        LOGMACRO(kms_log, log_level::debug, "Assume role: {} (RoleSessionID={})", aws_assume_role_arn, role_session);
 
         auto res = co_await post(aws_query{
             .host = sts_host,
@@ -815,11 +815,11 @@ future<> encryption::kms_host::impl::init() {
     }
 
     if (!_options.master_key.empty()) {
-        kms_log.debug("Looking up master key");
+        LOGMACRO(kms_log, log_level::debug, "Looking up master key");
         auto query = rjson::empty_object();
         rjson::add(query, "KeyId", _options.master_key);
         auto response = co_await post("DescribeKey", _options.aws_assume_role_arn, query);
-        kms_log.debug("Master key exists");
+        LOGMACRO(kms_log, log_level::debug, "Master key exists");
     } else {
         kms_log.info("No default master key configured. Not verifying.");
     }
@@ -888,7 +888,7 @@ future<encryption::kms_host::impl::key_and_id_type> encryption::kms_host::impl::
     // there is nothing we can "look up" or anything. Always 
     // new key here.
 
-    kms_log.debug("Creating new key: {}", info);
+    LOGMACRO(kms_log, log_level::debug, "Creating new key: {}", info);
 
     auto query = rjson::empty_object();
 
@@ -932,7 +932,7 @@ future<bytes> encryption::kms_host::impl::find_key(const id_cache_key& k) {
         throw std::invalid_argument(format("Not a valid key id: {}", id));
     }
 
-    kms_log.debug("Finding key: {}", id);
+    LOGMACRO(kms_log, log_level::debug, "Finding key: {}", id);
 
     std::string kid(id.begin(), id.begin() + pos);
     std::string enc(id.begin() + pos + 1, id.end());

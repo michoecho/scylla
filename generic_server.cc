@@ -273,17 +273,17 @@ future<> server::shutdown() {
     _all_connections_stopped = _gate.close();
     size_t nr = 0;
     size_t nr_total = _listeners.size();
-    _logger.debug("abort accept nr_total={}", nr_total);
+    LOGMACRO(_logger, log_level::debug, "abort accept nr_total={}", nr_total);
     for (auto&& l : _listeners) {
         l.abort_accept();
-        _logger.debug("abort accept {} out of {} done", ++nr, nr_total);
+        LOGMACRO(_logger, log_level::debug, "abort accept {} out of {} done", ++nr, nr_total);
     }
     size_t nr_conn = 0;
     auto nr_conn_total = _connections_list.size();
-    _logger.debug("shutdown connection nr_total={}", nr_conn_total);
+    LOGMACRO(_logger, log_level::debug, "shutdown connection nr_total={}", nr_conn_total);
     co_await coroutine::parallel_for_each(_connections_list, [&] (auto&& c) -> future<> {
         co_await c.shutdown();
-        _logger.debug("shutdown connection {} out of {} done", ++nr_conn, nr_conn_total);
+        LOGMACRO(_logger, log_level::debug, "shutdown connection {} out of {} done", ++nr_conn, nr_conn_total);
     });
     co_await std::move(_listeners_stopped);
     _abort_source.request_abort();
@@ -399,7 +399,7 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
                 });
             });
         } catch (...) {
-            _logger.debug("accept failed: {}", std::current_exception());
+            LOGMACRO(_logger, log_level::debug, "accept failed: {}", std::current_exception());
         }
     }
 }

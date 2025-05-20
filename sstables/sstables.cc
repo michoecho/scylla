@@ -934,7 +934,7 @@ void sstable::open_sstable(const sstring& origin) {
 }
 
 void sstable::write_toc(file_writer w) {
-    sstlog.debug("Writing TOC file {} ", toc_filename());
+    LOGMACRO(sstlog, log_level::debug, "Writing TOC file {} ", toc_filename());
 
     do_write_simple(std::move(w), [&] (version_types v, file_writer& w) {
         for (auto&& key : _recognized_components) {
@@ -968,7 +968,7 @@ thread_local std::array<std::vector<int>, downsampling::BASE_SAMPLING_LEVEL> dow
 future<> sstable::do_read_simple(component_type type,
                                  noncopyable_function<future<> (version_types, file&&, uint64_t sz)> read_component) {
     auto component_name = filename(type);
-    sstlog.debug("Reading {} file {}", sstable_version_constants::get_component_map(_version).at(type), component_name);
+    LOGMACRO(sstlog, log_level::debug, "Reading {} file {}", sstable_version_constants::get_component_map(_version).at(type), component_name);
     try {
         file fi = co_await new_sstable_component_file(_read_error_handler, type, open_flags::ro);
         uint64_t size = co_await fi.size();
@@ -1026,7 +1026,7 @@ void sstable::do_write_simple(file_writer&& writer,
 void sstable::do_write_simple(component_type type,
         noncopyable_function<void (version_types version, file_writer& writer)> write_component, unsigned buffer_size) {
     auto file_path = filename(type);
-    sstlog.debug("Writing {} file {}", sstable_version_constants::get_component_map(_version).at(type), file_path);
+    LOGMACRO(sstlog, log_level::debug, "Writing {} file {}", sstable_version_constants::get_component_map(_version).at(type), file_path);
 
     file_output_stream_options options;
     options.buffer_size = buffer_size;
@@ -1282,7 +1282,7 @@ void sstable::write_statistics() {
 }
 
 void sstable::rewrite_statistics() {
-    sstlog.debug("Rewriting statistics component of sstable {}", get_filename());
+    LOGMACRO(sstlog, log_level::debug, "Rewriting statistics component of sstable {}", get_filename());
 
     file_output_stream_options options;
     options.buffer_size = sstable_buffer_size;
@@ -1857,7 +1857,7 @@ sstable::write_scylla_metadata(shard_id shard, struct run_identifier identifier,
             if (auto it = ts_stats->map.find(sstables::ext_timestamp_stats_type::min_live_row_marker_timestamp); it != ts_stats->map.end()) {
                 min_live_row_marker_timestamp = it->second;
             }
-            sstlog.debug("Storing sstable {}: min_timestamp={} min_live_timestamp={} min_live_row_marker_timestamp={}",
+            LOGMACRO(sstlog, log_level::debug, "Storing sstable {}: min_timestamp={} min_live_timestamp={} min_live_row_marker_timestamp={}",
                     get_filename(),
                     get_stats_metadata().min_timestamp,
                     min_live_timestamp,
@@ -2379,7 +2379,7 @@ static std::tuple<entry_descriptor, sstring, sstring> make_entry_descriptor(cons
 
     const auto sstdir = sst_path.parent_path();
     const auto fname = sst_path.filename();
-    sstlog.debug("Make descriptor sstdir: {}; fname: {}", sstdir, fname);
+    LOGMACRO(sstlog, log_level::debug, "Make descriptor sstdir: {}; fname: {}", sstdir, fname);
     std::string s(fname);
     if (boost::regex_match(s, match, la_mx)) {
         std::string sdir(sstdir);
@@ -2750,7 +2750,7 @@ void sstable::set_sstable_level(uint32_t new_level) {
         throw std::runtime_error("Statistics is malformed");
     }
     stats_metadata& s = *static_cast<stats_metadata *>(p.get());
-    sstlog.debug("set level of {} with generation {} from {} to {}", get_filename(), _generation, s.sstable_level, new_level);
+    LOGMACRO(sstlog, log_level::debug, "set level of {} with generation {} from {} to {}", get_filename(), _generation, s.sstable_level, new_level);
     s.sstable_level = new_level;
 }
 
@@ -2815,7 +2815,7 @@ future<> sstable::close_files() {
         // log and ignore this failure, because on startup we'll again try to
         // clean up unused sstables, and because we'll never reuse the same
         // generation number anyway.
-        sstlog.debug("Deleting sstable that is {}marked for deletion", _marked_for_deletion == mark_for_deletion::implicit ? "implicitly " : "");
+        LOGMACRO(sstlog, log_level::debug, "Deleting sstable that is {}marked for deletion", _marked_for_deletion == mark_for_deletion::implicit ? "implicitly " : "");
         try {
             unlinked = unlink().handle_exception(
                         [me = shared_from_this()] (std::exception_ptr eptr) {
@@ -2880,7 +2880,7 @@ future<sstring> make_toc_temporary(sstring sstable_toc_name, storage::sync_dir s
     sstring prefix = sstable_toc_name.substr(0, sstable_toc_name.size() - sstable_version_constants::TOC_SUFFIX.size());
     sstring new_toc_name = prefix + sstable_version_constants::TEMPORARY_TOC_SUFFIX;
 
-    sstlog.debug("Removing by TOC name: {}", sstable_toc_name);
+    LOGMACRO(sstlog, log_level::debug, "Removing by TOC name: {}", sstable_toc_name);
     if (co_await sstable_io_check(sstable_write_error_handler, file_exists, sstable_toc_name)) {
         // If new_toc_name exists it will be atomically replaced.  See rename(2)
         co_await sstable_io_check(sstable_write_error_handler, rename_file, sstable_toc_name, new_toc_name);

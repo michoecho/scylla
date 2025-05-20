@@ -553,7 +553,7 @@ tablet_id process_one_row(replica::database* db, table_id table, tablet_map& map
             if (r.host == myid) {
                 auto& gc_state = db->get_compaction_manager().get_tombstone_gc_state();
                 gc_state.insert_pending_repair_time_update(table, range, to_gc_clock(repair_time), r.shard);
-                tablet_logger.debug("Insert pending repair time for tombstone gc: table={} tablet={} range={} repair_time={}",
+                LOGMACRO(tablet_logger, log_level::debug, "Insert pending repair time for tombstone gc: table={} tablet={} range={} repair_time={}",
                         table, tid, range, repair_time);
                 break;
             }
@@ -563,7 +563,7 @@ tablet_id process_one_row(replica::database* db, table_id table, tablet_map& map
     auto persisted_last_token = dht::token::from_int64(row.get_as<int64_t>("last_token"));
     auto current_last_token = map.get_last_token(tid);
     if (current_last_token != persisted_last_token) {
-        tablet_logger.debug("current tablet_map: {}", map);
+        LOGMACRO(tablet_logger, log_level::debug, "current tablet_map: {}", map);
         throw std::runtime_error(format("last_token mismatch between on-disk ({}) and in-memory ({}) tablet map for table {} tablet {}",
                                         persisted_last_token, current_last_token, table, tid));
     }
@@ -896,7 +896,7 @@ std::vector<sstables::shared_sstable> tablet_sstable_set::select(const dht::part
         }
         return stop_iteration::no;
     });
-    tablet_logger.debug("tablet_sstable_set::select: range={} ret={}", range, ret.size());
+    LOGMACRO(tablet_logger, log_level::debug, "tablet_sstable_set::select: range={} ret={}", range, ret.size());
     return ret;
 }
 
@@ -971,7 +971,7 @@ public:
             auto lowest_next_position = _lowest_next_token.is_maximum()
                 ? dht::ring_position_ext::max()
                 : dht::ring_position_ext::starting_at(_lowest_next_token);
-            tablet_logger.debug("tablet_incremental_selector {}.{}: select pos={}: returning 0 sstables, next_pos={}",
+            LOGMACRO(tablet_logger, log_level::debug, "tablet_incremental_selector {}.{}: select pos={}: returning 0 sstables, next_pos={}",
                     _tset.schema()->ks_name(), _tset.schema()->cf_name(), pos, lowest_next_position);
             return std::make_tuple(std::move(current_range), std::vector<sstables::shared_sstable>{}, lowest_next_position);
         }
@@ -1000,7 +1000,7 @@ public:
             }
         }
 
-        tablet_logger.debug("tablet_incremental_selector {}.{}: select pos={}: returning {} sstables, next_pos={}",
+        LOGMACRO(tablet_logger, log_level::debug, "tablet_incremental_selector {}.{}: select pos={}: returning {} sstables, next_pos={}",
                 _tset.schema()->ks_name(), _tset.schema()->cf_name(), pos, sstables.size(), next_position);
         return std::make_tuple(std::move(current_range), std::move(sstables), std::move(next_position));
     }

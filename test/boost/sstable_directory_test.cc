@@ -90,19 +90,19 @@ make_sstable_for_all_shards(replica::table& table, sstables::sstable_state state
     mt->clear_gently().get();
     // We can't write an SSTable with bad sharding, so pretend
     // it came from Cassandra
-    testlog.debug("make_sstable_for_all_shards: {}: rewriting TOC", sst->get_filename());
+    LOGMACRO(testlog, log_level::debug, "make_sstable_for_all_shards: {}: rewriting TOC", sst->get_filename());
     sstables::test(sst).remove_component(sstables::component_type::Scylla).get();
     sstables::test(sst).rewrite_toc_without_component(sstables::component_type::Scylla);
     return sst;
 }
 
 sstables::shared_sstable new_sstable(sstables::test_env& env, sstables::generation_type gen) {
-    testlog.debug("new_sstable: dir={} gen={}", env.tempdir().path(), gen);
+    LOGMACRO(testlog, log_level::debug, "new_sstable: dir={} gen={}", env.tempdir().path(), gen);
     return env.make_sstable(test_table_schema(), gen);
 }
 
 sstables::shared_sstable new_env_sstable(sstables::test_env& env) {
-    testlog.debug("new_env_sstable: dir={}", env.tempdir().path());
+    LOGMACRO(testlog, log_level::debug, "new_env_sstable: dir={}", env.tempdir().path());
     return env.make_sstable(test_table_schema());
 }
 
@@ -131,7 +131,7 @@ static void with_sstable_directory(
     wrapped_test_env env_wrap,
     noncopyable_function<void (sharded<sstable_directory>&)> func) {
 
-    testlog.debug("with_sstable_directory: {}/{}", path, state);
+    LOGMACRO(testlog, log_level::debug, "with_sstable_directory: {}/{}", path, state);
 
     sharded<sstable_directory> sstdir;
     auto stop_sstdir = defer([&sstdir] {
@@ -426,10 +426,10 @@ SEASTAR_TEST_CASE(sstable_directory_test_table_lock_works) {
         auto cf_name = "cf";
         std::unordered_map<unsigned, std::vector<sstring>> sstables;
 
-        testlog.debug("Inserting into cf");
+        LOGMACRO(testlog, log_level::debug, "Inserting into cf");
         e.execute_cql("insert into cf (p, c) values ('one', 1)").get();
 
-        testlog.debug("Flushing cf");
+        LOGMACRO(testlog, log_level::debug, "Flushing cf");
         e.db().invoke_on_all([&] (replica::database& db) {
             auto& cf = db.find_column_family(ks_name, cf_name);
             return cf.flush();
@@ -462,7 +462,7 @@ SEASTAR_TEST_CASE(sstable_directory_test_table_lock_works) {
                 }
             };
 
-            testlog.debug("Waiting until {}.{} is unlisted from the database", ks_name, cf_name);
+            LOGMACRO(testlog, log_level::debug, "Waiting until {}.{} is unlisted from the database", ks_name, cf_name);
             while (table_exists()) {
                 yield().get();
             }
@@ -815,12 +815,12 @@ SEASTAR_TEST_CASE(test_pending_log_garbage_collection) {
         for (int i = 0; i < 2; i++) {
             ssts_to_keep.emplace_back(make_sstable_for_this_shard(new_sstable));
         }
-        testlog.debug("SSTables to keep: {}", ssts_to_keep);
+        LOGMACRO(testlog, log_level::debug, "SSTables to keep: {}", ssts_to_keep);
         std::vector<shared_sstable> ssts_to_remove;
         for (int i = 0; i < 3; i++) {
             ssts_to_remove.emplace_back(make_sstable_for_this_shard(new_sstable));
         }
-        testlog.debug("SSTables to remove: {}", ssts_to_remove);
+        LOGMACRO(testlog, log_level::debug, "SSTables to remove: {}", ssts_to_remove);
 
         // Now start atomic deletion -- create the pending deletion log for all
         // three sstables, move TOC file for one of them into temporary-TOC, and 

@@ -2147,24 +2147,24 @@ SEASTAR_TEST_CASE(basic_test) {
             SCYLLA_ASSERT(eq(co_await call(ExReg::exchange{i}, 100_t), ExReg::ret{i - 1}));
         }
 
-        tlogger.debug("100 exchanges - single server - passed");
+        LOGMACRO(tlogger, log_level::debug, "100 exchanges - single server - passed");
 
         auto id2 = co_await env.new_server(false);
         auto id3 = co_await env.new_server(false);
 
-        tlogger.debug("Started 2 more servers, changing configuration");
+        LOGMACRO(tlogger, log_level::debug, "Started 2 more servers, changing configuration");
 
         SCYLLA_ASSERT(std::holds_alternative<std::monostate>(
             co_await env.reconfigure(leader_id, {leader_id, id2, id3}, timer.now() + 100_t, timer)));
 
-        tlogger.debug("Configuration changed");
+        LOGMACRO(tlogger, log_level::debug, "Configuration changed");
 
         co_await call(ExReg::exchange{0}, 100_t);
         for (int i = 1; i <= 100; ++i) {
             SCYLLA_ASSERT(eq(co_await call(ExReg::exchange{i}, 100_t), ExReg::ret{i - 1}));
         }
 
-        tlogger.debug("100 exchanges - three servers - passed");
+        LOGMACRO(tlogger, log_level::debug, "100 exchanges - three servers - passed");
 
         // concurrent calls
         std::vector<future<call_result_t<ExReg>>> futs;
@@ -2176,10 +2176,10 @@ SEASTAR_TEST_CASE(basic_test) {
             SCYLLA_ASSERT(eq(co_await std::move(futs[i]), ExReg::ret{100}));
         }
 
-        tlogger.debug("100 concurrent reads - three servers - passed");
+        LOGMACRO(tlogger, log_level::debug, "100 concurrent reads - three servers - passed");
     });
 
-    tlogger.debug("Finished");
+    LOGMACRO(tlogger, log_level::debug, "Finished");
 }
 
 SEASTAR_TEST_CASE(test_frequent_snapshotting) {
@@ -2233,19 +2233,19 @@ SEASTAR_TEST_CASE(test_frequent_snapshotting) {
             srv->get_server()->set_applier_queue_max_size(1);
         });
 
-        tlogger.debug("Started 2 more servers, changing configuration");
+        LOGMACRO(tlogger, log_level::debug, "Started 2 more servers, changing configuration");
 
         SCYLLA_ASSERT(std::holds_alternative<std::monostate>(
                 co_await env.reconfigure(leader_id, {leader_id, id2, id3}, timer.now() + 100_t, timer)));
 
-        tlogger.debug("Configuration changed");
+        LOGMACRO(tlogger, log_level::debug, "Configuration changed");
 
         co_await call(ExReg::exchange{0}, 100_t);
         for (int i = 1; i <= 100; ++i) {
             SCYLLA_ASSERT(eq(co_await call(ExReg::exchange{i}, 100_t), ExReg::ret{i - 1}));
         }
 
-        tlogger.debug("100 exchanges - three servers - passed");
+        LOGMACRO(tlogger, log_level::debug, "100 exchanges - three servers - passed");
 
         // concurrent calls
         std::vector<future<call_result_t<ExReg>>> futs;
@@ -2257,10 +2257,10 @@ SEASTAR_TEST_CASE(test_frequent_snapshotting) {
             SCYLLA_ASSERT(eq(co_await std::move(futs[i]), ExReg::ret{100}));
         }
 
-        tlogger.debug("100 concurrent reads - three servers - passed");
+        LOGMACRO(tlogger, log_level::debug, "100 concurrent reads - three servers - passed");
     });
 
-    tlogger.debug("Finished");
+    LOGMACRO(tlogger, log_level::debug, "Finished");
 }
 
 // A snapshot was being taken with the wrong term (current term instead of the term at the snapshotted index).
@@ -2586,12 +2586,12 @@ struct raft_call {
         std::advance(it, std::uniform_int_distribution<size_t>{0, s.known.size() - 1}(engine));
         auto contact = *it;
 
-        tlogger.debug("db call start inp {} tid {} start time {} current time {} contact {}", input, ctx.thread, ctx.start, s.timer.now(), contact);
+        LOGMACRO(tlogger, log_level::debug, "db call start inp {} tid {} start time {} current time {} contact {}", input, ctx.thread, ctx.start, s.timer.now(), contact);
 
         auto [res, last] = co_await bouncing{[input = input, timeout = s.timer.now() + timeout, &timer = s.timer, &env = s.env] (raft::server_id id) {
             return env.call(id, input, timeout, timer);
         }}(s.timer, s.known, contact, 6, 10_t, 10_t);
-        tlogger.debug("db call end inp {} tid {} start time {} current time {} last contact {}", input, ctx.thread, ctx.start, s.timer.now(), last);
+        LOGMACRO(tlogger, log_level::debug, "db call end inp {} tid {} start time {} current time {} last contact {}", input, ctx.thread, ctx.start, s.timer.now(), last);
 
         co_return res;
     }
@@ -2627,9 +2627,9 @@ struct raft_read {
         std::advance(it, std::uniform_int_distribution<size_t>{0, s.known.size() - 1}(engine));
         auto contact = *it;
 
-        tlogger.debug("read start tid {} start time {} current time {} contact {}", ctx.thread, ctx.start, s.timer.now(), contact);
+        LOGMACRO(tlogger, log_level::debug, "read start tid {} start time {} current time {} contact {}", ctx.thread, ctx.start, s.timer.now(), contact);
         auto res = co_await s.env.read(contact, s.timer.now() + timeout, s.timer);
-        tlogger.debug("read end tid {} start time {} current time {} contact {}", ctx.thread, ctx.start, s.timer.now(), contact);
+        LOGMACRO(tlogger, log_level::debug, "read end tid {} start time {} current time {} contact {}", ctx.thread, ctx.start, s.timer.now(), contact);
 
         co_return result_type{read_id, std::move(res)};
     }
@@ -2686,7 +2686,7 @@ public:
             }
         }
 
-        tlogger.debug("network_majority_grudge start tid {} start time {} current time {} duration {} grudge: {} vs {}",
+        LOGMACRO(tlogger, log_level::debug, "network_majority_grudge start tid {} start time {} current time {} duration {} grudge: {} vs {}",
                 ctx.thread, ctx.start, s.timer.now(),
                 _duration,
                 std::vector<raft::server_id>{nodes.begin(), mid},
@@ -2694,7 +2694,7 @@ public:
 
         co_await s.timer.sleep(_duration);
 
-        tlogger.debug("network_majority_grudge end tid {} start time {} current time {}", ctx.thread, ctx.start, s.timer.now());
+        LOGMACRO(tlogger, log_level::debug, "network_majority_grudge end tid {} start time {} current time {}", ctx.thread, ctx.start, s.timer.now());
 
         // Some servers in `nodes` may already be gone at this point but network doesn't care.
         // It's safe to call `remove_grudge`.
@@ -2748,7 +2748,7 @@ struct reconfiguration {
         std::vector<raft::server_id> removed {nodes.begin() + members_end, nodes.end()};
         auto contact = *s.known.begin();
 
-        tlogger.debug("reconfig modify_config start add {} remove {} start tid {} start time {} current time {} contact {}",
+        LOGMACRO(tlogger, log_level::debug, "reconfig modify_config start add {} remove {} start tid {} start time {} current time {} contact {}",
                 added, removed, ctx.thread, ctx.start, s.timer.now(), contact);
 
         SCYLLA_ASSERT(s.known.size() > 0);
@@ -2759,22 +2759,22 @@ struct reconfiguration {
 
         std::visit(make_visitor(
         [&, last = last] (std::monostate) {
-            tlogger.debug("reconfig successful known {} added {} removed {} by {}", s.known, added, removed, last);
+            LOGMACRO(tlogger, log_level::debug, "reconfig successful known {} added {} removed {} by {}", s.known, added, removed, last);
             s.known.merge(std::unordered_set<raft::server_id>{nodes.begin(), nodes.begin() + members_end});
             for (auto id: removed) {
                 s.known.erase(id);
             }
         },
         [&, last = last] (raft::not_a_leader& e) {
-            tlogger.debug("reconfig failed, not a leader: {} tried to add {}, remove {} by {}", e, added, removed, last);
+            LOGMACRO(tlogger, log_level::debug, "reconfig failed, not a leader: {} tried to add {}, remove {} by {}", e, added, removed, last);
         },
         [&, last = last] (auto& e) {
             s.known.merge(std::unordered_set<raft::server_id>{nodes.begin(), nodes.begin() + members_end});
-            tlogger.debug("reconfig failed: {}, tried to add {}, remove {}, after merge {} by {}", e, added, removed, s.known, last);
+            LOGMACRO(tlogger, log_level::debug, "reconfig failed: {}, tried to add {}, remove {}, after merge {} by {}", e, added, removed, s.known, last);
         }
         ), res);
 
-        tlogger.debug("reconfig modify_config end add {} remove {} start tid {} start time {} current time {} last contact {}",
+        LOGMACRO(tlogger, log_level::debug, "reconfig modify_config end add {} remove {} start tid {} start time {} current time {} last contact {}",
                 added, removed, ctx.thread, ctx.start, s.timer.now(), last);
 
         co_return res;
@@ -2793,7 +2793,7 @@ struct reconfiguration {
 
         auto contact = *s.known.begin();
 
-        tlogger.debug("reconfig set_configuration start nodes {} start tid {} start time {} current time {} contact {}",
+        LOGMACRO(tlogger, log_level::debug, "reconfig set_configuration start nodes {} start tid {} start time {} current time {} contact {}",
                 nodes_voters, ctx.thread, ctx.start, s.timer.now(), contact);
 
         SCYLLA_ASSERT(s.known.size() > 0);
@@ -2803,21 +2803,21 @@ struct reconfiguration {
 
         std::visit(make_visitor(
         [&, last = last] (std::monostate) {
-            tlogger.debug("reconfig successful from {} to {} by {}", s.known, nodes_voters, last);
+            LOGMACRO(tlogger, log_level::debug, "reconfig successful from {} to {} by {}", s.known, nodes_voters, last);
             s.known = std::unordered_set<raft::server_id>{nodes.begin(), nodes.begin() + members_end};
             // TODO: include the old leader as well in case it's not part of the new config?
             // it may remain a leader for some time...
         },
         [&, last = last] (raft::not_a_leader& e) {
-            tlogger.debug("reconfig failed, not a leader: {} tried {} by {}", e, nodes_voters, last);
+            LOGMACRO(tlogger, log_level::debug, "reconfig failed, not a leader: {} tried {} by {}", e, nodes_voters, last);
         },
         [&, last = last] (auto& e) {
             s.known.merge(std::unordered_set<raft::server_id>{nodes.begin(), nodes.begin() + members_end});
-            tlogger.debug("reconfig failed: {}, tried {} after merge {} by {}", e, nodes_voters, s.known, last);
+            LOGMACRO(tlogger, log_level::debug, "reconfig failed: {}, tried {} after merge {} by {}", e, nodes_voters, s.known, last);
         }
         ), res);
 
-        tlogger.debug("reconfig set_configuration end nodes {} start tid {} start time {} current time {} last contact {}",
+        LOGMACRO(tlogger, log_level::debug, "reconfig set_configuration end nodes {} start tid {} start time {} current time {} last contact {}",
                 nodes_voters, ctx.thread, ctx.start, s.timer.now(), last);
 
         co_return res;
@@ -2880,15 +2880,15 @@ struct stop_crash {
 
         static std::bernoulli_distribution bdist{0.5};
         if (bdist(s.rnd)) {
-            tlogger.debug("Crashing server {}", srv);
+            LOGMACRO(tlogger, log_level::debug, "Crashing server {}", srv);
             s.env.crash(srv);
         } else {
-            tlogger.debug("Stopping server {}...", srv);
+            LOGMACRO(tlogger, log_level::debug, "Stopping server {}...", srv);
             co_await s.env.stop(srv);
-            tlogger.debug("Server {} stopped", srv);
+            LOGMACRO(tlogger, log_level::debug, "Server {} stopped", srv);
         }
         co_await s.timer.sleep(restart_delay);
-        tlogger.debug("Restarting server {}", srv);
+        LOGMACRO(tlogger, log_level::debug, "Restarting server {}", srv);
         co_await s.env.start_server(srv);
 
         co_return result_type{};
@@ -3455,7 +3455,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
             consistency_checker(statistics& s) : _model{}, _stats(s) {}
 
             void operator()(op_type o) {
-                tlogger.debug("invocation {}", o);
+                LOGMACRO(tlogger, log_level::debug, "invocation {}", o);
 
                 if (auto call_op = std::get_if<raft_call<AppendReg>>(&o.op)) {
                     ++_stats.invocations;
@@ -3473,7 +3473,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
                 if (auto call_res = std::get_if<raft_call<AppendReg>::result_type>(res)) {
                     std::visit(make_visitor(
                     [this] (AppendReg::output_t& out) {
-                        tlogger.debug("completion x: {} prev digest: {}", out.x, out.prev.digest());
+                        LOGMACRO(tlogger, log_level::debug, "completion x: {} prev digest: {}", out.x, out.prev.digest());
 
                         ++_stats.successes;
                         _model.return_success(out.x, std::move(out.prev));
@@ -3495,7 +3495,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
                 } else if (auto read_res = std::get_if<raft_read<AppendReg>::result_type>(res)) {
                     std::visit(make_visitor(
                     [this, id = read_res->first] (AppendReg::state_t& s) {
-                        tlogger.debug("read completion id: {} digest: {}", id, s.digest());
+                        LOGMACRO(tlogger, log_level::debug, "read completion id: {} digest: {}", id, s.digest());
 
                         ++_stats.successes;
                         _model.read_success(id, std::move(s));
@@ -3505,7 +3505,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
                     }
                     ), read_res->second);
                 } else {
-                    tlogger.debug("completion {}", c);
+                    LOGMACRO(tlogger, log_level::debug, "completion {}", c);
                 }
 
                 // TODO: check consistency of reconfiguration completions
@@ -3582,7 +3582,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
 
             if (std::holds_alternative<typename AppendReg::ret>(res)) {
                 tlogger.info("Obtained last result");
-                tlogger.debug("Last result: {}", res);
+                LOGMACRO(tlogger, log_level::debug, "Last result: {}", res);
                 co_return;
             }
 

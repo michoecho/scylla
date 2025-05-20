@@ -1078,11 +1078,11 @@ void tablet_metadata_guard::subscribe() {
 }
 
 void assert_rf_rack_valid_keyspace(std::string_view ks, const token_metadata_ptr tmptr, const abstract_replication_strategy& ars) {
-    tablet_logger.debug("[assert_rf_rack_valid_keyspace]: Starting verifying that keyspace '{}' is RF-rack-valid", ks);
+    LOGMACRO(tablet_logger, log_level::debug, "[assert_rf_rack_valid_keyspace]: Starting verifying that keyspace '{}' is RF-rack-valid", ks);
 
     // Any keyspace that does NOT use tablets is RF-rack-valid.
     if (!ars.uses_tablets()) {
-        tablet_logger.debug("[assert_rf_rack_valid_keyspace]: Keyspace '{}' has been verified to be RF-rack-valid (no tablets)", ks);
+        LOGMACRO(tablet_logger, log_level::debug, "[assert_rf_rack_valid_keyspace]: Keyspace '{}' has been verified to be RF-rack-valid (no tablets)", ks);
         return;
     }
 
@@ -1101,7 +1101,7 @@ void assert_rf_rack_valid_keyspace(std::string_view ks, const token_metadata_ptr
     }
 
     for (const auto& [dc, rack_map] : dc_rack_map) {
-        tablet_logger.debug("[assert_rf_rack_valid_keyspace]: Verifying for '{}' / '{}'", ks, dc);
+        LOGMACRO(tablet_logger, log_level::debug, "[assert_rf_rack_valid_keyspace]: Verifying for '{}' / '{}'", ks, dc);
 
         size_t normal_rack_count = 0;
         for (const auto& [_, rack_nodes] : rack_map) {
@@ -1132,7 +1132,7 @@ void assert_rf_rack_valid_keyspace(std::string_view ks, const token_metadata_ptr
         }
     }
 
-    tablet_logger.debug("[assert_rf_rack_valid_keyspace]: Keyspace '{}' has been verified to be RF-rack-valid", ks);
+    LOGMACRO(tablet_logger, log_level::debug, "[assert_rf_rack_valid_keyspace]: Keyspace '{}' has been verified to be RF-rack-valid", ks);
 }
 
 }

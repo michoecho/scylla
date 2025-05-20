@@ -9,6 +9,7 @@
 #include "aws_credentials_provider.hh"
 #include <seastar/core/coroutine.hh>
 
+
 namespace aws {
 
 seastar::future<s3::aws_credentials> aws_credentials_provider::get_aws_credentials() {

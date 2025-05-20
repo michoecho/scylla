@@ -156,7 +156,7 @@ future<> backup_task_impl::process_snapshot_dir() {
     size_t num_sstable_comps = 0;
 
     try {
-        snap_log.debug("backup_task: listing {}", _snapshot_dir.native());
+        LOGMACRO(snap_log, log_level::debug, "backup_task: listing {}", _snapshot_dir.native());
         size_t total = 0;
         while (auto component_ent = co_await snapshot_dir_lister.get()) {
             const auto& name = component_ent->name;
@@ -174,7 +174,7 @@ future<> backup_task_impl::process_snapshot_dir() {
                 // it is already deleted from the table's base directory, and
                 // therefore it better be uploaded earlier to free-up its capacity.
                 if (desc.component == sstables::component_type::Data && st.number_of_links == 1) {
-                    snap_log.debug("backup_task: SSTable with generation {} is already deleted from the table", gen);
+                    LOGMACRO(snap_log, log_level::debug, "backup_task: SSTable with generation {} is already deleted from the table", gen);
                     _deleted_sstables.push_back(gen);
                 }
             } catch (const sstables::malformed_sstable_exception&) {
@@ -182,7 +182,7 @@ future<> backup_task_impl::process_snapshot_dir() {
             }
         }
         _total_progress.total = total;
-        snap_log.debug("backup_task: found {} SSTables consisting of {} component files, and {} non-sstable files",
+        LOGMACRO(snap_log, log_level::debug, "backup_task: found {} SSTables consisting of {} component files, and {} non-sstable files",
             _sstable_comps.size(), num_sstable_comps, _files.size());
     } catch (...) {
         _ex = std::current_exception();
@@ -237,7 +237,7 @@ future<> backup_task_impl::worker::backup_file(sstring name, upload_permit permi
     try {
         co_await upload_component(name);
     } catch (...) {
-        snap_log.debug("backup_file {} failed: {}", name, std::current_exception());
+        LOGMACRO(snap_log, log_level::debug, "backup_file {} failed: {}", name, std::current_exception());
         // keep the first exception
         if (!_ex) {
             _ex = std::current_exception();
@@ -277,7 +277,7 @@ void backup_task_impl::dequeue_sstable() {
         }
     }
     auto ent = _sstable_comps.extract(to_backup);
-    snap_log.debug("Backing up SSTable generation {}", ent.key());
+    LOGMACRO(snap_log, log_level::debug, "Backing up SSTable generation {}", ent.key());
     for (auto& name : ent.mapped()) {
         _files.emplace_back(std::move(name));
     }
@@ -311,7 +311,7 @@ future<> backup_task_impl::worker::deleted_sstable(sstables::generation_type gen
     // Note: looking up gen in `_sstables_in_snapshot` is safe, although it was
     // created on `backup_shard`, since it is immutable after `process_snapshot_dir` is done.
     if (_task._sstables_in_snapshot.contains(gen)) {
-        snap_log.debug("SSTable with generation {} was deleted from the table", gen);
+        LOGMACRO(snap_log, log_level::debug, "SSTable with generation {} was deleted from the table", gen);
         return smp::submit_to(_task._backup_shard, [this, gen] {
             _task.on_sstable_deletion(gen);
         });

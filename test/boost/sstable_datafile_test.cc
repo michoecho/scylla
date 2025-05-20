@@ -1846,7 +1846,7 @@ SEASTAR_TEST_CASE(sstable_set_incremental_selector) {
         auto tok0 = key0.token();
         auto key1 = decorated_keys[k1];
         auto tok1 = key1.token();
-        testlog.debug("creating sstable with k[{}] token={} k[{}] token={} level={}", k0, tok0, k1, tok1, level);
+        LOGMACRO(testlog, log_level::debug, "creating sstable with k[{}] token={} k[{}] token={} level={}", k0, tok0, k1, tok1, level);
         auto sst = sstable_for_overlapping_test(env, s, key0.key(), key1.key(), level);
         set.insert(sst);
         return sst;
@@ -1855,7 +1855,7 @@ SEASTAR_TEST_CASE(sstable_set_incremental_selector) {
     auto check = [&] (sstable_set::incremental_selector& selector, size_t k, std::unordered_set<shared_sstable> expected_ssts) {
         const dht::decorated_key& key = decorated_keys[k];
         auto sstables = selector.select(key).sstables;
-        testlog.debug("checking sstables for key[{}] token={} found={} expected={}", k, decorated_keys[k].token(), sstables.size(), expected_ssts.size());
+        LOGMACRO(testlog, log_level::debug, "checking sstables for key[{}] token={} found={} expected={}", k, decorated_keys[k].token(), sstables.size(), expected_ssts.size());
         BOOST_REQUIRE_EQUAL(sstables.size(), expected_ssts.size());
         for (auto& sst : sstables) {
             BOOST_REQUIRE(expected_ssts.contains(sst));

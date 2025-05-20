@@ -77,7 +77,7 @@ void stream_coordinator::connect_all_stream_sessions() {
     for (auto& x : _peer_sessions) {
         auto& session = x.second;
         session->start();
-        sslog.debug("[Stream #{}] Beginning stream session with {}", session->plan_id(), session->peer);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] Beginning stream session with {}", session->plan_id(), session->peer);
     }
 }
 

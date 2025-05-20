@@ -256,7 +256,7 @@ time_window_compaction_strategy::get_reshaping_job(std::vector<shared_sstable> i
         return sstable_set_overlapping_count(schema, ssts) <= tolerance;
     };
 
-    clogger.debug("time_window_compaction_strategy::get_reshaping_job: offstrategy_threshold={} max_sstables={} multi_window={} disjoint={} single_window={} disjoint={}",
+    LOGMACRO(clogger, log_level::debug, "time_window_compaction_strategy::get_reshaping_job: offstrategy_threshold={} max_sstables={} multi_window={} disjoint={} single_window={} disjoint={}",
             offstrategy_threshold, max_sstables,
             multi_window.size(), !multi_window.empty() && sstable_set_overlapping_count(schema, multi_window) == 0,
             single_window.size(), !single_window.empty() && sstable_set_overlapping_count(schema, single_window) == 0);
@@ -308,7 +308,7 @@ time_window_compaction_strategy::get_reshaping_job(std::vector<shared_sstable> i
     single_window.clear();
     for (auto& [bucket, ssts] : all_buckets.first) {
         if (ssts.size() >= offstrategy_threshold) {
-            clogger.debug("time_window_compaction_strategy::get_reshaping_job: bucket={} bucket_size={}", bucket, ssts.size());
+            LOGMACRO(clogger, log_level::debug, "time_window_compaction_strategy::get_reshaping_job: bucket={} bucket_size={}", bucket, ssts.size());
             if (all_disjoint) {
                 std::copy(ssts.begin(), ssts.end(), std::back_inserter(single_window));
                 continue;
@@ -344,12 +344,12 @@ time_window_compaction_strategy::get_sstables_for_compaction(table_state& table_
 
     auto now = db_clock::now();
     if (now - state.last_expired_check > _options.expired_sstable_check_frequency) {
-        clogger.debug("[{}] TWCS expired check sufficiently far in the past, checking for fully expired SSTables", fmt::ptr(this));
+        LOGMACRO(clogger, log_level::debug, "[{}] TWCS expired check sufficiently far in the past, checking for fully expired SSTables", fmt::ptr(this));
 
         // Find fully expired SSTables. Those will be included no matter what.
         auto expired = table_s.fully_expired_sstables(candidates, compaction_time);
         if (!expired.empty()) {
-            clogger.debug("[{}] Going to compact {} expired sstables", fmt::ptr(this), expired.size());
+            LOGMACRO(clogger, log_level::debug, "[{}] Going to compact {} expired sstables", fmt::ptr(this), expired.size());
             return compaction_descriptor(has_only_fully_expired::yes, std::vector<shared_sstable>(expired.begin(), expired.end()));
         }
         // Keep checking for fully_expired_sstables until we don't find
@@ -357,11 +357,11 @@ time_window_compaction_strategy::get_sstables_for_compaction(table_state& table_
         // or registered for compaction.
         state.last_expired_check = now;
     } else {
-        clogger.debug("[{}] TWCS skipping check for fully expired SSTables", fmt::ptr(this));
+        LOGMACRO(clogger, log_level::debug, "[{}] TWCS skipping check for fully expired SSTables", fmt::ptr(this));
     }
 
     auto compaction_candidates = get_next_non_expired_sstables(table_s, control, std::move(candidates), compaction_time);
-    clogger.debug("[{}] Going to compact {} non-expired sstables", fmt::ptr(this), compaction_candidates.size());
+    LOGMACRO(clogger, log_level::debug, "[{}] Going to compact {} non-expired sstables", fmt::ptr(this), compaction_candidates.size());
     return compaction_descriptor(std::move(compaction_candidates));
 }
 
@@ -466,7 +466,7 @@ std::vector<shared_sstable>
 time_window_compaction_strategy::newest_bucket(table_state& table_s, strategy_control& control, std::map<timestamp_type, std::vector<shared_sstable>> buckets,
         int min_threshold, int max_threshold, timestamp_type now) {
     auto& state = get_state(table_s);
-    clogger.debug("time_window_compaction_strategy::newest_bucket:\n  now {}\n{}", now, buckets);
+    LOGMACRO(clogger, log_level::debug, "time_window_compaction_strategy::newest_bucket:\n  now {}\n{}", now, buckets);
 
     for (auto&& [key, bucket] : buckets | std::views::reverse) {
         bool last_active_bucket = is_last_active_bucket(key, now);
@@ -480,7 +480,7 @@ time_window_compaction_strategy::newest_bucket(table_state& table_s, strategy_co
 
             // If the tables in the current bucket aren't eligible in the STCS strategy, we'll skip it and look for other buckets
             if (!stcs_interesting_bucket.empty()) {
-                clogger.debug("bucket size {} >= 2, key {}, performing STCS on what's here", bucket.size(), key);
+                LOGMACRO(clogger, log_level::debug, "bucket size {} >= 2, key {}, performing STCS on what's here", bucket.size(), key);
                 return stcs_interesting_bucket;
             }
             break;
@@ -490,7 +490,7 @@ time_window_compaction_strategy::newest_bucket(table_state& table_s, strategy_co
             if (control.has_ongoing_compaction(table_s)) {
                 break;
             }
-            clogger.debug("bucket size {} >= 2 and not in current bucket, key {}, compacting what's here", bucket.size(), key);
+            LOGMACRO(clogger, log_level::debug, "bucket size {} >= 2 and not in current bucket, key {}, compacting what's here", bucket.size(), key);
             return trim_to_threshold(std::move(bucket), max_threshold);
         default:
             // windows needing major will remain with major state until they're compacted into one file.
@@ -499,7 +499,7 @@ time_window_compaction_strategy::newest_bucket(table_state& table_s, strategy_co
             if (!last_active_bucket) {
                 state.recent_active_windows.erase(key);
             }
-            clogger.debug("No compaction necessary for bucket size {} , key {}, now {}", bucket.size(), key, now);
+            LOGMACRO(clogger, log_level::debug, "No compaction necessary for bucket size {} , key {}, now {}", bucket.size(), key, now);
             break;
         }
     }

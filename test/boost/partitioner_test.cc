@@ -48,7 +48,7 @@ static int64_t long_from_token(dht::token token) {
 }
 
 void print_token(sstring desc, dht::token t) {
-    testlog.debug("{}={}", desc, t);
+    LOGMACRO(testlog, log_level::debug, "{}={}", desc, t);
 }
 
 SEASTAR_THREAD_TEST_CASE(test_minimum_token) {
@@ -774,7 +774,7 @@ SEASTAR_THREAD_TEST_CASE(test_split_token_range_msb) {
         std::optional<dht::token> prev_last_token;
         for (unsigned i = 0; i < ranges.size(); i++) {
             auto t = dht::last_token_of_compaction_group(msb, i);
-            testlog.debug("msb: {}, t: {}, range: {}", msb, t, ranges[i]);
+            LOGMACRO(testlog, log_level::debug, "msb: {}, t: {}, range: {}", msb, t, ranges[i]);
             BOOST_REQUIRE(ranges[i].contains(t, cmp));
             if (prev_last_token) {
                 BOOST_REQUIRE(ranges[i].contains(dht::next_token(*prev_last_token), cmp));

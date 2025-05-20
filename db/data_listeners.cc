@@ -18,11 +18,11 @@ namespace db {
 
 void data_listeners::install(data_listener* listener) {
     _listeners.emplace(listener);
-    dblog.debug("data_listeners: install listener {}", fmt::ptr(listener));
+    LOGMACRO(dblog, log_level::debug, "data_listeners: install listener {}", fmt::ptr(listener));
 }
 
 void data_listeners::uninstall(data_listener* listener) {
-    dblog.debug("data_listeners: uninstall listener {}", fmt::ptr(listener));
+    LOGMACRO(dblog, log_level::debug, "data_listeners: uninstall listener {}", fmt::ptr(listener));
     _listeners.erase(listener);
 }
 
@@ -50,17 +50,17 @@ toppartitions_item_key::operator sstring() const {
 
 toppartitions_data_listener::toppartitions_data_listener(replica::database& db, std::unordered_set<std::tuple<sstring, sstring>, utils::tuple_hash> table_filters,
         std::unordered_set<sstring> keyspace_filters) : _db(db), _table_filters(std::move(table_filters)), _keyspace_filters(std::move(keyspace_filters)) {
-    dblog.debug("toppartitions_data_listener: installing {}", fmt::ptr(this));
+    LOGMACRO(dblog, log_level::debug, "toppartitions_data_listener: installing {}", fmt::ptr(this));
     _db.data_listeners().install(this);
 }
 
 toppartitions_data_listener::~toppartitions_data_listener() {
-    dblog.debug("toppartitions_data_listener: uninstalling {}", fmt::ptr(this));
+    LOGMACRO(dblog, log_level::debug, "toppartitions_data_listener: uninstalling {}", fmt::ptr(this));
     _db.data_listeners().uninstall(this);
 }
 
 future<> toppartitions_data_listener::stop() {
-    dblog.debug("toppartitions_data_listener: stopping {}", fmt::ptr(this));
+    LOGMACRO(dblog, log_level::debug, "toppartitions_data_listener: stopping {}", fmt::ptr(this));
     return make_ready_future<>();
 }
 
@@ -115,7 +115,7 @@ toppartitions_query::toppartitions_query(distributed<replica::database>& xdb, st
         std::unordered_set<sstring>&& keyspace_filters, std::chrono::milliseconds duration, size_t list_size, size_t capacity)
         : _xdb(xdb), _table_filters(std::move(table_filters)), _keyspace_filters(std::move(keyspace_filters)), _duration(duration), _list_size(list_size), _capacity(capacity),
           _query(std::make_unique<sharded<toppartitions_data_listener>>()) {
-    dblog.debug("toppartitions_query on {} column families and {} keyspaces", !_table_filters.empty() ? std::to_string(_table_filters.size()) : "all",
+    LOGMACRO(dblog, log_level::debug, "toppartitions_query on {} column families and {} keyspaces", !_table_filters.empty() ? std::to_string(_table_filters.size()) : "all",
                 !_keyspace_filters.empty() ? std::to_string(_keyspace_filters.size()) : "all");
 }
 
@@ -126,7 +126,7 @@ future<> toppartitions_query::scatter() {
 using top_t = toppartitions_data_listener::global_top_k::results;
 
 future<toppartitions_query::results> toppartitions_query::gather(unsigned res_size) {
-    dblog.debug("toppartitions_query::gather");
+    LOGMACRO(dblog, log_level::debug, "toppartitions_query::gather");
 
     auto map = [res_size] (toppartitions_data_listener& listener) {
         LOGMACRO(dblog, log_level::trace, "toppartitions_query::map_reduce with listener {}", fmt::ptr(&listener));
@@ -144,9 +144,9 @@ future<toppartitions_query::results> toppartitions_query::gather(unsigned res_si
             dblog.error("toppartitions_query::gather: {}", ep);
             return make_exception_future<results>(ep);
         }).finally([this] () {
-            dblog.debug("toppartitions_query::gather: stopping query");
+            LOGMACRO(dblog, log_level::debug, "toppartitions_query::gather: stopping query");
             return _query->stop().then([] {
-                dblog.debug("toppartitions_query::gather: query stopped");
+                LOGMACRO(dblog, log_level::debug, "toppartitions_query::gather: query stopped");
             });
         });
 }

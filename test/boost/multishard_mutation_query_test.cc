@@ -633,12 +633,12 @@ SEASTAR_THREAD_TEST_CASE(test_read_all_multi_range) {
 
             unsigned i = 0;
 
-            testlog.debug("Scan with step={}, ranges={}", step, ranges);
+            LOGMACRO(testlog, log_level::debug, "Scan with step={}, ranges={}", step, ranges);
 
             // Keep indent the same to reduce white-space noise
             for (const auto page_size : {1, 4, 8, 19, 100}) {
             for (const auto stateful : {stateful_query::no, stateful_query::yes}) {
-                testlog.debug("[scan #{}]: page_size={}, stateful={}", i++, page_size, stateful);
+                LOGMACRO(testlog, log_level::debug, "[scan #{}]: page_size={}, stateful={}", i++, page_size, stateful);
 
                 // First read all partition-by-partition (not paged).
                 auto expected_results = read_all_partitions_one_by_one(env.db(), s, pkeys);
@@ -680,7 +680,7 @@ SEASTAR_THREAD_TEST_CASE(test_read_with_partition_row_limits) {
         for (const auto partition_row_limit : {1ul, 4ul, 8ul, query::partition_max_rows}) {
         for (const auto page_size : {1, 4, 8, 19}) {
         for (const auto stateful : {stateful_query::no, stateful_query::yes}) {
-            testlog.debug("[scan #{}]: partition_row_limit={}, page_size={}, stateful={}", i++, partition_row_limit, page_size, stateful);
+            LOGMACRO(testlog, log_level::debug, "[scan #{}]: partition_row_limit={}, page_size={}, stateful={}", i++, partition_row_limit, page_size, stateful);
 
             const auto slice = partition_slice_builder(*s, s->full_slice())
                 .reversed()
@@ -798,7 +798,7 @@ SEASTAR_THREAD_TEST_CASE(test_read_reversed) {
         for (const auto partition_row_limit : {1ul, 4ul, 8ul, query::partition_max_rows}) {
         for (const auto page_size : {1, 4, 8, 19}) {
         for (const auto stateful : {stateful_query::no, stateful_query::yes}) {
-            testlog.debug("[scan #{}]: partition_row_limit={}, page_size={}, stateful={}", i++, partition_row_limit, page_size, stateful);
+            LOGMACRO(testlog, log_level::debug, "[scan #{}]: partition_row_limit={}, page_size={}, stateful={}", i++, partition_row_limit, page_size, stateful);
 
             const auto slice = partition_slice_builder(*s, s->full_slice())
                 .reversed()
@@ -1074,7 +1074,7 @@ run_fuzzy_test_scan(size_t i, fuzzy_test_config cfg, distributed<replica::databa
 
     const auto is_stateful = stateful_query(std::uniform_int_distribution<int>(0, 3)(rnd_engine));
 
-    testlog.debug("[scan#{}]: seed={}, is_stateful={}, prange={}, ckranges={}", i, seed, is_stateful, partition_range,
+    LOGMACRO(testlog, log_level::debug, "[scan#{}]: seed={}, is_stateful={}, prange={}, ckranges={}", i, seed, is_stateful, partition_range,
             partition_slice.default_row_ranges());
 
     const auto [results, npages] = read_partitions_with_paged_scan(db, schema, 1000, 1024, is_stateful, partition_range, partition_slice);
@@ -1107,7 +1107,7 @@ future<> run_concurrently(size_t count, size_t concurrency, noncopyable_function
                     }
                     LOGMACRO(testlog, log_level::trace, "Invoking func({})", i);
                     auto f = func(i).handle_exception([&error, i] (std::exception_ptr e) {
-                        testlog.debug("func({}) invocation returned with error: {}", i, e);
+                        LOGMACRO(testlog, log_level::debug, "func({}) invocation returned with error: {}", i, e);
                         error = std::move(e);
                     });
                     return f;

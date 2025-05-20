@@ -554,14 +554,14 @@ future<> read_context::save_reader(shard_id shard, full_position_view last_pos) 
         } catch (...) {
             // We don't want to fail a read just because of a failure to
             // save any of the readers.
-            mmq_log.debug("Failed to save reader: {}", std::current_exception());
+            LOGMACRO(mmq_log, log_level::debug, "Failed to save reader: {}", std::current_exception());
             ++db.get_stats().multishard_query_failed_reader_saves;
             return make_ready_future<>();
         }
     }).handle_exception([this, shard] (std::exception_ptr e) {
         // We don't want to fail a read just because of a failure to
         // save any of the readers.
-        mmq_log.debug("Failed to save reader on shard {}: {}", shard, e);
+        LOGMACRO(mmq_log, log_level::debug, "Failed to save reader on shard {}: {}", shard, e);
         // This will account the failure on the local shard but we don't
         // know where exactly the failure happened anyway.
         ++_db.local().get_stats().multishard_query_failed_reader_saves;

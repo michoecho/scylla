@@ -3255,7 +3255,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
     {
         size_t i = 0;
         for (const auto& segregated_fragment_stream : segregated_fragment_streams) {
-            testlog.debug("Checking position monotonicity of segregated stream #{}", i++);
+            LOGMACRO(testlog, log_level::debug, "Checking position monotonicity of segregated stream #{}", i++);
             assert_that(make_mutation_reader_from_fragments(schema, permit, copy_fragments(segregated_fragment_stream)))
                     .has_monotonic_positions();
         }
@@ -3284,7 +3284,7 @@ SEASTAR_THREAD_TEST_CASE(test_scrub_segregate_stack) {
 
         auto rd = assert_that(make_combined_reader(schema, permit, std::move(readers)));
         for (const auto& [pkey, content] : expected_partitions) {
-            testlog.debug("Checking content of partition {}", pkey);
+            LOGMACRO(testlog, log_level::debug, "Checking content of partition {}", pkey);
             rd.produces_partition_start(pkey);
             if (content.has_static_row) {
                 rd.produces_static_row();
@@ -4921,7 +4921,7 @@ SEASTAR_TEST_CASE(compound_sstable_set_incremental_selector_test) {
             auto tok0 = key0.token();
             auto key1 = keys[k1];
             auto tok1 = key1.token();
-            testlog.debug("creating sstable with k[{}] token={} k[{}] token={} level={}", k0, tok0, k1, tok1, level);
+            LOGMACRO(testlog, log_level::debug, "creating sstable with k[{}] token={} k[{}] token={} level={}", k0, tok0, k1, tok1, level);
             auto sst = sstable_for_overlapping_test(env, s, key0.key(), key1.key(), level);
             set->insert(sst);
             return sst;
@@ -4930,7 +4930,7 @@ SEASTAR_TEST_CASE(compound_sstable_set_incremental_selector_test) {
         auto check = [&] (sstable_set::incremental_selector& selector, size_t k, std::unordered_set<shared_sstable> expected_ssts) {
             const dht::decorated_key& key = keys[k];
             auto sstables = selector.select(key).sstables;
-            testlog.debug("checking sstables for key[{}] token={} found={} expected={}", k, keys[k].token(), sstables.size(), expected_ssts.size());
+            LOGMACRO(testlog, log_level::debug, "checking sstables for key[{}] token={} found={} expected={}", k, keys[k].token(), sstables.size(), expected_ssts.size());
             BOOST_REQUIRE_EQUAL(sstables.size(), expected_ssts.size());
             for (auto& sst : sstables) {
                 BOOST_REQUIRE(expected_ssts.contains(sst));
@@ -5209,7 +5209,7 @@ future<> run_controller_test(sstables::compaction_strategy_type compaction_strat
             SCYLLA_ASSERT(sst->data_size() == data_size);
             auto backlog_before = t.as_table_state().get_backlog_tracker().backlog();
             t->add_sstable_and_update_cache(sst).get();
-            testlog.debug("\tNew sstable of size={} level={}; Backlog diff={};",
+            LOGMACRO(testlog, log_level::debug, "\tNew sstable of size={} level={}; Backlog diff={};",
                           utils::pretty_printed_data_size(data_size), level,
                           t.as_table_state().get_backlog_tracker().backlog() - backlog_before);
         };
@@ -5270,11 +5270,11 @@ future<> run_controller_test(sstables::compaction_strategy_type compaction_strat
                 }
 
                 auto table_size = t->get_stats().live_disk_space_used;
-                testlog.debug("T{}: {} tiers, with total size={}", t_idx, tiers, utils::pretty_printed_data_size(table_size));
+                LOGMACRO(testlog, log_level::debug, "T{}: {} tiers, with total size={}", t_idx, tiers, utils::pretty_printed_data_size(table_size));
                 tables.push_back(t);
                 tables_total_size += table_size;
             }
-            testlog.debug("Created {} tables, with total size={}", tables.size(), utils::pretty_printed_data_size(tables_total_size));
+            LOGMACRO(testlog, log_level::debug, "Created {} tables, with total size={}", tables.size(), utils::pretty_printed_data_size(tables_total_size));
             results.push_back(result{ tables.size(), per_table_max_disk_usage, normalize_backlog(manager.backlog()) });
             for (auto& t : tables) {
                 t.stop().get();

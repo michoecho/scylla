@@ -268,7 +268,7 @@ sstable_directory::process_descriptor(sstables::entry_descriptor desc,
             _shared_sstable_info.push_back(co_await sst->get_open_info());
         }
     } else {
-        dirlog.debug("Added {} to unsorted sstables list", sst->get_filename());
+        LOGMACRO(dirlog, log_level::debug, "Added {} to unsorted sstables list", sst->get_filename());
         _unsorted_sstables.push_back(std::move(sst));
     }
 }
@@ -339,7 +339,7 @@ future<> sstable_directory::filesystem_components_lister::process(sstable_direct
         }
     }
 
-    dirlog.debug("Start processing directory {} for SSTables", _directory);
+    LOGMACRO(dirlog, log_level::debug, "Start processing directory {} for SSTables", _directory);
     // It seems wasteful that each shard is repeating this scan, and to some extent it is.
     // However, we still want to open the files and especially call process_dir() in a distributed
     // fashion not to overload any shard. Also in the common case the SSTables will all be
@@ -394,7 +394,7 @@ future<> sstable_directory::filesystem_components_lister::process(sstable_direct
         msg = format("{}, no numeric generation was seen", msg);
     }
 
-    dirlog.debug("{}", msg);
+    LOGMACRO(dirlog, log_level::debug, "{}", msg);
 
     // _descriptors is everything with a TOC. So after we remove this, what's left is
     // SSTables for which a TOC was not found.
@@ -422,7 +422,7 @@ future<> sstable_directory::filesystem_components_lister::process(sstable_direct
 }
 
 future<> sstable_directory::sstables_registry_components_lister::process(sstable_directory& directory, process_flags flags) {
-    dirlog.debug("Start processing registry entry {} (state {})", _owner, directory._state);
+    LOGMACRO(dirlog, log_level::debug, "Start processing registry entry {} (state {})", _owner, directory._state);
     return _sstables_registry.sstables_registry_list(_owner, [this, flags, &directory] (sstring status, sstable_state state, entry_descriptor desc) {
         if (state != directory._state) {
             return make_ready_future<>();
@@ -435,7 +435,7 @@ future<> sstable_directory::sstables_registry_components_lister::process(sstable
             return make_ready_future<>();
         }
 
-        dirlog.debug("Processing {} entry from {}", desc.generation, _owner);
+        LOGMACRO(dirlog, log_level::debug, "Processing {} entry from {}", desc.generation, _owner);
         return directory.process_descriptor(std::move(desc), flags,
                                             [&directory] { return *directory._storage_opts; });
     });
@@ -448,7 +448,7 @@ future<> sstable_directory::restore_components_lister::process(sstable_directory
         if (!sstable_generation_generator::maybe_owned_by_this_shard(desc.generation)) {
             co_return;
         }
-        dirlog.debug("Processing {} entry from {}", desc.generation, toc_filename);
+        LOGMACRO(dirlog, log_level::debug, "Processing {} entry from {}", desc.generation, toc_filename);
         co_await directory.process_descriptor(
             std::move(desc), flags,
             [&directory, prefix=sst_path.parent_path().native()] {
@@ -502,7 +502,7 @@ sstable_directory::move_foreign_sstables(sharded<sstable_directory>& source_dire
         }
         // Should be empty, since an SSTable that belongs to this shard is not remote.
         SCYLLA_ASSERT(shard_id != this_shard_id());
-        dirlog.debug("Moving {} unshared SSTables of {}.{} to shard {} ", info_vec.size(), _schema->ks_name(), _schema->cf_name(), shard_id);
+        LOGMACRO(dirlog, log_level::debug, "Moving {} unshared SSTables of {}.{} to shard {} ", info_vec.size(), _schema->ks_name(), _schema->cf_name(), shard_id);
         return source_directory.invoke_on(shard_id, &sstables::sstable_directory::load_foreign_sstables, std::move(info_vec));
     });
 }
@@ -533,7 +533,7 @@ future<std::vector<shard_id>> sstable_directory::get_shards_for_this_sstable(
 
 future<>
 sstable_directory::remove_sstables(std::vector<sstables::shared_sstable> sstlist) {
-    dirlog.debug("Removing {} SSTables", sstlist.size());
+    LOGMACRO(dirlog, log_level::debug, "Removing {} SSTables", sstlist.size());
     return parallel_for_each(std::move(sstlist), [] (const sstables::shared_sstable& sst) {
         LOGMACRO(dirlog, log_level::trace, "Removing SSTable {}", sst->get_filename());
         return sst->unlink().then([sst] {});
@@ -542,7 +542,7 @@ sstable_directory::remove_sstables(std::vector<sstables::shared_sstable> sstlist
 
 future<>
 sstable_directory::collect_output_unshared_sstables(std::vector<sstables::shared_sstable> resharded_sstables, can_be_remote remote_ok) {
-    dirlog.debug("Collecting {} output SSTables (remote={})", resharded_sstables.size(), remote_ok);
+    LOGMACRO(dirlog, log_level::debug, "Collecting {} output SSTables (remote={})", resharded_sstables.size(), remote_ok);
     return parallel_for_each(std::move(resharded_sstables), [this, remote_ok] (sstables::shared_sstable sst) {
         auto shards = sst->get_shards_for_this_sstable();
         SCYLLA_ASSERT(shards.size() == 1);
@@ -569,7 +569,7 @@ sstable_directory::remove_unshared_sstables(std::vector<sstables::shared_sstable
     // When removing input sstables from reshaping: Those SSTables used to be in the unshared local
     // list. So not only do we have to remove them, we also have to update the list. Because we're
     // dealing with a vector it's easier to just reconstruct the list.
-    dirlog.debug("Removing {} unshared SSTables", sstlist.size());
+    LOGMACRO(dirlog, log_level::debug, "Removing {} unshared SSTables", sstlist.size());
     std::unordered_set<sstables::shared_sstable> exclude;
 
     for (auto& sst : sstlist) {
@@ -587,7 +587,7 @@ sstable_directory::remove_unshared_sstables(std::vector<sstables::shared_sstable
     // Do this last for exception safety. If there is an exception on unlink we
     // want to at least leave the SSTable unshared list in a sane state.
     co_await remove_sstables(std::move(sstlist));
-    dirlog.debug("Finished removing all SSTables");
+    LOGMACRO(dirlog, log_level::debug, "Finished removing all SSTables");
 }
 
 
@@ -676,7 +676,7 @@ future<sstring> sstable_directory::create_pending_deletion_log(opened_directory&
 
             // Guarantee that the changes above reached the disk.
             base_dir.sync(general_disk_error_handler).get();
-            dirlog.debug("{} written successfully.", pending_delete_log);
+            LOGMACRO(dirlog, log_level::debug, "{} written successfully.", pending_delete_log);
 
         return pending_delete_log;
     });
@@ -685,7 +685,7 @@ future<sstring> sstable_directory::create_pending_deletion_log(opened_directory&
 // FIXME: Go through maybe_delete_large_partitions_entry on recovery since
 // this is an indication we crashed in the middle of atomic deletion
 future<> sstable_directory::filesystem_components_lister::replay_pending_delete_log(fs::path pending_delete_log) {
-    dirlog.debug("Reading pending_deletes log file {}", pending_delete_log);
+    LOGMACRO(dirlog, log_level::debug, "Reading pending_deletes log file {}", pending_delete_log);
     fs::path pending_delete_dir = pending_delete_log.parent_path();
     try {
         sstring sstdir = pending_delete_dir.parent_path().native();
@@ -695,12 +695,12 @@ future<> sstable_directory::filesystem_components_lister::replay_pending_delete_
         std::vector<sstring> basenames;
         boost::split(basenames, all, boost::is_any_of("\n"), boost::token_compress_on);
         auto tocs = std::ranges::to<std::vector<sstring>>(basenames | std::views::filter([] (auto&& basename) { return !basename.empty(); }));
-        dirlog.debug("TOCs to remove: {}", tocs);
+        LOGMACRO(dirlog, log_level::debug, "TOCs to remove: {}", tocs);
         co_await parallel_for_each(tocs, [&sstdir] (const sstring& name) {
             // Only move TOC to TOC.tmp, the rest will be finished by regular process
             return make_toc_temporary(sstdir + "/" + name).discard_result();
         });
-        dirlog.debug("Replayed {}, removing", pending_delete_log);
+        LOGMACRO(dirlog, log_level::debug, "Replayed {}, removing", pending_delete_log);
         co_await remove_file(pending_delete_log.native());
     } catch (...) {
         dirlog.warn("Error replaying {}: {}. Ignoring.", pending_delete_log, std::current_exception());
@@ -756,7 +756,7 @@ future<> sstable_directory::filesystem_components_lister::handle_sstables_pendin
                 auto f = replay_pending_delete_log(std::move(file_path));
                 futures.push_back(std::move(f));
             } else {
-                dirlog.debug("Found unknown file in pending_delete directory: {}, ignoring", file_path);
+                LOGMACRO(dirlog, log_level::debug, "Found unknown file in pending_delete directory: {}, ignoring", file_path);
             }
         }
         co_return futures;

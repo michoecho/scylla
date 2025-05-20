@@ -50,7 +50,7 @@ protected:
         );
 
         state->initialized = true;
-        logger.debug("Initialized factory, address={} tls={}", state->addr, state->creds == nullptr ? "no" : "yes");
+        LOGMACRO(logger, log_level::debug, "Initialized factory, address={} tls={}", state->addr, state->creds == nullptr ? "no" : "yes");
     }
 
 public:
@@ -65,15 +65,15 @@ public:
 
     virtual future<connected_socket> make(abort_source*) override {
         if (!_state->initialized) {
-            _logger.debug("Waiting for factory to initialize");
+            LOGMACRO(_logger, log_level::debug, "Waiting for factory to initialize");
             co_await _done.get_future();
         }
 
         if (_state->creds) {
-            _logger.debug("Making new HTTPS connection addr={} host={}", _state->addr, _host);
+            LOGMACRO(_logger, log_level::debug, "Making new HTTPS connection addr={} host={}", _state->addr, _host);
             co_return co_await tls::connect(_state->creds, _state->addr, tls::tls_options{.server_name = _host});
         } else {
-            _logger.debug("Making new HTTP connection");
+            LOGMACRO(_logger, log_level::debug, "Making new HTTP connection");
             co_return co_await seastar::connect(_state->addr, {}, transport::TCP);
         }
     }

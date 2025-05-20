@@ -155,7 +155,7 @@ class error_injection {
                 return std::nullopt;
             }
             const auto& s = it->second;
-            errinj_logger.debug("Injected value [{}] for parameter [{}], injection [{}]",
+            LOGMACRO(errinj_logger, log_level::debug, "Injected value [{}] for parameter [{}], injection [{}]",
                 s, name, injection_name);
             if constexpr (std::is_same_v<T, std::string_view>) {
                 return s;
@@ -361,7 +361,7 @@ public:
         auto data = injection_data{one_shot, std::move(parameters), injection_name};
         std::string_view name = data.shared_data->injection_name;
         _enabled.emplace(name, std::move(data));
-        errinj_logger.debug("Enabling injection {} \"{}\"",
+        LOGMACRO(errinj_logger, log_level::debug, "Enabling injection {} \"{}\"",
                 one_shot? "one-shot ": "", injection_name);
     }
 
@@ -387,7 +387,7 @@ public:
         if (!enter(name)) {
             return;
         }
-        errinj_logger.debug("Triggering injection \"{}\"", name);
+        LOGMACRO(errinj_logger, log_level::debug, "Triggering injection \"{}\"", name);
         f();
     }
 
@@ -397,7 +397,7 @@ public:
         if (!enter(name)) {
             return make_ready_future<>();
         }
-        errinj_logger.debug("Triggering sleep injection \"{}\" ({}ms)", name, duration.count());
+        LOGMACRO(errinj_logger, log_level::debug, "Triggering sleep injection \"{}\" ({}ms)", name, duration.count());
         return seastar::sleep(duration);
     }
 
@@ -411,7 +411,7 @@ public:
 
         // Time left until deadline
         auto duration = deadline - Clock::now();
-        errinj_logger.debug("Triggering sleep injection \"{}\" ({})", name, duration);
+        LOGMACRO(errinj_logger, log_level::debug, "Triggering sleep injection \"{}\" ({})", name, duration);
         return seastar::sleep<Clock>(duration);
     }
 
@@ -426,7 +426,7 @@ public:
             return make_ready_future<>();
         }
 
-        errinj_logger.debug("Triggering exception injection \"{}\"", name);
+        LOGMACRO(errinj_logger, log_level::debug, "Triggering exception injection \"{}\"", name);
         return make_exception_future<>(exception_factory());
     }
 
@@ -446,7 +446,7 @@ public:
             co_return;
         }
 
-        errinj_logger.debug("Triggering injection \"{}\" with injection handler", name);
+        LOGMACRO(errinj_logger, log_level::debug, "Triggering injection \"{}\" with injection handler", name);
         injection_handler handler(data->shared_data, share_messages);
         data->handlers.push_back(handler);
 

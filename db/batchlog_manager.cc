@@ -64,7 +64,7 @@ future<> db::batchlog_manager::do_batch_log_replay(post_replay_cleanup cleanup) 
         auto sem_units = co_await get_units(bm._sem, 1);
 
         auto dest = bm._cpu++ % smp::count;
-        blogger.debug("Batchlog replay on shard {}: starts", dest);
+        LOGMACRO(blogger, log_level::debug, "Batchlog replay on shard {}: starts", dest);
         auto last_replay = gc_clock::now();
         if (dest == 0) {
             co_await bm.replay_all_failed_batches(cleanup);
@@ -78,7 +78,7 @@ future<> db::batchlog_manager::do_batch_log_replay(post_replay_cleanup cleanup) 
         co_await bm.container().invoke_on_all([last_replay] (auto& bm) {
             bm._last_replay = last_replay;
         });
-        blogger.debug("Batchlog replay on shard {}: done", dest);
+        LOGMACRO(blogger, log_level::debug, "Batchlog replay on shard {}: done", dest);
     });
 }
 
@@ -169,7 +169,7 @@ future<> db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cle
         // enough time for the actual write + batchlog entry mutation delivery (two separate requests).
         auto timeout = get_batch_log_timeout();
         if (db_clock::now() < written_at + timeout) {
-            blogger.debug("Skipping replay of {}, too fresh", id);
+            LOGMACRO(blogger, log_level::debug, "Skipping replay of {}, too fresh", id);
             return make_ready_future<stop_iteration>(stop_iteration::no);
         }
 
@@ -187,7 +187,7 @@ future<> db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cle
 
         auto data = row.get_blob("data");
 
-        blogger.debug("Replaying batch {}", id);
+        LOGMACRO(blogger, log_level::debug, "Replaying batch {}", id);
 
         auto fms = make_lw_shared<std::deque<canonical_mutation>>();
         auto in = ser::as_input_stream(data);
@@ -268,7 +268,7 @@ future<> db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cle
     };
 
     co_await with_gate(_gate, [this, cleanup, batch = std::move(batch)] () mutable -> future<> {
-        blogger.debug("Started replayAllFailedBatches (cpu {})", this_shard_id());
+        LOGMACRO(blogger, log_level::debug, "Started replayAllFailedBatches (cpu {})", this_shard_id());
         co_await utils::get_local_injector().inject("add_delay_to_batch_replay", std::chrono::milliseconds(1000));
         co_await _qp.query_internal(
                 format("SELECT id, data, written_at, version FROM {}.{} BYPASS CACHE", system_keyspace::NAME, system_keyspace::BATCHLOG),
@@ -283,7 +283,7 @@ future<> db::batchlog_manager::replay_all_failed_batches(post_replay_cleanup cle
             // where they can be compacted away.
             return replica::database::flush_table_on_all_shards(_qp.proxy().get_db(), system_keyspace::NAME, system_keyspace::BATCHLOG);
         }).then([] {
-            blogger.debug("Finished replayAllFailedBatches");
+            LOGMACRO(blogger, log_level::debug, "Finished replayAllFailedBatches");
         });
     });
 }

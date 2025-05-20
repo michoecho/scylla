@@ -53,7 +53,7 @@ struct ring_point {
 };
 
 void print_natural_endpoints(double point, const host_id_vector_replica_set v) {
-    testlog.debug("Natural endpoints for a token {}:", point);
+    LOGMACRO(testlog, log_level::debug, "Natural endpoints for a token {}:", point);
     std::string str;
     std::ostringstream strm(str);
 
@@ -61,7 +61,7 @@ void print_natural_endpoints(double point, const host_id_vector_replica_set v) {
         fmt::print(strm, "{} ", addr);
     }
 
-    testlog.debug("{}", strm.str());
+    LOGMACRO(testlog, log_level::debug, "{}", strm.str());
 }
 
 static void verify_sorted(const dht::token_range_vector& trv) {
@@ -219,7 +219,7 @@ void check_tablets_balance(const tablet_map& tmap,
             load_map[node.dc_rack().dc][node.dc_rack().rack][r.host][r.shard]++;
         }
     }
-    testlog.debug("load_map={}", load_map);
+    LOGMACRO(testlog, log_level::debug, "load_map={}", load_map);
 
     for (const auto& [dc, dc_racks] : load_map) {
         size_t replicas_in_dc = 0;
@@ -399,7 +399,7 @@ void heavy_origin_test() {
                 ring_points.emplace_back(rp);
                 tokens[address].emplace(token{tests::d2t(token_point / total_eps)});
 
-                testlog.debug("adding node {} at {}", address, token_point);
+                LOGMACRO(testlog, log_level::debug, "adding node {} at {}", address, token_point);
 
                 token_point++;
             }
@@ -472,7 +472,7 @@ SEASTAR_THREAD_TEST_CASE(NetworkTopologyStrategy_tablets_test) {
             }
         }
 
-        testlog.debug("node_count_per_rack={}", node_count_per_rack);
+        LOGMACRO(testlog, log_level::debug, "node_count_per_rack={}", node_count_per_rack);
 
         // Initialize the token_metadata
         locator::shared_token_metadata stm([] () noexcept { return db::schema_tables::hold_merge_lock(); }, tm_cfg);
@@ -507,7 +507,7 @@ SEASTAR_THREAD_TEST_CASE(NetworkTopologyStrategy_tablets_test) {
         // Create the replication strategy
         auto options = make_random_options();
         size_t tablet_count = 1 + tests::random::get_int(99);
-        testlog.debug("tablet_count={} rf_options={}", tablet_count, options);
+        LOGMACRO(testlog, log_level::debug, "tablet_count={} rf_options={}", tablet_count, options);
         locator::replication_strategy_params params(options, tablet_count);
         auto ars_ptr = abstract_replication_strategy::create_replication_strategy(
                 "NetworkTopologyStrategy", params);
@@ -560,7 +560,7 @@ static void test_random_balancing(sharded<snitch_ptr>& snitch, gms::inet_address
         }
     }
 
-    testlog.debug("num_dcs={} num_racks={} nodes_per_rack={} shards_per_node={} ring_points=[{}]", num_dcs, num_racks, nodes_per_rack, shard_count,
+    LOGMACRO(testlog, log_level::debug, "num_dcs={} num_racks={} nodes_per_rack={} shards_per_node={} ring_points=[{}]", num_dcs, num_racks, nodes_per_rack, shard_count,
             fmt::join(ring_points | std::views::transform([] (const ring_point& rp) {
                 return fmt::format("({}, {})", rp.id, rp.host);
             }), ", "));
@@ -598,7 +598,7 @@ static void test_random_balancing(sharded<snitch_ptr>& snitch, gms::inet_address
     // Create the replication strategy
     auto options = make_options(rf_per_dc);
     size_t tablet_count = 128 * num_dcs * nodes_per_dc * shard_count / rf_per_dc;
-    testlog.debug("tablet_count={} options={}", tablet_count, options);
+    LOGMACRO(testlog, log_level::debug, "tablet_count={} options={}", tablet_count, options);
     locator::replication_strategy_params params(options, tablet_count);
     auto ars_ptr = abstract_replication_strategy::create_replication_strategy(
             "NetworkTopologyStrategy", params);
@@ -611,7 +611,7 @@ static void test_random_balancing(sharded<snitch_ptr>& snitch, gms::inet_address
 
     if (rf_per_dc < nodes_per_dc) {
         auto inc_options = make_options(rf_per_dc + 1);
-        testlog.debug("Increasing rf_per_dc={}", rf_per_dc);
+        LOGMACRO(testlog, log_level::debug, "Increasing rf_per_dc={}", rf_per_dc);
         locator::replication_strategy_params inc_params(inc_options, tablet_count);
         auto inc_ars_ptr = abstract_replication_strategy::create_replication_strategy(
                 "NetworkTopologyStrategy", params);
@@ -625,7 +625,7 @@ static void test_random_balancing(sharded<snitch_ptr>& snitch, gms::inet_address
 
     if (rf_per_dc > 1) {
         auto dec_options = make_options(rf_per_dc - 1);
-        testlog.debug("Increasing rf_per_dc={}", rf_per_dc);
+        LOGMACRO(testlog, log_level::debug, "Increasing rf_per_dc={}", rf_per_dc);
         locator::replication_strategy_params dec_params(dec_options, tablet_count);
         auto dec_ars_ptr = abstract_replication_strategy::create_replication_strategy(
                 "NetworkTopologyStrategy", params);
@@ -980,7 +980,7 @@ void topology::test_compare_endpoints(const locator::host_id& address, const loc
         }
     }
     auto res = compare_endpoints(*this, address, a1, a2);
-    testlog.debug("compare_endpoint: address={} [{}/{}] a1={} [{}/{}] a2={} [{}/{}]: res={} expected={} expected_value={}",
+    LOGMACRO(testlog, log_level::debug, "compare_endpoint: address={} [{}/{}] a1={} [{}/{}] a2={} [{}/{}]: res={} expected={} expected_value={}",
             address, loc.dc, loc.rack,
             a1, loc1.dc, loc1.rack,
             a2, loc2.dc, loc2.rack,
@@ -1245,7 +1245,7 @@ SEASTAR_THREAD_TEST_CASE(tablets_simple_rack_aware_view_pairing_test) {
         }
     }
 
-    testlog.debug("node_count_per_rack={}", node_count_per_rack);
+    LOGMACRO(testlog, log_level::debug, "node_count_per_rack={}", node_count_per_rack);
 
     // Initialize the token_metadata
     locator::shared_token_metadata stm([] () noexcept { return db::schema_tables::hold_merge_lock(); }, tm_cfg);
@@ -1287,7 +1287,7 @@ SEASTAR_THREAD_TEST_CASE(tablets_simple_rack_aware_view_pairing_test) {
 
     auto options = make_random_options();
     size_t tablet_count = 1 + tests::random::get_int(99);
-    testlog.debug("tablet_count={} rf_options={}", tablet_count, options);
+    LOGMACRO(testlog, log_level::debug, "tablet_count={} rf_options={}", tablet_count, options);
     locator::replication_strategy_params params(options, tablet_count);
     auto ars_ptr = abstract_replication_strategy::create_replication_strategy(
             "NetworkTopologyStrategy", params);
@@ -1295,10 +1295,10 @@ SEASTAR_THREAD_TEST_CASE(tablets_simple_rack_aware_view_pairing_test) {
     BOOST_REQUIRE(tab_awr_ptr);
     auto base_tmap = tab_awr_ptr->allocate_tablets_for_new_table(base_schema, tmptr, 1).get();
     auto base_table_id = base_schema->id();
-    testlog.debug("base_table_id={}", base_table_id);
+    LOGMACRO(testlog, log_level::debug, "base_table_id={}", base_table_id);
     auto view_table_id = view_schema->id();
     auto view_tmap = tab_awr_ptr->allocate_tablets_for_new_table(view_schema, tmptr, 1).get();
-    testlog.debug("view_table_id={}", view_table_id);
+    LOGMACRO(testlog, log_level::debug, "view_table_id={}", view_table_id);
 
     stm.mutate_token_metadata([&] (token_metadata& tm) {
         tm.tablets().set_tablet_map(base_table_id, base_tmap);
@@ -1311,7 +1311,7 @@ SEASTAR_THREAD_TEST_CASE(tablets_simple_rack_aware_view_pairing_test) {
     auto view_erm = tab_awr_ptr->make_replication_map(view_table_id, tmptr);
 
     auto& topology = tmptr->get_topology();
-    testlog.debug("topology: {}", topology.get_datacenter_racks());
+    LOGMACRO(testlog, log_level::debug, "topology: {}", topology.get_datacenter_racks());
 
     // Test tablets rack-aware base-view pairing
     auto base_token = dht::token::get_random_token();
@@ -1397,7 +1397,7 @@ void test_complex_rack_aware_view_pairing_test(bool more_or_less) {
         }
     }
 
-    testlog.debug("node_count_per_rack={}", node_count_per_rack);
+    LOGMACRO(testlog, log_level::debug, "node_count_per_rack={}", node_count_per_rack);
 
     // Initialize the token_metadata
     locator::shared_token_metadata stm([] () noexcept { return db::schema_tables::hold_merge_lock(); }, tm_cfg);
@@ -1440,7 +1440,7 @@ void test_complex_rack_aware_view_pairing_test(bool more_or_less) {
 
     auto options = make_random_options();
     size_t tablet_count = 1 + tests::random::get_int(99);
-    testlog.debug("tablet_count={} rf_options={}", tablet_count, options);
+    LOGMACRO(testlog, log_level::debug, "tablet_count={} rf_options={}", tablet_count, options);
     locator::replication_strategy_params params(options, tablet_count);
     auto ars_ptr = abstract_replication_strategy::create_replication_strategy(
             "NetworkTopologyStrategy", params);
@@ -1448,10 +1448,10 @@ void test_complex_rack_aware_view_pairing_test(bool more_or_less) {
     BOOST_REQUIRE(tab_awr_ptr);
     auto base_tmap = tab_awr_ptr->allocate_tablets_for_new_table(base_schema, tmptr, 1).get();
     auto base_table_id = base_schema->id();
-    testlog.debug("base_table_id={}", base_table_id);
+    LOGMACRO(testlog, log_level::debug, "base_table_id={}", base_table_id);
     auto view_table_id = view_schema->id();
     auto view_tmap = tab_awr_ptr->allocate_tablets_for_new_table(view_schema, tmptr, 1).get();
-    testlog.debug("view_table_id={}", view_table_id);
+    LOGMACRO(testlog, log_level::debug, "view_table_id={}", view_table_id);
 
     stm.mutate_token_metadata([&] (token_metadata& tm) {
         tm.tablets().set_tablet_map(base_table_id, base_tmap);
@@ -1464,7 +1464,7 @@ void test_complex_rack_aware_view_pairing_test(bool more_or_less) {
     auto view_erm = tab_awr_ptr->make_replication_map(view_table_id, tmptr);
 
     auto& topology = tmptr->get_topology();
-    testlog.debug("topology: {}", topology.get_datacenter_racks());
+    LOGMACRO(testlog, log_level::debug, "topology: {}", topology.get_datacenter_racks());
 
     // Test tablets rack-aware base-view pairing
     auto base_token = dht::token::get_random_token();

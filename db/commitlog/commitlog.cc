@@ -832,13 +832,13 @@ public:
         _sync_time(clock_type::now()), _pending_ops(true) // want exception propagation
     {
         ++_segment_manager->totals.segments_created;
-        clogger.debug("Created new segment {}", *this);
+        LOGMACRO(clogger, log_level::debug, "Created new segment {}", *this);
     }
     ~segment() {
         dispose_mode mode = dispose_mode::Keep;
 
         if (is_clean()) {
-            clogger.debug("Segment {} is no longer active and will submitted for delete now", *this);
+            LOGMACRO(clogger, log_level::debug, "Segment {} is no longer active and will submitted for delete now", *this);
             ++_segment_manager->totals.segments_destroyed;
             _segment_manager->totals.active_size_on_disk -= file_position();
             _segment_manager->totals.bytes_released += file_position();
@@ -891,7 +891,7 @@ public:
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - _sync_time).count();
         if ((_segment_manager->cfg.commitlog_sync_period_in_ms * 2) < uint64_t(ms)) {
-            clogger.debug("{} needs sync. {} ms elapsed", *this, ms);
+            LOGMACRO(clogger, log_level::debug, "{} needs sync. {} ms elapsed", *this, ms);
             return true;
         }
         return false;
@@ -1559,7 +1559,7 @@ future<R> db::commitlog::segment_manager::allocate_when_possible(T writer, db::t
 }
 
 future<> db::commitlog::segment_manager::oversized_allocation(entry_writer& writer, db::timeout_clock::time_point timeout) {
-    clogger.debug("Attempting oversized alloc of {} entry writer", writer.num_entries);
+    LOGMACRO(clogger, log_level::debug, "Attempting oversized alloc of {} entry writer", writer.num_entries);
 
     auto size = writer.size();
     auto max_file_size = cfg.commitlog_segment_size_in_mb * 1024 * 1024;
@@ -1733,7 +1733,7 @@ future<> db::commitlog::segment_manager::oversized_allocation(entry_writer& writ
             } 
 
             if (wrote_entry) {
-                clogger.debug("oversized wrote sub-entry {}, {} bytes", i, data_size);
+                LOGMACRO(clogger, log_level::debug, "oversized wrote sub-entry {}, {} bytes", i, data_size);
                 continue;
             }
 
@@ -1812,7 +1812,7 @@ future<> db::commitlog::segment_manager::oversized_allocation(entry_writer& writ
                 }
 
                 if (!failed) {
-                    clogger.debug("oversized wrote sub-entry {} fragment, id={} off={}, size={}, {} of {} bytes", i, id, off, to_write, off + to_write, data_size);
+                    LOGMACRO(clogger, log_level::debug, "oversized wrote sub-entry {} fragment, id={} off={}, size={}, {} of {} bytes", i, id, off, to_write, off + to_write, data_size);
 
                     off += to_write;
                     if (s != seg_ptr) {
@@ -1844,7 +1844,7 @@ future<> db::commitlog::segment_manager::oversized_allocation(entry_writer& writ
     }
 
     if (failed) {
-        clogger.debug("Oversized allocation failed. Rolling back...");
+        LOGMACRO(clogger, log_level::debug, "Oversized allocation failed. Rolling back...");
         // reset file positions.
         for (auto [s, fp] : maybe_clear) {
             s->reset_file_position(fp);
@@ -2193,7 +2193,7 @@ void db::commitlog::segment_manager::flush_segments(uint64_t size_to_remove) {
         }
     }
 
-    clogger.debug("Flushing ({} MB) to {}", flushing/(1024*1024), high);
+    LOGMACRO(clogger, log_level::debug, "Flushing ({} MB) to {}", flushing/(1024*1024), high);
 
     // For each CF id: for each callback c: call c(id, high)
     for (auto& f : callbacks) {
@@ -2413,13 +2413,13 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
             // proper descriptor id order. If we renamed in the delete call
             // that recycled the file we could potentially have
             // out-of-order files. (Sort does not help).
-            clogger.debug("Using recycled segment file {} -> {} ({} MB)", f.name(), dst, f.known_size()/(1024*1024));
+            LOGMACRO(clogger, log_level::debug, "Using recycled segment file {} -> {} ({} MB)", f.name(), dst, f.known_size()/(1024*1024));
             co_await f.rename(dst);
             co_return co_await allocate_segment_ex(std::move(d), std::move(f), flags);
         }
 
         if (!cfg.allow_going_over_size_limit && max_disk_size != 0 && totals.total_size_on_disk >= max_disk_size) {
-            clogger.debug("Disk usage ({} MB) exceeds maximum ({} MB) - allocation will wait...", totals.total_size_on_disk/(1024*1024), max_disk_size/(1024*1024));
+            LOGMACRO(clogger, log_level::debug, "Disk usage ({} MB) exceeds maximum ({} MB) - allocation will wait...", totals.total_size_on_disk/(1024*1024), max_disk_size/(1024*1024));
             auto f = _recycled_segments.not_empty();
             if (!f.available()) {
                 _new_counter = 0; // zero this so timer task does not duplicate the below flush
@@ -2453,7 +2453,7 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
         // don't increase reserve count if we are at max, or we would go over disk limit. 
         if (_reserve_segments.max_size() < cfg.max_reserve_segments && (totals.total_size_on_disk + max_size) <= max_disk_size) {
             _reserve_segments.set_max_size(_reserve_segments.max_size() + 1);
-            clogger.debug("Increased segment reserve count to {}", _reserve_segments.max_size());
+            LOGMACRO(clogger, log_level::debug, "Increased segment reserve count to {}", _reserve_segments.max_size());
         }
         // if we have no reserve and we're above/at limits, make background task a little more eager.
         auto cur = totals.active_size_on_disk + totals.wasted_size_on_disk;
@@ -2510,7 +2510,7 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
 void db::commitlog::segment_manager::discard_completed_segments(const cf_id_type& id, const rp_set& used) noexcept {
     auto& usage = used.usage();
 
-    clogger.debug("Discarding {}: {}", id, usage);
+    LOGMACRO(clogger, log_level::debug, "Discarding {}: {}", id, usage);
 
     for (auto&s : _segments) {
         auto i = usage.find(s->_desc.id);
@@ -2522,7 +2522,7 @@ void db::commitlog::segment_manager::discard_completed_segments(const cf_id_type
 }
 
 void db::commitlog::segment_manager::discard_completed_segments(const cf_id_type& id) noexcept {
-    clogger.debug("Discard all data for {}", id);
+    LOGMACRO(clogger, log_level::debug, "Discard all data for {}", id);
     for (auto&s : _segments) {
         s->mark_clean(id);
     }
@@ -2578,15 +2578,15 @@ void db::commitlog::segment_manager::discard_unused_segments() noexcept {
 
     std::erase_if(_segments, [=](sseg_ptr s) {
         if (s->can_delete()) {
-            clogger.debug("Segment {} is unused", *s);
+            LOGMACRO(clogger, log_level::debug, "Segment {} is unused", *s);
             return true;
         }
         if (s->is_still_allocating()) {
-            clogger.debug("Not safe to delete segment {}; still allocating.", *s);
+            LOGMACRO(clogger, log_level::debug, "Not safe to delete segment {}; still allocating.", *s);
         } else if (!s->is_clean()) {
-            clogger.debug("Not safe to delete segment {}; dirty is {}", *s, segment::cf_mark {*s});
+            LOGMACRO(clogger, log_level::debug, "Not safe to delete segment {}; dirty is {}", *s, segment::cf_mark {*s});
         } else {
-            clogger.debug("Not safe to delete segment {}; disk ops pending", *s);
+            LOGMACRO(clogger, log_level::debug, "Not safe to delete segment {}; disk ops pending", *s);
         }
         return false;
     });
@@ -2622,24 +2622,24 @@ future<> db::commitlog::segment_manager::clear_reserve_segments() {
 }
 
 future<> db::commitlog::segment_manager::sync_all_segments() {
-    clogger.debug("Issuing sync for all segments");
+    LOGMACRO(clogger, log_level::debug, "Issuing sync for all segments");
     // #8952 - calls that do sync/cycle can end up altering
     // _segments (end_flush()->discard_unused())
     auto def_copy = _segments;
     co_await coroutine::parallel_for_each(def_copy, [] (sseg_ptr s) -> future<> {
         co_await s->sync();
-        clogger.debug("Synced segment {}", *s);
+        LOGMACRO(clogger, log_level::debug, "Synced segment {}", *s);
     });
 }
 
 future<> db::commitlog::segment_manager::shutdown_all_segments() {
-    clogger.debug("Issuing shutdown for all segments");
+    LOGMACRO(clogger, log_level::debug, "Issuing shutdown for all segments");
     // #8952 - calls that do sync/cycle can end up altering
     // _segments (end_flush()->discard_unused())
     auto def_copy = _segments;
     co_await coroutine::parallel_for_each(def_copy, [] (sseg_ptr s) -> future<> {
         co_await s->shutdown();
-        clogger.debug("Shutdown segment {}", *s);
+        LOGMACRO(clogger, log_level::debug, "Shutdown segment {}", *s);
     });
 }
 
@@ -2711,7 +2711,7 @@ future<> db::commitlog::segment_manager::shutdown() {
         }
     }
     co_await _shutdown_promise->get_shared_future();
-    clogger.debug("Commitlog shutdown complete");
+    LOGMACRO(clogger, log_level::debug, "Commitlog shutdown complete");
 }
 
 void db::commitlog::segment_manager::add_file_to_dispose(named_file f, dispose_mode mode) {
@@ -2807,7 +2807,7 @@ future<> db::commitlog::segment_manager::do_pending_deletes() {
     std::exception_ptr recycle_error;
     auto exts = cfg.extensions;
 
-    clogger.debug("Discarding segments {}", ftd);
+    LOGMACRO(clogger, log_level::debug, "Discarding segments {}", ftd);
 
     for (auto& [f, mode] : ftd) {
         // `f.remove_file()` resets known_size to 0, so remember the size here,
@@ -2836,7 +2836,7 @@ future<> db::commitlog::segment_manager::do_pending_deletes() {
                 descriptor d(next_id(), "Recycled-" + cfg.fname_prefix);
                 auto dst = this->filename(d);
 
-                clogger.debug("Recycling segment file {} -> {}", f.name(), dst);
+                LOGMACRO(clogger, log_level::debug, "Recycling segment file {} -> {}", f.name(), dst);
                 // must rename the file since we must ensure the
                 // data is not replayed. Changing the name will
                 // cause header ID to be invalid in the file -> ignored
@@ -2852,7 +2852,7 @@ future<> db::commitlog::segment_manager::do_pending_deletes() {
                 }
             }
 
-            clogger.debug("Deleting segment file {}", f.name());
+            LOGMACRO(clogger, log_level::debug, "Deleting segment file {}", f.name());
             // last resort.
             co_await f.remove_file();
         } catch (...) {
@@ -2888,9 +2888,9 @@ future<> db::commitlog::segment_manager::orphan_all() {
  * Only use from tests.
  */
 future<> db::commitlog::segment_manager::clear() {
-    clogger.debug("Clearing commitlog");
+    LOGMACRO(clogger, log_level::debug, "Clearing commitlog");
     co_await shutdown();
-    clogger.debug("Clearing all segments");
+    LOGMACRO(clogger, log_level::debug, "Clearing all segments");
     for (auto& s : _segments) {
         s->mark_clean();
     }
@@ -2932,7 +2932,7 @@ void db::commitlog::segment_manager::on_timer() {
         bytes_rate = rate;
         last_time = now;
 
-        clogger.debug("Rate: {} / s ({} s)", rate, seconds);
+        LOGMACRO(clogger, log_level::debug, "Rate: {} / s ({} s)", rate, seconds);
 
         // IFF a new segment was put in use since last we checked, and we're
         // above threshold, request flush.
@@ -2952,7 +2952,7 @@ void db::commitlog::segment_manager::on_timer() {
             // do not just measure current footprint, but maybe include expected
             // footprint that will be added.
             if (max != 0 && (cur + extra) >= max) {
-                clogger.debug("Used size on disk {} MB ({} MB projected) exceeds local threshold {} MB"
+                LOGMACRO(clogger, log_level::debug, "Used size on disk {} MB ({} MB projected) exceeds local threshold {} MB"
                     , (cur) / (1024 * 1024)
                     , (cur+extra) / (1024 * 1024)
                     , max / (1024 * 1024)
@@ -3339,7 +3339,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
             return eof || next == pos;
         }
         future<> skip_to_chunk(size_t seek_to_pos) {
-            clogger.debug("Skip to {} ({}, {})", seek_to_pos, pos, buffer.size_bytes());
+            LOGMACRO(clogger, log_level::debug, "Skip to {} ({}, {})", seek_to_pos, pos, buffer.size_bytes());
 
             if (seek_to_pos >= file_size) {
                 eof = true;
@@ -3443,7 +3443,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
             auto buf_vec = std::move(buffer).release();
             auto block_boundry = align_up(pos - initial.size_bytes(), alignment);
 
-            clogger.debug("Read {} bytes of data ({}, {})", size, pos, rem);
+            LOGMACRO(clogger, log_level::debug, "Read {} bytes of data ({}, {})", size, pos, rem);
 
             while (rem < size) {
                 if (eof) {
@@ -3544,7 +3544,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
         }
 
         future<> read_chunk() {
-            clogger.debug("read_chunk {}", pos);
+            LOGMACRO(clogger, log_level::debug, "read_chunk {}", pos);
             auto start = pos;
             auto buf = co_await read_data(segment::segment_overhead_size); 
             auto in = buf.get_istream();
@@ -3566,7 +3566,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
             if (cs != checksum) {
                 // if a chunk header checksum is broken, we shall just assume that all
                 // remaining is as well. We cannot trust the "next" pointer, so...
-                clogger.debug("Checksum error in segment chunk at {}.", start);
+                LOGMACRO(clogger, log_level::debug, "Checksum error in segment chunk at {}.", start);
                 corrupt_size += (file_size - pos);
                 stop();
                 co_return;
@@ -3609,7 +3609,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
         future<> read_entry() {
             static constexpr size_t entry_header_size = segment::entry_overhead_size;
 
-            clogger.debug("read_entry {}", pos);
+            LOGMACRO(clogger, log_level::debug, "read_entry {}", pos);
 
             /**
              * #598 - Must check that data left in chunk is enough to even read an entry.
@@ -3649,7 +3649,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
                 if (actual_size < 2 * segment::entry_overhead_size || crc.checksum() != checksum) {
                     auto slack = next - pos;
                     if (size != 0) {
-                        clogger.debug("Segment entry at {} has broken header. Skipping to next chunk ({} bytes)", rp, slack);
+                        LOGMACRO(clogger, log_level::debug, "Segment entry at {} has broken header. Skipping to next chunk ({} bytes)", rp, slack);
                         corrupt_size += slack;
                     }
                     co_await skip_to_chunk(next);
@@ -3670,7 +3670,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
                 auto actual_size = checksum;
                 auto end = next_pos(actual_size - entry_header_size);
 
-                clogger.debug("read_entry (fragmented) size = {}", actual_size);
+                LOGMACRO(clogger, log_level::debug, "read_entry (fragmented) size = {}", actual_size);
 
                 assert(end <= next);
 
@@ -3692,7 +3692,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
                 if (crc.checksum() != checksum) {
                     auto slack = next - pos;
                     if (size != 0) {
-                        clogger.debug("Fractured segment entry at {} has broken header. Skipping to next chunk ({} bytes)", rp, slack);
+                        LOGMACRO(clogger, log_level::debug, "Fractured segment entry at {} has broken header. Skipping to next chunk ({} bytes)", rp, slack);
                         corrupt_size += slack;
                     }
                     co_await skip_to_chunk(next);
@@ -3708,7 +3708,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
                 frag.end = off + buf.size_bytes();
                 frag.rpbuf = buffer_and_replay_position{std::move(buf), rp};
 
-                clogger.debug("fragment id={} off={}, end={}, rem={} ", id, off, frag.end, rem);
+                LOGMACRO(clogger, log_level::debug, "fragment id={} off={}, end={}, rem={} ", id, off, frag.end, rem);
 
                 auto& frag_states = state.fragment_state[id];
 
@@ -3749,7 +3749,7 @@ db::commitlog::read_log_file(const replay_state& state, sstring filename, sstrin
             if (size < 2 * sizeof(uint32_t) || checksum != crc.checksum()) {
                 auto slack = next - pos;
                 if (size != 0) {
-                    clogger.debug("Segment entry at {} has broken header. Skipping to next chunk ({} bytes)", rp, slack);
+                    LOGMACRO(clogger, log_level::debug, "Segment entry at {} has broken header. Skipping to next chunk ({} bytes)", rp, slack);
                     corrupt_size += slack;
                 }
                 // size == 0 -> special scylla case: zero padding due to dma blocks

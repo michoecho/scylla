@@ -4836,7 +4836,7 @@ namespace tools {
 
 int scylla_nodetool_main(int argc, char** argv) {
     auto replacement_argv = massage_argv(argc, argv);
-    nlog.debug("replacement argv: {}", replacement_argv);
+    LOGMACRO(nlog, log_level::debug, "replacement argv: {}", replacement_argv);
 
     constexpr auto description_template =
 R"(scylla-{} - a command-line tool to administer local or remote ScyllaDB nodes

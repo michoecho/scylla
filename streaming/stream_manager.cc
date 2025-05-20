@@ -152,7 +152,7 @@ shared_ptr<stream_result_future> stream_manager::get_receiving_stream(streaming:
 }
 
 void stream_manager::remove_stream(streaming::plan_id plan_id) {
-    sslog.debug("stream_manager: removing plan_id={}", plan_id);
+    LOGMACRO(sslog, log_level::debug, "stream_manager: removing plan_id={}", plan_id);
     _initiated_streams.erase(plan_id);
     _receiving_streams.erase(plan_id);
     // FIXME: Do not ignore the future
@@ -163,10 +163,10 @@ void stream_manager::remove_stream(streaming::plan_id plan_id) {
 
 void stream_manager::show_streams() const {
     for (auto const& x : _initiated_streams) {
-        sslog.debug("stream_manager:initiated_stream: plan_id={}", x.first);
+        LOGMACRO(sslog, log_level::debug, "stream_manager:initiated_stream: plan_id={}", x.first);
     }
     for (auto const& x : _receiving_streams) {
-        sslog.debug("stream_manager:receiving_stream: plan_id={}", x.first);
+        LOGMACRO(sslog, log_level::debug, "stream_manager:receiving_stream: plan_id={}", x.first);
     }
 }
 
@@ -387,9 +387,9 @@ future<> stream_manager::on_dead(inet_address endpoint, locator::host_id id, end
 
 shared_ptr<stream_session> stream_manager::get_session(streaming::plan_id plan_id, locator::host_id from, const char* verb, std::optional<table_id> cf_id) {
     if (cf_id) {
-        sslog.debug("[Stream #{}] GOT {} from {}: cf_id={}", plan_id, verb, from, *cf_id);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] GOT {} from {}: cf_id={}", plan_id, verb, from, *cf_id);
     } else {
-        sslog.debug("[Stream #{}] GOT {} from {}", plan_id, verb, from);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] GOT {} from {}", plan_id, verb, from);
     }
     auto sr = get_sending_stream(plan_id);
     if (!sr) {
@@ -397,13 +397,13 @@ shared_ptr<stream_session> stream_manager::get_session(streaming::plan_id plan_i
     }
     if (!sr) {
         auto err = format("[Stream #{}] GOT {} from {}: Can not find stream_manager", plan_id, verb, from);
-        sslog.debug("{}", err.c_str());
+        LOGMACRO(sslog, log_level::debug, "{}", err.c_str());
         throw std::runtime_error(err);
     }
     auto coordinator = sr->get_coordinator();
     if (!coordinator) {
         auto err = format("[Stream #{}] GOT {} from {}: Can not find coordinator", plan_id, verb, from);
-        sslog.debug("{}", err.c_str());
+        LOGMACRO(sslog, log_level::debug, "{}", err.c_str());
         throw std::runtime_error(err);
     }
     return coordinator->get_or_create_session(*this, from);

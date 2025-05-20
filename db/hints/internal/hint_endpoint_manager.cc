@@ -65,7 +65,7 @@ future<> hint_endpoint_manager::do_store_hint(schema_ptr s, lw_shared_ptr<const 
         const replay_position rp = rh.release();
         if (_last_written_rp < rp) {
             _last_written_rp = rp;
-            manager_logger.debug("[{}] Updated last written replay position to {}", end_point_key(), rp);
+            LOGMACRO(manager_logger, log_level::debug, "[{}] Updated last written replay position to {}", end_point_key(), rp);
         }
 
         ++shard_stats().written;
@@ -76,7 +76,7 @@ future<> hint_endpoint_manager::do_store_hint(schema_ptr s, lw_shared_ptr<const 
         ++shard_stats().errors;
         const auto eptr = std::current_exception();
 
-        manager_logger.debug("store_hint(): got the exception when storing a hint to {}: {}", end_point_key(), eptr);
+        LOGMACRO(manager_logger, log_level::debug, "store_hint(): got the exception when storing a hint to {}: {}", end_point_key(), eptr);
         tracing::trace(tr_state, "Failed to store a hint to {}: {}", end_point_key(), eptr);
     }
 

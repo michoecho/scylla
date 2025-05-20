@@ -416,14 +416,14 @@ private:
 #endif
     }
     void main_loop_wake() {
-        llogger.debug("background_reclaimer::main_loop_wake: waking {}", bool(_main_loop_wait));
+        LOGMACRO(llogger, log_level::debug, "background_reclaimer::main_loop_wake: waking {}", bool(_main_loop_wait));
         if (_main_loop_wait) {
             _main_loop_wait->set_value();
             _main_loop_wait = nullptr;
         }
     }
     future<> main_loop() {
-        llogger.debug("background_reclaimer::main_loop: entry");
+        LOGMACRO(llogger, log_level::debug, "background_reclaimer::main_loop: entry");
         while (true) {
             while (!_stopping && !have_work()) {
                 promise<> wait;
@@ -439,7 +439,7 @@ private:
             _reclaim(free_memory_threshold - memory::free_memory());
             co_await coroutine::maybe_yield();
         }
-        llogger.debug("background_reclaimer::main_loop: exit");
+        LOGMACRO(llogger, log_level::debug, "background_reclaimer::main_loop: exit");
     }
     void adjust_shares() {
         if (have_work()) {
@@ -854,7 +854,7 @@ public:
     }
     void use_standard_allocator_segment_pool_backend(size_t available_memory) {
         _backend = std::make_unique<standard_memory_segment_store_backend>(available_memory / segment::size);
-        llogger.debug("using the standard allocator segment pool backend with {} available memory", available_memory);
+        LOGMACRO(llogger, log_level::debug, "using the standard allocator segment pool backend with {} available memory", available_memory);
     }
     const segment* segment_from_idx(size_t idx) const noexcept {
         return reinterpret_cast<segment*>(_backend->segments_base()) + idx;
@@ -921,7 +921,7 @@ public:
         _delegate_store = std::make_unique<contiguous_memory_segment_store>(contiguous_memory_segment_store::with_standard_memory_backend{}, available_memory);
         free_segments();
         _segment_indexes = {};
-        llogger.debug("using the standard allocator segment pool backend with {} available memory", available_memory);
+        LOGMACRO(llogger, log_level::debug, "using the standard allocator segment pool backend with {} available memory", available_memory);
     }
     const segment* segment_from_idx(size_t idx) const noexcept {
         if (_delegate_store) {
@@ -1245,7 +1245,7 @@ tracker::stats tracker::statistics() const {
 size_t segment_pool::reclaim_segments(size_t target, is_preemptible preempt) {
     // Reclaimer tries to release segments occupying lower parts of the address
     // space.
-    llogger.debug("Trying to reclaim {} segments", target);
+    LOGMACRO(llogger, log_level::debug, "Trying to reclaim {} segments", target);
 
     // Reclamation. Migrate segments to higher addresses and shrink segment pool.
     size_t reclaimed_segments = 0;
@@ -1291,7 +1291,7 @@ size_t segment_pool::reclaim_segments(size_t target, is_preemptible preempt) {
         }
     }
 
-    llogger.debug("Reclaimed {} segments (requested {})", reclaimed_segments, target);
+    LOGMACRO(llogger, log_level::debug, "Reclaimed {} segments (requested {})", reclaimed_segments, target);
     timing_guard.set_memory_released(reclaimed_segments * segment::size);
     return reclaimed_segments;
 }
@@ -1911,7 +1911,7 @@ private:
 
     void compact_segment_locked(segment* seg, segment_descriptor& desc) noexcept {
         auto seg_occupancy = desc.occupancy();
-        llogger.debug("Compacting segment {} from region {}, {}", fmt::ptr(seg), id(), seg_occupancy);
+        LOGMACRO(llogger, log_level::debug, "Compacting segment {} from region {}, {}", fmt::ptr(seg), id(), seg_occupancy);
 
         ++_invalidate_counter;
 
@@ -2295,7 +2295,7 @@ public:
     // Invalidates references to allocated objects.
     void full_compaction() {
         compaction_lock _(*this);
-        llogger.debug("Full compaction, {}", occupancy());
+        LOGMACRO(llogger, log_level::debug, "Full compaction, {}", occupancy());
         close_and_open();
         close_buf_active();
         segment_descriptor_hist all;
@@ -2306,7 +2306,7 @@ public:
             all.pop_one_of_largest();
             compact_segment_locked(segment_pool().segment_from(desc), desc);
         }
-        llogger.debug("Done, {}", occupancy());
+        LOGMACRO(llogger, log_level::debug, "Done, {}", occupancy());
     }
 
     void compact_segment(segment* seg, segment_descriptor& desc) {
@@ -2576,15 +2576,15 @@ size_t tracker::impl::non_lsa_used_space() const noexcept {
 
 void tracker::impl::reclaim_all_free_segments()
 {
-    llogger.debug("Reclaiming all free segments");
+    LOGMACRO(llogger, log_level::debug, "Reclaiming all free segments");
     _segment_pool->reclaim_all_free_segments();
-    llogger.debug("Reclamation done");
+    LOGMACRO(llogger, log_level::debug, "Reclamation done");
 }
 
 void tracker::impl::full_compaction() {
     reclaiming_lock _(*this);
 
-    llogger.debug("Full compaction on all regions, {}", region_occupancy());
+    LOGMACRO(llogger, log_level::debug, "Full compaction on all regions, {}", region_occupancy());
 
     for (region_impl* r : _regions) {
         if (r->reclaiming_enabled()) {
@@ -2592,11 +2592,11 @@ void tracker::impl::full_compaction() {
         }
     }
 
-    llogger.debug("Compaction done, {}", region_occupancy());
+    LOGMACRO(llogger, log_level::debug, "Compaction done, {}", region_occupancy());
 }
 
 static void reclaim_from_evictable(region::impl& r, size_t target_mem_in_use, is_preemptible preempt) {
-    llogger.debug("reclaim_from_evictable: total_memory_in_use={} target={}", r.segment_pool().total_memory_in_use(), target_mem_in_use);
+    LOGMACRO(llogger, log_level::debug, "reclaim_from_evictable: total_memory_in_use={} target={}", r.segment_pool().total_memory_in_use(), target_mem_in_use);
 
     // Before attempting segment compaction, try to evict at least deficit and one segment more so that
     // for workloads in which eviction order matches allocation order we will reclaim full segments
@@ -2608,25 +2608,25 @@ static void reclaim_from_evictable(region::impl& r, size_t target_mem_in_use, is
     while (r.segment_pool().total_memory_in_use() > target_mem_in_use) {
         used = r.occupancy().used_space();
         if (used > used_target) {
-            llogger.debug("Evicting {} bytes from region {}, occupancy={} in advance",
+            LOGMACRO(llogger, log_level::debug, "Evicting {} bytes from region {}, occupancy={} in advance",
                     used - used_target, r.id(), r.occupancy());
         } else {
-            llogger.debug("Evicting from region {}, occupancy={} until it's compactible", r.id(), r.occupancy());
+            LOGMACRO(llogger, log_level::debug, "Evicting from region {}, occupancy={} until it's compactible", r.id(), r.occupancy());
         }
         while (r.occupancy().used_space() > used_target || !r.is_compactible()) {
             if (r.evict_some() == memory::reclaiming_result::reclaimed_nothing) {
                 if (r.is_compactible()) { // Need to make forward progress in case there is nothing to evict.
                     break;
                 }
-                llogger.debug("Unable to evict more, evicted {} bytes", used - r.occupancy().used_space());
+                LOGMACRO(llogger, log_level::debug, "Unable to evict more, evicted {} bytes", used - r.occupancy().used_space());
                 return;
             }
             if (r.segment_pool().total_memory_in_use() <= target_mem_in_use) {
-                llogger.debug("Target met after evicting {} bytes", used - r.occupancy().used_space());
+                LOGMACRO(llogger, log_level::debug, "Target met after evicting {} bytes", used - r.occupancy().used_space());
                 return;
             }
             if (preempt && need_preempt()) {
-                llogger.debug("reclaim_from_evictable preempted");
+                LOGMACRO(llogger, log_level::debug, "reclaim_from_evictable preempted");
                 return;
             }
         }
@@ -2640,10 +2640,10 @@ static void reclaim_from_evictable(region::impl& r, size_t target_mem_in_use, is
         // preempted without doing any useful work, then eventually memory will be
         // exhausted and reclaim will be called synchronously, without preemption.
         if (preempt && need_preempt()) {
-            llogger.debug("reclaim_from_evictable preempted");
+            LOGMACRO(llogger, log_level::debug, "reclaim_from_evictable preempted");
             return;
         }
-        llogger.debug("Compacting after evicting {} bytes", used - r.occupancy().used_space());
+        LOGMACRO(llogger, log_level::debug, "Compacting after evicting {} bytes", used - r.occupancy().used_space());
         r.compact();
     }
 }
@@ -2692,7 +2692,7 @@ size_t tracker::impl::reclaim(size_t memory_to_release, is_preemptible preempt) 
 }
 
 size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible preempt) {
-    llogger.debug("reclaim_locked({}, preempt={})", memory_to_release, int(bool(preempt)));
+    LOGMACRO(llogger, log_level::debug, "reclaim_locked({}, preempt={})", memory_to_release, int(bool(preempt)));
     // Reclamation steps:
     // 1. Try to release free segments from segment pool and emergency reserve.
     // 2. Compact used segments and/or evict data.
@@ -2701,18 +2701,18 @@ size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible pr
     auto nr_released = _segment_pool->reclaim_segments(segments_to_release, preempt);
     size_t mem_released = nr_released * segment::size;
     if (mem_released >= memory_to_release) {
-        llogger.debug("reclaim_locked() = {}", memory_to_release);
+        LOGMACRO(llogger, log_level::debug, "reclaim_locked() = {}", memory_to_release);
         return memory_to_release;
     }
     if (preempt && need_preempt()) {
-        llogger.debug("reclaim_locked() = {}", mem_released);
+        LOGMACRO(llogger, log_level::debug, "reclaim_locked() = {}", mem_released);
         return mem_released;
     }
 
     auto compacted = compact_and_evict_locked(_segment_pool->current_emergency_reserve_goal(), memory_to_release - mem_released, preempt);
 
     if (compacted == 0) {
-        llogger.debug("reclaim_locked() = {}", mem_released);
+        LOGMACRO(llogger, log_level::debug, "reclaim_locked() = {}", mem_released);
         return mem_released;
     }
 
@@ -2721,7 +2721,7 @@ size_t tracker::impl::reclaim_locked(size_t memory_to_release, is_preemptible pr
     nr_released = _segment_pool->reclaim_segments(compacted / segment::size, preempt);
     mem_released += nr_released * segment::size;
 
-    llogger.debug("reclaim_locked() = {}", mem_released);
+    LOGMACRO(llogger, log_level::debug, "reclaim_locked() = {}", mem_released);
     return mem_released;
 }
 
@@ -2734,7 +2734,7 @@ size_t tracker::impl::compact_and_evict(size_t reserve_segments, size_t memory_t
 }
 
 size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t memory_to_release, is_preemptible preempt) {
-    llogger.debug("compact_and_evict_locked({}, {}, {})", reserve_segments, memory_to_release, int(bool(preempt)));
+    LOGMACRO(llogger, log_level::debug, "compact_and_evict_locked({}, {}, {})", reserve_segments, memory_to_release, int(bool(preempt)));
     //
     // Algorithm outline.
     //
@@ -2760,7 +2760,7 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
     memory_to_release += (reserve_segments - std::min(reserve_segments, _segment_pool->free_segments())) * segment::size;
     auto target_mem = mem_in_use - std::min(mem_in_use, memory_to_release - mem_released);
 
-    llogger.debug("Compacting, requested {} bytes, {} bytes in use, target is {}",
+    LOGMACRO(llogger, log_level::debug, "Compacting, requested {} bytes, {} bytes in use, target is {}",
         memory_to_release, mem_in_use, target_mem);
 
     // Allow dipping into reserves while compacting
@@ -2776,9 +2776,9 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
     std::ranges::make_heap(_regions, cmp);
 
     if (llogger.is_enabled(logging::log_level::debug)) {
-        llogger.debug("Occupancy of regions:");
+        LOGMACRO(llogger, log_level::debug, "Occupancy of regions:");
         for (region::impl* r : _regions) {
-            llogger.debug(" - {}: min={}, avg={}", r->id(), r->min_occupancy(), r->compactible_occupancy());
+            LOGMACRO(llogger, log_level::debug, " - {}: min={}, avg={}", r->id(), r->min_occupancy(), r->compactible_occupancy());
         }
     }
 
@@ -2824,7 +2824,7 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
         reclaim_timer timing_guard("evict", preempt, memory_to_release, reserve_segments, *this, [&] (log_level level) {
             timing_logger.log(level, "- processed {} regions, reclaimed from {}", regions, evictable_regions);
         });
-        llogger.debug("Considering evictable regions.");
+        LOGMACRO(llogger, log_level::debug, "Considering evictable regions.");
         // FIXME: Fair eviction
         for (region::impl* r : _regions) {
             if (preempt && need_preempt()) {
@@ -2843,7 +2843,7 @@ size_t tracker::impl::compact_and_evict_locked(size_t reserve_segments, size_t m
 
     mem_released += mem_in_use - _segment_pool->total_memory_in_use();
 
-    llogger.debug("Released {} bytes (wanted {}), {} during compaction",
+    LOGMACRO(llogger, log_level::debug, "Released {} bytes (wanted {}), {} during compaction",
         mem_released, memory_to_release, released_during_compaction);
 
     return mem_released;
@@ -2863,12 +2863,12 @@ void tracker::impl::register_region(region::impl* r) {
     }
     reclaiming_lock _(*this);
     _regions.push_back(r);
-    llogger.debug("Registered region @{} with id={}", fmt::ptr(r), r->id());
+    LOGMACRO(llogger, log_level::debug, "Registered region @{} with id={}", fmt::ptr(r), r->id());
 }
 
 void tracker::impl::unregister_region(region::impl* r) noexcept {
     reclaiming_lock _(*this);
-    llogger.debug("Unregistering region, id={}", r->id());
+    LOGMACRO(llogger, log_level::debug, "Unregistering region, id={}", r->id());
     _regions.erase(std::remove(_regions.begin(), _regions.end(), r), _regions.end());
 }
 
@@ -2968,14 +2968,14 @@ void allocating_section::maybe_decay_reserve() noexcept {
     if (_remaining_lsa_segments_until_decay < 0) {
         _remaining_lsa_segments_until_decay = s_segments_per_decay;
         _lsa_reserve = std::max(s_min_lsa_reserve, _lsa_reserve / 2);
-        llogger.debug("Decaying LSA reserve in section {} to {} segments", static_cast<void*>(this), _lsa_reserve);
+        LOGMACRO(llogger, log_level::debug, "Decaying LSA reserve in section {} to {} segments", static_cast<void*>(this), _lsa_reserve);
     }
 
     _remaining_std_bytes_until_decay -= _std_reserve;
     if (_remaining_std_bytes_until_decay < 0) {
         _remaining_std_bytes_until_decay = s_bytes_per_decay;
         _std_reserve = std::max(s_min_std_reserve, _std_reserve / 2);
-        llogger.debug("Decaying standard allocator head-room in section {} to {} [B]", static_cast<void*>(this), _std_reserve);
+        LOGMACRO(llogger, log_level::debug, "Decaying standard allocator head-room in section {} to {} [B]", static_cast<void*>(this), _std_reserve);
     }
 }
 

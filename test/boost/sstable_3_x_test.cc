@@ -5306,13 +5306,13 @@ static void test_sstable_log_too_many_dead_rows_f(int rows, uint64_t threshold, 
             // regular row
             s.add_row(p, ck, sv);
             ++live_rows;
-            testlog.debug("added live row: {}", ck);
+            LOGMACRO(testlog, log_level::debug, "added live row: {}", ck);
             break;
         case 1: {
             // dead (deleted) row
             auto& row = p.partition().clustered_row(*s.schema(), ck);
             row.apply(row_marker(s.new_tombstone()));
-            testlog.debug("added dead row: {}", ck);
+            LOGMACRO(testlog, log_level::debug, "added dead row: {}", ck);
             ++expected_dead_rows;
             break;
         }
@@ -5320,7 +5320,7 @@ static void test_sstable_log_too_many_dead_rows_f(int rows, uint64_t threshold, 
             // dead (expired) row
             auto& row = p.partition().clustered_row(*s.schema(), ck);
             row.apply(row_marker(s.new_timestamp(), gc_clock::duration(1), gc_clock::now()));
-            testlog.debug("added expired row: {}", ck);
+            LOGMACRO(testlog, log_level::debug, "added expired row: {}", ck);
             ++expected_expired_rows;
             break;
         }
@@ -5328,7 +5328,7 @@ static void test_sstable_log_too_many_dead_rows_f(int rows, uint64_t threshold, 
             // row with dead cell
             s.add_row_with_dead_cell(p, ck);
             ++expected_rows_with_dead_cell;
-            testlog.debug("added row with dead cell: {}", ck);
+            LOGMACRO(testlog, log_level::debug, "added row with dead cell: {}", ck);
             break;
         }
         case 4: {
@@ -5346,7 +5346,7 @@ static void test_sstable_log_too_many_dead_rows_f(int rows, uint64_t threshold, 
             auto ck_end = s.make_ckey(sv);
             auto rt_end = bound_view(ck_end, tests::random::get_bool() ? bound_kind::excl_end : bound_kind::incl_end);
             auto rt = range_tombstone(rt_start, rt_end, s.new_tombstone());
-            testlog.debug("added range tombstone: {}", rt);
+            LOGMACRO(testlog, log_level::debug, "added range tombstone: {}", rt);
             p.partition().apply_delete(*s.schema(), std::move(rt));
             expected_range_tombstones += 2;
             break;

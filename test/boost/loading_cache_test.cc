@@ -57,10 +57,10 @@ class loader {
         int load_count = 0;
 
         future<sstring> load(const int& k) {
-            testlog.debug("{}: load: start: load_count={}", now(), load_count);
+            LOGMACRO(testlog, log_level::debug, "{}: load: start: load_count={}", now(), load_count);
             co_await manual_clock_sleep_fn(tests::random::get_int(1, 5) * 1ms);
             ++load_count;
-            testlog.debug("{}: load: done: load_count={}", now(), load_count);
+            LOGMACRO(testlog, log_level::debug, "{}: load: done: load_count={}", now(), load_count);
             co_return test_string;
         }
     };
@@ -75,12 +75,12 @@ public:
     }
 
     int& load_count() {
-        testlog.debug("{}: load_count={}", now(), _impl->load_count);
+        LOGMACRO(testlog, log_level::debug, "{}: load_count={}", now(), _impl->load_count);
         return _impl->load_count;
     }
 
     const int& load_count() const {
-        testlog.debug("{}: load_count={}", now(), _impl->load_count);
+        LOGMACRO(testlog, log_level::debug, "{}: load_count={}", now(), _impl->load_count);
         return _impl->load_count;
     }
 

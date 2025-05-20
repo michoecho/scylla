@@ -173,7 +173,7 @@ void topology::set_host_id_cfg(host_id this_host_id) {
 
 future<topology> topology::clone_gently() const {
     topology ret(topology::shallow_copy{}, _cfg);
-    tlogger.debug("topology[{}]: clone_gently to {} from shard {}", fmt::ptr(this), fmt::ptr(&ret), _shard);
+    LOGMACRO(tlogger, log_level::debug, "topology[{}]: clone_gently to {} from shard {}", fmt::ptr(this), fmt::ptr(&ret), _shard);
     for (const auto& nptr : _nodes) {
         if (nptr) {
             ret.add_node(nptr->clone());
@@ -226,7 +226,7 @@ const node& topology::add_node(node_holder nptr) {
             }
         }
 
-        tlogger.debug("topology[{}]: add_node: {}, at {}", fmt::ptr(this), node_printer(nptr.get()), lazy_backtrace());
+        LOGMACRO(tlogger, log_level::debug, "topology[{}]: add_node: {}, at {}", fmt::ptr(this), node_printer(nptr.get()), lazy_backtrace());
 
         index_node(*node);
     } catch (...) {
@@ -237,7 +237,7 @@ const node& topology::add_node(node_holder nptr) {
 }
 
 void topology::update_node(node& node, std::optional<host_id> opt_id, std::optional<endpoint_dc_rack> opt_dr, std::optional<node::state> opt_st, std::optional<shard_id> opt_shard_count) {
-    tlogger.debug("topology[{}]: update_node: {}: to: host_id={} dc={} rack={} state={} shard_count={}, at {}", fmt::ptr(this), node_printer(&node),
+    LOGMACRO(tlogger, log_level::debug, "topology[{}]: update_node: {}: to: host_id={} dc={} rack={} state={} shard_count={}, at {}", fmt::ptr(this), node_printer(&node),
         opt_id ? format("{}", *opt_id) : "unchanged",
         opt_dr ? format("{}", opt_dr->dc) : "unchanged",
         opt_dr ? format("{}", opt_dr->rack) : "unchanged",
@@ -309,7 +309,7 @@ void topology::update_node(node& node, std::optional<host_id> opt_id, std::optio
 
 bool topology::remove_node(host_id id) {
     auto node = find_node(id);
-    tlogger.debug("topology[{}]: remove_node: host_id={}: {}", fmt::ptr(this), id, node_printer(node));
+    LOGMACRO(tlogger, log_level::debug, "topology[{}]: remove_node: host_id={}: {}", fmt::ptr(this), id, node_printer(node));
     if (node) {
         remove_node(*node);
         return true;
@@ -461,7 +461,7 @@ const node& topology::add_or_update_endpoint(host_id id, std::optional<endpoint_
 bool topology::remove_endpoint(locator::host_id host_id)
 {
     auto node = find_node(host_id);
-    tlogger.debug("topology[{}]: remove_endpoint: host_id={}: {}", fmt::ptr(this), host_id, node_printer(node));
+    LOGMACRO(tlogger, log_level::debug, "topology[{}]: remove_endpoint: host_id={}: {}", fmt::ptr(this), host_id, node_printer(node));
     // Do not allow removing yourself from the topology
     // The entry is needed for local writes
     if (node && node != _this_node) {

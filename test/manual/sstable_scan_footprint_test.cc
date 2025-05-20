@@ -178,7 +178,7 @@ void execute_reads(const schema_ptr& schema, reader_concurrency_semaphore& sem, 
         }
     }
 
-    testlog.debug("Closing gate");
+    LOGMACRO(testlog, log_level::debug, "Closing gate");
     g.close().get();
 
     if (e) {

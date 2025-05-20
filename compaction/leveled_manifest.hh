@@ -150,7 +150,7 @@ public:
             }
             return sstables::compaction_descriptor(std::move(info.candidates), next_level, _max_sstable_size_in_bytes);
         } else {
-            logger.debug("No compaction candidates for L{}", level);
+            LOGMACRO(logger, log_level::debug, "No compaction candidates for L{}", level);
             return sstables::compaction_descriptor();
         }
     }
@@ -200,7 +200,7 @@ public:
 #endif
             double score = (double) get_total_bytes(sstables) / (double) max_bytes_for_level(i);
 
-            logger.debug("Compaction score for level {} is {}", i, score);
+            LOGMACRO(logger, log_level::debug, "Compaction score for level {} is {}", i, score);
 
             if (score <= TARGET_SCORE) {
                 continue;
@@ -211,7 +211,7 @@ public:
                 auto most_interesting = sstables::size_tiered_compaction_strategy::most_interesting_bucket(get_level(0),
                     _table_s.min_compaction_threshold(), _schema->max_compaction_threshold(), _stcs_options);
                 if (!most_interesting.empty()) {
-                    logger.debug("L0 is too far behind, performing size-tiering there first");
+                    LOGMACRO(logger, log_level::debug, "L0 is too far behind, performing size-tiering there first");
                     return sstables::compaction_descriptor(std::move(most_interesting));
                 }
             }
@@ -462,7 +462,7 @@ private:
     candidates_info get_candidates_for(int level, const std::vector<std::optional<dht::decorated_key>>& last_compacted_keys) {
         SCYLLA_ASSERT(!get_level(level).empty());
 
-        logger.debug("Choosing candidates for L{}", level);
+        LOGMACRO(logger, log_level::debug, "Choosing candidates for L{}", level);
 
         if (level == 0) {
             return candidates_for_level_0_compaction();

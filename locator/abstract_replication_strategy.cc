@@ -342,7 +342,7 @@ abstract_replication_strategy::get_pending_address_ranges(const token_metadata_p
         auto eps = co_await calculate_natural_endpoints(t, temp);
         if (eps.contains(pending_address)) {
             dht::token_range_vector r = temp.get_primary_ranges_for(t);
-            rslogger.debug("get_pending_address_ranges: token={} primary_range={} endpoint={}", t, r, pending_address);
+            LOGMACRO(rslogger, log_level::debug, "get_pending_address_ranges: token={} primary_range={} endpoint={}", t, r, pending_address);
             ret.insert(ret.end(), r.begin(), r.end());
         }
     }
@@ -523,7 +523,7 @@ future<vnode_effective_replication_map_ptr> effective_replication_map_factory::c
     auto key = vnode_effective_replication_map::make_factory_key(rs, tmptr);
     auto erm = find_effective_replication_map(key);
     if (erm) {
-        rslogger.debug("create_effective_replication_map: found {} [{}]", key, fmt::ptr(erm.get()));
+        LOGMACRO(rslogger, log_level::debug, "create_effective_replication_map: found {} [{}]", key, fmt::ptr(erm.get()));
         co_return erm;
     }
 
@@ -558,12 +558,12 @@ vnode_effective_replication_map_ptr effective_replication_map_factory::find_effe
 vnode_effective_replication_map_ptr effective_replication_map_factory::insert_effective_replication_map(mutable_vnode_effective_replication_map_ptr erm, vnode_effective_replication_map::factory_key key) {
     auto [it, inserted] = _effective_replication_maps.insert({key, erm.get()});
     if (inserted) {
-        rslogger.debug("insert_effective_replication_map: inserted {} [{}]", key, fmt::ptr(erm.get()));
+        LOGMACRO(rslogger, log_level::debug, "insert_effective_replication_map: inserted {} [{}]", key, fmt::ptr(erm.get()));
         erm->set_factory(*this, std::move(key));
         return erm;
     }
     auto res = it->second->shared_from_this();
-    rslogger.debug("insert_effective_replication_map: found {} [{}]", key, fmt::ptr(res.get()));
+    LOGMACRO(rslogger, log_level::debug, "insert_effective_replication_map: found {} [{}]", key, fmt::ptr(res.get()));
     return res;
 }
 
@@ -578,7 +578,7 @@ bool effective_replication_map_factory::erase_effective_replication_map(vnode_ef
         rslogger.warn("Could not unregister effective_replication_map {} [{}]: different instance [{}] is currently registered", key, fmt::ptr(erm), fmt::ptr(it->second));
         return false;
     }
-    rslogger.debug("erase_effective_replication_map: erased {} [{}]", key, fmt::ptr(erm));
+    LOGMACRO(rslogger, log_level::debug, "erase_effective_replication_map: erased {} [{}]", key, fmt::ptr(erm));
     _effective_replication_maps.erase(it);
     return true;
 }
@@ -588,7 +588,7 @@ future<> effective_replication_map_factory::stop() noexcept {
     if (!_effective_replication_maps.empty()) {
         for (auto it = _effective_replication_maps.begin(); it != _effective_replication_maps.end(); it = _effective_replication_maps.erase(it)) {
             auto& [key, erm] = *it;
-            rslogger.debug("effective_replication_map_factory::stop found outstanding map {} [{}]", key, fmt::ptr(erm));
+            LOGMACRO(rslogger, log_level::debug, "effective_replication_map_factory::stop found outstanding map {} [{}]", key, fmt::ptr(erm));
             // unregister outstanding effective_replication_maps
             // so they won't try to submit background work
             // to gently clear their contents when they are destroyed.

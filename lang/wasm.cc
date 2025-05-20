@@ -240,7 +240,7 @@ seastar::future<> precompile(alien_thread_runner& alien_runner, context& ctx, co
     }
 }
 seastar::future<bytes_opt> run_script(context& ctx, wasmtime::Store& store, wasmtime::Instance& instance, wasmtime::Func& func, const std::vector<data_type>& arg_types, std::span<const bytes_opt> params, data_type return_type, bool allow_null_input) {
-    wasm_logger.debug("Running function {}", ctx.function_name);
+    LOGMACRO(wasm_logger, log_level::debug, "Running function {}", ctx.function_name);
 
     rust::Box<wasmtime::ValVec> argv = wasmtime::get_val_vec();
     for (size_t i = 0; i < arg_types.size(); ++i) {

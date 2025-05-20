@@ -654,7 +654,7 @@ task_manager::task_manager(config cfg, class abort_source& as) noexcept
     _abort_subscription = as.subscribe([this] () noexcept {
         _as.request_abort();
     });
-    tmlogger.debug("Started task manager (TTL={}) (USER TTL={})", get_task_ttl(), get_user_task_ttl());
+    LOGMACRO(tmlogger, log_level::debug, "Started task manager (TTL={}) (USER TTL={})", get_task_ttl(), get_user_task_ttl());
 }
 
 task_manager::task_manager() noexcept

@@ -855,7 +855,7 @@ public:
         }
         if (memory_budget_exceeded()) {
             warn_budget_exceeded();
-            compressor_factory_logger.debug("make_compressor_for_writing: falling back to no dict");
+            LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_writing: falling back to no dict");
         }
         return make_foreign(std::move(ddict));
     }
@@ -872,7 +872,7 @@ public:
             cdict = it->second->shared_from_this();
         } else if (memory_budget_exceeded()) {
             warn_budget_exceeded();
-            compressor_factory_logger.debug("make_compressor_for_writing: falling back to no dict");
+            LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_writing: falling back to no dict");
         } else {
             cdict = make_lw_shared<zstd_cdict>(*this, raw, level);
             _zstd_cdicts.emplace(zstd_cdict_id{raw->id(), level}, cdict.get());
@@ -949,11 +949,11 @@ public:
     void set_recommended_dict(table_id t, foreign_ptr<lw_shared_ptr<const raw_dict>> dict) {
         _recommended.erase(t);
         if (dict) {
-            compressor_factory_logger.debug("set_recommended_dict: table={} size={} id={}",
+            LOGMACRO(compressor_factory_logger, log_level::debug, "set_recommended_dict: table={} size={} id={}",
                 t, dict->raw().size(), fmt_hex(dict->id()));
             _recommended.emplace(t, std::move(dict));
         } else {
-            compressor_factory_logger.debug("set_recommended_dict: table={} size=0", t);
+            LOGMACRO(compressor_factory_logger, log_level::debug, "set_recommended_dict: table={} size=0", t);
         }
     }
     future<foreign_ptr<lw_shared_ptr<const raw_dict>>> get_recommended_dict(table_id t) {
@@ -1042,7 +1042,7 @@ future<foreign_ptr<lw_shared_ptr<const raw_dict>>> default_sstable_compressor_fa
 future<compressor_ptr> default_sstable_compressor_factory::make_compressor_for_writing_impl(const compression_parameters& params, table_id id) {
     using algorithm = compression_parameters::algorithm;
     const auto algo = params.get_algorithm();
-    compressor_factory_logger.debug("make_compressor_for_writing: table={} algo={}", id, algo);
+    LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_writing: table={} algo={}", id, algo);
     switch (algo) {
     case algorithm::lz4:
         co_return std::make_unique<lz4_processor>(nullptr, nullptr);
@@ -1054,7 +1054,7 @@ future<compressor_ptr> default_sstable_compressor_factory::make_compressor_for_w
             });
         }
         if (cdict) {
-            compressor_factory_logger.debug("make_compressor_for_writing: using dict id={}", fmt_hex(cdict->id()));
+            LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_writing: using dict id={}", fmt_hex(cdict->id()));
         }
         co_return std::make_unique<lz4_processor>(std::move(cdict), nullptr);
     }
@@ -1073,7 +1073,7 @@ future<compressor_ptr> default_sstable_compressor_factory::make_compressor_for_w
             });
         }
         if (cdict) {
-            compressor_factory_logger.debug("make_compressor_for_writing: using dict id={}", fmt_hex(cdict->id()));
+            LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_writing: using dict id={}", fmt_hex(cdict->id()));
         }
         co_return std::make_unique<zstd_processor>(params, std::move(cdict), nullptr);
     }
@@ -1106,7 +1106,7 @@ future<compressor_ptr> default_sstable_compressor_factory::make_compressor_for_r
             return local._holder->get_lz4_dict_for_reading(std::move(d));
         });
         if (ddict) {
-            compressor_factory_logger.debug("make_compressor_for_reading: using dict id={}", fmt_hex(ddict->id()));
+            LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_reading: using dict id={}", fmt_hex(ddict->id()));
         }
         co_return std::make_unique<lz4_processor>(nullptr, std::move(ddict));
     }
@@ -1127,7 +1127,7 @@ future<compressor_ptr> default_sstable_compressor_factory::make_compressor_for_r
             return local._holder->get_zstd_dict_for_reading(std::move(d), level);
         });
         if (ddict) {
-            compressor_factory_logger.debug("make_compressor_for_reading: using dict id={}", fmt_hex(ddict->id()));
+            LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_reading: using dict id={}", fmt_hex(ddict->id()));
         }
         co_return std::make_unique<zstd_processor>(params, nullptr, std::move(ddict));
     }
@@ -1141,7 +1141,7 @@ future<compressor_ptr> default_sstable_compressor_factory::make_compressor_for_r
     const auto params = compression_parameters(sstables::options_from_compression(c));
     auto dict = dict_from_options(c);
     const auto algo = params.get_algorithm();
-    compressor_factory_logger.debug("make_compressor_for_reading: compression={} algo={}", fmt::ptr(&c), algo);
+    LOGMACRO(compressor_factory_logger, log_level::debug, "make_compressor_for_reading: compression={} algo={}", fmt::ptr(&c), algo);
     co_return co_await make_compressor_for_reading_impl(params, std::as_bytes(std::span(*dict)));
 }
 

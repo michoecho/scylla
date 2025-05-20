@@ -109,9 +109,9 @@ SEASTAR_TEST_CASE(test_promoted_index_parsing_page_crossing_and_retries) {
 
                 auto* block = cur->promoted_index().get_block(i, trace).get();
 
-                testlog.debug("key   : {}", pos);
-                testlog.debug("start : {}", *block->start);
-                testlog.debug("end   : {}", *block->end);
+                LOGMACRO(testlog, log_level::debug, "key   : {}", pos);
+                LOGMACRO(testlog, log_level::debug, "start : {}", *block->start);
+                LOGMACRO(testlog, log_level::debug, "end   : {}", *block->end);
 
                 BOOST_REQUIRE(eq(*block->start, pos));
                 BOOST_REQUIRE(eq(*block->end, pos));
@@ -124,8 +124,8 @@ SEASTAR_TEST_CASE(test_promoted_index_parsing_page_crossing_and_retries) {
                 utils::get_local_injector().enable("cached_promoted_index_bad_alloc_parsing_across_page", true);
                 block = cur->promoted_index().get_block(i, trace).get();
 
-                testlog.debug("start : {}", *block->start);
-                testlog.debug("end   : {}", *block->end);
+                LOGMACRO(testlog, log_level::debug, "start : {}", *block->start);
+                LOGMACRO(testlog, log_level::debug, "end   : {}", *block->end);
                 BOOST_REQUIRE(eq(*block->start, pos));
                 BOOST_REQUIRE(eq(*block->end, pos));
                 if (prev_offset) {

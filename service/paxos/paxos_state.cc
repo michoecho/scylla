@@ -82,7 +82,7 @@ future<prepare_response> paxos_state::prepare(storage_proxy& sp, db::system_keys
     // but we will return the previously accepted proposal so that the new coordinator will use it instead of
     // its own.
     if (ballot.timestamp() > state._promised_ballot.timestamp()) {
-        logger.debug("Promising ballot {}", ballot);
+        LOGMACRO(logger, log_level::debug, "Promising ballot {}", ballot);
         tracing::trace(tr_state, "Promising ballot {}", ballot);
         if (utils::get_local_injector().enter("paxos_error_before_save_promise")) {
             co_await coroutine::return_exception(utils::injected_error("injected_error_before_save_promise"));
@@ -105,7 +105,7 @@ future<prepare_response> paxos_state::prepare(storage_proxy& sp, db::system_keys
                         co_return make_foreign(std::move(result));
                     }
                 } catch(...) {
-                    logger.debug("Failed to get data or digest: {}. Ignored.", std::current_exception());
+                    LOGMACRO(logger, log_level::debug, "Failed to get data or digest: {}. Ignored.", std::current_exception());
                     co_return std::nullopt;
                 }
             }
@@ -125,7 +125,7 @@ future<prepare_response> paxos_state::prepare(storage_proxy& sp, db::system_keys
             //
             // If there's no schema in the cache, then retrieve persisted column mapping
             // for that version and upgrade the mutation with it.
-            logger.debug("Stored mutation references outdated schema version. "
+            LOGMACRO(logger, log_level::debug, "Stored mutation references outdated schema version. "
                 "Trying to upgrade the accepted proposal mutation to the most recent schema version.");
             const column_mapping& cm = co_await service::get_column_mapping(sys_ks, p->update.column_family_id(), p->update.schema_version());
 
@@ -136,7 +136,7 @@ future<prepare_response> paxos_state::prepare(storage_proxy& sp, db::system_keys
 
         co_return prepare_response(promise(std::move(u1), std::move(u2), std::move(data_or_digest)));
     } else {
-        logger.debug("Promise rejected; {} is not sufficiently newer than {}", ballot, state._promised_ballot);
+        LOGMACRO(logger, log_level::debug, "Promise rejected; {} is not sufficiently newer than {}", ballot, state._promised_ballot);
         tracing::trace(tr_state, "Promise rejected; {} is not sufficiently newer than {}", ballot, state._promised_ballot);
         // Return the currently promised ballot (rather than, e.g., the ballot of the last
         // accepted proposal) so the coordinator can make sure it uses a newer ballot next
@@ -168,7 +168,7 @@ future<bool> paxos_state::accept(storage_proxy& sp, db::system_keyspace& sys_ks,
     // Accept the proposal if we promised to accept it or the proposal is newer than the one we promised.
     // Otherwise the proposal was cutoff by another Paxos proposer and has to be rejected.
     if (proposal.ballot == state._promised_ballot || proposal.ballot.timestamp() > state._promised_ballot.timestamp()) {
-        logger.debug("Accepting proposal {}", proposal);
+        LOGMACRO(logger, log_level::debug, "Accepting proposal {}", proposal);
         tracing::trace(tr_state, "Accepting proposal {}", proposal);
 
         if (utils::get_local_injector().enter("paxos_error_before_save_proposal")) {
@@ -182,7 +182,7 @@ future<bool> paxos_state::accept(storage_proxy& sp, db::system_keyspace& sys_ks,
         }
         co_return true;
     } else {
-        logger.debug("Rejecting proposal for {} because in_progress is now {}", proposal, state._promised_ballot);
+        LOGMACRO(logger, log_level::debug, "Rejecting proposal for {} because in_progress is now {}", proposal, state._promised_ballot);
         tracing::trace(tr_state, "Rejecting proposal for {} because in_progress is now {}", proposal, state._promised_ballot);
         co_return false;
     }
@@ -220,7 +220,7 @@ future<> paxos_state::learn(storage_proxy& sp, db::system_keyspace& sys_ks, sche
     // The table may have been truncated since the proposal was initiated. In that case, we
     // don't want to perform the mutation and potentially resurrect truncated data.
     if (utils::UUID_gen::unix_timestamp(decision.ballot) >= truncated_at) {
-        logger.debug("Committing decision {}", decision);
+        LOGMACRO(logger, log_level::debug, "Committing decision {}", decision);
         tracing::trace(tr_state, "Committing decision {}", decision);
 
         // In case current schema is not the same as the schema in the decision
@@ -235,7 +235,7 @@ future<> paxos_state::learn(storage_proxy& sp, db::system_keyspace& sys_ks, sche
 
         co_await sp.mutate_locally(schema, decision.update, tr_state, db::commitlog::force_sync::yes, timeout);
     } else {
-        logger.debug("Not committing decision {} as ballot timestamp predates last truncation time", decision);
+        LOGMACRO(logger, log_level::debug, "Not committing decision {} as ballot timestamp predates last truncation time", decision);
         tracing::trace(tr_state, "Not committing decision {} as ballot timestamp predates last truncation time", decision);
     }
 
@@ -247,7 +247,7 @@ future<> paxos_state::learn(storage_proxy& sp, db::system_keyspace& sys_ks, sche
 
 future<> paxos_state::prune(db::system_keyspace& sys_ks, schema_ptr schema, const partition_key& key, utils::UUID ballot, clock_type::time_point timeout,
         tracing::trace_state_ptr tr_state) {
-    logger.debug("Delete paxos state for ballot {}", ballot);
+    LOGMACRO(logger, log_level::debug, "Delete paxos state for ballot {}", ballot);
     tracing::trace(tr_state, "Delete paxos state for ballot {}", ballot);
     return sys_ks.delete_paxos_decision(*schema, key, ballot, timeout);
 }

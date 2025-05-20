@@ -163,7 +163,7 @@ rebalance_stats rebalance_tablets(cql_test_env& e, locator::load_stats_ptr load_
             .rebalance_count = 1,
         };
         stats += iteration_stats;
-        testlog.debug("Rebalance iteration {} took {:.3f} [s]: mig={}, bad={}, first_bad={}, eval={}, skiplist={}, skip: (load={}, rack={}, node={})",
+        LOGMACRO(testlog, log_level::debug, "Rebalance iteration {} took {:.3f} [s]: mig={}, bad={}, first_bad={}, eval={}, skiplist={}, skip: (load={}, rack={}, node={})",
                       i + 1, elapsed.count(),
                       lb_stats.migrations_produced,
                       lb_stats.bad_migrations,
@@ -312,7 +312,7 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
         auto check_balance = [&] () -> cluster_balance {
             cluster_balance res;
 
-            testlog.debug("tablet metadata: {}", stm.get()->tablets());
+            LOGMACRO(testlog, log_level::debug, "tablet metadata: {}", stm.get()->tablets());
 
             int table_index = 0;
             for (auto s : {s1, s2}) {
@@ -365,7 +365,7 @@ future<results> test_load_balancing_with_many_tables(params p, bool tablet_aware
             return res;
         };
 
-        testlog.debug("tablet metadata: {}", stm.get()->tablets());
+        LOGMACRO(testlog, log_level::debug, "tablet metadata: {}", stm.get()->tablets());
 
         e.get_tablet_allocator().local().set_use_table_aware_balancing(tablet_aware);
 

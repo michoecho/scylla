@@ -195,7 +195,7 @@ future<> streaming_task_impl::run() {
         }
         _result = _action();
     } else {
-        service::rtlogger.debug("already streaming");
+        service::LOGMACRO(rtlogger, log_level::debug, "already streaming");
     }
     co_await _result.value().get_future();
     service::rtlogger.info("streaming completed");

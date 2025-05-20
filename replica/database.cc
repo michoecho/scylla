@@ -1256,7 +1256,7 @@ keyspace::create_replication_strategy(const locator::shared_token_metadata& stm)
     locator::replication_strategy_params params(_metadata->strategy_options(), _metadata->initial_tablets());
     _replication_strategy =
             abstract_replication_strategy::create_replication_strategy(_metadata->strategy_name(), params);
-    rslogger.debug("replication strategy for keyspace {} is {}, opts={}",
+    LOGMACRO(rslogger, log_level::debug, "replication strategy for keyspace {} is {}, opts={}",
             _metadata->name(), _metadata->strategy_name(), _metadata->strategy_options());
     if (!_replication_strategy->is_per_table()) {
         auto erm = co_await _erm_factory.create_effective_replication_map(_replication_strategy, stm.get());
@@ -1921,7 +1921,7 @@ future<> database::apply_with_commitlog(column_family& cf, const mutation& m, db
         co_await apply_in_memory(m, cf, std::move(h), timeout);
     } catch (mutation_reordered_with_truncate_exception&) {
         // This mutation raced with a truncate, so we can just drop it.
-        dblog.debug("replay_position reordering detected");
+        LOGMACRO(dblog, log_level::debug, "replay_position reordering detected");
     }
 }
 
@@ -2058,7 +2058,7 @@ future<> database::do_apply(schema_ptr s, const frozen_mutation& m, tracing::tra
       auto ex = f.get_exception();
       if (try_catch<mutation_reordered_with_truncate_exception>(ex)) {
         // This mutation raced with a truncate, so we can just drop it.
-        dblog.debug("replay_position reordering detected");
+        LOGMACRO(dblog, log_level::debug, "replay_position reordering detected");
         co_return;
       } else if (is_timeout_exception(ex)) {
         ++_stats->total_writes_timedout;
@@ -2266,7 +2266,7 @@ future<> database::close_tables(table_kind kind_to_close) {
 
 void database::revert_initial_system_read_concurrency_boost() {
     _system_read_concurrency_sem.set_resources({database::max_count_system_concurrent_reads, max_memory_system_concurrent_reads()});
-    dblog.debug("Reverted system read concurrency from initial {} to normal {}", database::max_count_concurrent_reads, database::max_count_system_concurrent_reads);
+    LOGMACRO(dblog, log_level::debug, "Reverted system read concurrency from initial {} to normal {}", database::max_count_concurrent_reads, database::max_count_system_concurrent_reads);
 }
 
 future<> database::start(sharded<qos::service_level_controller>& sl_controller) {
@@ -2651,7 +2651,7 @@ future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, cons
     const auto uuid = cf.schema()->id();
     const auto truncated_at = st.truncated_at;
 
-    dblog.debug("Discarding sstable data for truncated CF + indexes");
+    LOGMACRO(dblog, log_level::debug, "Discarding sstable data for truncated CF + indexes");
     // TODO: notify truncation
 
     db::replay_position rp = co_await cf.discard_sstables(truncated_at);
@@ -2800,13 +2800,13 @@ future<> database::clear_snapshot(sstring tag, std::vector<sstring> keyspace_nam
             auto data_dir = fs::path(parent_dir);
             auto data_dir_lister = directory_lister(data_dir, lister::dir_entry_types::of<directory_entry_type::directory>(), filter);
             auto close_data_dir_lister = deferred_close(data_dir_lister);
-            dblog.debug("clear_snapshot: listing data dir {} with filter={}", data_dir, ks_names_set.empty() ? "none" : fmt::format("{}", ks_names_set));
+            LOGMACRO(dblog, log_level::debug, "clear_snapshot: listing data dir {} with filter={}", data_dir, ks_names_set.empty() ? "none" : fmt::format("{}", ks_names_set));
             while (auto ks_ent = data_dir_lister.get().get()) {
                 auto ks_name = ks_ent->name;
                 auto ks_dir = data_dir / ks_name;
                 auto ks_dir_lister = directory_lister(ks_dir, lister::dir_entry_types::of<directory_entry_type::directory>(), table_filter);
                 auto close_ks_dir_lister = deferred_close(ks_dir_lister);
-                dblog.debug("clear_snapshot: listing keyspace dir {} with filter={}", ks_dir, table_name_param.empty() ? "none" : fmt::format("{}", table_name_param));
+                LOGMACRO(dblog, log_level::debug, "clear_snapshot: listing keyspace dir {} with filter={}", ks_dir, table_name_param.empty() ? "none" : fmt::format("{}", table_name_param));
                 while (auto table_ent = ks_dir_lister.get().get()) {
                     auto table_dir = ks_dir / table_ent->name;
                     auto snapshots_dir = table_dir / sstables::snapshots_dir;
@@ -2820,7 +2820,7 @@ future<> database::clear_snapshot(sstring tag, std::vector<sstring> keyspace_nam
                             // if specific snapshots tags were given - filter only these snapshot directories
                             auto snapshots_dir_lister = directory_lister(snapshots_dir, lister::dir_entry_types::of<directory_entry_type::directory>());
                             auto close_snapshots_dir_lister = deferred_close(snapshots_dir_lister);
-                            dblog.debug("clear_snapshot: listing snapshots dir {} with filter={}", snapshots_dir, tag);
+                            LOGMACRO(dblog, log_level::debug, "clear_snapshot: listing snapshots dir {} with filter={}", snapshots_dir, tag);
                             has_snapshots = false;  // unless other snapshots are found
                             while (auto snapshot_ent = snapshots_dir_lister.get().get()) {
                                 if (snapshot_ent->name == tag) {
@@ -2833,7 +2833,7 @@ future<> database::clear_snapshot(sstring tag, std::vector<sstring> keyspace_nam
                             }
                         }
                     } else {
-                        dblog.debug("clear_snapshot: {} not found", snapshots_dir);
+                        LOGMACRO(dblog, log_level::debug, "clear_snapshot: {} not found", snapshots_dir);
                     }
                     // zap the table directory if the table is dropped
                     // and has no remaining snapshots

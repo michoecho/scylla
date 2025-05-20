@@ -80,7 +80,7 @@ test_file make_test_file(size_t size) {
     auto path = dir.path() / "file";
     file f = open_file_dma(path.c_str(), open_flags::create | open_flags::rw).get();
 
-    testlog.debug("file contents: {}", contents);
+    LOGMACRO(testlog, log_level::debug, "file contents: {}", contents);
 
     output_stream<char> out = make_file_output_stream(f).get();
     auto close_out = defer([&] { out.close().get(); });
@@ -337,7 +337,7 @@ SEASTAR_THREAD_TEST_CASE(test_stress_eviction) {
         read_to_string(cf, page_size * i, page_size);
     }
 
-    testlog.debug("Saturating memory...");
+    LOGMACRO(testlog, log_level::debug, "Saturating memory...");
 
     // Disable background reclaiming which will prevent bugs from reproducing
     // We want reclamation to happen synchronously with page cache population in read_to_void()
@@ -350,8 +350,8 @@ SEASTAR_THREAD_TEST_CASE(test_stress_eviction) {
         blobs.emplace_back(bytes(bytes::initialized_later(), 1024));
     }
 
-    testlog.debug("Memory: allocated={}, free={}", seastar::memory::stats().allocated_memory(), seastar::memory::stats().free_memory());
-    testlog.debug("Starting test...");
+    LOGMACRO(testlog, log_level::debug, "Memory: allocated={}, free={}", seastar::memory::stats().allocated_memory(), seastar::memory::stats().free_memory());
+    LOGMACRO(testlog, log_level::debug, "Starting test...");
 
     for (size_t j = 0; j < n_pages * 16; ++j) {
         LOGMACRO(testlog, log_level::trace, "Allocating");

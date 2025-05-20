@@ -154,11 +154,11 @@ future<> db::commitlog_replayer::impl::init() {
     });
 
     for (auto&p : _min_pos) {
-        rlogger.debug("minimum position for shard {}: {}", p.first, p.second);
+        LOGMACRO(rlogger, log_level::debug, "minimum position for shard {}: {}", p.first, p.second);
     }
     for (auto&p1 : _rpm) {
         for (auto& p2 : p1.second) {
-            rlogger.debug("replay position for shard/uuid {}/{}: {}", p1.first, p2.first, p2.second);
+            LOGMACRO(rlogger, log_level::debug, "replay position for shard/uuid {}/{}: {}", p1.first, p2.first, p2.second);
         }
     }
 }
@@ -172,7 +172,7 @@ db::commitlog_replayer::impl::recover(const commitlog::descriptor& d, const comm
     auto f = d.filename();
 
     if (rp.id < gp.id) {
-        rlogger.debug("skipping replay of fully-flushed {}", f);
+        LOGMACRO(rlogger, log_level::debug, "skipping replay of fully-flushed {}", f);
         return make_ready_future<stats>();
     }
     position_type p = 0;
@@ -211,10 +211,10 @@ future<> db::commitlog_replayer::impl::process(stats* s, commitlog::buffer_and_r
         auto cm_it = local_cm.find(fm.schema_version());
         if (cm_it == local_cm.end()) {
             if (!cer.get_column_mapping()) {
-                rlogger.debug("replaying at {} v={} at {}", fm.column_family_id(), fm.schema_version(), rp);
+                LOGMACRO(rlogger, log_level::debug, "replaying at {} v={} at {}", fm.column_family_id(), fm.schema_version(), rp);
                 throw std::runtime_error(format("unknown schema version {}, table=", fm.schema_version(), fm.column_family_id()));
             }
-            rlogger.debug("new schema version {} in entry {}", fm.schema_version(), rp);
+            LOGMACRO(rlogger, log_level::debug, "new schema version {} in entry {}", fm.schema_version(), rp);
             cm_it = local_cm.emplace(fm.schema_version(), *cer.get_column_mapping()).first;
         }
         const column_mapping& src_cm = cm_it->second;
@@ -254,7 +254,7 @@ future<> db::commitlog_replayer::impl::process(stats* s, commitlog::buffer_and_r
             auto& cf = db.find_column_family(fm.column_family_id());
 
             if (rlogger.is_enabled(logging::log_level::debug)) {
-                rlogger.debug("replaying at {} v={} {}:{} at {}", fm.column_family_id(), fm.schema_version(),
+                LOGMACRO(rlogger, log_level::debug, "replaying at {} v={} {}:{} at {}", fm.column_family_id(), fm.schema_version(),
                         cf.schema()->ks_name(), cf.schema()->cf_name(), rp);
             }
             if (const auto err = validation::is_cql_key_invalid(*cf.schema(), fm.key()); err) {
@@ -292,7 +292,7 @@ future<> db::commitlog_replayer::impl::process(stats* s, commitlog::buffer_and_r
       };
         auto shards = table.get_effective_replication_map()->shard_for_writes(schema, token);
         if (shards.empty()) {
-            rlogger.debug("no shard for token {} in table {}", token, uuid);
+            LOGMACRO(rlogger, log_level::debug, "no shard for token {} in table {}", token, uuid);
             s->skipped_mutations++;
         } else {
             co_await seastar::parallel_for_each(shards, apply);
@@ -362,7 +362,7 @@ future<> db::commitlog_replayer::recover(std::vector<sstring> files, sstring fna
                 auto range = map.equal_range(id);
                 for (auto& [id, d] : std::ranges::subrange(range.first, range.second)) {
                     auto f = d.filename();
-                    rlogger.debug("Replaying {}", f);
+                    LOGMACRO(rlogger, log_level::debug, "Replaying {}", f);
                     auto stats = co_await _impl->recover(d, states[replay_position(d).shard_id()]);
                     if (stats.corrupt_bytes != 0) {
                         rlogger.warn("Corrupted file: {}. {} bytes skipped.", f, stats.corrupt_bytes);
@@ -370,7 +370,7 @@ future<> db::commitlog_replayer::recover(std::vector<sstring> files, sstring fna
                     if (stats.truncated_at != 0) {
                         rlogger.warn("Truncated file: {} at position {}.", f, stats.truncated_at);
                     }
-                    rlogger.debug("Log replay of {} complete, {} replayed mutations ({} invalid, {} skipped)"
+                    LOGMACRO(rlogger, log_level::debug, "Log replay of {} complete, {} replayed mutations ({} invalid, {} skipped)"
                                     , f
                                     , stats.applied_mutations
                                     , stats.invalid_mutations

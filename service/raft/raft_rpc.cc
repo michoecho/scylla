@@ -43,7 +43,7 @@ raft_rpc::one_way_rpc(sloc loc, raft::server_id id,
         Verb&& verb, Msg&& msg) {
     (void)with_gate(_shutdown_gate, [this, loc = std::move(loc), id, &verb, &msg] () mutable {
         if (rpc_kind == one_way_kind::request && !_failure_detector->is_alive(id)) {
-            rlogger.debug("{}:{}: {} dropping outgoing message to {} - node is not seen as alive by the failure detector",
+            LOGMACRO(rlogger, log_level::debug, "{}:{}: {} dropping outgoing message to {} - node is not seen as alive by the failure detector",
                 loc.file_name(), loc.line(), loc.function_name(), id);
             return make_ready_future<>();
         }
@@ -84,7 +84,7 @@ future<raft::snapshot_reply> raft_rpc::send_snapshot(raft::server_id id, const r
 
 future<> raft_rpc::send_append_entries(raft::server_id id, const raft::append_request& append_request) {
     if (!_failure_detector->is_alive(id)) {
-        rlogger.debug("Failed to send append_entires to {}: node is not seen as alive by the failure detector", id);
+        LOGMACRO(rlogger, log_level::debug, "Failed to send append_entires to {}: node is not seen as alive by the failure detector", id);
         co_return;
     }
 

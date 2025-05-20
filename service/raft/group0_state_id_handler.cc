@@ -29,7 +29,7 @@ lowres_clock::duration group0_state_id_handler::get_refresh_interval(const repli
 void group0_state_id_handler::refresh() {
     auto* const group0_server = _server_accessor.get_server();
     if (!group0_server) {
-        slogger.debug("Skipping due to group0 server not found");
+        LOGMACRO(slogger, log_level::debug, "Skipping due to group0 server not found");
         return;
     }
 
@@ -127,19 +127,19 @@ void group0_state_id_handler::run() {
 
 future<> group0_state_id_handler::advertise_state_id(utils::UUID state_id) {
     if (!_gossiper.is_enabled()) {
-        slogger.debug("Skipping advertisement of state id {} because gossiper is not active", state_id);
+        LOGMACRO(slogger, log_level::debug, "Skipping advertisement of state id {} because gossiper is not active", state_id);
         return make_ready_future();
     }
 
     if (_state_id_last_advertised && utils::timeuuid_tri_compare(_state_id_last_advertised, state_id) > 0) {
-        slogger.debug("Skipping advertisement of stale state id {}", state_id);
+        LOGMACRO(slogger, log_level::debug, "Skipping advertisement of stale state id {}", state_id);
         return make_ready_future();
     }
 
     _state_id_last_advertised = state_id;
 
     const auto gc_time = to_gc_clock(db_clock::time_point(utils::UUID_gen::unix_timestamp(state_id)));
-    slogger.debug("Advertising state id: {} (gc_time: {})", state_id, gc_time);
+    LOGMACRO(slogger, log_level::debug, "Advertising state id: {} (gc_time: {})", state_id, gc_time);
     return _gossiper.add_local_application_state(gms::application_state::GROUP0_STATE_ID, gms::versioned_value::state_id(service::state_id(state_id)));
 }
 

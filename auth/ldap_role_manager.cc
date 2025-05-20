@@ -51,14 +51,14 @@ url_desc_ptr parse_url(std::string_view url) {
 /// Extracts attribute \p attr from all entries in \p res.
 std::vector<sstring> get_attr_values(LDAP* ld, LDAPMessage* res, const char* attr) {
     std::vector<sstring> values;
-    mylog.debug("Analyzing search results");
+    LOGMACRO(mylog, log_level::debug, "Analyzing search results");
     for (auto e = ldap_first_entry(ld, res); e; e = ldap_next_entry(ld, e)) {
         struct deleter {
             void operator()(berval** p) { ldap_value_free_len(p); }
             void operator()(char* p) { ldap_memfree(p); }
         };
         const std::unique_ptr<char, deleter> dname(ldap_get_dn(ld, e));
-        mylog.debug("Analyzing entry {}", dname.get());
+        LOGMACRO(mylog, log_level::debug, "Analyzing entry {}", dname.get());
         const std::unique_ptr<berval*, deleter> vals(ldap_get_values_len(ld, e, attr));
         if (!vals) {
             mylog.warn("LDAP entry {} has no attribute {}", dname.get(), attr);
@@ -68,7 +68,7 @@ std::vector<sstring> get_attr_values(LDAP* ld, LDAPMessage* res, const char* att
             values.emplace_back(vals.get()[i]->bv_val, vals.get()[i]->bv_len);
         }
     }
-    mylog.debug("Done analyzing search results; extracted roles {}", values);
+    LOGMACRO(mylog, log_level::debug, "Done analyzing search results; extracted roles {}", values);
     return values;
 }
 
@@ -298,7 +298,7 @@ future<bool> ldap_role_manager::exists(std::string_view role_name) {
         }
         co_return exists;
     }
-    mylog.debug("Role {} will not be auto-created", role_name);
+    LOGMACRO(mylog, log_level::debug, "Role {} will not be auto-created", role_name);
     co_return false;
 }
 

@@ -561,21 +561,21 @@ public:
 
 public:
     virtual void add(region* r) override {
-        testlog.debug("test_region_listener [{}:{}]: add region={}", _name, fmt::ptr(this), fmt::ptr(r));
+        LOGMACRO(testlog, log_level::debug, "test_region_listener [{}:{}]: add region={}", _name, fmt::ptr(this), fmt::ptr(r));
 
         BOOST_REQUIRE(!contains(r));
         region_group::add(r);
         BOOST_REQUIRE(contains(r));
     }
     virtual void del(region* r) override {
-        testlog.debug("test_region_listener [{}:{}]: del region={}", _name, fmt::ptr(this), fmt::ptr(r));
+        LOGMACRO(testlog, log_level::debug, "test_region_listener [{}:{}]: del region={}", _name, fmt::ptr(this), fmt::ptr(r));
 
         BOOST_REQUIRE(contains(r));
         region_group::del(r);
         BOOST_REQUIRE(!contains(r));
     }
     virtual void moved(region* old_region, region* new_region) override {
-        testlog.debug("test_region_listener [{}:{}]: moved old_region={} new_region={}", _name, fmt::ptr(this), fmt::ptr(old_region), fmt::ptr(new_region));
+        LOGMACRO(testlog, log_level::debug, "test_region_listener [{}:{}]: moved old_region={} new_region={}", _name, fmt::ptr(this), fmt::ptr(old_region), fmt::ptr(new_region));
 
         BOOST_REQUIRE(contains(old_region));
         BOOST_REQUIRE(!contains(new_region));
@@ -584,19 +584,19 @@ public:
         BOOST_REQUIRE(contains(new_region));
     }
     virtual void increase_usage(region* r, ssize_t delta) override {
-        testlog.debug("test_region_listener [{}:{}]: increase_usage region={} delta={}", _name, fmt::ptr(this), fmt::ptr(r), delta);
+        LOGMACRO(testlog, log_level::debug, "test_region_listener [{}:{}]: increase_usage region={} delta={}", _name, fmt::ptr(this), fmt::ptr(r), delta);
 
         BOOST_REQUIRE(contains(r));
         region_group::increase_usage(r, delta);
     }
     virtual void decrease_evictable_usage(region* r) override {
-        testlog.debug("test_region_listener [{}:{}]: decrease_evictable_usage region={}", _name, fmt::ptr(this), fmt::ptr(r));
+        LOGMACRO(testlog, log_level::debug, "test_region_listener [{}:{}]: decrease_evictable_usage region={}", _name, fmt::ptr(this), fmt::ptr(r));
 
         BOOST_REQUIRE(contains(r));
         region_group::decrease_evictable_usage(r);
     }
     virtual void decrease_usage(region* r, ssize_t delta) override {
-        testlog.debug("test_region_listener [{}:{}]: decrease_usage region={} delta={}", _name, fmt::ptr(this), fmt::ptr(r), delta);
+        LOGMACRO(testlog, log_level::debug, "test_region_listener [{}:{}]: decrease_usage region={} delta={}", _name, fmt::ptr(this), fmt::ptr(r), delta);
 
         BOOST_REQUIRE(contains(r));
         region_group::decrease_usage(r, delta);

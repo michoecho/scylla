@@ -47,12 +47,12 @@ private:
         int32_t status = 0;
         while (auto status_opt = co_await _source()) {
             status = std::get<0>(*status_opt);
-            llog.debug("send_meta_data: got error code={}, from node={}", status, _node);
+            LOGMACRO(llog, log_level::debug, "send_meta_data: got error code={}, from node={}", status, _node);
             if (status == -1) {
                 _error_from_peer = true;
             }
         }
-        llog.debug("send_meta_data: finished reading source from node={}", _node);
+        LOGMACRO(llog, log_level::debug, "send_meta_data: finished reading source from node={}", _node);
         if (_error_from_peer) {
             throw std::runtime_error(format("send_meta_data: got error code={} from node={}", status, _node));
         }
@@ -445,7 +445,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
                     if (!metas.contains(node)) {
                         auto [sink, source] = co_await _ms.make_sink_and_source_for_stream_mutation_fragments(reader.schema()->version(),
                                 ops_uuid, cf_id, estimated_partitions, reason, service::default_session_id, node);
-                        llog.debug("load_and_stream: ops_uuid={}, make sink and source for node={}", ops_uuid, node);
+                        LOGMACRO(llog, log_level::debug, "load_and_stream: ops_uuid={}, make sink and source for node={}", ops_uuid, node);
                         metas.emplace(node, send_meta_data(node, std::move(sink), std::move(source)));
                         metas.at(node).receive();
                     }
@@ -478,7 +478,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
     if (!failed && _unlink_sstables) {
         try {
             co_await coroutine::parallel_for_each(sstables, [&] (sstables::shared_sstable& sst) {
-                llog.debug("load_and_stream: ops_uuid={}, ks={}, table={}, remove sst={}",
+                LOGMACRO(llog, log_level::debug, "load_and_stream: ops_uuid={}, ks={}, table={}, remove sst={}",
                         ops_uuid, s->ks_name(), s->cf_name(), sst->toc_filename());
                 return sst->unlink();
             });
@@ -683,13 +683,13 @@ future<> sstables_loader::download_task_impl::run() {
     sstables::sstable_open_config cfg {
         .load_bloom_filter = false,
     };
-    llog.debug("Loading sstables from {}({}/{})", _endpoint, _bucket, _prefix);
+    LOGMACRO(llog, log_level::debug, "Loading sstables from {}({}/{})", _endpoint, _bucket, _prefix);
 
     std::vector<seastar::abort_source> shard_aborts(smp::count);
     auto [ table_id, sstables_on_shards ] = co_await replica::distributed_loader::get_sstables_from_object_store(_loader.local()._db, _ks, _cf, _sstables, _endpoint, _bucket, _prefix, cfg, [&] {
         return &shard_aborts[this_shard_id()];
     });
-    llog.debug("Streaming sstables from {}({}/{})", _endpoint, _bucket, _prefix);
+    LOGMACRO(llog, log_level::debug, "Streaming sstables from {}({}/{})", _endpoint, _bucket, _prefix);
     std::exception_ptr ex;
     named_gate g("sstables_loader::download_task_impl");
     try {

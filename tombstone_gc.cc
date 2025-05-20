@@ -235,7 +235,7 @@ future<> tombstone_gc_state::flush_pending_repair_time_update(replica::database&
                 co_await coroutine::maybe_yield();
                 if (update.shard == this_shard_id()) {
                     gc_state.update_repair_time(table, update.range, update.time);
-                    dblog.debug("Flush pending repair time for tombstone gc: table={} range={} repair_time={}",
+                    LOGMACRO(dblog, log_level::debug, "Flush pending repair time for tombstone gc: table={} range={} repair_time={}",
                             table, update.range, update.time);
                 }
             }

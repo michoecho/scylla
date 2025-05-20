@@ -55,7 +55,7 @@ std::string_view format_as(cause c) {
 void warn(cause c) {
     if (!_warnings.contains(c)) {
         _warnings.insert({c, true});
-        ulogger.debug("{}", format_as(c));
+        LOGMACRO(ulogger, log_level::debug, "{}", format_as(c));
     }
 }
 

@@ -48,7 +48,7 @@ public:
         if (this_shard_id() == 0) {
             rslog.info(msg, raft_id);
         } else {
-            rslog.debug(msg, raft_id);
+            LOGMACRO(rslog, log_level::debug, msg, raft_id);
         }
 
         co_return;
@@ -64,7 +64,7 @@ public:
         if (this_shard_id() == 0) {
             rslog.info(msg, raft_id);
         } else {
-            rslog.debug(msg, raft_id);
+            LOGMACRO(rslog, log_level::debug, msg, raft_id);
         }
 
         co_return;
@@ -93,7 +93,7 @@ void raft_group_registry::init_rpc_verbs() {
         constexpr bool is_one_way = std::is_void_v<std::invoke_result_t<decltype(handler), raft_rpc&>>;
         if (_my_id != dst) {
             if constexpr (is_one_way) {
-                rslog.debug("Got message for server {}, but my id is {}", dst, _my_id);
+                LOGMACRO(rslog, log_level::debug, "Got message for server {}, but my id is {}", dst, _my_id);
                 return make_ready_future<rpc::no_wait_type>(netw::messaging_service::no_wait());
             } else {
                 throw raft_destination_id_not_correct{_my_id, dst};

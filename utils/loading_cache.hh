@@ -224,7 +224,7 @@ private:
         static_assert(noexcept(LoadingCacheStats::inc_unprivileged_on_cache_size_eviction()), "LoadingCacheStats::inc_unprivileged_on_cache_size_eviction must be non-throwing");
         static_assert(noexcept(LoadingCacheStats::inc_privileged_on_cache_size_eviction()), "LoadingCacheStats::inc_privileged_on_cache_size_eviction must be non-throwing");
 
-        _logger.debug("Loading cache; max_size: {}, expiry: {}ms, refresh: {}ms", _cfg.max_size,
+        LOGMACRO(_logger, log_level::debug, "Loading cache; max_size: {}, expiry: {}ms, refresh: {}ms", _cfg.max_size,
                      std::chrono::duration_cast<std::chrono::milliseconds>(_cfg.expiry).count(),
                      std::chrono::duration_cast<std::chrono::milliseconds>(_cfg.refresh).count());
 
@@ -293,7 +293,7 @@ public:
                      std::chrono::duration_cast<std::chrono::milliseconds>(cfg.refresh).count());
 
         if (!validate_config(cfg)) {
-            _logger.debug("loading_cache: caching is enabled but refresh period and/or max_size are zero");
+            LOGMACRO(_logger, log_level::debug, "loading_cache: caching is enabled but refresh period and/or max_size are zero");
             return false;
         }
 
@@ -551,9 +551,9 @@ private:
             try {
                 *ts_value_ptr = f.get();
             } catch (std::exception& e) {
-                _logger.debug("{}: reload failed: {}", key, e.what());
+                LOGMACRO(_logger, log_level::debug, "{}: reload failed: {}", key, e.what());
             } catch (...) {
-                _logger.debug("{}: reload failed: unknown error", key);
+                LOGMACRO(_logger, log_level::debug, "{}: reload failed: unknown error", key);
             }
 
             return make_ready_future<>();

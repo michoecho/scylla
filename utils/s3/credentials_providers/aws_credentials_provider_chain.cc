@@ -10,6 +10,8 @@
 #include "utils/log.hh"
 #include <seastar/core/coroutine.hh>
 
+using seastar::log_level;
+
 namespace aws {
 static logging::logger cpc_logger("cred_provider_chain");
 
@@ -21,9 +23,9 @@ seastar::future<s3::aws_credentials> aws_credentials_provider_chain::get_aws_cre
                 cpc_logger.info("AWS credentials were successfully retrieved by {}.", provider->get_name());
                 co_return creds;
             }
-            cpc_logger.debug("Retrieving AWS credentials by credentials provider {} failed.", provider->get_name());
+            LOGMACRO(cpc_logger, log_level::debug, "Retrieving AWS credentials by credentials provider {} failed.", provider->get_name());
         } catch (...) {
-            cpc_logger.debug("Retrieving AWS credentials by credentials provider {} failed. Reason: {}", provider->get_name(), std::current_exception());
+            LOGMACRO(cpc_logger, log_level::debug, "Retrieving AWS credentials by credentials provider {} failed. Reason: {}", provider->get_name(), std::current_exception());
         }
     }
     cpc_logger.error("Failed to retrieve AWS credentials from any provider.");

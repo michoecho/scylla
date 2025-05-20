@@ -463,7 +463,7 @@ encryption::gcp_host::impl::get_default_credentials() {
     auto credentials_path = std::getenv(CREDENTIAL_ENV_VAR);
 
     if (credentials_path != nullptr && strlen(credentials_path)) {
-        gcp_log.debug("Attempting to load credentials from file: {}", credentials_path);
+        LOGMACRO(gcp_log, log_level::debug, "Attempting to load credentials from file: {}", credentials_path);
 
         try {
             co_return co_await from_file(credentials_path);
@@ -487,7 +487,7 @@ encryption::gcp_host::impl::get_default_credentials() {
         }
 
         if (co_await seastar::file_exists(well_known_file)) {
-            gcp_log.debug("Attempting to load credentials from well known file: {}", well_known_file);
+            LOGMACRO(gcp_log, log_level::debug, "Attempting to load credentials from well known file: {}", well_known_file);
             try {
                 co_return co_await from_file(well_known_file);
             } catch (...) {
@@ -502,7 +502,7 @@ encryption::gcp_host::impl::get_default_credentials() {
 
     {
         // Then try Compute Engine and GAE 8 standard environment
-        gcp_log.debug("Attempting to load credentials from GCE");
+        LOGMACRO(gcp_log, log_level::debug, "Attempting to load credentials from GCE");
 
         auto is_on_gce = [this]() -> future<bool> {
             if (_checked_is_on_gce) {
@@ -789,7 +789,7 @@ future<rjson::value> encryption::gcp_host::impl::gcp_auth_post_with_retry(std::s
             });
             co_return res;
         } catch (httpd::unexpected_status_error& e) {
-            gcp_log.debug("{}: Got unexpected response: {}", uri, e.status());
+            LOGMACRO(gcp_log, log_level::debug, "{}: Got unexpected response: {}", uri, e.status());
             if (e.status() == http::reply::status_type::unauthorized && retries++ < 3) {
                 // refresh access token and retry.
                 continue;
@@ -812,7 +812,7 @@ future<> encryption::gcp_host::impl::init() {
     }
 
     if (!_options.master_key.empty()) {
-        gcp_log.debug("Looking up master key");
+        LOGMACRO(gcp_log, log_level::debug, "Looking up master key");
 
         attr_cache_key k{
             .src = _options,
@@ -820,7 +820,7 @@ future<> encryption::gcp_host::impl::init() {
             .info = key_info{ .alg = "AES", .len = 128 },
         };
         co_await create_key(k);
-        gcp_log.debug("Master key exists");
+        LOGMACRO(gcp_log, log_level::debug, "Master key exists");
     } else {
         gcp_log.info("No default master key configured. Not verifying.");
     }
@@ -884,7 +884,7 @@ future<encryption::gcp_host::impl::key_and_id_type> encryption::gcp_host::impl::
     // there is nothing we can "look up" or anything. Always 
     // new key here.
 
-    gcp_log.debug("Creating new key: {}", info);
+    LOGMACRO(gcp_log, log_level::debug, "Creating new key: {}", info);
 
     auto [keyring, keyname] = parse_key(k.master_key);
 
@@ -925,7 +925,7 @@ future<bytes> encryption::gcp_host::impl::find_key(const id_cache_key& k) {
     // master id can contain ':', but blob will not.
     // (we are being wasteful, and keeping the base64 encoding - easier to read)
     std::string_view id(reinterpret_cast<const char*>(k.id.data()), k.id.size());
-    gcp_log.debug("Finding key: {}", id);
+    LOGMACRO(gcp_log, log_level::debug, "Finding key: {}", id);
 
     auto pos = id.find_last_of(':');
     auto pos2 = id.find_last_of('/', pos - 1);

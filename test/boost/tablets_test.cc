@@ -1370,14 +1370,14 @@ SEASTAR_THREAD_TEST_CASE(test_token_ownership_splitting) {
         tablet_map(16),
         tablet_map(1024),
     }) {
-        testlog.debug("tmap: {}", tmap);
+        LOGMACRO(testlog, log_level::debug, "tmap: {}", tmap);
 
         BOOST_REQUIRE_EQUAL(real_min_token, tmap.get_first_token(tmap.first_tablet()));
         BOOST_REQUIRE_EQUAL(real_max_token, tmap.get_last_token(tmap.last_tablet()));
 
         std::optional<tablet_id> prev_tb;
         for (tablet_id tb : tmap.tablet_ids()) {
-            testlog.debug("first: {}, last: {}", tmap.get_first_token(tb), tmap.get_last_token(tb));
+            LOGMACRO(testlog, log_level::debug, "first: {}, last: {}", tmap.get_first_token(tb), tmap.get_last_token(tb));
             BOOST_REQUIRE_EQUAL(tb, tmap.get_tablet_id(tmap.get_first_token(tb)));
             BOOST_REQUIRE_EQUAL(tb, tmap.get_tablet_id(tmap.get_last_token(tb)));
             if (prev_tb) {
@@ -1505,7 +1505,7 @@ void do_rebalance_tablets(cql_test_env& e,
             auto& tm = *stm.get();
             for (auto& [table, tmap]: tm.tablets().all_tables()) {
                 if (std::holds_alternative<resize_decision::split>(tmap->resize_decision().way)) {
-                    testlog.debug("set_split_ready_seq_number({}, {})", table, tmap->resize_decision().sequence_number);
+                    LOGMACRO(testlog, log_level::debug, "set_split_ready_seq_number({}, {})", table, tmap->resize_decision().sequence_number);
                     load_stats->set_split_ready_seq_number(table, tmap->resize_decision().sequence_number);
                 }
             }
@@ -1526,10 +1526,10 @@ void rebalance_tablets(cql_test_env& e,
                        std::function<bool(const migration_plan&)> stop = nullptr,
                        bool auto_split = true) {
     abort_source as;
-    testlog.debug("rebalance_tablets(): start");
+    LOGMACRO(testlog, log_level::debug, "rebalance_tablets(): start");
 
     auto guard = e.get_raft_group0_client().start_operation(as).get();
-    testlog.debug("rebalance_tablets(): took group0 guard");
+    LOGMACRO(testlog, log_level::debug, "rebalance_tablets(): took group0 guard");
 
     shared_load_stats local_stats;
     if (!load_stats) {
@@ -1541,7 +1541,7 @@ void rebalance_tablets(cql_test_env& e,
     }
 
     do_rebalance_tablets(e, guard, load_stats, std::move(skiplist), std::move(stop), auto_split);
-    testlog.debug("rebalance_tablets(): rebalanced");
+    LOGMACRO(testlog, log_level::debug, "rebalance_tablets(): rebalanced");
 
     // We should not introduce inconsistency between on-disk state and in-memory state
     // as that may violate invariants and cause failures in later operations
@@ -1550,7 +1550,7 @@ void rebalance_tablets(cql_test_env& e,
     save_tablet_metadata(e.local_db(), stm.get()->tablets(), guard.write_timestamp()).get();
     e.get_storage_service().local().load_tablet_metadata({}).get();
 
-    testlog.debug("rebalance_tablets(): done");
+    LOGMACRO(testlog, log_level::debug, "rebalance_tablets(): done");
 }
 
 static
@@ -1654,7 +1654,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_empty_node) {
         load.populate().get();
 
         for (auto h : {host1, host2, host3}) {
-            testlog.debug("Checking host {}", h);
+            LOGMACRO(testlog, log_level::debug, "Checking host {}", h);
             BOOST_REQUIRE_LE(load.get_load(h), 3);
             BOOST_REQUIRE_GT(load.get_load(h), 1);
             BOOST_REQUIRE_LE(load.get_avg_shard_load(h), 2);
@@ -2167,7 +2167,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_works_with_in_progress_transitions)
         load.populate().get();
 
         for (auto h : {host1, host2, host3}) {
-            testlog.debug("Checking host {}", h);
+            LOGMACRO(testlog, log_level::debug, "Checking host {}", h);
             BOOST_REQUIRE_EQUAL(load.get_avg_shard_load(h), 2);
         }
     }
@@ -2256,7 +2256,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_two_empty_nodes) {
         load.populate().get();
 
         for (auto h : {host1, host2, host3, host4}) {
-            testlog.debug("Checking host {}", h);
+            LOGMACRO(testlog, log_level::debug, "Checking host {}", h);
             BOOST_REQUIRE_EQUAL(load.get_avg_shard_load(h), 4);
             BOOST_REQUIRE_LE(load.get_shard_imbalance(h), 1);
         }
@@ -2301,7 +2301,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_asymmetric_node_capacity) {
           load.populate().get();
 
           for (auto h: {host2, host3}) {
-              testlog.debug("Checking host {}", h);
+              LOGMACRO(testlog, log_level::debug, "Checking host {}", h);
               BOOST_REQUIRE_EQUAL(load.get_avg_shard_load(h), 2); // 16 tablets / 8 shards = 2 tablets / shard
               BOOST_REQUIRE_EQUAL(load.get_shard_imbalance(h), 0);
           }
@@ -2487,7 +2487,7 @@ SEASTAR_THREAD_TEST_CASE(test_skiplist_is_ignored_when_draining) {
             load.populate().get();
 
             for (auto h : {host2, host3}) {
-                testlog.debug("Checking host {}", h);
+                LOGMACRO(testlog, log_level::debug, "Checking host {}", h);
                 BOOST_REQUIRE_EQUAL(load.get_avg_shard_load(h), 1);
             }
         }
@@ -2587,7 +2587,7 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_random_load) {
             });
         }
 
-        testlog.debug("tablet metadata: {}", stm.get()->tablets());
+        LOGMACRO(testlog, log_level::debug, "tablet metadata: {}", stm.get()->tablets());
         testlog.info("Total tablet count: {}, hosts: {}", total_tablet_count, hosts.size());
 
         check_tablet_invariants(stm.get()->tablets());
@@ -2608,8 +2608,8 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_random_load) {
                 BOOST_REQUIRE_LE(load.get_shard_imbalance(h), 1);
             }
 
-            testlog.debug("tablet metadata: {}", stm.get()->tablets());
-            testlog.debug("Min load: {}, max load: {}", min_max_load.min(), min_max_load.max());
+            LOGMACRO(testlog, log_level::debug, "tablet metadata: {}", stm.get()->tablets());
+            LOGMACRO(testlog, log_level::debug, "Min load: {}, max load: {}", min_max_load.min(), min_max_load.max());
 
 //          FIXME: The algorithm cannot achieve balance in all cases yet, so we only check that it stops.
 //          For example, if we have an overloaded node in one rack and target underloaded node in a different rack,
@@ -3009,7 +3009,7 @@ SEASTAR_TEST_CASE(test_tablet_id_and_range_side) {
         auto right_id = tablet_id(left_id.value() + 1);
         auto left_tr = tmap_after_splitting.get_token_range(left_id);
         auto right_tr = tmap_after_splitting.get_token_range(right_id);
-        testlog.debug("id {}, left tr {}, right tr {}", id, left_tr, right_tr);
+        LOGMACRO(testlog, log_level::debug, "id {}, left tr {}, right tr {}", id, left_tr, right_tr);
 
         auto test = [&tmap, id] (dht::token token, tablet_range_side expected_side) {
             auto [tid, side] = tmap.get_tablet_id_and_range_side(token);
@@ -3156,14 +3156,14 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_merge_colocation_with_random_load) 
 
             auto set_tablets = [rf, shard_count] (token_metadata&, tablet_map& tmap, const rack_vector& racks, const hosts_by_rack_map& hosts_by_rack) {
                 for (auto tid : tmap.tablet_ids()) {
-                    testlog.debug("allocating replica in racks with rf {}", rf);
+                    LOGMACRO(testlog, log_level::debug, "allocating replica in racks with rf {}", rf);
                     std::vector<host_id> replica_hosts = allocate_replicas_in_racks(racks, rf, hosts_by_rack);
                     tablet_replica_set replicas;
                     replicas.reserve(replica_hosts.size());
                     for (auto h : replica_hosts) {
                         replicas.push_back(tablet_replica {h, tests::random::get_int<shard_id>(0, shard_count - 1)});
                     }
-                    testlog.debug("allocating replicas for tablet {}: {}", tid, replicas);
+                    LOGMACRO(testlog, log_level::debug, "allocating replicas for tablet {}: {}", tid, replicas);
                     tmap.set_tablet(tid, tablet_info {std::move(replicas)});
                 }
             };
@@ -3440,9 +3440,9 @@ SEASTAR_THREAD_TEST_CASE(test_tablet_range_splitter) {
         locator::tablet_range_splitter range_splitter{ss.schema(), tmap, h1, ranges};
         auto it = expected_result.begin();
         while (auto range_opt = range_splitter()) {
-            testlog.debug("result: shard={} range={}", range_opt->shard, range_opt->range);
+            LOGMACRO(testlog, log_level::debug, "result: shard={} range={}", range_opt->shard, range_opt->range);
             BOOST_REQUIRE(it != expected_result.end());
-            testlog.debug("expected: shard={} range={}", it->shard, it->range);
+            LOGMACRO(testlog, log_level::debug, "expected: shard={} range={}", it->shard, it->range);
             BOOST_REQUIRE_EQUAL(it->shard, range_opt->shard);
             BOOST_REQUIRE(it->range.equal(range_opt->range, cmp));
             ++it;
@@ -3874,7 +3874,7 @@ SEASTAR_TEST_CASE(test_tablet_count_metric) {
         auto tid = add_table(e).get();
         auto total = e.db().map_reduce0([&] (replica::database& db) {
             auto count = db.find_column_family(tid).get_stats().tablet_count;
-            testlog.debug("shard table_count={}", count);
+            LOGMACRO(testlog, log_level::debug, "shard table_count={}", count);
             return count;
         }, int64_t(0), std::plus<int64_t>()).get();
         BOOST_REQUIRE_EQUAL(total, cfg.initial_tablets);
@@ -3922,14 +3922,14 @@ future<> test_create_keyspace(sstring ks_name, std::optional<bool> tablets_opt, 
             }
         }
         auto q = format("create keyspace {} with replication = {{ 'class' : '{}', 'replication_factor' : 1 }}{};", ks_name, replication_strategy, extra);
-        testlog.debug("{}", q);
+        LOGMACRO(testlog, log_level::debug, "{}", q);
         e.execute_cql(q).get();
         BOOST_REQUIRE(e.local_db().has_keyspace(ks_name));
 
         auto tid = add_table(e, ks_name).get();
         auto total = e.db().map_reduce0([&] (replica::database& db) {
             auto count = db.find_column_family(tid).get_stats().tablet_count;
-            testlog.debug("shard table_count={}", count);
+            LOGMACRO(testlog, log_level::debug, "shard table_count={}", count);
             return count;
         }, int64_t(0), std::plus<int64_t>()).get();
         if (tablets_opt.value_or(cfg.db_config->enable_tablets_by_default())) {

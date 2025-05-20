@@ -292,7 +292,7 @@ private:
             _max_purgeable = _get_max_purgeable(*_dk, is_shadowable);
         }
         auto ret = t.timestamp < _max_purgeable;
-        mclog.debug("can_gc: t={} is_shadowable={} max_purgeable={}: ret={}", t, is_shadowable, _max_purgeable, ret);
+        LOGMACRO(mclog, log_level::debug, "can_gc: t={} is_shadowable={} max_purgeable={}: ret={}", t, is_shadowable, _max_purgeable, ret);
         return ret;
     };
 

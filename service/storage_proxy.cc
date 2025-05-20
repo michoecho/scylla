@@ -1049,7 +1049,7 @@ private:
     }
 
     void connection_dropped(locator::host_id id) {
-        slogger.debug("Drop hit rate info for {} because of disconnect", id);
+        LOGMACRO(slogger, log_level::debug, "Drop hit rate info for {} because of disconnect", id);
         for (auto&& cf : _sp._db.local().get_non_system_column_families()) {
             cf->drop_hit_rate(id);
         }
@@ -1119,7 +1119,7 @@ private:
                 co_await _group0_client.add_entry(std::move(g0_cmd), std::move(guard), _group0_as, raft_timeout{});
                 break;
             } catch (group0_concurrent_modification&) {
-                slogger.debug("request_truncate_with_tablets: concurrent modification, retrying");
+                LOGMACRO(slogger, log_level::debug, "request_truncate_with_tablets: concurrent modification, retrying");
             }
         }
 
@@ -2042,13 +2042,13 @@ paxos_response_handler::begin_and_repair_paxos(client_state& cs, unsigned& conte
         // proposal so we have to use getRandomTimeUUIDFromMicros.
         utils::UUID ballot = utils::UUID_gen::get_random_time_UUID_from_micros(std::chrono::microseconds{ballot_micros});
 
-        paxos::paxos_state::logger.debug("CAS[{}] Preparing {}", _id, ballot);
+        paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] Preparing {}", _id, ballot);
         tracing::trace(tr_state, "Preparing {}", ballot);
 
         paxos::prepare_summary summary = co_await prepare_ballot(ballot);
 
         if (!summary.promised) {
-            paxos::paxos_state::logger.debug("CAS[{}] Some replicas have already promised a higher ballot than ours; aborting", _id);
+            paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] Some replicas have already promised a higher ballot than ours; aborting", _id);
             tracing::trace(tr_state, "Some replicas have already promised a higher ballot than ours; aborting");
             contentions++;
             co_await sleep_approx_50ms();
@@ -2063,7 +2063,7 @@ paxos_response_handler::begin_and_repair_paxos(client_state& cs, unsigned& conte
         // we know, then it's an in-progress round that needs to be completed, so do it.
         if (in_progress &&
             (!summary.most_recent_commit || (summary.most_recent_commit && in_progress->ballot.timestamp() > summary.most_recent_commit->ballot.timestamp()))) {
-            paxos::paxos_state::logger.debug("CAS[{}] Finishing incomplete paxos round {}", _id, *in_progress);
+            paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] Finishing incomplete paxos round {}", _id, *in_progress);
             tracing::trace(tr_state, "Finishing incomplete paxos round {}", *in_progress);
             if (is_write) {
                 ++_proxy->get_stats().cas_write_unfinished_commit;
@@ -2085,7 +2085,7 @@ paxos_response_handler::begin_and_repair_paxos(client_state& cs, unsigned& conte
                     co_return coroutine::exception(std::make_exception_ptr(e));
                 }
             } else {
-                paxos::paxos_state::logger.debug("CAS[{}] Some replicas have already promised a higher ballot than ours; aborting", _id);
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] Some replicas have already promised a higher ballot than ours; aborting", _id);
                 tracing::trace(tr_state, "Some replicas have already promised a higher ballot than ours; aborting");
                 // sleep a random amount to give the other proposer a chance to finish
                 contentions++;
@@ -2105,7 +2105,7 @@ paxos_response_handler::begin_and_repair_paxos(client_state& cs, unsigned& conte
 
         host_id_vector_replica_set missing_mrc = summary.replicas_missing_most_recent_commit(_schema, now_in_sec);
         if (missing_mrc.size() > 0) {
-            paxos::paxos_state::logger.debug("CAS[{}] Repairing replicas that missed the most recent commit", _id);
+            paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] Repairing replicas that missed the most recent commit", _id);
             tracing::trace(tr_state, "Repairing replicas that missed the most recent commit");
             std::array<std::tuple<lw_shared_ptr<paxos::proposal>, schema_ptr, shared_ptr<paxos_response_handler>, dht::token, host_id_vector_replica_set>, 1>
                 m{std::make_tuple(make_lw_shared<paxos::proposal>(std::move(*summary.most_recent_commit)), _schema, shared_from_this(), _key.token(), std::move(missing_mrc))};
@@ -2121,7 +2121,7 @@ paxos_response_handler::begin_and_repair_paxos(client_state& cs, unsigned& conte
             try {
                 co_await std::move(f);
             } catch(...) {
-                paxos::paxos_state::logger.debug("CAS[{}] Failure during commit repair {}", _id, std::current_exception());
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] Failure during commit repair {}", _id, std::current_exception());
                 continue;
             }
         }
@@ -2507,7 +2507,7 @@ void paxos_response_handler::prune(utils::UUID ballot) {
             tracing::trace(tr_state, "prune failed: connection closed");
         } catch (const mutation_write_timeout_exception& ex) {
             tracing::trace(tr_state, "prune failed: write timeout; received {:d} of {:d} required replies", ex.received, ex.block_for);
-            paxos::paxos_state::logger.debug("CAS[{}] prune: failed {}", h->_id, std::current_exception());
+            paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] prune: failed {}", h->_id, std::current_exception());
         } catch (...) {
             tracing::trace(tr_state, "prune failed: {}", std::current_exception());
             paxos::paxos_state::logger.error("CAS[{}] prune: failed {}", h->_id, std::current_exception());
@@ -3569,7 +3569,7 @@ future<result<>> storage_proxy::mutate_begin(unique_response_handler_vector ids,
             // to put in the exception. The exception is not needed for
             // correctness (e.g., hints are written by timeout_cb(), not
             // because of an exception here).
-            slogger.debug("unstarted write cancelled for id {}", response_id);
+            LOGMACRO(slogger, log_level::debug, "unstarted write cancelled for id {}", response_id);
             return make_ready_future<result<>>(bo::success());
         }
         // it is better to send first and hint afterwards to reduce latency
@@ -3604,7 +3604,7 @@ future<result<>> storage_proxy::mutate_end(future<result<>> mutate_result, utils
         return handle.into_future();
     }), utils::result_catch<mutation_write_timeout_exception>([&] (const auto& ex, auto&& handle) {
         tracing::trace(trace_state, "Mutation failed: write timeout; received {:d} of {:d} required replies", ex.received, ex.block_for);
-        slogger.debug("Write timeout; received {} of {} required replies", ex.received, ex.block_for);
+        LOGMACRO(slogger, log_level::debug, "Write timeout; received {} of {} required replies", ex.received, ex.block_for);
         stats.write_timeouts.mark();
         return handle.into_future();
     }), utils::result_catch<exceptions::unavailable_exception>([&] (const auto& ex, auto&& handle) {
@@ -5729,7 +5729,7 @@ result<::shared_ptr<abstract_read_executor>> storage_proxy::get_read_executor(lw
     try {
         db::assure_sufficient_live_nodes(cl, *erm, target_replicas, host_id_vector_topology_change{});
     } catch (exceptions::unavailable_exception& ex) {
-        slogger.debug("Read unavailable: cl={} required {} alive {}", ex.consistency, ex.required, ex.alive);
+        LOGMACRO(slogger, log_level::debug, "Read unavailable: cl={} required {} alive {}", ex.consistency, ex.required, ex.alive);
         get_stats().read_unavailables.mark();
         throw;
     }
@@ -5744,7 +5744,7 @@ result<::shared_ptr<abstract_read_executor>> storage_proxy::get_read_executor(lw
     if (cmd->allow_limit && _db.local().can_apply_per_partition_rate_limit(*schema, db::operation_type::read)) {
         auto r_rate_limit_info = choose_rate_limit_info(erm, _db.local(), !is_read_non_local, db::operation_type::read, schema, token, trace_state);
         if (!r_rate_limit_info) {
-            slogger.debug("Read was rate limited");
+            LOGMACRO(slogger, log_level::debug, "Read was rate limited");
             get_stats().read_rate_limited_by_coordinator.mark();
             return std::move(r_rate_limit_info).as_failure();
         }
@@ -5836,7 +5836,7 @@ void storage_proxy::handle_read_error(std::variant<exceptions::coordinator_excep
             std::rethrow_exception(std::get<1>(std::move(failure)));
         }
     },  utils::result_catch<read_timeout_exception>([&] (const auto& ex) {
-        slogger.debug("Read timeout: received {} of {} required replies, data {}present", ex.received, ex.block_for, ex.data_present ? "" : "not ");
+        LOGMACRO(slogger, log_level::debug, "Read timeout: received {} of {} required replies, data {}present", ex.received, ex.block_for, ex.data_present ? "" : "not ");
         if (range) {
             get_stats().range_slice_timeouts.mark();
         } else {
@@ -5844,7 +5844,7 @@ void storage_proxy::handle_read_error(std::variant<exceptions::coordinator_excep
         }
         return bo::success();
     }), utils::result_catch<exceptions::rate_limit_exception>([&] (const auto& ex) {
-        slogger.debug("Read was rate limited");
+        LOGMACRO(slogger, log_level::debug, "Read was rate limited");
         if (ex.rejected_by_coordinator) {
             get_stats().read_rate_limited_by_coordinator.mark();
         } else {
@@ -5852,7 +5852,7 @@ void storage_proxy::handle_read_error(std::variant<exceptions::coordinator_excep
         }
         return bo::success();
     }), utils::result_catch_dots([&] (auto&& handle) {
-        slogger.debug("Error during read query {}", handle.as_inner());
+        LOGMACRO(slogger, log_level::debug, "Error during read query {}", handle.as_inner());
         return bo::success();
     }));
 }
@@ -6143,7 +6143,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
             try {
                 db::assure_sufficient_live_nodes(cl, *erm, filtered_endpoints, host_id_vector_topology_change{});
             } catch(exceptions::unavailable_exception& ex) {
-                slogger.debug("Read unavailable: cl={} required {} alive {}", ex.consistency, ex.required, ex.alive);
+                LOGMACRO(slogger, log_level::debug, "Read unavailable: cl={} required {} alive {}", ex.consistency, ex.required, ex.alive);
                 get_stats().range_slice_unavailables.mark();
                 throw;
             }
@@ -6209,7 +6209,7 @@ storage_proxy::query_partition_key_range(lw_shared_ptr<query::read_command> cmd,
     int result_rows_per_range = 0;
     int concurrency_factor = 1;
 
-    slogger.debug("Estimated result rows per range: {}; requested rows: {}, concurrent range requests: {}",
+    LOGMACRO(slogger, log_level::debug, "Estimated result rows per range: {}; requested rows: {}, concurrent range requests: {}",
             result_rows_per_range, cmd->get_row_limit(), concurrency_factor);
 
     // The call to `query_partition_key_range_concurrent()` below
@@ -6522,11 +6522,11 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
             auto [ballot, qr] = co_await handler->begin_and_repair_paxos(query_options.cstate, contentions, write);
             // Read the current values and check they validate the conditions.
             if (qr) {
-                paxos::paxos_state::logger.debug("CAS[{}]: Using prefetched values for CAS precondition",
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}]: Using prefetched values for CAS precondition",
                         handler->id());
                 tracing::trace(handler->tr_state, "Using prefetched values for CAS precondition");
             } else {
-                paxos::paxos_state::logger.debug("CAS[{}]: Reading existing values for CAS precondition",
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}]: Reading existing values for CAS precondition",
                         handler->id());
                 tracing::trace(handler->tr_state, "Reading existing values for CAS precondition");
                 ++get_stats().cas_failed_read_round_optimization;
@@ -6540,7 +6540,7 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
             condition_met = true;
             if (!mutation) {
                 if (write) {
-                    paxos::paxos_state::logger.debug("CAS[{}] precondition does not match current values", handler->id());
+                    paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] precondition does not match current values", handler->id());
                     tracing::trace(handler->tr_state, "CAS precondition does not match current values");
                     ++get_stats().cas_write_condition_not_met;
                     condition_met = false;
@@ -6553,7 +6553,7 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
                 // since the value we are writing is dummy we may use minimal consistency level for learn
                 handler->set_cl_for_learn(db::consistency_level::ANY);
             } else {
-                paxos::paxos_state::logger.debug("CAS[{}] precondition is met; proposing client-requested updates for {}",
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] precondition is met; proposing client-requested updates for {}",
                         handler->id(), ballot);
                 tracing::trace(handler->tr_state, "CAS precondition is met; proposing client-requested updates for {}", ballot);
             }
@@ -6575,11 +6575,11 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
                     throw mutation_write_timeout_exception(schema->ks_name(), schema->cf_name(),
                                           e.consistency, e.alive, e.required, db::write_type::CAS);
                 }
-                paxos::paxos_state::logger.debug("CAS[{}] successful", handler->id());
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] successful", handler->id());
                 tracing::trace(handler->tr_state, "CAS successful");
                 break;
             } else {
-                paxos::paxos_state::logger.debug("CAS[{}] PAXOS proposal not accepted (preempted by a higher ballot)",
+                paxos::paxos_state::LOGMACRO(logger, log_level::debug, "CAS[{}] PAXOS proposal not accepted (preempted by a higher ballot)",
                         handler->id());
                 tracing::trace(handler->tr_state, "PAXOS proposal not accepted (preempted by a higher ballot)");
                 ++contentions;
@@ -6709,7 +6709,7 @@ db::hints::manager& storage_proxy::hints_manager_for(db::write_type type) {
 }
 
 future<> storage_proxy::truncate_blocking(sstring keyspace, sstring cfname, std::chrono::milliseconds timeout_in_ms) {
-    slogger.debug("Starting a blocking truncate operation on keyspace {}, CF {}", keyspace, cfname);
+    LOGMACRO(slogger, log_level::debug, "Starting a blocking truncate operation on keyspace {}, CF {}", keyspace, cfname);
 
     const replica::keyspace& ks = local_db().find_keyspace(keyspace);
     if (ks.get_replication_strategy().get_type() == locator::replication_strategy_type::local) {

@@ -400,7 +400,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch_to_shards(
             }
         }
 
-        flogger.debug("on node execution result is {}", seastar::value_of([&req, &result] {
+        LOGMACRO(flogger, log_level::debug, "on node execution result is {}", seastar::value_of([&req, &result] {
             return query::mapreduce_result::printer {
                 .functions = get_functions(req),
                 .res = *result
@@ -529,7 +529,7 @@ future<query::mapreduce_result> mapreduce_service::execute_on_this_shard(
             };
         });
         tracing::trace(tr_state, "On shard execution result is {}", printer);
-        flogger.debug("on shard execution result is {}", printer);
+        LOGMACRO(flogger, log_level::debug, "on shard execution result is {}", printer);
 
         return res;
     });
@@ -583,7 +583,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
     }
 
     tracing::trace(tr_state, "Dispatching mapreduce_request to {} endpoints", vnodes_per_addr.size());
-    flogger.debug("dispatching mapreduce_request to {} endpoints", vnodes_per_addr.size());
+    LOGMACRO(flogger, log_level::debug, "dispatching mapreduce_request to {} endpoints", vnodes_per_addr.size());
 
     retrying_dispatcher dispatcher(*this, tr_state);
     query::mapreduce_result result;
@@ -599,7 +599,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
         req_with_modified_pr.pr = std::move(vnodes_with_addr.second);
 
         tracing::trace(tr_state_, "Sending mapreduce_request to {}", addr);
-        flogger.debug("dispatching mapreduce_request={} to address={}", req_with_modified_pr, addr);
+        LOGMACRO(flogger, log_level::debug, "dispatching mapreduce_request={} to address={}", req_with_modified_pr, addr);
 
         query::mapreduce_result partial_result = co_await dispatcher_.dispatch_to_node(*erm, addr, std::move(req_with_modified_pr));
         auto partial_printer = seastar::value_of([&req, &partial_result] {
@@ -609,7 +609,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
             };
         });
         tracing::trace(tr_state_, "Received mapreduce_result={} from {}", partial_printer, addr);
-        flogger.debug("received mapreduce_result={} from {}", partial_printer, addr);
+        LOGMACRO(flogger, log_level::debug, "received mapreduce_result={} from {}", partial_printer, addr);
 
         auto aggrs = mapreduce_aggregates(req);
         co_return co_await aggrs.with_thread_if_needed([&result_, &aggrs, partial_result = std::move(partial_result)] () mutable {
@@ -628,7 +628,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
             };
         });
         tracing::trace(tr_state, "Merged result is {}", printer);
-        flogger.debug("merged result is {}", printer);
+        LOGMACRO(flogger, log_level::debug, "merged result is {}", printer);
 
         aggrs.finalize(result);
         return result;

@@ -16,7 +16,7 @@ namespace auth {
 
 permissions_cache::permissions_cache(const utils::loading_cache_config& c, service& ser, logging::logger& log)
         : _cache(c, log, [&ser, &log](const key_type& k) {
-              log.debug("Refreshing permissions for {}", k.first);
+              LOGMACRO(log, log_level::debug, "Refreshing permissions for {}", k.first);
               return ser.get_uncached_permissions(k.first, k.second);
           }) {
 }

@@ -295,7 +295,7 @@ incremental_compaction_strategy::find_garbage_collection_job(const compaction::t
         }
     }
     if (it == buckets.rend()) {
-        clogger.debug("ICS: nothing to garbage collect in {} buckets for {}.{}", buckets.size(), t.schema()->ks_name(), t.schema()->cf_name());
+        LOGMACRO(clogger, log_level::debug, "ICS: nothing to garbage collect in {} buckets for {}.{}", buckets.size(), t.schema()->ks_name(), t.schema()->cf_name());
         return compaction_descriptor();
     }
 
@@ -313,7 +313,7 @@ incremental_compaction_strategy::find_garbage_collection_job(const compaction::t
         input.reserve(input.size() + second_bucket.size());
         std::move(second_bucket.begin(), second_bucket.end(), std::back_inserter(input));
     }
-    clogger.debug("ICS: starting garbage collection on {} runs for {}.{}", input.size(), t.schema()->ks_name(), t.schema()->cf_name());
+    LOGMACRO(clogger, log_level::debug, "ICS: starting garbage collection on {} runs for {}.{}", input.size(), t.schema()->ks_name(), t.schema()->cf_name());
 
     return compaction_descriptor(runs_to_sstables(std::move(input)), 0, _fragment_size);
 }
@@ -376,7 +376,7 @@ incremental_compaction_strategy::get_sstables_for_compaction(table_state& t, str
         double space_amplification = double(s0_size + s1_size) / s0_size;
 
         if (space_amplification > _space_amplification_goal) {
-            clogger.debug("ICS: doing cross-tier compaction of two largest tiers, to reduce SA {} to below SAG {}",
+            LOGMACRO(clogger, log_level::debug, "ICS: doing cross-tier compaction of two largest tiers, to reduce SA {} to below SAG {}",
                           space_amplification, *_space_amplification_goal);
             // Aims at reducing space amplification, to below SAG, by compacting together the two largest tiers
             std::vector<sstables::frozen_sstable_run> cross_tier_input = std::move(s0);

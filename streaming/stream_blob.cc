@@ -155,7 +155,7 @@ future<> stream_blob_handler(replica::database& db,
             throw std::runtime_error(msg);
         }
 
-        blogger.debug("fstream[{}] Follower started peer={} file={}",
+        LOGMACRO(blogger, log_level::debug, "fstream[{}] Follower started peer={} file={}",
                 meta.ops_id, from, meta.filename);
 
         auto [f, out] = co_await create_output(db, meta);
@@ -186,7 +186,7 @@ future<> stream_blob_handler(replica::database& db,
                         meta.ops_id, from, meta.filename);
                 throw std::runtime_error(format("Got stream_blob_cmd::error from peer={} file={}", from, meta.filename));
             } else if (cmd == streaming::stream_blob_cmd::end_of_stream) {
-                blogger.debug("fstream[{}] Follower got stream_blob_cmd::end_of_stream from peer={} file={}",
+                LOGMACRO(blogger, log_level::debug, "fstream[{}] Follower got stream_blob_cmd::end_of_stream from peer={} file={}",
                         meta.ops_id, from, meta.filename);
                 got_end_of_stream = true;
             } else if (cmd == streaming::stream_blob_cmd::data) {
@@ -301,7 +301,7 @@ future<> stream_blob_handler(replica::database& db,
         // the error. We have already logged the error here.
     } else {
         // Get some statistics
-        blogger.debug("fstream[{}] Follower finished peer={} file={} received_size={} bw={}",
+        LOGMACRO(blogger, log_level::debug, "fstream[{}] Follower finished peer={} file={} received_size={} bw={}",
                 meta.ops_id, from, meta.filename, total_size, get_bw(total_size, start_time));
     }
     co_return;
@@ -335,7 +335,7 @@ future<> stream_blob_handler(replica::database& db, netw::messaging_service& ms,
                 }
                 auto sst = co_await sstable_sink->close_and_seal();
                 if (sst) {
-                    blogger.debug("stream_sstables[{}] Loading sstable {} on shard {}", meta.ops_id, sst->toc_filename(), meta.dst_shard_id);
+                    LOGMACRO(blogger, log_level::debug, "stream_sstables[{}] Loading sstable {} on shard {}", meta.ops_id, sst->toc_filename(), meta.dst_shard_id);
                     auto desc = sst->get_descriptor(sstables::component_type::TOC);
                     sst = {};
                     co_await load_sstable_for_tablet(meta.ops_id, db, meta.table, sstable_state(meta), std::move(desc), meta.dst_shard_id);
@@ -382,7 +382,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
         co_return ops_total_size;
     }
 
-    blogger.debug("fstream[{}] Master started sending n={}, sources={}, targets={}",
+    LOGMACRO(blogger, log_level::debug, "fstream[{}] Master started sending n={}, sources={}, targets={}",
             ops_id, sources.size(), sources, targets);
 
     struct sink_and_source {
@@ -427,7 +427,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
             for (auto& x : targets) {
                 const auto& node = x.node;
                 meta.dst_shard_id = x.shard;
-                blogger.debug("fstream[{}] Master creating sink and source for node={}/{}, file={}, targets={}", ops_id, node, node, filename, targets);
+                LOGMACRO(blogger, log_level::debug, "fstream[{}] Master creating sink and source for node={}/{}, file={}, targets={}", ops_id, node, node, filename, targets);
                 auto [sink, source] = co_await ms.make_sink_and_source_for_stream_blob(meta, node);
                 ss.push_back(sink_and_source{node, std::move(sink), std::move(source)});
             }
@@ -477,7 +477,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
                 }
 
                 for (auto& s : ss) {
-                    blogger.debug("fstream[{}] Master done sending file={} to node={}", ops_id, filename, s.node);
+                    LOGMACRO(blogger, log_level::debug, "fstream[{}] Master done sending file={} to node={}", ops_id, filename, s.node);
                     if (!got_error_from_peer) {
                         co_await s.sink(streaming::stream_blob_cmd_data(streaming::stream_blob_cmd::end_of_stream));
                         s.status_sent = true;
@@ -504,7 +504,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
                             } if (cmd_data.cmd == streaming::stream_blob_cmd::ok) {
                                 got_cmd_ok = true;
                             }
-                            blogger.debug("fstream[{}] Master got stream_blob_cmd={} file={} peer={}",
+                            LOGMACRO(blogger, log_level::debug, "fstream[{}] Master got stream_blob_cmd={} file={} peer={}",
                                     ops_id, int(cmd_data.cmd), filename, s.node);
                         } else {
                             break;
@@ -582,7 +582,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
             // Stop handling remaining files
             break;
         } else {
-            blogger.debug("fstream[{}] Master done sending file={} to targets={} send_size={} bw={}",
+            LOGMACRO(blogger, log_level::debug, "fstream[{}] Master done sending file={} to targets={} send_size={} bw={}",
                     ops_id, filename, targets, total_size, get_bw(total_size, start_time));
         }
     }
@@ -591,7 +591,7 @@ tablet_stream_files(netw::messaging_service& ms, std::list<stream_blob_info> sou
                 ops_id, sources.size(), sources, targets, ops_total_size, get_bw(ops_total_size, ops_start_time), error);
         std::rethrow_exception(error);
     } else {
-        blogger.debug("fstream[{}] Master finished sending files_nr={} files={} targets={} send_size={} bw={}",
+        LOGMACRO(blogger, log_level::debug, "fstream[{}] Master finished sending files_nr={} files={} targets={} send_size={} bw={}",
                 ops_id, sources.size(), sources, targets, ops_total_size, get_bw(ops_total_size, ops_start_time));
     }
     co_return ops_total_size;
@@ -630,7 +630,7 @@ future<stream_files_response> tablet_stream_files_handler(replica::database& db,
             auto oldname = s->component_basename();
             auto newname = get_sstable_name_with_generation(req.ops_id, oldname, newgen);
 
-            blogger.debug("fstream[{}] Get name oldname={}, newname={}", req.ops_id, oldname, newname);
+            LOGMACRO(blogger, log_level::debug, "fstream[{}] Get name oldname={}, newname={}", req.ops_id, oldname, newname);
 
             auto& info = files.emplace_back();
             info.fops = file_ops::stream_sstables;
@@ -648,7 +648,7 @@ future<stream_files_response> tablet_stream_files_handler(replica::database& db,
     if (files.empty()) {
         co_return resp;
     }
-    blogger.debug("stream_sstables[{}] Started sending sstable_nr={} files_nr={} files={} range={}",
+    LOGMACRO(blogger, log_level::debug, "stream_sstables[{}] Started sending sstable_nr={} files_nr={} files={} range={}",
             req.ops_id, sstables.size(), files.size(), files, req.range);
     auto ops_start_time = std::chrono::steady_clock::now();
     size_t stream_bytes = co_await tablet_stream_files(ms, std::move(files), req.targets, req.table, req.ops_id, req.topo_guard);

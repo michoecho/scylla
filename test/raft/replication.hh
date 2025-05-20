@@ -417,14 +417,14 @@ public:
             }
             _done.set_value();
         }
-        tlogger.debug("sm::apply[{}] got {}/{} entries", _id, _seen, _apply_entries);
+        LOGMACRO(tlogger, log_level::debug, "sm::apply[{}] got {}/{} entries", _id, _seen, _apply_entries);
         return make_ready_future<>();
     }
 
     future<raft::snapshot_id> take_snapshot() override {
         auto snp_id = raft::snapshot_id::create_random_id();
         (*_snapshots)[_id][snp_id].hasher = *hasher;
-        tlogger.debug("sm[{}] takes snapshot id {} {} seen {}", _id, (*_snapshots)[_id][snp_id].hasher.finalize_uint64(), snp_id, _seen);
+        LOGMACRO(tlogger, log_level::debug, "sm[{}] takes snapshot id {} {} seen {}", _id, (*_snapshots)[_id][snp_id].hasher.finalize_uint64(), snp_id, _seen);
         (*_snapshots)[_id][snp_id].idx = raft::index_t{_seen};
         return make_ready_future<raft::snapshot_id>(snp_id);
     }
@@ -433,7 +433,7 @@ public:
     }
     future<> load_snapshot(raft::snapshot_id snp_id) override {
         hasher = make_lw_shared<hasher_int>((*_snapshots)[_id][snp_id].hasher);
-        tlogger.debug("sm[{}] loads snapshot {} idx={}", _id, (*_snapshots)[_id][snp_id].hasher.finalize_uint64(), (*_snapshots)[_id][snp_id].idx);
+        LOGMACRO(tlogger, log_level::debug, "sm[{}] loads snapshot {} idx={}", _id, (*_snapshots)[_id][snp_id].hasher.finalize_uint64(), (*_snapshots)[_id][snp_id].idx);
         _seen = (*_snapshots)[_id][snp_id].idx.value();
         if (_seen >= _apply_entries) {
             _done.set_value();
@@ -476,7 +476,7 @@ public:
     }
     future<> store_snapshot_descriptor(const raft::snapshot_descriptor& snap, size_t preserve_log_entries) override {
         (*_persisted_snapshots)[_id] = std::make_pair(snap, (*_snapshots)[_id][snap.id]);
-        tlogger.debug("sm[{}] persists snapshot {}", _id, (*_snapshots)[_id][snap.id].hasher.finalize_uint64());
+        LOGMACRO(tlogger, log_level::debug, "sm[{}] persists snapshot {}", _id, (*_snapshots)[_id][snap.id].hasher.finalize_uint64());
         return make_ready_future<>();
     }
     future<raft::snapshot_descriptor> load_snapshot_descriptor() override {
@@ -719,7 +719,7 @@ public:
         _net[id]->_client->timeout_now_request(_id, std::move(timeout_now));
     }
     future<> abort() override {
-        tlogger.debug("[{}] rpc aborting", _id);
+        LOGMACRO(tlogger, log_level::debug, "[{}] rpc aborting", _id);
         return _gate.close();
     }
     void send_read_quorum(raft::server_id id, const raft::read_quorum& read_quorum) override {
@@ -1144,7 +1144,7 @@ future<> raft_cluster<Clock>::elect_new_leader(size_t new_leader) {
         } while (!_servers[new_leader].server->is_leader());
     }
 
-    tlogger.debug("confirmed leader on {}", to_raft_id(new_leader));
+    LOGMACRO(tlogger, log_level::debug, "confirmed leader on {}", to_raft_id(new_leader));
     _leader = new_leader;
 }
 
@@ -1152,14 +1152,14 @@ future<> raft_cluster<Clock>::elect_new_leader(size_t new_leader) {
 // NOTE: there should be enough nodes capable of participating
 template <typename Clock>
 future<> raft_cluster<Clock>::free_election() {
-    tlogger.debug("Running free election");
+    LOGMACRO(tlogger, log_level::debug, "Running free election");
     size_t loops = 0;
     for (;; loops++) {
         co_await seastar::sleep(_tick_delta);   // Wait for election rpc exchanges
         // find if we have a leader
         for (auto s: _in_configuration) {
             if (_servers[s].server->is_leader()) {
-                tlogger.debug("New leader {} (in {} loops)", to_raft_id(s), loops);
+                LOGMACRO(tlogger, log_level::debug, "New leader {} (in {} loops)", to_raft_id(s), loops);
                 _leader = s;
                 co_return;
             }
@@ -1193,7 +1193,7 @@ future<> raft_cluster<Clock>::change_configuration(set_config sc) {
     // Start nodes in new configuration but not in current configuration (re-added)
     for (auto s: new_config) {
         if (!_in_configuration.contains(s)) {
-            tlogger.debug("Starting node being re-added to configuration {}", s);
+            LOGMACRO(tlogger, log_level::debug, "Starting node being re-added to configuration {}", s);
             co_await reset_server(s, initial_state{.log = {}});
 
             if (_tick_delays.size()) {
@@ -1203,7 +1203,7 @@ future<> raft_cluster<Clock>::change_configuration(set_config sc) {
         }
     }
 
-    tlogger.debug("Changing configuration on leader {}", _leader);
+    LOGMACRO(tlogger, log_level::debug, "Changing configuration on leader {}", _leader);
     co_await _servers[_leader].server->set_configuration(std::move(set), nullptr);
 
     if (!new_config.contains(_leader)) {
@@ -1279,7 +1279,7 @@ future<> raft_cluster<Clock>::reconfigure_all() {
 
 template <typename Clock>
 future<> raft_cluster<Clock>::partition(::partition p) {
-    tlogger.debug("partitioning");
+    LOGMACRO(tlogger, log_level::debug, "partitioning");
     std::unordered_set<size_t> partition_servers;
     std::optional<size_t> next_leader;
     for (auto s: p) {
@@ -1366,7 +1366,7 @@ void raft_cluster<Clock>::disconnect(::disconnect nodes) {
 
 template <typename Clock>
 future<> raft_cluster<Clock>::isolate(::isolate node) {
-    tlogger.debug("disconnecting {}", to_raft_id(node.id));
+    LOGMACRO(tlogger, log_level::debug, "disconnecting {}", to_raft_id(node.id));
     _connected->disconnect(to_raft_id(node.id));
     if (node.id == _leader) {
         _servers[_leader].server->elapse_election();   // make old leader step down
@@ -1437,7 +1437,7 @@ struct run_test {
 
         hasher_int::set_commutative(test.commutative_hash);
 
-        tlogger.debug("starting test with {}",
+        LOGMACRO(tlogger, log_level::debug, "starting test with {}",
                 rpc_config.network_delay > 0ms? "delays" : "no delays");
 
         raft_cluster<Clock> rafts(test, ::apply_changes, test.total_values,

@@ -87,7 +87,7 @@ public:
         utils::directories::set dir_set;
         dir_set.add_sharded(_hints_directory);
 
-        manager_logger.debug("Creating and validating hint directories: {}", _hints_directory);
+        LOGMACRO(manager_logger, log_level::debug, "Creating and validating hint directories: {}", _hints_directory);
         co_await _dirs.create_and_verify(std::move(dir_set));
 
         _state = state::created_and_validated;
@@ -104,7 +104,7 @@ public:
 
         const auto units = co_await seastar::get_units(_lock, 1);
 
-        manager_logger.debug("Rebalancing hints in {}", _hints_directory);
+        LOGMACRO(manager_logger, log_level::debug, "Rebalancing hints in {}", _hints_directory);
         co_await rebalance_hints(fs::path{_hints_directory});
 
         _state = state::rebalanced;
@@ -448,7 +448,7 @@ bool manager::store_hint(endpoint_id host_id, schema_ptr s, lw_shared_ptr<const 
         tracing::trace_state_ptr tr_state) noexcept
 {
     if (utils::get_local_injector().enter("reject_incoming_hints")) {
-        manager_logger.debug("Rejecting a hint to {} due to an error injection", host_id);
+        LOGMACRO(manager_logger, log_level::debug, "Rejecting a hint to {} due to an error injection", host_id);
         ++_stats.dropped;
         return false;
     }
@@ -539,7 +539,7 @@ future<> manager::change_host_filter(host_filter filter) {
                 "change_host_filter: cannot change the configuration because hints all hints were drained"});
     }
 
-    manager_logger.debug("change_host_filter: changing from {} to {}", _host_filter, filter);
+    LOGMACRO(manager_logger, log_level::debug, "change_host_filter: changing from {} to {}", _host_filter, filter);
 
     // Change the host_filter now and save the old one so that we can
     // roll back in case of failure
@@ -661,7 +661,7 @@ future<> manager::drain_for(endpoint_id host_id, gms::inet_address ip) noexcept 
 
             return ep_man.with_file_update_mutex([&ep_man] -> future<> {
                 return remove_file(ep_man.hints_dir().native()).then([&ep_man] {
-                    manager_logger.debug("Removed hint directory for {}", ep_man.end_point_key());
+                    LOGMACRO(manager_logger, log_level::debug, "Removed hint directory for {}", ep_man.end_point_key());
                 });
             });
         });

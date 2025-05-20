@@ -55,7 +55,7 @@ shared_ptr<stream_result_future> stream_result_future::init_receiving_side(strea
 
 void stream_result_future::handle_session_prepared(shared_ptr<stream_session> session) {
     auto si = session->make_session_info();
-    sslog.debug("[Stream #{}] Prepare completed with {}. Receiving {}, sending {}",
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] Prepare completed with {}. Receiving {}, sending {}",
                session->plan_id(),
                session->peer,
                si.get_total_files_to_receive(),
@@ -66,7 +66,7 @@ void stream_result_future::handle_session_prepared(shared_ptr<stream_session> se
 }
 
 void stream_result_future::handle_session_complete(shared_ptr<stream_session> session) {
-    sslog.debug("[Stream #{}] Session with {} is complete, state={}", session->plan_id(), session->peer, session->get_state());
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] Session with {} is complete, state={}", session->plan_id(), session->peer, session->get_state());
     auto event = session_complete_event(session);
     fire_stream_event(std::move(event));
     auto si = session->make_session_info();
@@ -85,7 +85,7 @@ void stream_result_future::fire_stream_event(Event event) {
 void stream_result_future::maybe_complete() {
     auto has_active_sessions = _coordinator->has_active_sessions();
     auto plan_id = this->plan_id;
-    sslog.debug("[Stream #{}] stream_result_future: has_active_sessions={}", plan_id, has_active_sessions);
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] stream_result_future: has_active_sessions={}", plan_id, has_active_sessions);
     if (!has_active_sessions) {
         if (sslog.is_enabled(logging::log_level::debug)) {
             _mgr.show_streams();

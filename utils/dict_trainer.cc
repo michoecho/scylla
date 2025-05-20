@@ -26,7 +26,7 @@ seastar::logger dict_trainer_logger("dict_training");
 
 future<std::vector<dict_sampler::page_type>> dict_sampler::sample(request req, abort_source& as) {
     auto ensure_reset = defer([this] {
-        dict_trainer_logger.debug("Sampling finished.");
+        LOGMACRO(dict_trainer_logger, log_level::debug, "Sampling finished.");
         reset();
     });
 
@@ -38,9 +38,9 @@ future<std::vector<dict_sampler::page_type>> dict_sampler::sample(request req, a
     _bytes_remaining = req.min_sampling_bytes;
     _min_bytes_satisifed.signal(_bytes_remaining == 0);
     _sampling = true;
-    dict_trainer_logger.debug("Sampling until the requested amount of time passes...");
+    LOGMACRO(dict_trainer_logger, log_level::debug, "Sampling until the requested amount of time passes...");
     co_await std::move(req.min_sampling_duration);
-    dict_trainer_logger.debug("Sampling until sampled data size threshold is met...");
+    LOGMACRO(dict_trainer_logger, log_level::debug, "Sampling until sampled data size threshold is met...");
     co_await _min_bytes_satisifed.wait(as);
     co_return std::move(_storage);
 }
@@ -96,24 +96,24 @@ dict_sampler::dict_type zdict_train(std::span<const dict_sampler::page_type> sam
 }
 
 void dict_training_loop::pause() {
-    dict_trainer_logger.debug("dict_training_loop::pause(), called");
+    LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop::pause(), called");
     if (!std::exchange(_paused, true)) {
-        dict_trainer_logger.debug("dict_training_loop::pause(), pausing");
+        LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop::pause(), pausing");
         _pause.consume();
         _pause_as.request_abort();
     }
 }
 
 void dict_training_loop::unpause() {
-    dict_trainer_logger.debug("dict_training_loop::unpause(), called");
+    LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop::unpause(), called");
     if (std::exchange(_paused, false)) {
-        dict_trainer_logger.debug("dict_training_loop::unpause(), unpausing");
+        LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop::unpause(), unpausing");
         _pause.signal();
     }
 }
 
 void dict_training_loop::cancel() noexcept {
-    dict_trainer_logger.debug("dict_training_loop::cancel(), called");
+    LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop::cancel(), called");
     _cancelled.request_abort();
     _pause_as.request_abort();
 }
@@ -125,19 +125,19 @@ seastar::future<> dict_training_loop::start(
     utils::updateable_value<uint64_t> min_bytes,
     utils::alien_worker& worker
 ) {
-    dict_trainer_logger.debug("dict_training_loop::start(), called");
+    LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop::start(), called");
     std::default_random_engine rng(0);
     while (!_cancelled.abort_requested()) {
         try {
             _pause_as = seastar::abort_source();
-            dict_trainer_logger.debug("dict_training_loop: waiting on _pause...");
+            LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: waiting on _pause...");
             auto units = co_await get_units(_pause, 1, _cancelled);
-            dict_trainer_logger.debug("dict_training_loop: sampling...");
+            LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: sampling...");
             auto sample = co_await ds.sample({
                 .min_sampling_duration = seastar::sleep_abortable(std::chrono::seconds(min_time_seconds), _pause_as),
                 .min_sampling_bytes = min_bytes,
             }, _pause_as);
-            dict_trainer_logger.debug("dict_training_loop: training...");
+            LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: training...");
             // The order of samples coming from dict_sampler is unspecified.
             // In particular, they could have a correlation with time.
             // 
@@ -150,16 +150,16 @@ seastar::future<> dict_training_loop::start(
             auto dict_data = co_await worker.submit<dict_sampler::dict_type>([sample = std::move(sample)] {
                 return zdict_train(sample, {});
             });
-            dict_trainer_logger.debug("dict_training_loop: publishing...");
+            LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: publishing...");
             co_await emit(dict_data);
-            dict_trainer_logger.debug("dict_training_loop: published...");
+            LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: published...");
         } catch (const raft::request_aborted&) {
-            dict_trainer_logger.debug("dict_training_loop: raft aborted while publishing");
+            LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: raft aborted while publishing");
         } catch (...) {
             if (_cancelled.abort_requested()) {
-                dict_trainer_logger.debug("dict_training_loop: cancelled");
+                LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: cancelled");
             } else if (_paused) {
-                dict_trainer_logger.debug("dict_training_loop: paused");
+                LOGMACRO(dict_trainer_logger, log_level::debug, "dict_training_loop: paused");
             } else  {
                 dict_trainer_logger.error("Failed to train a dictionary: {}.", std::current_exception());
             }

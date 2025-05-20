@@ -31,7 +31,7 @@ namespace dht {
 
 future<> boot_strapper::bootstrap(streaming::stream_reason reason, gms::gossiper& gossiper, service::frozen_topology_guard topo_guard,
                                   locator::host_id replace_address) {
-    blogger.debug("Beginning bootstrap process: sorted_tokens={}", get_token_metadata().sorted_tokens());
+    LOGMACRO(blogger, log_level::debug, "Beginning bootstrap process: sorted_tokens={}", get_token_metadata().sorted_tokens());
     sstring description;
     if (reason == streaming::stream_reason::bootstrap) {
         description = "Bootstrap";
@@ -46,7 +46,7 @@ future<> boot_strapper::bootstrap(streaming::stream_reason reason, gms::gossiper
         if (reason == streaming::stream_reason::replace) {
             nodes_to_filter.insert(std::move(replace_address));
         }
-        blogger.debug("nodes_to_filter={}", nodes_to_filter);
+        LOGMACRO(blogger, log_level::debug, "nodes_to_filter={}", nodes_to_filter);
         streamer->add_source_filter(std::make_unique<range_streamer::failure_detector_source_filter>(nodes_to_filter));
         auto ks_erms = _db.local().get_non_local_strategy_keyspaces_erms();
         for (const auto& [keyspace_name, erm] : ks_erms) {
@@ -54,7 +54,7 @@ future<> boot_strapper::bootstrap(streaming::stream_reason reason, gms::gossiper
             // We took a strategy ptr to keep it alive during the `co_await`.
             // The keyspace may be dropped in the meantime.
             dht::token_range_vector ranges = co_await strategy.get_pending_address_ranges(_token_metadata_ptr, _tokens, _address, _dr);
-            blogger.debug("Will stream keyspace={}, ranges={}", keyspace_name, ranges);
+            LOGMACRO(blogger, log_level::debug, "Will stream keyspace={}, ranges={}", keyspace_name, ranges);
             co_await streamer->add_ranges(keyspace_name, erm, std::move(ranges), gossiper, reason == streaming::stream_reason::replace);
         }
         _abort_source.check();
@@ -97,7 +97,7 @@ std::unordered_set<token> boot_strapper::get_bootstrap_tokens(const token_metada
 
     // if user specified tokens, use those
     if (initial_tokens.size() > 0) {
-        blogger.debug("tokens manually specified as {}", initial_tokens);
+        LOGMACRO(blogger, log_level::debug, "tokens manually specified as {}", initial_tokens);
         std::unordered_set<token> tokens;
         for (auto& token_string : initial_tokens) {
             auto token = dht::token::from_sstring(token_string);

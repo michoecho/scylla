@@ -43,12 +43,12 @@ future<std::map<sstring, double>> load_meter::get_load_map() {
         if (_lb) {
             for (auto& x : _lb->get_load_info()) {
                 load_map.emplace(format("{}", _lb->gossiper().get_address_map().find(x.first).value_or(gms::inet_address{})), x.second);
-                llogger.debug("get_load_map endpoint={}, load={}", x.first, x.second);
+                LOGMACRO(llogger, log_level::debug, "get_load_map endpoint={}, load={}", x.first, x.second);
             }
             load_map.emplace(format("{}",
                     _lb->gossiper().get_broadcast_address()), get_load());
         } else {
-            llogger.debug("load_broadcaster is not set yet!");
+            LOGMACRO(llogger, log_level::debug, "load_broadcaster is not set yet!");
         }
         return load_map;
     });
@@ -76,7 +76,7 @@ void load_broadcaster::start_broadcasting() {
     // after that send every BROADCAST_INTERVAL.
 
     _timer.set_callback([this] {
-        llogger.debug("Disseminating load info ...");
+        LOGMACRO(llogger, log_level::debug, "Disseminating load info ...");
         _done = _db.map_reduce0([](replica::database& db) {
             int64_t res = 0;
             db.get_tables_metadata().for_each_table([&] (table_id, lw_shared_ptr<replica::table> table) {
@@ -202,7 +202,7 @@ future<lowres_clock::duration> cache_hitrate_calculator::recalculate_hitrates() 
         // table->set_global_cache_hit_rate to set the hitrate.
         auto recalculate_duration = _diff > 0.01 ? lowres_clock::duration(500ms) : lowres_clock::duration(2000ms);
         if (do_publish) {
-            llogger.debug("Send CACHE_HITRATES update max_diff={}, published_nr={}", _diff, _published_nr);
+            LOGMACRO(llogger, log_level::debug, "Send CACHE_HITRATES update max_diff={}, published_nr={}", _diff, _published_nr);
             ++_published_nr;
             _published_time = now;
             return container().invoke_on(0, [&gstate = _gstate] (cache_hitrate_calculator& self) {
@@ -212,7 +212,7 @@ future<lowres_clock::duration> cache_hitrate_calculator::recalculate_hitrates() 
                 return recalculate_duration;
             });
         } else {
-            llogger.debug("Skip CACHE_HITRATES update max_diff={}, published_nr={}", _diff, _published_nr);
+            LOGMACRO(llogger, log_level::debug, "Skip CACHE_HITRATES update max_diff={}, published_nr={}", _diff, _published_nr);
             return make_ready_future<lowres_clock::duration>(recalculate_duration);
         }
     }).finally([this] {

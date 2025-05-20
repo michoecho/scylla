@@ -281,7 +281,7 @@ std::optional<schema_with_source> try_load_schema_autodetect(const bpo::variable
             .path = schema_file_path,
             .obtained_from = "--schema-file parameters (default value)"};
     } catch (...) {
-        sst_log.debug("Trying to read schema file from default location failed: {}", std::current_exception());
+        LOGMACRO(sst_log, log_level::debug, "Trying to read schema file from default location failed: {}", std::current_exception());
     }
 
     if (app_config.count("sstables")) {
@@ -292,10 +292,10 @@ std::optional<schema_with_source> try_load_schema_autodetect(const bpo::variable
                 .path = info.data_dir_path,
                 .obtained_from = format("sstable path ({})", info.sstable_path)};
         } catch (...) {
-            sst_log.debug("Trying to find scylla data dir based on the sstable path failed: {}", std::current_exception());
+            LOGMACRO(sst_log, log_level::debug, "Trying to find scylla data dir based on the sstable path failed: {}", std::current_exception());
         }
     } else {
-        sst_log.debug("Trying to find scylla data dir based on sstable path failed: no sstable argument provided");
+        LOGMACRO(sst_log, log_level::debug, "Trying to find scylla data dir based on sstable path failed: no sstable argument provided");
     }
 
     try {
@@ -306,7 +306,7 @@ std::optional<schema_with_source> try_load_schema_autodetect(const bpo::variable
             .path = data_dir_path,
             .obtained_from = "data dir"};
     } catch (...) {
-        sst_log.debug("Trying to locate data dir failed: {}", std::current_exception());
+        LOGMACRO(sst_log, log_level::debug, "Trying to locate data dir failed: {}", std::current_exception());
     }
 
     try {
@@ -326,7 +326,7 @@ std::optional<schema_with_source> try_load_schema_autodetect(const bpo::variable
             .source = "sstable's serialization header",
             .obtained_from = sst_path};
     } catch (...) {
-        sst_log.debug("Trying to load schema from the sstable itself failed: {}", std::current_exception());
+        LOGMACRO(sst_log, log_level::debug, "Trying to load schema from the sstable itself failed: {}", std::current_exception());
     }
 
     fmt::print(std::cerr, "Failed to autodetect and load schema, try again with --logger-log-level scylla-sstable=debug to learn more or provide the schema source manually\n");
@@ -2982,7 +2982,7 @@ void query_operation(schema_ptr sstable_schema, reader_permit permit, const std:
         const auto original_schema_description = sstable_schema->describe(describe_helper, cql3::describe_option::STMTS_AND_INTERNALS);
         const auto schema_description = schema->describe(describe_helper, cql3::describe_option::STMTS_AND_INTERNALS);
 
-        sst_log.debug("\noriginal schema:\n{}\nreplacement schema:\n{}\n\nNote: original keyspace name of {} was replaced with {}, original id of {} was replaced with {} and all properties were dropped!\n",
+        LOGMACRO(sst_log, log_level::debug, "\noriginal schema:\n{}\nreplacement schema:\n{}\n\nNote: original keyspace name of {} was replaced with {}, original id of {} was replaced with {} and all properties were dropped!\n",
                 original_schema_description.create_statement.value(),
                 schema_description.create_statement.value(),
                 sstable_schema->ks_name(),
@@ -3033,7 +3033,7 @@ void query_operation(schema_ptr sstable_schema, reader_permit permit, const std:
 
         query_operation_validate_query(query, table_name, db.as_data_dictionary());
 
-        sst_log.debug("query_operation(): running query {}", query);
+        LOGMACRO(sst_log, log_level::debug, "query_operation(): running query {}", query);
 
         const auto result = co_await env.execute_cql(query);
         result->throw_if_exception();
@@ -3518,13 +3518,13 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
 
         if (file_exists(scylla_yaml_path).get()) {
             dbcfg.read_from_file(scylla_yaml_path, [] (const sstring& opt, const sstring& msg, std::optional<::utils::config_file::value_status> status) {
-                sst_log.debug("error processing configuration item: {} : {}", msg, opt);
+                LOGMACRO(sst_log, log_level::debug, "error processing configuration item: {} : {}", msg, opt);
             }).get();
             dbcfg.setup_directories();
-            sst_log.debug("Successfully read scylla.yaml from {} location of {}", scylla_yaml_path_source, scylla_yaml_path);
+            LOGMACRO(sst_log, log_level::debug, "Successfully read scylla.yaml from {} location of {}", scylla_yaml_path_source, scylla_yaml_path);
         } else {
             dbcfg.experimental_features.set(db::experimental_features_t::all());
-            sst_log.debug("Failed to read scylla.yaml from {} location of {}, some functionality may be unavailable", scylla_yaml_path_source, scylla_yaml_path);
+            LOGMACRO(sst_log, log_level::debug, "Failed to read scylla.yaml from {} location of {}, some functionality may be unavailable", scylla_yaml_path_source, scylla_yaml_path);
         }
 
         dbcfg.enable_cache(false);
@@ -3538,10 +3538,10 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
             schema_sources += app_config.contains("sstable-schema");
 
             if (!schema_sources) {
-                sst_log.debug("No user-provided schema source, attempting to auto-detect it");
+                LOGMACRO(sst_log, log_level::debug, "No user-provided schema source, attempting to auto-detect it");
                 schema_with_source = try_load_schema_autodetect(app_config, dbcfg);
             } else if (schema_sources == 1) {
-                sst_log.debug("Single schema source provided");
+                LOGMACRO(sst_log, log_level::debug, "Single schema source provided");
                 schema_with_source = try_load_schema_from_user_provided_source(app_config, dbcfg);
             } else {
                 fmt::print(std::cerr, "Multiple schema sources provided, please provide exactly one of: --schema-file, --system-schema, --schema-tables or --sstable-schema (with the accompanying --keyspace and --table if necessary)\n");
@@ -3549,7 +3549,7 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
         }
         if (schema_with_source) {
             schema = std::move(schema_with_source->schema);
-            sst_log.debug("Succesfully loaded schema from {}{}, obtained from {}",
+            LOGMACRO(sst_log, log_level::debug, "Succesfully loaded schema from {}{}, obtained from {}",
                     schema_with_source->source,
                     schema_with_source->path ? seastar::format(" ({})", schema_with_source->path->native()) : "",
                     schema_with_source->obtained_from);

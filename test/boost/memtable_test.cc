@@ -1275,7 +1275,7 @@ static future<> exceptions_in_flush_helper(std::unique_ptr<sstables::file_io_ext
 
         int i = 0;
 
-        testlog.debug("Wait for fail");
+        LOGMACRO(testlog, log_level::debug, "Wait for fail");
 
         auto f = make_ready_future<>();
 
@@ -1292,7 +1292,7 @@ static future<> exceptions_in_flush_helper(std::unique_ptr<sstables::file_io_ext
         }
 
         BOOST_REQUIRE(did_fail);
-        testlog.debug("Reset fail trigger");
+        LOGMACRO(testlog, log_level::debug, "Reset fail trigger");
 
         should_fail = false;
 
@@ -1314,7 +1314,7 @@ static future<> exceptions_in_flush_helper(std::unique_ptr<sstables::file_io_ext
             BOOST_REQUIRE(isolated);
         }
 
-        testlog.debug("Trying to stop");
+        LOGMACRO(testlog, log_level::debug, "Trying to stop");
 
         co_await std::move(f);
     }, cfg);
@@ -1340,7 +1340,7 @@ static future<> exceptions_in_flush_on_sstable_write_helper(std::function<void()
                     void fail() const {
                         if (_myext.should_fail) {
                             _myext.did_fail = true;
-                            testlog.debug("Throwing exception");
+                            LOGMACRO(testlog, log_level::debug, "Throwing exception");
                             _myext.throw_func();
                         }
                     }
@@ -1450,7 +1450,7 @@ static future<> exceptions_in_flush_on_sstable_open_helper(std::function<void()>
         future<file> wrap_file(const sstable& t, component_type type, file f, open_flags flags) override {
             if (should_fail) {
                 did_fail = true;
-                testlog.debug("Throwing exception");
+                LOGMACRO(testlog, log_level::debug, "Throwing exception");
                 throw_func();
             }
             co_return f;

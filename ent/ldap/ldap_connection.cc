@@ -235,7 +235,7 @@ sstring ldap_connection::get_error() const {
 }
 
 int ldap_connection::sbi_ctrl(Sockbuf_IO_Desc* sid, int opt, void* arg) noexcept {
-    mylog.debug("sbi_ctrl({}/{}, {}, {})", static_cast<void*>(sid), sid->sbiod_pvt, opt, arg);
+    LOGMACRO(mylog, log_level::debug, "sbi_ctrl({}/{}, {}, {})", static_cast<void*>(sid), sid->sbiod_pvt, opt, arg);
     auto conn = connection(sid);
     switch (opt) {
     case LBER_SB_OPT_DATA_READY:
@@ -273,7 +273,7 @@ ber_slen_t ldap_connection::sbi_write(Sockbuf_IO_Desc* sid, void* buffer, ber_le
 }
 
 int ldap_connection::sbi_close(Sockbuf_IO_Desc* sid) noexcept {
-    mylog.debug("sbi_close {}/{}", static_cast<const void*>(sid), static_cast<const void*>(sid->sbiod_pvt));
+    LOGMACRO(mylog, log_level::debug, "sbi_close {}/{}", static_cast<const void*>(sid), static_cast<const void*>(sid->sbiod_pvt));
     // Leave actual closing to the owner of *this.  Note sbi_close() will be invoked during
     // ldap_unbind(), which also calls sbi_write() to convey one last message to the server.  We
     // remain open here, to try to communicate that message.
@@ -306,7 +306,7 @@ void ldap_connection::read_ahead() {
     LOGMACRO(mylog, log_level::trace, "read_ahead invoking socket read");
     _read_consumer = _input_stream.read().then([this] (temporary_buffer<char> b) {
         if (b.empty()) {
-            mylog.debug("read_ahead received empty buffer; assuming EOF");
+            LOGMACRO(mylog, log_level::debug, "read_ahead received empty buffer; assuming EOF");
             set_status(status::eof);
             return;
         }
@@ -408,12 +408,12 @@ void ldap_connection::shutdown()  {
 void ldap_connection::poll_results() {
     LOGMACRO(mylog, log_level::trace, "poll_results");
     if (!_ldap) { // Could happen during close(), which unbinds.
-        mylog.debug("poll_results: _ldap is null, punting");
+        LOGMACRO(mylog, log_level::debug, "poll_results: _ldap is null, punting");
         return;
     }
     if (_currently_polling) {
         // This happens when ldap_result() calls read_ahead() and runs its inner continuation immediately.
-        mylog.debug("poll_results: _currently_polling somewhere up the call-stack, punting");
+        LOGMACRO(mylog, log_level::debug, "poll_results: _currently_polling somewhere up the call-stack, punting");
         return;
     }
 

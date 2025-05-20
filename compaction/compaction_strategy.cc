@@ -645,9 +645,9 @@ time_window_compaction_strategy::time_window_compaction_strategy(const std::map<
 {
     if (!options.contains(TOMBSTONE_COMPACTION_INTERVAL_OPTION) && !options.contains(TOMBSTONE_THRESHOLD_OPTION)) {
         _disable_tombstone_compaction = true;
-        clogger.debug("Disabling tombstone compactions for TWCS");
+        LOGMACRO(clogger, log_level::debug, "Disabling tombstone compactions for TWCS");
     } else {
-        clogger.debug("Enabling tombstone compactions for TWCS");
+        LOGMACRO(clogger, log_level::debug, "Enabling tombstone compactions for TWCS");
     }
     _use_clustering_key_filter = true;
 }

@@ -450,7 +450,7 @@ public:
         , _range_idx(random_offset(0, _token_ranges.size() - 1))
         , _end_idx(_range_idx + _token_ranges.size())
     {
-        tlogger.debug("Generating token ranges starting from base range {} of {}", _range_idx, _token_ranges.size());
+        LOGMACRO(tlogger, log_level::debug, "Generating token ranges starting from base range {} of {}", _range_idx, _token_ranges.size());
     }
 
     // Return the next token_range owned by this shard, or nullopt when the

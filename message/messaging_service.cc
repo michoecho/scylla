@@ -1170,7 +1170,7 @@ shared_ptr<messaging_service::rpc_protocol_client_wrapper> messaging_service::ge
                 *client, broadcast_address, src_cpu_id,
                 query::result_memory_limiter::maximum_result_size, my_host_id.uuid(), host_id ? std::optional{host_id->uuid()} : std::nullopt, _current_generation)
             .handle_exception([ms = shared_from_this(), remote_addr, verb] (std::exception_ptr ep) {
-        mlogger.debug("Failed to send client id to {} for verb {}: {}", remote_addr, std::underlying_type_t<messaging_verb>(verb), ep);
+        LOGMACRO(mlogger, log_level::debug, "Failed to send client id to {} for verb {}: {}", remote_addr, std::underlying_type_t<messaging_verb>(verb), ep);
     });
     return client;
 }
@@ -1206,7 +1206,7 @@ void messaging_service::find_and_remove_client(Map& clients, typename Map::key_t
         // client->stop() is over.
         //
         (void)client->stop().finally([id, client, ms = shared_from_this()] {
-            mlogger.debug("dropped connection to {}", id);
+            LOGMACRO(mlogger, log_level::debug, "dropped connection to {}", id);
         }).discard_result();
         _connection_dropped(hid);
     }

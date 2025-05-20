@@ -808,13 +808,13 @@ SEASTAR_TEST_CASE(clear_multiple_snapshots) {
         auto snapshots_dir = tdir / sstables::snapshots_dir;
 
         for (auto i = 0; i < num_snapshots; i++) {
-            testlog.debug("Taking snapshot {} on {}.{}", snapshot_name(i), ks_name, table_name);
+            LOGMACRO(testlog, log_level::debug, "Taking snapshot {} on {}.{}", snapshot_name(i), ks_name, table_name);
             take_snapshot(e, ks_name, table_name, snapshot_name(i)).get();
         }
 
         for (auto i = 0; i < num_snapshots; i++) {
             unsigned count = 0;
-            testlog.debug("Verifying {}", snapshots_dir / snapshot_name(i));
+            LOGMACRO(testlog, log_level::debug, "Verifying {}", snapshots_dir / snapshot_name(i));
             lister::scan_dir(snapshots_dir / snapshot_name(i), lister::dir_entry_types::of<directory_entry_type::regular>(), [&count] (fs::path parent_dir, directory_entry de) {
                 count++;
                 return make_ready_future<>();
@@ -823,14 +823,14 @@ SEASTAR_TEST_CASE(clear_multiple_snapshots) {
         }
 
         // non-existent tag
-        testlog.debug("Clearing bogus tag");
+        LOGMACRO(testlog, log_level::debug, "Clearing bogus tag");
         e.local_db().clear_snapshot("bogus", {ks_name}, table_name).get();
         for (auto i = 0; i < num_snapshots; i++) {
             BOOST_REQUIRE_EQUAL(fs::exists(snapshots_dir / snapshot_name(i)), true);
         }
 
         // clear single tag
-        testlog.debug("Clearing snapshot={} of {}.{}", snapshot_name(0), ks_name, table_name);
+        LOGMACRO(testlog, log_level::debug, "Clearing snapshot={} of {}.{}", snapshot_name(0), ks_name, table_name);
         e.local_db().clear_snapshot(snapshot_name(0), {ks_name}, table_name).get();
         BOOST_REQUIRE_EQUAL(fs::exists(snapshots_dir / snapshot_name(0)), false);
         for (auto i = 1; i < num_snapshots; i++) {
@@ -838,22 +838,22 @@ SEASTAR_TEST_CASE(clear_multiple_snapshots) {
         }
 
         // clear all tags (all tables)
-        testlog.debug("Clearing all snapshots in {}", ks_name);
+        LOGMACRO(testlog, log_level::debug, "Clearing all snapshots in {}", ks_name);
         e.local_db().clear_snapshot("", {ks_name}, "").get();
         for (auto i = 0; i < num_snapshots; i++) {
             BOOST_REQUIRE_EQUAL(fs::exists(snapshots_dir / snapshot_name(i)), false);
         }
 
-        testlog.debug("Taking an extra {} of {}.{}", snapshot_name(num_snapshots), ks_name, table_name);
+        LOGMACRO(testlog, log_level::debug, "Taking an extra {} of {}.{}", snapshot_name(num_snapshots), ks_name, table_name);
         take_snapshot(e, ks_name, table_name, snapshot_name(num_snapshots)).get();
 
         // existing snapshots expected to remain after dropping the table
-        testlog.debug("Dropping table {}.{}", ks_name, table_name);
+        LOGMACRO(testlog, log_level::debug, "Dropping table {}.{}", ks_name, table_name);
         replica::database::drop_table_on_all_shards(e.db(), e.get_system_keyspace(), ks_name, table_name).get();
         BOOST_REQUIRE_EQUAL(fs::exists(snapshots_dir / snapshot_name(num_snapshots)), true);
 
         // clear all tags
-        testlog.debug("Clearing all snapshots in {}.{} after it had been dropped", ks_name, table_name);
+        LOGMACRO(testlog, log_level::debug, "Clearing all snapshots in {}.{} after it had been dropped", ks_name, table_name);
         e.local_db().clear_snapshot("", {ks_name}, table_name).get();
 
         SCYLLA_ASSERT(!fs::exists(tdir));
@@ -1413,7 +1413,7 @@ SEASTAR_TEST_CASE(populate_from_quarantine_works) {
                         co_return;
                     }
                     auto idx = tests::random::get_int<size_t>(0, sstables.size() - 1);
-                    testlog.debug("Moving sstable #{} out of {} to quarantine", idx, sstables.size());
+                    LOGMACRO(testlog, log_level::debug, "Moving sstable #{} out of {} to quarantine", idx, sstables.size());
                     auto sst = sstables[idx];
                     co_await sst->change_state(sstables::sstable_state::quarantine);
                     found |= true;
@@ -1478,7 +1478,7 @@ SEASTAR_TEST_CASE(snapshot_with_quarantine_works) {
 
         co_await take_snapshot(e, "ks", "cf", "test", true /* skip_flush */);
 
-        testlog.debug("Expected: {}", expected);
+        LOGMACRO(testlog, log_level::debug, "Expected: {}", expected);
 
         // snapshot triggered a flush and wrote the data down.
         BOOST_REQUIRE_GT(expected.size(), 1);
@@ -1487,7 +1487,7 @@ SEASTAR_TEST_CASE(snapshot_with_quarantine_works) {
 
         // all files were copied and manifest was generated
         co_await lister::scan_dir((table_dir(cf) / sstables::snapshots_dir / "test"), lister::dir_entry_types::of<directory_entry_type::regular>(), [&expected] (fs::path parent_dir, directory_entry de) {
-            testlog.debug("Found in snapshots: {}", de.name);
+            LOGMACRO(testlog, log_level::debug, "Found in snapshots: {}", de.name);
             expected.erase(de.name);
             return make_ready_future<>();
         });

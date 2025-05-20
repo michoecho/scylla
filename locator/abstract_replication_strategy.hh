@@ -87,7 +87,7 @@ protected:
 
     template <typename... Args>
     void debug(const char* fmt, Args&&... args) const {
-        rslogger.debug(fmt, std::forward<Args>(args)...);
+        LOGMACRO(rslogger, log_level::debug, fmt, std::forward<Args>(args)...);
     }
 
 public:

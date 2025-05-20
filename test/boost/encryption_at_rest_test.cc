@@ -68,7 +68,7 @@ struct test_provider_args {
 static void do_create_and_insert(cql_test_env& env, const test_provider_args& args, const std::string& pk, const std::string& v) {
     for (auto i = 0u; i < args.n_tables; ++i) {
         if (args.before_create_table) {
-            testlog.debug("Calling before create table");
+            LOGMACRO(testlog, log_level::debug, "Calling before create table");
             args.before_create_table(env);
         }
         if (args.options.empty()) {
@@ -78,7 +78,7 @@ static void do_create_and_insert(cql_test_env& env, const test_provider_args& ar
         }
 
         if (args.after_create_table) {
-            testlog.debug("Calling after create table");
+            LOGMACRO(testlog, log_level::debug, "Calling after create table");
             args.after_create_table(env);
         }
         try {
@@ -89,7 +89,7 @@ static void do_create_and_insert(cql_test_env& env, const test_provider_args& ar
             throw;
         }
         if (args.after_insert) {
-            testlog.debug("Calling after insert");
+            LOGMACRO(testlog, log_level::debug, "Calling after insert");
             args.after_insert(env);
         }
     }
@@ -133,7 +133,7 @@ static future<> test_provider(const test_provider_args& args) {
 
         co_await do_with_cql_env_thread([&] (cql_test_env& env) {
             if (args.before_verify) {
-                testlog.debug("Calling after second start");
+                LOGMACRO(testlog, log_level::debug, "Calling after second start");
                 args.before_verify(env);
             }
             for (auto i = 0u; i < args.n_tables; ++i) {
@@ -474,7 +474,7 @@ class fake_proxy {
                 auto client = co_await _socket.accept();
                 auto dst = co_await seastar::connect(socket_address(addr, port));
 
-                testlog.debug("Got proxy connection: {}->{}:{} ({})", client.remote_address, dst_addr, port, _do_proxy);
+                LOGMACRO(testlog, log_level::debug, "Got proxy connection: {}->{}:{} ({})", client.remote_address, dst_addr, port, _do_proxy);
 
                 auto f = [&]() -> future<> {
                     auto& s = client.connection;

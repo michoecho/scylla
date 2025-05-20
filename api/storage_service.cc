@@ -187,7 +187,7 @@ seastar::future<json::json_return_type> run_toppartitions_query(db::toppartition
     return q.scatter().then([&q, legacy_request] {
         return sleep(q.duration()).then([&q, legacy_request] {
             return q.gather(q.capacity()).then([&q, legacy_request] (auto topk_results) {
-                apilog.debug("toppartitions query: processing results");
+                LOGMACRO(apilog, log_level::debug, "toppartitions query: processing results");
                 cf::toppartitions_query_results results;
 
                 results.read_cardinality = topk_results.read.size();
@@ -585,7 +585,7 @@ rest_toppartitions_generic(http_context& ctx, std::unique_ptr<http::request> req
 
         // when the query is empty return immediately
         if (filters_provided && table_filters.empty() && keyspace_filters.empty()) {
-            apilog.debug("toppartitions query: processing results");
+            LOGMACRO(apilog, log_level::debug, "toppartitions query: processing results");
             httpd::column_family_json::toppartitions_query_results results;
 
             results.read_cardinality = 0;
@@ -1426,16 +1426,16 @@ rest_estimate_compression_ratios(http_context& ctx, sharded<service::storage_ser
     auto ticket = get_units(ss.local().get_do_sample_sstables_concurrency_limiter(), 1);
     auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
     auto cf = api::req_param<sstring>(*req, "cf", {}).value;
-    apilog.debug("estimate_compression_ratios: called with ks={} cf={}", ks, cf);
+    LOGMACRO(apilog, log_level::debug, "estimate_compression_ratios: called with ks={} cf={}", ks, cf);
 
     auto s = ctx.db.local().find_column_family(ks, cf).schema();
 
     auto training_sample = co_await ss.local().do_sample_sstables(s->id(), 4096, 4096);
     auto validation_sample = co_await ss.local().do_sample_sstables(s->id(), 16*1024, 1024);
-    apilog.debug("estimate_compression_ratios: got training sample with {} blocks and validation sample with {}", training_sample.size(), validation_sample.size());
+    LOGMACRO(apilog, log_level::debug, "estimate_compression_ratios: got training sample with {} blocks and validation sample with {}", training_sample.size(), validation_sample.size());
 
     auto dict = co_await ss.local().train_dict(std::move(training_sample));
-    apilog.debug("estimate_compression_ratios: got dict of size {}", dict.size());
+    LOGMACRO(apilog, log_level::debug, "estimate_compression_ratios: got dict of size {}", dict.size());
 
     std::vector<ss::compression_config_result> res;
     auto make_result = [](std::string_view name, int chunk_length_kb, std::string_view dict, int level, float ratio) -> ss::compression_config_result {
@@ -1492,16 +1492,16 @@ rest_retrain_dict(http_context& ctx, sharded<service::storage_service>& ss, serv
     auto ticket = get_units(ss.local().get_do_sample_sstables_concurrency_limiter(), 1);
     auto ks = api::req_param<sstring>(*req, "keyspace", {}).value;
     auto cf = api::req_param<sstring>(*req, "cf", {}).value;
-    apilog.debug("retrain_dict: called with ks={} cf={}", ks, cf);
+    LOGMACRO(apilog, log_level::debug, "retrain_dict: called with ks={} cf={}", ks, cf);
     const auto t_id = ctx.db.local().find_column_family(ks, cf).schema()->id();
     constexpr uint64_t chunk_size = 4096;
     constexpr uint64_t n_chunks = 4096;
     auto sample = co_await ss.local().do_sample_sstables(t_id, chunk_size, n_chunks);
-    apilog.debug("retrain_dict: got sample with {} blocks", sample.size());
+    LOGMACRO(apilog, log_level::debug, "retrain_dict: got sample with {} blocks", sample.size());
     auto dict = co_await ss.local().train_dict(std::move(sample));
-    apilog.debug("retrain_dict: got dict of size {}", dict.size());
+    LOGMACRO(apilog, log_level::debug, "retrain_dict: got dict of size {}", dict.size());
     co_await ss.local().publish_new_sstable_dict(t_id, dict, group0_client);
-    apilog.debug("retrain_dict: published new dict");
+    LOGMACRO(apilog, log_level::debug, "retrain_dict: published new dict");
     co_return json_void();
 }
 

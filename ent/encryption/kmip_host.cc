@@ -305,7 +305,7 @@ future<> kmip_host::impl::connection::connect() {
     auto cred = ::make_shared<seastar::tls::certificate_credentials>();
     auto f = make_ready_future();
 
-    kmip_log.debug("connecting {}", _host);
+    LOGMACRO(kmip_log, log_level::debug, "connecting {}", _host);
 
     if (!_options.priority_string.empty()) {
         cred->set_priority_string(_options.priority_string);
@@ -333,7 +333,7 @@ future<> kmip_host::impl::connection::connect() {
 
         return seastar::net::dns::resolve_name(name).then([this, cred, port](seastar::net::inet_address addr) {
             return seastar::tls::connect(cred, seastar::ipv4_addr{addr, uint16_t(port)}).then([this](seastar::connected_socket s) {
-                kmip_log.debug("Successfully connected {}", _host);
+                LOGMACRO(kmip_log, log_level::debug, "Successfully connected {}", _host);
                 // #998 Set keepalive to try avoiding connection going stale in between commands.
                 s.set_keepalive_parameters(net::tcp_keepalive_params{60s, 60s, 10});
                 s.set_keepalive(true);
@@ -598,9 +598,9 @@ future<kmip_host::impl::kmip_cmd> kmip_host::impl::do_cmd(kmip_cmd cmd_in, Func 
                     // loop if something is stale/borked, the latter is 
                     // more or less dead. 
                     auto sleeptime = base_backoff_time * (_max_retry - retry);
-                    kmip_log.debug("{}: Connection failed. backoff {}", *this, std::chrono::duration_cast<std::chrono::milliseconds>(sleeptime).count());
+                    LOGMACRO(kmip_log, log_level::debug, "{}: Connection failed. backoff {}", *this, std::chrono::duration_cast<std::chrono::milliseconds>(sleeptime).count());
                     return seastar::sleep(sleeptime).then([this, cmd] {
-                        kmip_log.debug("{}: retrying...", *this);
+                        LOGMACRO(kmip_log, log_level::debug, "{}: retrying...", *this);
                         return get_connection(cmd);
                     });
                 }
@@ -611,7 +611,7 @@ future<kmip_host::impl::kmip_cmd> kmip_host::impl::do_cmd(kmip_cmd cmd_in, Func 
                 LOGMACRO(kmip_log, log_level::trace, "{}: request {}", *this, fmt::ptr(KMIP_CMD_get_request(cmd)));
                 return res.then([this, retry, host = std::move(host)](int res) {
                     if (res == KMIP_ERROR_IO) {
-                        kmip_log.debug("{}: request error {}", *this, kmip_errorc.message(res));
+                        LOGMACRO(kmip_log, log_level::debug, "{}: request error {}", *this, kmip_errorc.message(res));
                         if (retry) {
                             // do some backing off unless this is the first retry, which 
                             // might be a stale connection. Clear out all caches for the 
@@ -620,12 +620,12 @@ future<kmip_host::impl::kmip_cmd> kmip_host::impl::do_cmd(kmip_cmd cmd_in, Func 
                             if (retry != (_max_retry - 1)) {             
                                 f = f.then([this] {
                                     auto sleeptime = base_backoff_time;
-                                    kmip_log.debug("{}: backoff {}ms", *this, std::chrono::duration_cast<std::chrono::milliseconds>(sleeptime).count());
+                                    LOGMACRO(kmip_log, log_level::debug, "{}: backoff {}ms", *this, std::chrono::duration_cast<std::chrono::milliseconds>(sleeptime).count());
                                     return seastar::sleep(sleeptime);
                                 });
                             }
                             return f.then([this] {
-                                kmip_log.debug("{}: retrying...", *this);
+                                LOGMACRO(kmip_log, log_level::debug, "{}: retrying...", *this);
                                 return opt_int{};
                             });
                         }
@@ -811,7 +811,7 @@ future<kmip_host::impl::key_and_id_type> kmip_host::impl::create_key(const kmip_
                 });
             }
 
-            kmip_log.debug("{}: Creating key {}", _name, info);
+            LOGMACRO(kmip_log, log_level::debug, "{}: Creating key {}", _name, info);
 
             auto kdl_attrs_crypt_alg = make_attributes(info);
             auto&& kdl_attrs = std::get<0>(kdl_attrs_crypt_alg);
@@ -834,7 +834,7 @@ future<kmip_host::impl::key_and_id_type> kmip_host::impl::create_key(const kmip_
                 kmip_chk(KMIP_CMD_get_uuid(cmd, 0, &new_id), cmd);
                 sstring uuid(new_id);
 
-                kmip_log.debug("{}: Created {}:{}", _name, info, uuid);
+                LOGMACRO(kmip_log, log_level::debug, "{}: Created {}:{}", _name, info, uuid);
 
                 KMIP_CMD_set_ctx(cmd, const_cast<char *>("activate"));
 
@@ -842,7 +842,7 @@ future<kmip_host::impl::key_and_id_type> kmip_host::impl::create_key(const kmip_
                     return KMIP_CMD_activate(cmd, new_id);
                 }).then([this, info, uuid](kmip_cmd cmd) {
                     auto id = kmip_id_to_id(uuid);
-                    kmip_log.debug("{}: Activated {}", _name, uuid);
+                    LOGMACRO(kmip_log, log_level::debug, "{}: Activated {}", _name, uuid);
                     return get_key_by_id(id, info.info).then([id](auto k) {
                         return key_and_id_type(k, id);
                     });
@@ -863,7 +863,7 @@ future<kmip_host::impl::key_and_id_type> kmip_host::impl::create_key(const kmip_
 }
 
 future<std::vector<kmip_host::id_type>> kmip_host::impl::find_matching_keys(const kmip_key_info& info, std::optional<int> max) {
-    kmip_log.debug("{}: Finding matching key {}", _name, info);
+    LOGMACRO(kmip_log, log_level::debug, "{}: Finding matching key {}", _name, info);
 
     auto [kdl_attrs, crypt_alg] = make_attributes(info, false);
 
@@ -920,7 +920,7 @@ future<std::vector<kmip_host::id_type>> kmip_host::impl::find_matching_keys(cons
             result.emplace_back(kmip_id_to_id(new_id));
         }
 
-        kmip_log.debug("{}: Found {} matching keys {}", _name, result.size(), info);
+        LOGMACRO(kmip_log, log_level::debug, "{}: Found {} matching keys {}", _name, result.size(), info);
 
         return result;
     });
@@ -932,7 +932,7 @@ future<shared_ptr<symmetric_key>> kmip_host::impl::find_key(const id_type& id) {
         KMIP_CMD_set_ctx(cmd, const_cast<char *>("Find key"));
 
         auto uuid = id_to_kmip_string(id);
-        kmip_log.debug("{}: Finding {}", _name, uuid);
+        LOGMACRO(kmip_log, log_level::debug, "{}: Finding {}", _name, uuid);
 
         // Batch operation. Nothing is sent/received until xmit below
         kmip_chk(KMIP_CMD_batch_start(cmd));
@@ -1067,7 +1067,7 @@ static void translate_kmip_error(const kmip_error& e) {
 }
 
 future<std::tuple<shared_ptr<symmetric_key>, kmip_host::id_type>> kmip_host::impl::get_or_create_key(const key_info& info, const key_options& opts) {
-    kmip_log.debug("{}: Lookup key {}:{}", _name, info, opts);
+    LOGMACRO(kmip_log, log_level::debug, "{}: Lookup key {}:{}", _name, info, opts);
     try {
         auto linfo = info;
         auto kinfo = co_await _attr_cache.get(kmip_key_info{info, opts});

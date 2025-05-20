@@ -712,7 +712,7 @@ public:
                         }
 
                         if (esx->should_delay_read(id)) {
-                            logg.debug("Encrypted sstable component {} using delayed opening {} (id: {})", sst.component_basename(type), *esx, id);
+                            LOGMACRO(logg, log_level::debug, "Encrypted sstable component {} using delayed opening {} (id: {})", sst.component_basename(type), *esx, id);
 
                             co_return make_delayed_encrypted_file(f, esx->key_block_size(), [esx, comp = sst.component_basename(type), id = std::move(id)] {
                                 LOGMACRO(logg, log_level::trace, "Delayed component {} using {} (id: {}) resolve", comp, *esx, id);
@@ -720,7 +720,7 @@ public:
                             });
                         }
 
-                        logg.debug("Open encrypted sstable component {} using {} (id: {})", sst.component_basename(type), *esx, id);
+                        LOGMACRO(logg, log_level::debug, "Open encrypted sstable component {} using {} (id: {})", sst.component_basename(type), *esx, id);
 
                         auto k = co_await esx->key_for_read(std::move(id));
                         co_return make_encrypted_file(f, std::move(k));
@@ -767,7 +767,7 @@ public:
                 id = ext.map.at(key_id_attribute_ds).value;
             }
 
-            logg.debug("Write encrypted sstable component {} using {} (id: {})", sst.component_basename(type), *esx, id);
+            LOGMACRO(logg, log_level::debug, "Write encrypted sstable component {} using {} (id: {})", sst.component_basename(type), *esx, id);
 
             /**
              * #3954 We can be (and are) called with two components simultaneously (hello index, data).
@@ -910,7 +910,7 @@ public:
 
                     auto provider = _ctxt->get_provider(opts);
 
-                    logg.debug("Open commitlog segment {} using {} (id: {})", filename, *provider, id);
+                    LOGMACRO(logg, log_level::debug, "Open commitlog segment {} using {} (id: {})", filename, *provider, id);
                     auto info = make_shared<key_info>(get_key_info(opts));
                     return provider->key(*info, id).then([f, info](std::tuple<shared_ptr<symmetric_key>, opt_bytes> k) {
                         return make_ready_future<file>(make_encrypted_file(f, std::get<0>(k)));
@@ -932,7 +932,7 @@ public:
                 }
                 ss << end_of_file_mark << std::endl;
 
-                logg.debug("Creating commitlog segment {} using {} (id: {})", filename, provider, id);
+                LOGMACRO(logg, log_level::debug, "Creating commitlog segment {} using {} (id: {})", filename, provider, id);
 
                 return write_text_file_fully(cfg_file, ss.str()).then([f, k] {
                     return make_ready_future<file>(make_encrypted_file(f, k));

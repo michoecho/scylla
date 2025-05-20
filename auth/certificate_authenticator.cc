@@ -64,7 +64,7 @@ auth::certificate_authenticator::certificate_authenticator(cql3::query_processor
                         throw std::invalid_argument("Role query must have exactly one mark expression");
                     }
 
-                    clogger.debug("Append role query: {} : {}", source, query);
+                    LOGMACRO(clogger, log_level::debug, "Append role query: {} : {}", source, query);
 
                     if (source == cfg_source_subject) {
                         res.emplace_back(query_source::subject, std::move(ex));
@@ -140,12 +140,12 @@ future<std::optional<auth::authenticated_user>> auth::certificate_authenticator:
                 break;
         }
 
-        clogger.debug("Checking {}: {}", int(source), *source_str);
+        LOGMACRO(clogger, log_level::debug, "Checking {}: {}", int(source), *source_str);
 
         boost::smatch m;
         if (boost::regex_search(*source_str, m, expr)) {
             auto username = m[1].str();
-            clogger.debug("Return username: {}", username);
+            LOGMACRO(clogger, log_level::debug, "Return username: {}", username);
             co_return username;
         }
     }

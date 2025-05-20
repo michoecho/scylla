@@ -81,14 +81,14 @@ void table::update_sstables_known_generation(sstables::generation_type generatio
     } else {
         _sstable_generation_generator.emplace(gen);
     }
-    tlogger.debug("{}.{} updated highest known generation to {}", schema()->ks_name(), schema()->cf_name(), gen);
+    LOGMACRO(tlogger, log_level::debug, "{}.{} updated highest known generation to {}", schema()->ks_name(), schema()->cf_name(), gen);
 }
 
 sstables::generation_type table::calculate_generation_for_new_table() {
     SCYLLA_ASSERT(_sstable_generation_generator);
     auto ret = std::invoke(*_sstable_generation_generator,
                            sstables::uuid_identifiers{_sstables_manager.uuid_sstable_identifiers()});
-    tlogger.debug("{}.{} new sstable generation {}", schema()->ks_name(), schema()->cf_name(), ret);
+    LOGMACRO(tlogger, log_level::debug, "{}.{} new sstable generation {}", schema()->ks_name(), schema()->cf_name(), ret);
     return ret;
 }
 
@@ -264,13 +264,13 @@ table::make_mutation_reader(schema_ptr s,
 
 sstables::shared_sstable table::make_streaming_sstable_for_write() {
     auto newtab = make_sstable(sstables::sstable_state::normal);
-    tlogger.debug("Created sstable for streaming: ks={}, cf={}", schema()->ks_name(), schema()->cf_name());
+    LOGMACRO(tlogger, log_level::debug, "Created sstable for streaming: ks={}, cf={}", schema()->ks_name(), schema()->cf_name());
     return newtab;
 }
 
 sstables::shared_sstable table::make_streaming_staging_sstable() {
     auto newtab = make_sstable(sstables::sstable_state::staging);
-    tlogger.debug("Created staging sstable for streaming: ks={}, cf={}", schema()->ks_name(), schema()->cf_name());
+    LOGMACRO(tlogger, log_level::debug, "Created staging sstable for streaming: ks={}, cf={}", schema()->ks_name(), schema()->cf_name());
     return newtab;
 }
 
@@ -835,7 +835,7 @@ public:
             auto range = tmap.get_token_range(tid);
 
             if (tmap.has_replica(tid, local_replica)) {
-                tlogger.debug("Tablet with id {} and range {} present for {}.{}", tid, range, schema()->ks_name(), schema()->cf_name());
+                LOGMACRO(tlogger, log_level::debug, "Tablet with id {} and range {} present for {}.{}", tid, range, schema()->ks_name(), schema()->cf_name());
                 ret[tid.value()] = allocate_storage_group(tmap, tid, std::move(range));
             }
         }
@@ -1479,10 +1479,10 @@ public:
 future<>
 table::seal_active_memtable(compaction_group& cg, flush_permit&& flush_permit) noexcept {
     auto old = cg.memtables()->back();
-    tlogger.debug("Sealing active memtable of {}.{}, partitions: {}, occupancy: {}", _schema->ks_name(), _schema->cf_name(), old->partition_count(), old->occupancy());
+    LOGMACRO(tlogger, log_level::debug, "Sealing active memtable of {}.{}, partitions: {}, occupancy: {}", _schema->ks_name(), _schema->cf_name(), old->partition_count(), old->occupancy());
 
     if (old->empty()) {
-        tlogger.debug("Memtable is empty");
+        LOGMACRO(tlogger, log_level::debug, "Memtable is empty");
         co_return co_await _flush_barrier.advance_and_await();
     }
 
@@ -1543,7 +1543,7 @@ table::seal_active_memtable(compaction_group& cg, flush_permit&& flush_permit) n
     };
 
     co_await with_retry([&] {
-        tlogger.debug("seal_active_memtable: adding memtable");
+        LOGMACRO(tlogger, log_level::debug, "seal_active_memtable: adding memtable");
         utils::get_local_injector().inject("table_seal_active_memtable_add_memtable", []() {
             throw std::bad_alloc();
         });
@@ -1587,7 +1587,7 @@ table::seal_active_memtable(compaction_group& cg, flush_permit&& flush_permit) n
     co_await with_retry([&] () -> future<> {
         // Reacquiring the write permit might be needed if retrying flush
         if (!permit.has_sstable_write_permit()) {
-            tlogger.debug("seal_active_memtable: reacquiring write permit");
+            LOGMACRO(tlogger, log_level::debug, "seal_active_memtable: reacquiring write permit");
             utils::get_local_injector().inject("table_seal_active_memtable_reacquire_write_permit", []() {
                 throw std::bad_alloc();
             });
@@ -1646,7 +1646,7 @@ table::try_flush_memtable_to_sstable(compaction_group& cg, lw_shared_ptr<memtabl
 
             auto newtab = make_sstable();
             newtabs.push_back(newtab);
-            tlogger.debug("Flushing to {}", newtab->get_filename());
+            LOGMACRO(tlogger, log_level::debug, "Flushing to {}", newtab->get_filename());
 
             auto monitor = database_sstable_write_monitor(permit, newtab, cg,
                 old->get_max_timestamp());
@@ -1671,7 +1671,7 @@ table::try_flush_memtable_to_sstable(compaction_group& cg, lw_shared_ptr<memtabl
                 co_await std::move(f);
                 co_await coroutine::parallel_for_each(newtabs, [] (auto& newtab) -> future<> {
                     co_await newtab->open_data();
-                    tlogger.debug("Flushing to {} done", newtab->get_filename());
+                    LOGMACRO(tlogger, log_level::debug, "Flushing to {} done", newtab->get_filename());
                 });
 
                 co_await with_scheduling_group(_config.memtable_to_cache_scheduling_group, [this, old, &newtabs, &cg] {
@@ -1689,7 +1689,7 @@ table::try_flush_memtable_to_sstable(compaction_group& cg, lw_shared_ptr<memtabl
                 });
 
                 cg.memtables()->erase(old);
-                tlogger.debug("Memtable for {}.{} replaced, into {} sstables", old->schema()->ks_name(), old->schema()->cf_name(), newtabs.size());
+                LOGMACRO(tlogger, log_level::debug, "Memtable for {}.{} replaced, into {} sstables", old->schema()->ks_name(), old->schema()->cf_name(), newtabs.size());
                 co_return;
             } catch (const std::exception& e) {
                 for (auto& newtab : newtabs) {
@@ -2181,7 +2181,7 @@ void compaction_group::set_compaction_strategy_state(compaction::compaction_stra
 }
 
 void table::set_compaction_strategy(sstables::compaction_strategy_type strategy) {
-    tlogger.debug("Setting compaction strategy of {}.{} to {}", _schema->ks_name(), _schema->cf_name(), sstables::compaction_strategy::name(strategy));
+    LOGMACRO(tlogger, log_level::debug, "Setting compaction strategy of {}.{} to {}", _schema->ks_name(), _schema->cf_name(), sstables::compaction_strategy::name(strategy));
     auto new_cs = make_compaction_strategy(strategy, _schema->compaction_strategy_options());
 
     struct compaction_group_strategy_updater {
@@ -2530,7 +2530,7 @@ table::table(schema_ptr schema, config config, lw_shared_ptr<const storage_optio
 }
 
 void table::on_flush_timer() {
-    tlogger.debug("on table {}.{} flush timer, period {}ms", _schema->ks_name(), _schema->cf_name(), _schema->memtable_flush_period());
+    LOGMACRO(tlogger, log_level::debug, "on table {}.{} flush timer, period {}ms", _schema->ks_name(), _schema->cf_name(), _schema->memtable_flush_period());
     (void)with_gate(_async_gate, [this] {
         return flush().finally([this] {
             if (_schema->memtable_flush_period() > 0) {
@@ -2572,7 +2572,7 @@ void tablet_storage_group_manager::handle_tablet_split_completion(const locator:
 
     unsigned growth_factor = log2ceil(new_tablet_count / old_tablet_count);
     unsigned split_size = 1 << growth_factor;
-    tlogger.debug("Growth factor: {}, split size {}", growth_factor, split_size);
+    LOGMACRO(tlogger, log_level::debug, "Growth factor: {}, split size {}", growth_factor, split_size);
 
     if (old_tablet_count * split_size != new_tablet_count) {
         on_internal_error(tlogger, format("New tablet count for table {} is unexpected, actual: {}, expected {}.",
@@ -2609,7 +2609,7 @@ void tablet_storage_group_manager::handle_tablet_split_completion(const locator:
             new_storage_groups[group_id] = make_lw_shared<storage_group>(std::move(split_ready_groups[i]));
         }
 
-        tlogger.debug("Remapping tablet {} of table {} into new tablets [{}].",
+        LOGMACRO(tlogger, log_level::debug, "Remapping tablet {} of table {} into new tablets [{}].",
                       id, table_id, fmt::join(std::views::iota(first_new_id, first_new_id+split_size), ", "));
     }
 
@@ -2642,7 +2642,7 @@ future<> tablet_storage_group_manager::merge_completion_fiber() {
             tlogger.info("Merge completion fiber finished, about to sleep");
         });
         co_await _merge_completion_event.wait();
-        tlogger.debug("Merge completion fiber woke up for {}.{}", schema()->ks_name(), schema()->cf_name());
+        LOGMACRO(tlogger, log_level::debug, "Merge completion fiber woke up for {}.{}", schema()->ks_name(), schema()->cf_name());
     }
 }
 
@@ -2876,7 +2876,7 @@ table::seal_snapshot(sstring jsondir, std::vector<snapshot_file_set> file_sets) 
     auto json = ss.str();
     auto jsonfile = jsondir + "/manifest.json";
 
-    tlogger.debug("Storing manifest {}", jsonfile);
+    LOGMACRO(tlogger, log_level::debug, "Storing manifest {}", jsonfile);
 
     co_await io_check([jsondir] { return recursive_touch_directory(jsondir); });
     auto f = co_await open_checked_file_dma(general_disk_error_handler, jsonfile, open_flags::wo | open_flags::create | open_flags::truncate);
@@ -2936,7 +2936,7 @@ future<> table::snapshot_on_all_shards(sharded<database>& sharded_db, const glob
     co_await smp::submit_to(orchestrator, [&] () -> future<> {
         auto& t = *table_shards;
         auto s = t.schema();
-        tlogger.debug("Taking snapshot of {}.{}: directory={}", s->ks_name(), s->cf_name(), jsondir);
+        LOGMACRO(tlogger, log_level::debug, "Taking snapshot of {}.{}: directory={}", s->ks_name(), s->cf_name(), jsondir);
 
         std::vector<table::snapshot_file_set> file_sets;
         file_sets.reserve(smp::count);
@@ -2973,12 +2973,12 @@ future<table::snapshot_file_set> table::take_snapshot(sstring jsondir) {
 future<> table::finalize_snapshot(database& db, sstring jsondir, std::vector<snapshot_file_set> file_sets) {
     std::exception_ptr ex;
 
-    tlogger.debug("snapshot {}: writing schema.cql", jsondir);
+    LOGMACRO(tlogger, log_level::debug, "snapshot {}: writing schema.cql", jsondir);
     co_await write_schema_as_cql(db, jsondir).handle_exception([&] (std::exception_ptr ptr) {
         tlogger.error("Failed writing schema file in snapshot in {} with exception {}", jsondir, ptr);
         ex = std::move(ptr);
     });
-    tlogger.debug("snapshot {}: seal_snapshot", jsondir);
+    LOGMACRO(tlogger, log_level::debug, "snapshot {}: seal_snapshot", jsondir);
     co_await seal_snapshot(jsondir, std::move(file_sets)).handle_exception([&] (std::exception_ptr ptr) {
         tlogger.error("Failed to seal snapshot in {}: {}.", jsondir, ptr);
         ex = std::move(ptr);
@@ -3218,7 +3218,7 @@ future<db::replay_position> table::discard_sstables(db_clock::time_point truncat
             cg.set_maintenance_sstables(std::move(maintenance_pruned));
         });
         refresh_compound_sstable_set();
-        tlogger.debug("cleaning out row cache");
+        LOGMACRO(tlogger, log_level::debug, "cleaning out row cache");
     }));
     rebuild_statistics();
 
@@ -3255,7 +3255,7 @@ db::commitlog* table::commitlog() const {
 
 void table::set_schema(schema_ptr s) {
     SCYLLA_ASSERT(s->is_counter() == _schema->is_counter());
-    tlogger.debug("Changing schema version of {}.{} ({}) from {} to {}",
+    LOGMACRO(tlogger, log_level::debug, "Changing schema version of {}.{} ({}) from {} to {}",
                 _schema->ks_name(), _schema->cf_name(), _schema->id(), _schema->version(), s->version());
 
     _flush_timer.cancel();
@@ -4035,7 +4035,7 @@ future<> compaction_group::cleanup() {
     auto updater = row_cache::external_updater(std::make_unique<compaction_group_cleaner>(*this));
 
     auto p_range = to_partition_range(token_range());
-    tlogger.debug("Invalidating range {} for compaction group {} of table {} during cleanup.",
+    LOGMACRO(tlogger, log_level::debug, "Invalidating range {} for compaction group {} of table {} during cleanup.",
                   p_range, group_id(), _t.schema()->ks_name(), _t.schema()->cf_name());
     // Since permit is still held, all actions below will be executed atomically:
     co_await _t._cache.invalidate(std::move(updater), p_range);

@@ -478,7 +478,7 @@ future<> raft_group0::leadership_monitor_fiber() {
             _leadership_observable.set(false);
         }
     } catch (...) {
-        group0_log.debug("leadership_monitor_fiber aborted with {}", std::current_exception());
+        LOGMACRO(group0_log, log_level::debug, "leadership_monitor_fiber aborted with {}", std::current_exception());
     }
 }
 
@@ -1118,7 +1118,7 @@ future<persistent_discovery> persistent_discovery::make(discovery_peer my_addr, 
 
 future<std::optional<discovery::peer_list>> persistent_discovery::request(peer_list peers) {
     for (auto& p: peers) {
-        group0_log.debug("discovery: request peer: id={}, ip={}", p.id, p.ip_addr);
+        LOGMACRO(group0_log, log_level::debug, "discovery: request peer: id={}, ip={}", p.id, p.ip_addr);
     }
 
     if (_gate.is_closed()) {
@@ -1136,7 +1136,7 @@ future<std::optional<discovery::peer_list>> persistent_discovery::request(peer_l
 void persistent_discovery::response(discovery_peer from, const peer_list& peers) {
     // The peers discovered here will be persisted on the next `request` or `tick`.
     for (auto& p: peers) {
-        group0_log.debug("discovery: response peer: id={}, ip={}", p.id, p.ip_addr);
+        LOGMACRO(group0_log, log_level::debug, "discovery: response peer: id={}, ip={}", p.id, p.ip_addr);
     }
     _discovery.response(std::move(from), peers);
 }
@@ -1160,7 +1160,7 @@ persistent_discovery::persistent_discovery(discovery_peer my_addr, const peer_li
     , _gate("raft_group0::persistent_discovery")
 {
     for (auto& addr: seeds) {
-        group0_log.debug("discovery: seed peer: id={}, info={}", addr.id, addr.ip_addr);
+        LOGMACRO(group0_log, log_level::debug, "discovery: seed peer: id={}, info={}", addr.id, addr.ip_addr);
     }
 }
 

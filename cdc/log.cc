@@ -1694,7 +1694,7 @@ public:
       } catch (exceptions::unavailable_exception& e) {
         // `query` can throw `unavailable_exception`, which is seen by clients as ~ "NoHostAvailable". 
         // So, we'll translate it to a `read_failure_exception` with custom message.
-        cdc_log.debug("Preimage: translating a (read) `unavailable_exception` to `request_execution_exception` - {}", e);
+        LOGMACRO(cdc_log, log_level::debug, "Preimage: translating a (read) `unavailable_exception` to `request_execution_exception` - {}", e);
         throw exceptions::read_failure_exception("CDC preimage query could not achieve the CL.",
                 e.consistency, e.alive, 0, e.required, false);
       }

@@ -22,7 +22,7 @@ void row_locker::upgrade(schema_ptr new_schema) {
     if (new_schema == _schema) {
         return;
     }
-    mylog.debug("row_locker::upgrade from {} to {}", fmt::ptr(_schema.get()), fmt::ptr(new_schema.get()));
+    LOGMACRO(mylog, log_level::debug, "row_locker::upgrade from {} to {}", fmt::ptr(_schema.get()), fmt::ptr(new_schema.get()));
     _schema = new_schema;
 }
 
@@ -69,7 +69,7 @@ void row_locker::latency_stats_tracker::lock_acquired() {
 
 future<row_locker::lock_holder>
 row_locker::lock_pk(const dht::decorated_key& pk, bool exclusive, db::timeout_clock::time_point timeout, stats& stats) {
-    mylog.debug("taking {} lock on entire partition {}", (exclusive ? "exclusive" : "shared"), pk);
+    LOGMACRO(mylog, log_level::debug, "taking {} lock on entire partition {}", (exclusive ? "exclusive" : "shared"), pk);
     auto tracker = latency_stats_tracker(exclusive ? stats.exclusive_partition : stats.shared_partition);
     auto i = _two_level_locks.try_emplace(pk, this).first;
     auto f = exclusive ? i->second._partition_lock.write_lock(timeout) : i->second._partition_lock.read_lock(timeout);
@@ -84,7 +84,7 @@ row_locker::lock_pk(const dht::decorated_key& pk, bool exclusive, db::timeout_cl
 
 future<row_locker::lock_holder>
 row_locker::lock_ck(const dht::decorated_key& pk, const clustering_key_prefix& cpk, bool exclusive, db::timeout_clock::time_point timeout, stats& stats) {
-    mylog.debug("taking shared lock on partition {}, and {} lock on row {} in it", pk, (exclusive ? "exclusive" : "shared"), cpk);
+    LOGMACRO(mylog, log_level::debug, "taking shared lock on partition {}, and {} lock on row {} in it", pk, (exclusive ? "exclusive" : "shared"), cpk);
     auto tracker = latency_stats_tracker(exclusive ? stats.exclusive_row : stats.shared_row);
     auto ck = cpk;
     // Create a two-level lock entry for the partition if it doesn't exist already.
@@ -161,7 +161,7 @@ row_locker::unlock(const dht::decorated_key* pk, bool partition_exclusive,
                 return;
             }
             SCYLLA_ASSERT(&rli->first == cpk);
-            mylog.debug("releasing {} lock for row {} in partition {}", (row_exclusive ? "exclusive" : "shared"), *cpk, *pk);
+            LOGMACRO(mylog, log_level::debug, "releasing {} lock for row {} in partition {}", (row_exclusive ? "exclusive" : "shared"), *cpk, *pk);
             auto& lock = rli->second;
             if (row_exclusive) {
                 lock.write_unlock();
@@ -169,11 +169,11 @@ row_locker::unlock(const dht::decorated_key* pk, bool partition_exclusive,
                 lock.read_unlock();
             }
             if (!lock.locked()) {
-                mylog.debug("Erasing lock object for row {} in partition {}", *cpk, *pk);
+                LOGMACRO(mylog, log_level::debug, "Erasing lock object for row {} in partition {}", *cpk, *pk);
                 pli->second._row_locks.erase(rli);
             }
         }
-        mylog.debug("releasing {} lock for entire partition {}", (partition_exclusive ? "exclusive" : "shared"), *pk);
+        LOGMACRO(mylog, log_level::debug, "releasing {} lock for entire partition {}", (partition_exclusive ? "exclusive" : "shared"), *pk);
         auto& lock = pli->second._partition_lock;
         if (partition_exclusive) {
             lock.write_unlock();
@@ -181,7 +181,7 @@ row_locker::unlock(const dht::decorated_key* pk, bool partition_exclusive,
             lock.read_unlock();
         }
         if (!lock.locked()) {
-            mylog.debug("Erasing lock object for partition {}", *pk);
+            LOGMACRO(mylog, log_level::debug, "Erasing lock object for partition {}", *pk);
             _two_level_locks.erase(pli);
         }
      }

@@ -1267,7 +1267,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_group) {
         if (scheduling_groups.size() >= max_sched_groups) {
             return false;
         }
-        testlog.debug("create sg{}", sgi);
+        LOGMACRO(testlog, log_level::debug, "create sg{}", sgi);
         scheduling_group sg;
         const auto sg_name = format("sg{}", sgi++);
         if (recycle_bin.empty()) {
@@ -1288,12 +1288,12 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_group) {
     }
 
     for (size_t i = 0; i < 32; ++i) {
-        testlog.debug("iteration {}", i);
+        LOGMACRO(testlog, log_level::debug, "iteration {}", i);
         std::shuffle(scheduling_groups.begin(), scheduling_groups.end(), tests::random::gen());
         switch (tests::random::get_int<uint8_t>(0, 3)) {
             case 0: // add
             {
-                testlog.debug("maybe add sg");
+                LOGMACRO(testlog, log_level::debug, "maybe add sg");
                 if (add_sg()) {
                     break;
                 }
@@ -1302,9 +1302,9 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_group) {
             case 1: //remove
             {
                 const auto& sgs = scheduling_groups.back();
-                testlog.debug("maybe remove {}", sgs.sg.name());
+                LOGMACRO(testlog, log_level::debug, "maybe remove {}", sgs.sg.name());
                 if (scheduling_groups.size() > 1) {
-                    testlog.debug("remove {}", sgs.sg.name());
+                    LOGMACRO(testlog, log_level::debug, "remove {}", sgs.sg.name());
                     sem_group.remove(sgs.sg).get();
                     recycle_bin.push_back(sgs.sg);
                     scheduling_groups.pop_back();
@@ -1317,7 +1317,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_group) {
                 auto& sgs = scheduling_groups.back();
                 const auto new_shares = tests::random::get_int<size_t>(100, 1000);
                 sgs.shares = new_shares;
-                testlog.debug("update {}: {}->{}", sgs.sg.name(), sgs.shares, new_shares);
+                LOGMACRO(testlog, log_level::debug, "update {}: {}->{}", sgs.sg.name(), sgs.shares, new_shares);
                 sem_group.add_or_update(sgs.sg, new_shares);
                 sem_group.wait_adjust_complete().get();
                 break;
@@ -1362,7 +1362,7 @@ private:
     bool _success = true;
 public:
     explicit allocating_reader(reader_concurrency_semaphore& sem) : _sem(sem) {
-        testlog.debug("[{}] allocating_reader created", fmt::ptr(this));
+        LOGMACRO(testlog, log_level::debug, "[{}] allocating_reader created", fmt::ptr(this));
         _admission_fut = sem.obtain_permit(nullptr, "reader", admission_cost, db::no_timeout, {}).then_wrapped([this] (future<reader_permit>&& permit_fut) {
             try {
                 _permit = std::move(permit_fut.get());
@@ -1375,7 +1375,7 @@ public:
     }
     ~allocating_reader() { }
     void operator()() {
-        testlog.debug("[{}|p:0x{:x}] allocating_reader(): _state={}, _permit.state={}, _permit.resources={}, _sem.resources={}",
+        LOGMACRO(testlog, log_level::debug, "[{}|p:0x{:x}] allocating_reader(): _state={}, _permit.state={}, _permit.resources={}, _sem.resources={}",
                 fmt::ptr(this),
                 _permit ? _permit->id() : 0,
                 to_string(_state),
@@ -1399,7 +1399,7 @@ public:
                         _pending_resource_units.emplace_back(_permit->request_memory(buf_size));
                     }
                 } catch (std::bad_alloc&) {
-                    testlog.debug("[{}|p:{}] read killed", fmt::ptr(this), _permit ? _permit->id() : 0);
+                    LOGMACRO(testlog, log_level::debug, "[{}|p:{}] read killed", fmt::ptr(this), _permit ? _permit->id() : 0);
                     _read_count = read_iterations;
                 }
                 _state = state::wait_for_memory;
@@ -1411,7 +1411,7 @@ public:
                         try {
                             _current_resource_units.push_back(it->get());
                         } catch (std::bad_alloc&) {
-                            testlog.debug("[{}|p:{}] read killed", fmt::ptr(this), _permit ? _permit->id() : 0);
+                            LOGMACRO(testlog, log_level::debug, "[{}|p:{}] read killed", fmt::ptr(this), _permit ? _permit->id() : 0);
                             _read_count = read_iterations;
                         }
                         it = _pending_resource_units.erase(it);
@@ -1484,7 +1484,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_memory_limit_no_leaks
     bool done = false;
     sstring error = "";
     while (!done) {
-        testlog.debug("iteration {}", i);
+        LOGMACRO(testlog, log_level::debug, "iteration {}", i);
 
         for (auto& rd : readers) {
             rd();
@@ -1500,7 +1500,7 @@ SEASTAR_THREAD_TEST_CASE(test_reader_concurrency_semaphore_memory_limit_no_leaks
         }
         done = std::all_of(readers.begin(), readers.end(), std::mem_fn(&allocating_reader::done));
 
-        testlog.debug("{}", semaphore.dump_diagnostics());
+        LOGMACRO(testlog, log_level::debug, "{}", semaphore.dump_diagnostics());
 
         reader_resources all_permit_res;
         semaphore.foreach_permit([&all_permit_res] (const reader_permit& p) { all_permit_res += p.consumed_resources(); });

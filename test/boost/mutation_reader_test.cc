@@ -2112,7 +2112,7 @@ SEASTAR_THREAD_TEST_CASE(test_multishard_combining_reader_destroyed_with_pending
         }));
 
         // Destroy reader.
-        testlog.debug("Starting to close the reader");
+        LOGMACRO(testlog, log_level::debug, "Starting to close the reader");
         auto fut = reader.close();
 
         parallel_for_each(std::views::iota(0u, smp::count), [&remote_controls] (unsigned shard) mutable {
@@ -2122,7 +2122,7 @@ SEASTAR_THREAD_TEST_CASE(test_multishard_combining_reader_destroyed_with_pending
         }).get();
 
         fut.get();
-        testlog.debug("Reader is closed");
+        LOGMACRO(testlog, log_level::debug, "Reader is closed");
 
         BOOST_REQUIRE(eventually_true([&] {
             return map_reduce(std::views::iota(0u, smp::count), [&] (unsigned shard) {

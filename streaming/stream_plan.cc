@@ -44,7 +44,7 @@ stream_plan& stream_plan::transfer_ranges(locator::host_id to, sstring keyspace,
 }
 
 future<stream_state> stream_plan::execute() {
-    sslog.debug("[Stream #{}] Executing stream_plan description={} range_added={}", _plan_id, _description, _range_added);
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] Executing stream_plan description={} range_added={}", _plan_id, _description, _range_added);
     if (!_range_added) {
         stream_state state(_plan_id, _description, std::vector<session_info>());
         return make_ready_future<stream_state>(std::move(state));

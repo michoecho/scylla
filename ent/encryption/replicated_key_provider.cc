@@ -304,17 +304,17 @@ future<std::tuple<UUID, key_ptr>> replicated_key_provider::get_key(const key_inf
 
     if (id.id) {
         uuid = utils::UUID_gen::get_UUID(*id.id);
-        log.debug("Finding key {} ({})", uuid, info);
+        LOGMACRO(log, log_level::debug, "Finding key {} ({})", uuid, info);
         auto s = fmt::format("SELECT * FROM {}.{} WHERE key_file=? AND cipher=? AND strength=? AND key_id=?;", KSNAME, TABLENAME);
         res = co_await query(std::move(s), _system_key->name(), cipher, int32_t(id.info.len), uuid);
 
         // if we find nothing, and we actually queried a specific key (by uuid), we've failed.
         if (res->empty()) {
-            log.debug("Could not find key {}", id.id);
+            LOGMACRO(log, log_level::debug, "Could not find key {}", id.id);
             throw std::runtime_error(fmt::format("Unable to find key for cipher={} strength={} id={}", cipher, id.info.len, uuid));
         }
     } else {
-        log.debug("Finding key ({})", info);
+        LOGMACRO(log, log_level::debug, "Finding key ({})", info);
         auto s = fmt::format("SELECT * FROM {}.{} WHERE key_file=? AND cipher=? AND strength=? LIMIT 1;", KSNAME, TABLENAME);
         res = co_await query(std::move(s), _system_key->name(), cipher, int32_t(id.info.len));
     }
@@ -323,7 +323,7 @@ future<std::tuple<UUID, key_ptr>> replicated_key_provider::get_key(const key_inf
     if (res->empty()) {
         uuid = utils::UUID_gen::get_time_UUID();
 
-        log.debug("No key found. Generating {}", uuid);
+        LOGMACRO(log, log_level::debug, "No key found. Generating {}", uuid);
 
         auto k = make_shared<symmetric_key>(id.info);
         store_key(id, uuid, k);
@@ -390,7 +390,7 @@ future<> replicated_key_provider::do_initialize_tables(::replica::database& db, 
         co_return;
     }
 
-    log.debug("Creating keyspace and table");
+    LOGMACRO(log, log_level::debug, "Creating keyspace and table");
     if (!db.has_keyspace(KSNAME)) {
         auto group0_guard = co_await mm.start_group0_operation();
         auto ts = group0_guard.write_timestamp();
@@ -455,7 +455,7 @@ shared_ptr<key_provider> replicated_key_provider_factory::get_provider(encryptio
         ctxt.cache_provider(name, rp);
 
         if (debug && debug->find("nocache") != sstring::npos) {
-            log.debug("Turn off cache");
+            LOGMACRO(log, log_level::debug, "Turn off cache");
             rp->_use_cache = false;
         }
         p = std::move(rp);

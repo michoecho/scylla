@@ -462,7 +462,7 @@ public:
         , _voters_max(calc_voters_max(voters_max, nodes, _datacenters, _largest_dc_size))
         , _voters_max_per_dc(calc_voters_max_per_dc(_voters_max, nodes, _datacenters, _largest_dc_size)) {
 
-        rvlogger.debug("Max voters/per DC: {}/{}", _voters_max, _voters_max_per_dc);
+        LOGMACRO(rvlogger, log_level::debug, "Max voters/per DC: {}/{}", _voters_max, _voters_max_per_dc);
     }
 
     [[nodiscard]] group0_voter_calculator::voters_set_t distribute_voters() {
@@ -530,7 +530,7 @@ future<> group0_voter_handler::update_nodes(
             if (it == _topology.normal_nodes.end()) {
                 // This is expected, as the nodes present in the gossiper may not be present
                 // in the topology yet or any more.
-                rvlogger.debug("Node {} not found in the topology", id);
+                LOGMACRO(rvlogger, log_level::debug, "Node {} not found in the topology", id);
                 continue;
             }
             add_node(id, it->second, is_alive);
@@ -545,7 +545,7 @@ future<> group0_voter_handler::update_nodes(
         const auto itr = nodes.find(id);
         if (itr != nodes.end()) {
             // This is expected
-            rvlogger.debug("Node {} to be added is already a member", id);
+            LOGMACRO(rvlogger, log_level::debug, "Node {} to be added is already a member", id);
             continue;
         }
         const auto it = _topology.normal_nodes.find(id);
@@ -600,7 +600,7 @@ group0_voter_calculator::group0_voter_calculator(std::optional<size_t> voters_ma
 group0_voter_calculator::voters_set_t group0_voter_calculator::distribute_voters(const nodes_list_t& nodes) const {
     const auto& nodes_filtered = nodes | std::views::filter([](const auto& node_entry) {
         const auto& [id, node] = node_entry;
-        rvlogger.debug("Node: {}, DC: {}, is_voter: {}, is_alive: {}", id, node.datacenter, node.is_voter, node.is_alive);
+        LOGMACRO(rvlogger, log_level::debug, "Node: {}, DC: {}, is_voter: {}, is_alive: {}", id, node.datacenter, node.is_voter, node.is_alive);
         if (node.is_alive || node.is_voter) {
             return true;
         }

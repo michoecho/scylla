@@ -74,7 +74,7 @@ network_topology_strategy::network_topology_strategy(replication_strategy_params
 
     _rep_factor = rep_factor;
 
-    rslogger.debug("Configured datacenter replicas are: {}", _dc_rep_factor);
+    LOGMACRO(rslogger, log_level::debug, "Configured datacenter replicas are: {}", _dc_rep_factor);
 }
 
 using endpoint_dc_rack_set = std::unordered_set<endpoint_dc_rack>;
@@ -310,7 +310,7 @@ future<tablet_map> network_topology_strategy::reallocate_tablets(schema_ptr s, t
     load_sketch load(tm);
     co_await load.populate(std::nullopt, s->id());
 
-    tablet_logger.debug("Allocating tablets for {}.{} ({}): dc_rep_factor={} tablet_count={}", s->ks_name(), s->cf_name(), s->id(), _dc_rep_factor, tablets.tablet_count());
+    LOGMACRO(tablet_logger, log_level::debug, "Allocating tablets for {}.{} ({}): dc_rep_factor={} tablet_count={}", s->ks_name(), s->cf_name(), s->id(), _dc_rep_factor, tablets.tablet_count());
 
     for (tablet_id tb : tablets.tablet_ids()) {
         auto tinfo = tablets.get_tablet_info(tb);
@@ -318,7 +318,7 @@ future<tablet_map> network_topology_strategy::reallocate_tablets(schema_ptr s, t
         tablets.set_tablet(tb, std::move(tinfo));
     }
 
-    tablet_logger.debug("Allocated tablets for {}.{} ({}): dc_rep_factor={}: {}", s->ks_name(), s->cf_name(), s->id(), _dc_rep_factor, tablets);
+    LOGMACRO(tablet_logger, log_level::debug, "Allocated tablets for {}.{} ({}): dc_rep_factor={}: {}", s->ks_name(), s->cf_name(), s->id(), _dc_rep_factor, tablets);
     co_return tablets;
 }
 
@@ -481,7 +481,7 @@ future<tablet_replica_set> network_topology_strategy::add_tablets_in_dc(schema_p
         return replica;
     };
 
-    tablet_logger.debug("allocate_replica {}.{} tablet_id={}: allocating tablet replicas in dc={} allocated={} rf={}",
+    LOGMACRO(tablet_logger, log_level::debug, "allocate_replica {}.{} tablet_id={}: allocating tablet replicas in dc={} allocated={} rf={}",
             s->ks_name(), s->cf_name(), tb.id, dc, dc_node_count, dc_rf);
 
     for (size_t remaining = dc_rf - dc_node_count; remaining; --remaining) {
@@ -500,7 +500,7 @@ future<tablet_replica_set> network_topology_strategy::add_tablets_in_dc(schema_p
 tablet_replica_set network_topology_strategy::drop_tablets_in_dc(schema_ptr s, const locator::topology& topo, load_sketch& load, tablet_id tb,
         const tablet_replica_set& cur_replicas,
         sstring dc, size_t dc_node_count, size_t dc_rf) const {
-    tablet_logger.debug("drop_tablets_in_dc {}.{} tablet_id={}: deallocating tablet replicas in dc={} allocated={} rf={}", s->ks_name(), s->cf_name(), tb.id, dc, dc_node_count, dc_rf);
+    LOGMACRO(tablet_logger, log_level::debug, "drop_tablets_in_dc {}.{} tablet_id={}: deallocating tablet replicas in dc={} allocated={} rf={}", s->ks_name(), s->cf_name(), tb.id, dc, dc_node_count, dc_rf);
 
     // Leave dc_rf replicas in dc, effectively deallocating in reverse order,
     // to maintain replica pairing between the base table and its materialized views.

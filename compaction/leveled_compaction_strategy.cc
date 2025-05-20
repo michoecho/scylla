@@ -32,7 +32,7 @@ compaction_descriptor leveled_compaction_strategy::get_sstables_for_compaction(t
     auto candidate = manifest.get_compaction_candidates(*state.last_compacted_keys, state.compaction_counter);
 
     if (!candidate.sstables.empty()) {
-        leveled_manifest::logger.debug("leveled: Compacting {} out of {} sstables", candidate.sstables.size(), table_s.main_sstable_set().all()->size());
+        leveled_manifest::LOGMACRO(logger, log_level::debug, "leveled: Compacting {} out of {} sstables", candidate.sstables.size(), table_s.main_sstable_set().all()->size());
         return candidate;
     }
 
@@ -106,7 +106,7 @@ void leveled_compaction_strategy::notify_completion(table_state& table_s, const 
 
     if (leveled_manifest::logger.level() == logging::log_level::debug) {
         for (auto j = 0U; j < state.compaction_counter.size(); j++) {
-            leveled_manifest::logger.debug("CompactionCounter: {}: {}", j, state.compaction_counter[j]);
+            leveled_manifest::LOGMACRO(logger, log_level::debug, "CompactionCounter: {}: {}", j, state.compaction_counter[j]);
         }
     }
 }
@@ -154,7 +154,7 @@ leveled_compaction_strategy::get_reshaping_job(std::vector<shared_sstable> input
 
     auto max_sstable_size_in_bytes = _max_sstable_size_in_mb * 1024 * 1024;
 
-    clogger.debug("get_reshaping_job: mode={} input.size={} max_sstable_size_in_bytes={}", mode == reshape_mode::relaxed ? "relaxed" : "strict", input.size(), max_sstable_size_in_bytes);
+    LOGMACRO(clogger, log_level::debug, "get_reshaping_job: mode={} input.size={} max_sstable_size_in_bytes={}", mode == reshape_mode::relaxed ? "relaxed" : "strict", input.size(), max_sstable_size_in_bytes);
 
     for (auto& sst : input) {
         auto sst_level = sst->get_sstable_level();

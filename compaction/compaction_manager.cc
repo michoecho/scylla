@@ -332,11 +332,11 @@ compaction_task_executor::compaction_task_executor(compaction_manager& mgr, thro
 {}
 
 future<compaction_manager::compaction_stats_opt> compaction_manager::perform_task(shared_ptr<compaction_task_executor> task, throw_if_stopping do_throw_if_stopping) {
-    cmlog.debug("{}: started", *task);
+    LOGMACRO(cmlog, log_level::debug, "{}: started", *task);
 
     try {
         auto&& res = co_await task->run_compaction();
-        cmlog.debug("{}: done", *task);
+        LOGMACRO(cmlog, log_level::debug, "{}: done", *task);
         co_return res;
     } catch (sstables::compaction_stopped_exception& e) {
         cmlog.info("{}: stopped, reason: {}", *task, e.what());
@@ -706,7 +706,7 @@ compaction_manager::compaction_reenabler::compaction_reenabler(compaction_manage
     , _holder(_compaction_state.gate.hold())
 {
     _compaction_state.compaction_disabled_counter++;
-    cmlog.debug("Temporarily disabled compaction for {}. compaction_disabled_counter={}",
+    LOGMACRO(cmlog, log_level::debug, "Temporarily disabled compaction for {}. compaction_disabled_counter={}",
             t, _compaction_state.compaction_disabled_counter);
 }
 
@@ -720,7 +720,7 @@ compaction_manager::compaction_reenabler::compaction_reenabler(compaction_reenab
 compaction_manager::compaction_reenabler::~compaction_reenabler() {
     // submit compaction request if we're the last holder of the gate which is still opened.
     if (_table && --_compaction_state.compaction_disabled_counter == 0 && !_compaction_state.gate.is_closed()) {
-        cmlog.debug("Reenabling compaction for {}", *_table);
+        LOGMACRO(cmlog, log_level::debug, "Reenabling compaction for {}", *_table);
         try {
             _cm.submit(*_table);
         } catch (...) {
@@ -832,7 +832,7 @@ compaction_task_executor::state compaction_task_executor::switch_state(state new
         ++_cm._stats.completed_tasks;
         break;
     }
-    cmlog.debug("{}: switch_state: {} -> {}: pending={} active={} done={} errors={}", *this, old_state, new_state,
+    LOGMACRO(cmlog, log_level::debug, "{}: switch_state: {} -> {}: pending={} active={} done={} errors={}", *this, old_state, new_state,
             _cm._stats.pending_tasks, _cm._stats.active_tasks, _cm._stats.completed_tasks, _cm._stats.errors);
     return old_state;
 }
@@ -842,7 +842,7 @@ void sstables_task_executor::set_sstables(std::vector<sstables::shared_sstable> 
         on_internal_error(cmlog, format("sstables were already set"));
     }
     _sstables = std::move(new_sstables);
-    cmlog.debug("{}: set_sstables: {} sstable{}", *this, _sstables.size(), _sstables.size() > 1 ? "s" : "");
+    LOGMACRO(cmlog, log_level::debug, "{}: set_sstables: {} sstable{}", *this, _sstables.size(), _sstables.size() > 1 ? "s" : "");
     _cm._stats.pending_tasks += _sstables.size() - (_state == state::pending);
 }
 
@@ -853,7 +853,7 @@ sstables::shared_sstable sstables_task_executor::consume_sstable() {
     auto sst = _sstables.back();
     _sstables.pop_back();
     --_cm._stats.pending_tasks; // from this point on, switch_state(pending|active) works the same way as any other task
-    cmlog.debug("{}", format("consumed {}", sst->get_filename()));
+    LOGMACRO(cmlog, log_level::debug, "{}", format("consumed {}", sst->get_filename()));
     return sst;
 }
 
@@ -1051,7 +1051,7 @@ future<> compaction_manager::postponed_compactions_reevaluation() {
                 if (!_compaction_state.contains(t)) {
                     continue;
                 }
-                cmlog.debug("resubmitting postponed compaction for table {} [{}]", *t, fmt::ptr(t));
+                LOGMACRO(cmlog, log_level::debug, "resubmitting postponed compaction for table {} [{}]", *t, fmt::ptr(t));
                 submit(*t);
                 co_await coroutine::maybe_yield();
             }
@@ -1073,7 +1073,7 @@ future<> compaction_manager::stop_tasks(std::vector<shared_ptr<compaction_task_e
     // To prevent compaction from being postponed while tasks are being stopped,
     // let's stop all tasks before the deferring point below.
     for (auto& t : tasks) {
-        cmlog.debug("Stopping {}", *t);
+        LOGMACRO(cmlog, log_level::debug, "Stopping {}", *t);
         t->stop_compaction(reason);
     }
     co_await coroutine::parallel_for_each(tasks, [] (auto& task) -> future<> {
@@ -1085,10 +1085,10 @@ future<> compaction_manager::stop_tasks(std::vector<shared_ptr<compaction_task_e
             // as it happens with reshard and reshape.
         } catch (...) {
             // just log any other errors as the callers have nothing to do with them.
-            cmlog.debug("Stopping {}: task returned error: {}", *task, std::current_exception());
+            LOGMACRO(cmlog, log_level::debug, "Stopping {}: task returned error: {}", *task, std::current_exception());
             co_return;
         }
-        cmlog.debug("Stopping {}: done", *task);
+        LOGMACRO(cmlog, log_level::debug, "Stopping {}: done", *task);
     });
 }
 
@@ -1279,11 +1279,11 @@ protected:
             int weight = calculate_weight(descriptor);
 
             if (descriptor.sstables.empty() || !can_proceed() || t.is_auto_compaction_disabled_by_user()) {
-                cmlog.debug("{}: sstables={} can_proceed={} auto_compaction={}", *this, descriptor.sstables.size(), can_proceed(), t.is_auto_compaction_disabled_by_user());
+                LOGMACRO(cmlog, log_level::debug, "{}: sstables={} can_proceed={} auto_compaction={}", *this, descriptor.sstables.size(), can_proceed(), t.is_auto_compaction_disabled_by_user());
                 co_return std::nullopt;
             }
             if (!_cm.can_register_compaction(t, weight, descriptor.fan_in())) {
-                cmlog.debug("Refused compaction job ({} sstable(s)) of weight {} for {}, postponing it...",
+                LOGMACRO(cmlog, log_level::debug, "Refused compaction job ({} sstable(s)) of weight {} for {}, postponing it...",
                     descriptor.sstables.size(), weight, t);
                 switch_state(state::postponed);
                 _cm.postpone_compaction_for_table(&t);
@@ -1292,7 +1292,7 @@ protected:
             auto compacting = compacting_sstable_registration(_cm, _cm.get_compaction_state(&t), descriptor.sstables);
             auto weight_r = compaction_weight_registration(&_cm, weight);
             auto on_replace = compacting.update_on_sstable_replacement();
-            cmlog.debug("Accepted compaction job: task={} ({} sstable(s)) of weight {} for {}",
+            LOGMACRO(cmlog, log_level::debug, "Accepted compaction job: task={} ({} sstable(s)) of weight {} for {}",
                 fmt::ptr(this), descriptor.sstables.size(), weight, t);
 
             setup_new_compaction(descriptor.run_identifier);
@@ -1512,7 +1512,7 @@ protected:
                 table_state& t = *_compacting_table;
                 auto size = t.maintenance_sstable_set().size();
                 if (!size) {
-                    cmlog.debug("Skipping off-strategy compaction for {}, No candidates were found", t);
+                    LOGMACRO(cmlog, log_level::debug, "Skipping off-strategy compaction for {}, No candidates were found", t);
                     finish_compaction();
                     co_return std::nullopt;
                 }
@@ -2013,7 +2013,7 @@ future<> compaction_manager::perform_cleanup(owned_ranges_ptr sorted_owned_range
             return false;
         };
 
-        cmlog.debug("perform_cleanup: waiting for sstables to become eligible for cleanup");
+        LOGMACRO(cmlog, log_level::debug, "perform_cleanup: waiting for sstables to become eligible for cleanup");
         try {
             co_await t.get_staging_done_condition().when(sleep_duration, [&] { return has_sstables_eligible_for_compaction(); });
         } catch (const seastar::condition_variable_timed_out&) {
@@ -2060,7 +2060,7 @@ future<> compaction_manager::try_perform_cleanup(owned_ranges_ptr sorted_owned_r
     });
 
     if (cs.sstables_requiring_cleanup.empty()) {
-        cmlog.debug("perform_cleanup for {} found no sstables requiring cleanup", t);
+        LOGMACRO(cmlog, log_level::debug, "perform_cleanup for {} found no sstables requiring cleanup", t);
         co_return;
     }
 
@@ -2253,7 +2253,7 @@ bool compaction_manager::compaction_disabled(table_state& t) const {
     if (auto it = _compaction_state.find(&t); it != _compaction_state.end()) {
         return it->second.compaction_disabled();
     } else {
-        cmlog.debug("compaction_disabled: {}:{} not in compaction_state", t.schema()->id(), t.get_group_id());
+        LOGMACRO(cmlog, log_level::debug, "compaction_disabled: {}:{} not in compaction_state", t.schema()->id(), t.get_group_id());
         // Compaction is not strictly disabled, but it is not enabled either.
         // The callers actually care about if it's enabled or not, not about the actual state of
         // compaction_state::compaction_disabled()

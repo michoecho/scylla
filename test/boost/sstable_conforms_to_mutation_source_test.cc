@@ -199,7 +199,7 @@ SEASTAR_THREAD_TEST_CASE(test_sstable_reversing_reader_random_schema) {
     auto random_spec = tests::make_random_schema_specification(get_name());
     auto random_schema = tests::random_schema{tests::random::get_int<uint32_t>(), *random_spec};
     auto query_schema = random_schema.schema();
-    testlog.debug("Random schema:\n{}", random_schema.cql());
+    LOGMACRO(testlog, log_level::debug, "Random schema:\n{}", random_schema.cql());
 
     auto muts = tests::generate_random_mutations(random_schema).get();
 

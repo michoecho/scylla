@@ -268,7 +268,7 @@ protected:
 
 future<std::string> server::verify_signature(const request& req, const chunked_content& content) {
     if (!_enforce_authorization) {
-        slogger.debug("Skipping authorization");
+        LOGMACRO(slogger, log_level::debug, "Skipping authorization");
         return make_ready_future<std::string>();
     }
     auto host_it = req._headers.find("Host");

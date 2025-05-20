@@ -388,7 +388,7 @@ SEASTAR_THREAD_TEST_CASE(test_timestamp_based_splitting_mutation_writer) {
 
     segregate_by_timestamp(make_mutation_reader_from_mutations(random_schema.schema(), semaphore.make_permit(), muts), classify_fn, std::move(consumer)).get();
 
-    testlog.debug("Data split into {} buckets: {}", buckets.size(), buckets | std::views::keys | std::ranges::to<std::vector>());
+    LOGMACRO(testlog, log_level::debug, "Data split into {} buckets: {}", buckets.size(), buckets | std::views::keys | std::ranges::to<std::vector>());
 
     assert_that_segregator_produces_correct_data(buckets, muts, semaphore.make_permit(), random_schema);
 }
@@ -414,7 +414,7 @@ static void assert_that_segregator_produces_correct_data(const bucket_map_t& buc
 
     BOOST_REQUIRE_EQUAL(combined_mutations.size(), muts.size());
     for (size_t i = 0; i < muts.size(); ++i) {
-        testlog.debug("Comparing mutation #{}", i);
+        LOGMACRO(testlog, log_level::debug, "Comparing mutation #{}", i);
         assert_that(combined_mutations[i]).is_equal_to(muts[i]);
     }
 }

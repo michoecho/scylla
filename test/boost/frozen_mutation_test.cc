@@ -46,7 +46,7 @@ std::ostream& operator<<(std::ostream& os, const mutation_fragment::printer& p) 
 SEASTAR_THREAD_TEST_CASE(test_writing_and_reading) {
     for (auto do_freeze_gently : {false, true}) {
         for (auto do_unfreeze_gently : {false, true}) {
-            testlog.debug("test_writing_and_reading: freeze_gently={} unfreeze_gently={}", do_freeze_gently, do_unfreeze_gently);
+            LOGMACRO(testlog, log_level::debug, "test_writing_and_reading: freeze_gently={} unfreeze_gently={}", do_freeze_gently, do_unfreeze_gently);
             for_each_mutation([&](const mutation &m) {
                 auto frozen = do_freeze_gently ? freeze_gently(m).get() : freeze(m);
                 BOOST_REQUIRE_EQUAL(frozen.schema_version(), m.schema()->version());

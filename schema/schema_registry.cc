@@ -41,7 +41,7 @@ schema_registry_entry::schema_registry_entry(table_schema_version v, schema_regi
     , _sync_state(sync_state::NOT_SYNCED)
 {
     _erase_timer.set_callback([this] {
-        slogger.debug("Dropping {}", _version);
+        LOGMACRO(slogger, log_level::debug, "Dropping {}", _version);
         SCYLLA_ASSERT(!_schema);
         try {
             _registry._entries.erase(_version);
@@ -70,7 +70,7 @@ void schema_registry::attach_table(schema_registry_entry& e) noexcept {
         e.set_table(table.weak_from_this());
     } catch (const replica::no_such_column_family&) {
         if (slogger.is_enabled(seastar::log_level::debug)) {
-            slogger.debug("No table for schema version {} of {}.{}: {}", e._version,
+            LOGMACRO(slogger, log_level::debug, "No table for schema version {} of {}.{}: {}", e._version,
                           e.get_schema()->ks_name(), e.get_schema()->cf_name(), seastar::current_backtrace());
         }
         // ignore
@@ -90,7 +90,7 @@ schema_ptr schema_registry::learn(const schema_ptr& s) {
         }
         return e.get_schema();
     }
-    slogger.debug("Learning about version {} of {}.{}", s->version(), s->ks_name(), s->cf_name());
+    LOGMACRO(slogger, log_level::debug, "Learning about version {} of {}.{}", s->version(), s->ks_name(), s->cf_name());
     auto e_ptr = make_lw_shared<schema_registry_entry>(s->version(), *this);
     auto loaded_s = e_ptr->load(s);
     attach_table(*e_ptr);
@@ -224,7 +224,7 @@ future<schema_ptr> schema_registry_entry::start_loading(async_schema_loader load
                 std::throw_with_nested(schema_version_loading_failed(_version));
             }
         } catch (...) {
-            slogger.debug("Loading of {} failed: {}", _version, std::current_exception());
+            LOGMACRO(slogger, log_level::debug, "Loading of {} failed: {}", _version, std::current_exception());
             _schema_promise.set_exception(std::current_exception());
             _registry._entries.erase(_version);
         }
@@ -271,7 +271,7 @@ future<> schema_registry_entry::maybe_sync(std::function<future<>()> syncer) {
         case schema_registry_entry::sync_state::SYNCING:
             return _synced_promise.get_shared_future();
         case schema_registry_entry::sync_state::NOT_SYNCED: {
-            slogger.debug("Syncing {}", _version);
+            LOGMACRO(slogger, log_level::debug, "Syncing {}", _version);
             _synced_promise = {};
             auto f = do_with(std::move(syncer), [] (auto& syncer) {
                 return syncer();
@@ -285,11 +285,11 @@ future<> schema_registry_entry::maybe_sync(std::function<future<>()> syncer) {
                     return;
                 }
                 if (f.failed()) {
-                    slogger.debug("Syncing of {} failed", _version);
+                    LOGMACRO(slogger, log_level::debug, "Syncing of {} failed", _version);
                     _sync_state = schema_registry_entry::sync_state::NOT_SYNCED;
                     _synced_promise.set_exception(f.get_exception());
                 } else {
-                    slogger.debug("Synced {}", _version);
+                    LOGMACRO(slogger, log_level::debug, "Synced {}", _version);
                     _registry.attach_table(*this);
                     _sync_state = schema_registry_entry::sync_state::SYNCED;
                     _synced_promise.set_value();
@@ -314,7 +314,7 @@ void schema_registry_entry::mark_synced() {
     }
     _registry.attach_table(*this);
     _sync_state = sync_state::SYNCED;
-    slogger.debug("Marked {} as synced", _version);
+    LOGMACRO(slogger, log_level::debug, "Marked {} as synced", _version);
 }
 
 schema_registry& local_schema_registry() {

@@ -203,7 +203,7 @@ void assure_sufficient_live_nodes(
         size_t local_live = topo.count_local_endpoints(live_endpoints);
         size_t pending = topo.count_local_endpoints(pending_endpoints);
         if (local_live < need + pending) {
-            cl_logger.debug("Local replicas {} are insufficient to satisfy LOCAL_QUORUM requirement of needed {} and pending {}", live_endpoints, local_live, pending);
+            LOGMACRO(cl_logger, log_level::debug, "Local replicas {} are insufficient to satisfy LOCAL_QUORUM requirement of needed {} and pending {}", live_endpoints, local_live, pending);
             throw exceptions::unavailable_exception(cl, need, adjust_live_for_error(local_live, pending));
         }
         break;
@@ -218,7 +218,7 @@ void assure_sufficient_live_nodes(
         size_t live = live_endpoints.size();
         size_t pending = pending_endpoints.size();
         if (live < need + pending) {
-            cl_logger.debug("Live nodes {} do not satisfy ConsistencyLevel ({} required, {} pending)", live, need, pending);
+            LOGMACRO(cl_logger, log_level::debug, "Live nodes {} do not satisfy ConsistencyLevel ({} required, {} pending)", live, need, pending);
             throw exceptions::unavailable_exception(cl, need, adjust_live_for_error(live, pending));
         }
         break;

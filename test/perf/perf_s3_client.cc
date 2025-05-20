@@ -59,7 +59,7 @@ private:
     future<> make_temporary_file() {
         _object_name = fmt::format("/{}/perfobject-{}-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), ::getpid(), this_shard_id());
         _remove_file = true;
-        plog.debug("Creating {} of {} bytes", _object_name, _object_size);
+        LOGMACRO(plog, log_level::debug, "Creating {} of {} bytes", _object_name, _object_size);
 
         auto out = output_stream<char>(_client->make_upload_sink(_object_name));
         std::exception_ptr ex;
@@ -138,7 +138,7 @@ public:
 
     future<> stop() {
         if (_remove_file) {
-            plog.debug("Removing {}", _object_name);
+            LOGMACRO(plog, log_level::debug, "Removing {}", _object_name);
             co_await _client->delete_object(_object_name);
         }
         co_await _client->close();

@@ -48,7 +48,7 @@ void set_tasks_compaction_module(http_context& ctx, routes& r, sharded<service::
         auto keyspace = validate_keyspace(ctx, *params.get("keyspace"));
         auto table_infos = parse_table_infos(keyspace, ctx, params.get("cf").value_or(""));
         auto flush = params.get_as<bool>("flush_memtables").value_or(true);
-        apilog.debug("force_keyspace_compaction_async: keyspace={} tables={}, flush={}", keyspace, table_infos, flush);
+        LOGMACRO(apilog, log_level::debug, "force_keyspace_compaction_async: keyspace={} tables={}, flush={}", keyspace, table_infos, flush);
 
         auto& compaction_module = db.local().get_compaction_manager().get_task_manager_module();
         std::optional<flush_mode> fmopt;

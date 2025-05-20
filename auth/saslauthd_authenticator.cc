@@ -119,7 +119,7 @@ future<bool> authenticate_with_saslauthd(sstring saslauthd_socket_path, const sa
                                 }
                                 const auto paylen = read_be<uint16_t>(len.get());
                                 return in.read_exactly(paylen).then([paylen] (temporary_buffer<char> resp) {
-                                    mylog.debug("saslauthd response: {}", std::string_view(resp.get(), resp.size()));
+                                    LOGMACRO(mylog, log_level::debug, "saslauthd response: {}", std::string_view(resp.get(), resp.size()));
                                     if (resp.size() != paylen) {
                                         return make_exception_future<bool>(
                                             exceptions::authentication_exception(

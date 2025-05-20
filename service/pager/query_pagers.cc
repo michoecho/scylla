@@ -181,7 +181,7 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
     _cmd->set_row_limit(max_rows);
     maybe_adjust_per_partition_limit(page_size);
 
-    qlogger.debug("Fetching {}, page size={}, max_rows={}",
+    LOGMACRO(qlogger, log_level::debug, "Fetching {}, page size={}, max_rows={}",
             _cmd->cf_id, page_size, max_rows
             );
 
@@ -422,13 +422,13 @@ void query_pager::handle_result(
         }
     }
 
-    qlogger.debug("Fetched {} rows (kept {}), max_remain={} {}", replica_row_count, row_count, _max, _exhausted ? "(exh)" : "");
+    LOGMACRO(qlogger, log_level::debug, "Fetched {} rows (kept {}), max_remain={} {}", replica_row_count, row_count, _max, _exhausted ? "(exh)" : "");
 
     if (_last_pkey) {
-        qlogger.debug("Last partition key: {}", *_last_pkey);
+        LOGMACRO(qlogger, log_level::debug, "Last partition key: {}", *_last_pkey);
     }
     if (_has_clustering_keys && _last_pos.region() == partition_region::clustered) {
-        qlogger.debug("Last clustering pos: {}", _last_pos);
+        LOGMACRO(qlogger, log_level::debug, "Last clustering pos: {}", _last_pos);
     }
 }
 
@@ -461,7 +461,7 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
         return true;
     }();
 
-    qlogger.debug("Query of {}, page_size={}, limit={} {}", cmd.cf_id, page_size,
+    LOGMACRO(qlogger, log_level::debug, "Query of {}, page_size={}, limit={} {}", cmd.cf_id, page_size,
                     cmd.get_row_limit(),
                     need_paging ? "requires paging" : "does not require paging");
 

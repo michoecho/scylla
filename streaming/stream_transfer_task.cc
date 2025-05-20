@@ -138,7 +138,7 @@ future<> send_mutation_fragments(lw_shared_ptr<send_info> si) {
                             *got_error_from_peer = true;
                             *table_is_dropped = true;
                         }
-                        sslog.debug("Got status code from peer={}, plan_id={}, cf_id={}, status={}", si->id, si->plan_id, si->cf_id, status);
+                        LOGMACRO(sslog, log_level::debug, "Got status code from peer={}, plan_id={}, cf_id={}, status={}", si->id, si->plan_id, si->cf_id, status);
                         // we've got an error from the other side, but we cannot just abandon rpc::source we
                         // need to continue reading until EOS since this will signal that no more work
                         // is left and rpc::source can be destroyed. The sender closes connection immediately
@@ -210,7 +210,7 @@ future<> stream_transfer_task::execute() {
     auto& sm = session->manager();
     auto table_dropped = co_await streaming::with_table_drop_silenced(sm.db(), sm.mm(), cf_id, [this, &sm, cf_id, plan_id, id] (const table_id &) {
         auto dst_cpu_id = session->dst_cpu_id;
-        sslog.debug("[Stream #{}] stream_transfer_task: cf_id={}", plan_id, cf_id);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] stream_transfer_task: cf_id={}", plan_id, cf_id);
         sort_and_merge_ranges();
         auto reason = session->get_reason();
         auto topo_guard = session->topo_guard();
@@ -222,7 +222,7 @@ future<> stream_transfer_task::execute() {
                 });
                 return si->has_relevant_range_on_this_shard().then([si, plan_id, cf_id] (bool has_relevant_range_on_this_shard) {
                     if (!has_relevant_range_on_this_shard) {
-                        sslog.debug("[Stream #{}] stream_transfer_task: cf_id={}: ignore ranges on shard={}",
+                        LOGMACRO(sslog, log_level::debug, "[Stream #{}] stream_transfer_task: cf_id={}: ignore ranges on shard={}",
                                 plan_id, cf_id, this_shard_id());
                         return make_ready_future<>();
                     }
@@ -232,7 +232,7 @@ future<> stream_transfer_task::execute() {
                 });
             });
         }).then([this, plan_id, cf_id, id, &sm] {
-            sslog.debug("[Stream #{}] SEND STREAM_MUTATION_DONE to {}, cf_id={}", plan_id, id, cf_id);
+            LOGMACRO(sslog, log_level::debug, "[Stream #{}] SEND STREAM_MUTATION_DONE to {}, cf_id={}", plan_id, id, cf_id);
             return ser::streaming_rpc_verbs::send_stream_mutation_done(&sm.ms(), id, plan_id, _ranges,
                     cf_id, session->dst_cpu_id).handle_exception([plan_id, id] (auto ep) {
                 sslog.warn("[Stream #{}] stream_transfer_task: Fail to send STREAM_MUTATION_DONE to {}: {}", plan_id, id, ep);
@@ -240,7 +240,7 @@ future<> stream_transfer_task::execute() {
             });
         }).then([this, id, plan_id] {
             _mutation_done_sent = true;
-            sslog.debug("[Stream #{}] GOT STREAM_MUTATION_DONE Reply from {}", plan_id, id);
+            LOGMACRO(sslog, log_level::debug, "[Stream #{}] GOT STREAM_MUTATION_DONE Reply from {}", plan_id, id);
         }).handle_exception([plan_id, id, &sm] (std::exception_ptr ep) {
             sslog.warn("[Stream #{}] stream_transfer_task: Fail to send to {}: {}", plan_id, id, ep);
             utils::get_local_injector().inject("stream_mutation_fragments_table_dropped", [&sm] () {
@@ -268,7 +268,7 @@ void stream_transfer_task::append_ranges(const dht::token_range_vector& ranges) 
 void stream_transfer_task::sort_and_merge_ranges() {
     boost::icl::interval_set<dht::token> myset;
     dht::token_range_vector ranges;
-    sslog.debug("cf_id = {}, before ranges = {}, size={}", cf_id, _ranges, _ranges.size());
+    LOGMACRO(sslog, log_level::debug, "cf_id = {}, before ranges = {}, size={}", cf_id, _ranges, _ranges.size());
     _ranges.swap(ranges);
     for (auto& range : ranges) {
         // TODO: We should convert range_to_interval and interval_to_range to
@@ -281,7 +281,7 @@ void stream_transfer_task::sort_and_merge_ranges() {
         auto r = locator::token_metadata::interval_to_range(i);
         _ranges.push_back(dht::token_range(std::move(r)));
     }
-    sslog.debug("cf_id = {}, after  ranges = {}, size={}", cf_id, _ranges, _ranges.size());
+    LOGMACRO(sslog, log_level::debug, "cf_id = {}, after  ranges = {}, size={}", cf_id, _ranges, _ranges.size());
 }
 
 } // namespace streaming

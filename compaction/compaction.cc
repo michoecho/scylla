@@ -1946,7 +1946,7 @@ compact_sstables(sstables::compaction_descriptor descriptor, compaction_data& cd
 
 std::unordered_set<sstables::shared_sstable>
 get_fully_expired_sstables(const table_state& table_s, const std::vector<sstables::shared_sstable>& compacting, gc_clock::time_point compaction_time) {
-    clogger.debug("Checking droppable sstables in {}.{}", table_s.schema()->ks_name(), table_s.schema()->cf_name());
+    LOGMACRO(clogger, log_level::debug, "Checking droppable sstables in {}.{}", table_s.schema()->ks_name(), table_s.schema()->cf_name());
 
     if (compacting.empty()) {
         return {};
@@ -1980,13 +1980,13 @@ get_fully_expired_sstables(const table_state& table_s, const std::vector<sstable
     // SStables that do not contain live data is added to list of possibly expired sstables.
     for (auto& candidate : compacting) {
         auto gc_before = candidate->get_gc_before_for_fully_expire(compaction_time, table_s.get_tombstone_gc_state(), table_s.schema());
-        clogger.debug("Checking if candidate of generation {} and max_deletion_time {} is expired, gc_before is {}",
+        LOGMACRO(clogger, log_level::debug, "Checking if candidate of generation {} and max_deletion_time {} is expired, gc_before is {}",
                     candidate->generation(), candidate->get_stats_metadata().max_local_deletion_time, gc_before);
         // A fully expired sstable which has an ancestor undeleted shouldn't be compacted because
         // expired data won't be purged because undeleted sstables are taken into account when
         // calculating max purgeable timestamp, and not doing it could lead to a compaction loop.
         if (candidate->get_max_local_deletion_time() < gc_before && !has_undeleted_ancestor(candidate)) {
-            clogger.debug("Adding candidate of generation {} to list of possibly expired sstables", candidate->generation());
+            LOGMACRO(clogger, log_level::debug, "Adding candidate of generation {} to list of possibly expired sstables", candidate->generation());
             candidates.insert(candidate);
         } else {
             min_timestamp = std::min(min_timestamp, candidate->get_stats_metadata().min_timestamp);
@@ -2000,12 +2000,12 @@ get_fully_expired_sstables(const table_state& table_s, const std::vector<sstable
         if (candidate->get_stats_metadata().max_timestamp >= min_timestamp) {
             it = candidates.erase(it);
         } else {
-            clogger.debug("Dropping expired SSTable {} (maxLocalDeletionTime={})",
+            LOGMACRO(clogger, log_level::debug, "Dropping expired SSTable {} (maxLocalDeletionTime={})",
                     candidate->get_filename(), candidate->get_stats_metadata().max_local_deletion_time);
             it++;
         }
     }
-    clogger.debug("Checking droppable sstables in {}.{}, candidates={}", table_s.schema()->ks_name(), table_s.schema()->cf_name(), candidates.size());
+    LOGMACRO(clogger, log_level::debug, "Checking droppable sstables in {}.{}, candidates={}", table_s.schema()->ks_name(), table_s.schema()->cf_name(), candidates.size());
     return candidates;
 }
 

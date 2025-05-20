@@ -809,7 +809,7 @@ SEASTAR_THREAD_TEST_CASE(test_view_update_generator_buffering) {
     std::ranges::sort(pkeys, dht::ring_position_less_comparator(*schema));
 
     for (auto partition_sizes_100kb : partition_size_sets) {
-        testlog.debug("partition_sizes_100kb={}", partition_sizes_100kb);
+        LOGMACRO(testlog, log_level::debug, "partition_sizes_100kb={}", partition_sizes_100kb);
         partition_size_map partition_rows{dht::ring_position_less_comparator(*schema)};
         std::vector<mutation> muts;
         auto pk = 0;

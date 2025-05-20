@@ -134,32 +134,32 @@ public:
     explicit validating_consumer(const schema& s) : _validator(s) { }
 
     void consume_new_partition(const dht::decorated_key& dk) {
-        testlog.debug("consume new partition: {}", dk);
+        LOGMACRO(testlog, log_level::debug, "consume new partition: {}", dk);
         BOOST_REQUIRE(_validator(mutation_fragment_v2::kind::partition_start, position_in_partition_view::for_partition_start(), {}));
     }
     void consume(tombstone) { }
     stop_iteration consume(static_row&& sr) {
-        testlog.debug("consume static_row");
+        LOGMACRO(testlog, log_level::debug, "consume static_row");
         BOOST_REQUIRE(_validator(mutation_fragment_v2::kind::static_row, sr.position(), {}));
         return stop_iteration::no;
     }
     stop_iteration consume(clustering_row&& cr) {
-        testlog.debug("consume clustering_row: {}", cr.key());
+        LOGMACRO(testlog, log_level::debug, "consume clustering_row: {}", cr.key());
         BOOST_REQUIRE(_validator(mutation_fragment_v2::kind::clustering_row, cr.position(), {}));
         return stop_iteration::no;
     }
     stop_iteration consume(range_tombstone_change&& rtc) {
-        testlog.debug("consume range_tombstone_change: {} {}", rtc.position(), rtc.tombstone());
+        LOGMACRO(testlog, log_level::debug, "consume range_tombstone_change: {} {}", rtc.position(), rtc.tombstone());
         BOOST_REQUIRE(_validator(mutation_fragment_v2::kind::range_tombstone_change, rtc.position(), rtc.tombstone()));
         return stop_iteration::no;
     }
     stop_iteration consume_end_of_partition() {
-        testlog.debug("consume end of partition");
+        LOGMACRO(testlog, log_level::debug, "consume end of partition");
         BOOST_REQUIRE(_validator(mutation_fragment_v2::kind::partition_end, position_in_partition_view::for_partition_end(), {}));
         return stop_iteration::no;
     }
     void consume_end_of_stream() {
-        testlog.debug("consume end of stream");
+        LOGMACRO(testlog, log_level::debug, "consume end of stream");
         BOOST_REQUIRE(_validator.on_end_of_stream());
     }
 };

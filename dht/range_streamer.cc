@@ -52,7 +52,7 @@ range_streamer::get_range_fetch_map(const std::unordered_map<dht::token_range, s
             }
 
             if (filtered) {
-                logger.debug("In get_range_fetch_map, keyspace = {}, endpoint= {} is filtered", keyspace, address);
+                LOGMACRO(logger, log_level::debug, "In get_range_fetch_map, keyspace = {}, endpoint= {} is filtered", keyspace, address);
                 continue;
             }
 
@@ -81,11 +81,11 @@ range_streamer::get_range_fetch_map(const std::unordered_map<dht::token_range, s
 // Must be called from a seastar thread
 std::unordered_map<dht::token_range, std::vector<locator::host_id>>
 range_streamer::get_all_ranges_with_sources_for(const sstring& keyspace_name, locator::vnode_effective_replication_map_ptr erm, dht::token_range_vector desired_ranges) {
-    logger.debug("{} ks={}", __func__, keyspace_name);
+    LOGMACRO(logger, log_level::debug, "{} ks={}", __func__, keyspace_name);
 
     auto range_addresses = erm->get_range_host_ids().get();
 
-    logger.debug("keyspace={}, desired_ranges.size={}, range_addresses.size={}", keyspace_name, desired_ranges.size(), range_addresses.size());
+    LOGMACRO(logger, log_level::debug, "keyspace={}, desired_ranges.size={}, range_addresses.size={}", keyspace_name, desired_ranges.size(), range_addresses.size());
 
     std::unordered_map<dht::token_range, std::vector<locator::host_id>> range_sources;
     for (auto& desired_range : desired_ranges) {
@@ -116,7 +116,7 @@ range_streamer::get_all_ranges_with_sources_for(const sstring& keyspace_name, lo
 // Must be called from a seastar thread
 std::unordered_map<dht::token_range, std::vector<locator::host_id>>
 range_streamer::get_all_ranges_with_strict_sources_for(const sstring& keyspace_name, locator::vnode_effective_replication_map_ptr erm, dht::token_range_vector desired_ranges, gms::gossiper& gossiper) {
-    logger.debug("{} ks={}", __func__, keyspace_name);
+    LOGMACRO(logger, log_level::debug, "{} ks={}", __func__, keyspace_name);
     SCYLLA_ASSERT (_tokens.empty() == false);
 
     auto& strat = erm->get_replication_strategy();
@@ -134,7 +134,7 @@ range_streamer::get_all_ranges_with_strict_sources_for(const sstring& keyspace_n
     //Collects the source that will have its range moved to the new node
     std::unordered_map<dht::token_range, std::vector<locator::host_id>> range_sources;
 
-    logger.debug("keyspace={}, desired_ranges.size={}, range_addresses.size={}", keyspace_name, desired_ranges.size(), range_addresses.size());
+    LOGMACRO(logger, log_level::debug, "keyspace={}, desired_ranges.size={}, range_addresses.size={}", keyspace_name, desired_ranges.size(), range_addresses.size());
 
     for (auto& desired_range : desired_ranges) {
         for (auto& x : range_addresses) {
@@ -192,7 +192,7 @@ bool range_streamer::use_strict_sources_for_ranges(const sstring& keyspace_name,
            && !_tokens.empty()
            && !everywhere_topology
            && nr_nodes_in_ring >= rf;
-    logger.debug("use_strict_sources_for_ranges: ks={}, nr_nodes_in_ring={}, rf={}, strict={}",
+    LOGMACRO(logger, log_level::debug, "use_strict_sources_for_ranges: ks={}, nr_nodes_in_ring={}, rf={}, strict={}",
             keyspace_name, nr_nodes_in_ring, rf, strict);
     return strict;
 }
@@ -226,7 +226,7 @@ future<> range_streamer::add_ranges(const sstring& keyspace_name, locator::vnode
 
     if (logger.is_enabled(logging::log_level::debug)) {
         for (auto& x : ranges_for_keyspace) {
-            logger.debug("{} : keyspace {} range {} exists on {}", _description, keyspace_name, x.first, x.second);
+            LOGMACRO(logger, log_level::debug, "{} : keyspace {} range {} exists on {}", _description, keyspace_name, x.first, x.second);
         }
     }
 
@@ -235,7 +235,7 @@ future<> range_streamer::add_ranges(const sstring& keyspace_name, locator::vnode
 
     if (logger.is_enabled(logging::log_level::debug)) {
         for (auto& x : range_fetch_map) {
-            logger.debug("{} : keyspace={}, ranges={} from source={}, range_size={}", _description, keyspace_name, x.second, x.first, x.second.size());
+            LOGMACRO(logger, log_level::debug, "{} : keyspace={}, ranges={} from source={}, range_size={}", _description, keyspace_name, x.second, x.first, x.second.size());
         }
     }
     _to_stream.emplace(keyspace_name, std::move(range_fetch_map));
@@ -336,7 +336,7 @@ size_t range_streamer::nr_ranges_to_stream() {
             auto& source = ip_range.first;
             auto& range_vec = ip_range.second;
             nr_ranges_remaining += range_vec.size();
-            logger.debug("Remaining: keyspace={}, source={}, ranges={}", keyspace, source, range_vec);
+            LOGMACRO(logger, log_level::debug, "Remaining: keyspace={}, source={}, ranges={}", keyspace, source, range_vec);
         }
     }
     return nr_ranges_remaining;

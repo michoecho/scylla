@@ -301,7 +301,7 @@ future<> feature_service::enable_features_on_startup(db::system_keyspace& sys_ks
     check_features(persisted_features, persisted_unsafe_to_disable_features);
 
     for (auto&& f : persisted_features) {
-        logger.debug("Enabling persisted feature '{}'", f);
+        LOGMACRO(logger, log_level::debug, "Enabling persisted feature '{}'", f);
         if (_registered_features.contains(sstring(f))) {
             features_to_enable.insert(std::move(f));
         }

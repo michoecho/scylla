@@ -2108,7 +2108,7 @@ future<> system_keyspace::update_peer_info(gms::inet_address ep, locator::host_i
             "(peer,data_center,host_id,preferred_ip,rack,release_version,rpc_address,schema_version,tokens,supported_features) VALUES"
             "(?,?,?,?,?,?,?,?,?,?)", PEERS);
 
-    slogger.debug("{}: values={}", query, values);
+    LOGMACRO(slogger, log_level::debug, "{}: values={}", query, values);
 
     co_await _qp.execute_internal(query, db::consistency_level::ONE, values, cql3::query_processor::cache_internal::yes);
 }
@@ -2159,7 +2159,7 @@ future<> system_keyspace::update_schema_version(table_schema_version version) {
  */
 future<> system_keyspace::remove_endpoint(gms::inet_address ep) {
     const sstring req = format("DELETE FROM system.{} WHERE peer = ?", PEERS);
-    slogger.debug("DELETE FROM system.{} WHERE peer = {}", PEERS, ep);
+    LOGMACRO(slogger, log_level::debug, "DELETE FROM system.{} WHERE peer = {}", PEERS, ep);
     co_await execute_cql(req, ep.addr()).discard_result();
 }
 
@@ -3203,7 +3203,7 @@ future<service::topology> system_keyspace::load_topology_state(const std::unorde
                     "load_topology_state: last committed CDC generation time UUID ({}) present, but data missing", gen_id.id));
             }
             auto cnt = gen_rows->one().get_as<int64_t>("cnt");
-            slogger.debug("load_topology_state: last committed CDC generation time UUID ({}), loaded {} ranges", gen_id.id, cnt);
+            LOGMACRO(slogger, log_level::debug, "load_topology_state: last committed CDC generation time UUID ({}), loaded {} ranges", gen_id.id, cnt);
         } else {
             if (!ret.normal_nodes.empty()) {
                 on_internal_error(slogger,
@@ -3473,7 +3473,7 @@ future<mutation> system_keyspace::get_insert_dict_mutation(
     db_clock::time_point dict_ts,
     api::timestamp_type write_ts
 ) const {
-    slogger.debug("Publishing new compression dictionary: {} {} {}", name, dict_ts, host_id);
+    LOGMACRO(slogger, log_level::debug, "Publishing new compression dictionary: {} {} {}", name, dict_ts, host_id);
 
     static sstring insert_new = format("INSERT INTO {}.{} (name, timestamp, origin, data) VALUES (?, ?, ?, ?);", NAME, DICTS);
     auto muts = co_await _qp.get_mutations_internal(insert_new, internal_system_query_state(), write_ts, {

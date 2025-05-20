@@ -559,7 +559,7 @@ future<> endpoint_worker::ping_fiber() noexcept {
                 }
 
                 // Internal abort - the ping timed out. Continue.
-                logger.debug("ping to endpoint {} timed out after {} clock ticks", _id, clock.now() - start);
+                LOGMACRO(logger, log_level::debug, "ping to endpoint {} timed out after {} clock ticks", _id, clock.now() - start);
             } catch (...) {
                 // Unexpected exception, probably from `pinger.ping(...)`. Log and continue.
                 logger.warn("unexpected exception when pinging {}: {}", _id, std::current_exception());

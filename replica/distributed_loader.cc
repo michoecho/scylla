@@ -408,7 +408,7 @@ sstables::shared_sstable make_sstable(replica::table& table, sstables::sstable_s
 
 future<> table_populator::populate_subdir(sharded<sstables::sstable_directory>& directory) {
     auto state = directory.local().state();
-    dblog.debug("Populating {}/{}/{} state={}", _ks, _cf, _global_table->get_storage_options(), state);
+    LOGMACRO(dblog, log_level::debug, "Populating {}/{}/{} state={}", _ks, _cf, _global_table->get_storage_options(), state);
 
     co_await distributed_loader::reshard(directory, _db, _ks, _cf, [this, state] (shard_id shard) mutable {
         auto gen = smp::submit_to(shard, [this] () {

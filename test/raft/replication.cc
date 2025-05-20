@@ -62,7 +62,7 @@ int rand() noexcept {
 size_t apply_changes(raft::server_id id, const std::vector<raft::command_cref>& commands,
         lw_shared_ptr<hasher_int> hasher) {
     size_t entries = 0;
-    tlogger.debug("sm::apply_changes[{}] got {} entries", id, commands.size());
+    LOGMACRO(tlogger, log_level::debug, "sm::apply_changes[{}] got {} entries", id, commands.size());
 
     for (auto&& d : commands) {
         auto is = ser::as_input_stream(d);
@@ -70,7 +70,7 @@ size_t apply_changes(raft::server_id id, const std::vector<raft::command_cref>& 
         if (n != dummy_command) {
             entries++;
             hasher->update(n);      // running hash (values and snapshots)
-            tlogger.debug("{}: apply_changes {}", id, n);
+            LOGMACRO(tlogger, log_level::debug, "{}: apply_changes {}", id, n);
         }
     }
     return entries;

@@ -525,12 +525,12 @@ void repair_writer_impl::create_writer(lw_shared_ptr<repair_writer> w) {
         return;
     }
     replica::table& t = _db.local().find_column_family(_schema->id());
-    rlogger.debug("repair_writer: keyspace={}, table={}, estimated_partitions={}", w->schema()->ks_name(), w->schema()->cf_name(), w->get_estimated_partitions());
+    LOGMACRO(rlogger, log_level::debug, "repair_writer: keyspace={}, table={}, estimated_partitions={}", w->schema()->ks_name(), w->schema()->cf_name(), w->get_estimated_partitions());
     auto sharder = get_sharder_helper(t, *(w->schema()), _topo_guard);
     _writer_done = mutation_writer::distribute_reader_and_consume_on_shards(_schema, sharder.sharder, std::move(_queue_reader),
             streaming::make_streaming_consumer(sstables::repair_origin, _db, _view_builder, w->get_estimated_partitions(), _reason, is_offstrategy_supported(_reason), _topo_guard),
     t.stream_in_progress()).then([w] (uint64_t partitions) {
-        rlogger.debug("repair_writer: keyspace={}, table={}, managed to write partitions={} to sstable",
+        LOGMACRO(rlogger, log_level::debug, "repair_writer: keyspace={}, table={}, managed to write partitions={} to sstable",
             w->schema()->ks_name(), w->schema()->cf_name(), partitions);
         return utils::get_local_injector().inject("repair_writer_impl_create_writer_wait", utils::wait_for_message(200s));
     }).handle_exception([w, keepalive = std::move(sharder.keepalive)] (std::exception_ptr ep) {
@@ -847,19 +847,19 @@ public:
             , _sink_source_for_get_full_row_hashes(_repair_meta_id, _nr_peer_nodes,
                     [&rs] (uint32_t repair_meta_id, std::optional<shard_id> dst_cpu_id_opt, locator::host_id addr) {
                         auto dst_cpu_id = dst_cpu_id_opt.value_or(repair_unspecified_shard);
-                        rlogger.debug("get_full_row_hashes: repair_meta_id={} dst_cpu_id={}", repair_meta_id, dst_cpu_id);
+                        LOGMACRO(rlogger, log_level::debug, "get_full_row_hashes: repair_meta_id={} dst_cpu_id={}", repair_meta_id, dst_cpu_id);
                         return rs.get_messaging().make_sink_and_source_for_repair_get_full_row_hashes_with_rpc_stream(repair_meta_id, dst_cpu_id, addr);
                 })
             , _sink_source_for_get_row_diff(_repair_meta_id, _nr_peer_nodes,
                     [&rs] (uint32_t repair_meta_id, std::optional<shard_id> dst_cpu_id_opt, locator::host_id addr) {
                         auto dst_cpu_id = dst_cpu_id_opt.value_or(repair_unspecified_shard);
-                        rlogger.debug("get_row_diff: repair_meta_id={} dst_cpu_id={}", repair_meta_id, dst_cpu_id);
+                        LOGMACRO(rlogger, log_level::debug, "get_row_diff: repair_meta_id={} dst_cpu_id={}", repair_meta_id, dst_cpu_id);
                         return rs.get_messaging().make_sink_and_source_for_repair_get_row_diff_with_rpc_stream(repair_meta_id, dst_cpu_id, addr);
                 })
             , _sink_source_for_put_row_diff(_repair_meta_id, _nr_peer_nodes,
                     [&rs] (uint32_t repair_meta_id, std::optional<shard_id> dst_cpu_id_opt, locator::host_id addr) {
                         auto dst_cpu_id = dst_cpu_id_opt.value_or(repair_unspecified_shard);
-                        rlogger.debug("put_row_diff: repair_meta_id={} dst_cpu_id={}", repair_meta_id, dst_cpu_id);
+                        LOGMACRO(rlogger, log_level::debug, "put_row_diff: repair_meta_id={} dst_cpu_id={}", repair_meta_id, dst_cpu_id);
                         return rs.get_messaging().make_sink_and_source_for_repair_put_row_diff_with_rpc_stream(repair_meta_id, dst_cpu_id, addr);
                 })
             , _row_level_repair_ptr(row_level_repair_ptr)
@@ -934,7 +934,7 @@ public:
         auto f1 = _sink_source_for_get_full_row_hashes.close();
         auto f2 = _sink_source_for_get_row_diff.close();
         auto f3 = _sink_source_for_put_row_diff.close();
-        rlogger.debug("repair_meta::stop");
+        LOGMACRO(rlogger, log_level::debug, "repair_meta::stop");
         // move to background.  waited on via _stopped->get_future.
         when_all_succeed(std::move(gate_future), std::move(f1), std::move(f2), std::move(f3)).discard_result().finally([this] {
             return _repair_writer->wait_for_writer_done().finally([this] {
@@ -991,7 +991,7 @@ public:
                 std::not_equal_to<repair_hash>()) == combined_hashes.end();
         bool same_boundary = std::adjacent_find(sync_boundaries.begin(), sync_boundaries.end(),
                 [this] (const repair_sync_boundary& a, const repair_sync_boundary& b) { return this->_cmp(a, b) != 0; }) == sync_boundaries.end();
-        rlogger.debug("get_common_sync_boundary: zero_rows={}, same_hashes={}, same_boundary={}, combined_hashes={}, sync_boundaries={}",
+        LOGMACRO(rlogger, log_level::debug, "get_common_sync_boundary: zero_rows={}, same_hashes={}, same_boundary={}, combined_hashes={}, sync_boundaries={}",
             zero_rows, same_hashes, same_boundary, combined_hashes, sync_boundaries);
         bool already_synced = same_hashes && same_boundary && !zero_rows;
         return std::pair<std::optional<repair_sync_boundary>, bool>(sync_boundary_min, already_synced);
@@ -1050,7 +1050,7 @@ private:
     }
 
     bool is_same_sharding_config(replica::column_family& cf) {
-        rlogger.debug("is_same_sharding_config: remote_shard={}, remote_shard_count={}, remote_ignore_msb={}",
+        LOGMACRO(rlogger, log_level::debug, "is_same_sharding_config: remote_shard={}, remote_shard_count={}, remote_ignore_msb={}",
                 _master_node_shard_config.shard, _master_node_shard_config.shard_count, _master_node_shard_config.ignore_msb);
         auto& sharder = cf.get_effective_replication_map()->get_sharder(*_schema);
         return sharder.shard_count() == _master_node_shard_config.shard_count
@@ -1128,7 +1128,7 @@ private:
                 _seed,
                 std::invoke([this]() {
                     if (_repair_master || _same_sharding_config || _is_tablet) {
-                        rlogger.debug("repair_reader: meta_id={}, _repair_master={}, _same_sharding_config={},"
+                        LOGMACRO(rlogger, log_level::debug, "repair_reader: meta_id={}, _repair_master={}, _same_sharding_config={},"
                                       "read_strategy {} is chosen",
                            _repair_meta_id, _repair_master, _same_sharding_config,
                            repair_reader::read_strategy::local);
@@ -1165,7 +1165,7 @@ private:
                         _local_range_estimation->partitions_count <= _local_range_estimation->master_subranges_count
                         ? repair_reader::read_strategy::multishard_filter
                         : repair_reader::read_strategy::multishard_split;
-                    rlogger.debug("repair_reader: meta_id={}, _local_range_estimation: partitions_count={}, "
+                    LOGMACRO(rlogger, log_level::debug, "repair_reader: meta_id={}, _local_range_estimation: partitions_count={}, "
                                   "master_subranges_count={}, read_strategy {} is chosen",
                         _repair_meta_id,
                         _local_range_estimation->partitions_count,
@@ -1229,7 +1229,7 @@ private:
         if (!_row_buf.empty()) {
             sb_max = _row_buf.back().boundary();
         }
-        rlogger.debug("get_sync_boundary: Got nr={} rows, sb_max={}, row_buf_size={}, repair_hash={}, skipped_sync_boundary={}",
+        LOGMACRO(rlogger, log_level::debug, "get_sync_boundary: Got nr={} rows, sb_max={}, row_buf_size={}, repair_hash={}, skipped_sync_boundary={}",
                       new_rows_nr, sb_max, row_buf_bytes, row_buf_combined_hash, skipped_sync_boundary);
         co_return get_sync_boundary_response{sb_max, row_buf_combined_hash, row_buf_bytes, new_rows_size, new_rows_nr};
     }
@@ -1401,7 +1401,7 @@ public:
                 // The node is a bootstrapping node
                 tmptr = std::make_unique<locator::token_metadata>(co_await tm->clone_only_token_map());
                 co_await tmptr->update_normal_tokens(bootstrap_tokens, myid);
-                rlogger.debug("small_table_optimization: Got bootstrap tokens={}", bootstrap_tokens);
+                LOGMACRO(rlogger, log_level::debug, "small_table_optimization: Got bootstrap tokens={}", bootstrap_tokens);
             }
         } else if (_reason == streaming::stream_reason::decommission) {
             auto myid = tm->get_my_id();
@@ -1409,7 +1409,7 @@ public:
             if (!leaving.empty() && leaving.contains(myid)) {
                 // This node is leaving
                 tmptr = std::make_unique<locator::token_metadata>(co_await tm->clone_after_all_left());
-                rlogger.debug("small_table_optimization: Got leaving node={}", leaving);
+                LOGMACRO(rlogger, log_level::debug, "small_table_optimization: Got leaving node={}", leaving);
             }
         }
         _small_table_optimization_tm = std::move(tmptr);
@@ -1480,7 +1480,7 @@ public:
         }
         repair_hash_set hashes = co_await ser::repair_rpc_verbs::send_repair_get_full_row_hashes(&_messaging, remote_node,
                 _repair_meta_id, dst_cpu_id);
-        rlogger.debug("Got full hashes from peer={}, nr_hashes={}", remote_node, hashes.size());
+        LOGMACRO(rlogger, log_level::debug, "Got full hashes from peer={}, nr_hashes={}", remote_node, hashes.size());
         _metrics.rx_hashes_nr += hashes.size();
         stats().rx_hashes_nr += hashes.size();
         stats().rpc_call_nr++;
@@ -1606,7 +1606,7 @@ public:
             dht::token_range range, row_level_diff_detect_algorithm algo, uint64_t max_row_buf_size,
             uint64_t seed, shard_config master_node_shard_config, table_schema_version schema_version, streaming::stream_reason reason,
             gc_clock::time_point compaction_time, abort_source& as, service::frozen_topology_guard topo_guard) {
-        rlogger.debug(">>> Started Row Level Repair (Follower): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, schema_version={}, range={}, seed={}, max_row_buf_siz={}",
+        LOGMACRO(rlogger, log_level::debug, ">>> Started Row Level Repair (Follower): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, schema_version={}, range={}, seed={}, max_row_buf_siz={}",
                 repair.my_host_id(), from_id, repair_meta_id, ks_name, cf_name, schema_version, range, seed, max_row_buf_size);
         try {
             // Trigger read barrier to ensure that session_id is visible.
@@ -1634,7 +1634,7 @@ public:
     // RPC handler
     static future<>
     repair_row_level_stop_handler(repair_service& rs, locator::host_id from, uint32_t repair_meta_id, sstring ks_name, sstring cf_name, dht::token_range range) {
-        rlogger.debug("<<< Finished Row Level Repair (Follower): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, range={}",
+        LOGMACRO(rlogger, log_level::debug, "<<< Finished Row Level Repair (Follower): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, range={}",
                 rs.my_host_id(), from, repair_meta_id, ks_name, cf_name, range);
         auto rm = rs.get_repair_meta(from, repair_meta_id);
         rm->set_repair_state_for_local_node(repair_state::row_level_stop_started);
@@ -2318,7 +2318,7 @@ static future<> repair_get_full_row_hashes_with_rpc_stream_handler(
 }
 
 future<repair_update_system_table_response> repair_service::repair_update_system_table_handler(gms::inet_address from, repair_update_system_table_request req) {
-    rlogger.debug("repair[{}]: Got repair_update_system_table_request from node={}, range={}, repair_time={}", req.repair_uuid, from, req.range, req.repair_time);
+    LOGMACRO(rlogger, log_level::debug, "repair[{}]: Got repair_update_system_table_request from node={}, range={}, repair_time={}", req.repair_uuid, from, req.range, req.repair_time);
     auto& db = this->get_db();
     bool is_valid_range = true;
     if (req.range.start()) {
@@ -2771,7 +2771,7 @@ private:
         _sync_boundaries.clear();
         _combined_hashes.clear();
         _zero_rows = false;
-        rlogger.debug("ROUND {}, _last_sync_boundary={}, _current_sync_boundary={}, _skipped_sync_boundary={}",
+        LOGMACRO(rlogger, log_level::debug, "ROUND {}, _last_sync_boundary={}, _current_sync_boundary={}, _skipped_sync_boundary={}",
                 master.stats().round_nr, master.last_sync_boundary(), master.current_sync_boundary(), _skipped_sync_boundary);
         master.stats().round_nr++;
         parallel_for_each(master.all_nodes(), coroutine::lambda([&] (repair_node_state& ns) -> future<> {
@@ -2795,7 +2795,7 @@ private:
                     // this node when calculating common sync boundary
                     _zero_rows = true;
                 }
-                rlogger.debug("Called master.get_sync_boundary for node {} sb={}, combined_csum={}, row_size={}, zero_rows={}, skipped_sync_boundary={}",
+                LOGMACRO(rlogger, log_level::debug, "Called master.get_sync_boundary for node {} sb={}, combined_csum={}, row_size={}, zero_rows={}, skipped_sync_boundary={}",
                     node, res.boundary, res.row_buf_combined_csum, res.row_buf_size, _zero_rows, _skipped_sync_boundary);
             } catch (...) {
                 auto ep = std::current_exception();
@@ -2804,20 +2804,20 @@ private:
                 std::rethrow_exception(ep);
             }
         })).get();
-        rlogger.debug("sync_boundaries nr={}, combined_hashes nr={}",
+        LOGMACRO(rlogger, log_level::debug, "sync_boundaries nr={}, combined_hashes nr={}",
             _sync_boundaries.size(), _combined_hashes.size());
         if (!_sync_boundaries.empty()) {
             // We have data to sync between (_last_sync_boundary, _current_sync_boundary]
             auto res = master.get_common_sync_boundary(_zero_rows, _sync_boundaries, _combined_hashes);
             _common_sync_boundary = res.first;
             bool already_synced = res.second;
-            rlogger.debug("Calling master._get_common_sync_boundary: common_sync_boundary={}, already_synced={}",
+            LOGMACRO(rlogger, log_level::debug, "Calling master._get_common_sync_boundary: common_sync_boundary={}, already_synced={}",
                     _common_sync_boundary, already_synced);
             // If rows between (_last_sync_boundary, _current_sync_boundary] are synced, goto first step
             // This is the first fast path.
             if (already_synced) {
                 _skipped_sync_boundary = _common_sync_boundary;
-                rlogger.debug("Skip set skipped_sync_boundary={}", _skipped_sync_boundary);
+                LOGMACRO(rlogger, log_level::debug, "Skip set skipped_sync_boundary={}", _skipped_sync_boundary);
                 master.stats().round_nr_fast_path_already_synced++;
                 return op_status::next_round;
             } else {
@@ -2860,7 +2860,7 @@ private:
             try {
                 get_combined_row_hash_response resp = co_await master.get_combined_row_hash(_common_sync_boundary, ns.node, ns.shard);
                 master.all_nodes()[idx].state = repair_state::get_combined_row_hash_finished;
-                rlogger.debug("Calling master.get_combined_row_hash for node {}, got combined_hash={}", master.all_nodes()[idx].node, resp);
+                LOGMACRO(rlogger, log_level::debug, "Calling master.get_combined_row_hash for node {}, got combined_hash={}", master.all_nodes()[idx].node, resp);
                 combined_hashes[idx]= std::move(resp);
             } catch (...) {
                 auto ep = std::current_exception();
@@ -2904,7 +2904,7 @@ private:
                 // means we can set peer_row_hash_sets[n] to local row hashes
                 // without fetching it from peers to save network traffic.
                 master.peer_row_hash_sets(node_idx) = master.working_row_hashes().get();
-                rlogger.debug("Calling optimize master.working_row_hashes for node {}, hash_sets={}",
+                LOGMACRO(rlogger, log_level::debug, "Calling optimize master.working_row_hashes for node {}, hash_sets={}",
                     node, master.peer_row_hash_sets(node_idx).size());
                 continue;
             }
@@ -2913,12 +2913,12 @@ private:
             if (master.working_row_buf_combined_hash() == repair_hash() && combined_hashes[node_idx + 1] != repair_hash()) {
                 master.peer_row_hash_sets(node_idx).clear();
                 if (master.use_rpc_stream()) {
-                    rlogger.debug("FastPath: get_row_diff with needs_all_rows_t::yes rpc stream");
+                    LOGMACRO(rlogger, log_level::debug, "FastPath: get_row_diff with needs_all_rows_t::yes rpc stream");
                     ns.state = repair_state::get_row_diff_with_rpc_stream_started;
                     master.get_row_diff_with_rpc_stream({}, repair_meta::needs_all_rows_t::yes, repair_meta::update_peer_row_hash_sets::yes, node, node_idx, dst_cpu_id);
                     ns.state = repair_state::get_row_diff_with_rpc_stream_finished;
                 } else {
-                    rlogger.debug("FastPath: get_row_diff with needs_all_rows_t::yes rpc verb");
+                    LOGMACRO(rlogger, log_level::debug, "FastPath: get_row_diff with needs_all_rows_t::yes rpc verb");
                     ns.state = repair_state::get_row_diff_and_update_peer_row_hash_sets_started;
                     master.get_row_diff_and_update_peer_row_hash_sets(node, node_idx, dst_cpu_id);
                     ns.state = repair_state::get_row_diff_and_update_peer_row_hash_sets_finished;
@@ -2926,7 +2926,7 @@ private:
                 continue;
             }
 
-            rlogger.debug("Before master.get_full_row_hashes for node {}, hash_sets={}",
+            LOGMACRO(rlogger, log_level::debug, "Before master.get_full_row_hashes for node {}, hash_sets={}",
                 node, master.peer_row_hash_sets(node_idx).size());
             // Ask the peer to send the full list hashes in the working row buf.
             if (master.use_rpc_stream()) {
@@ -2938,7 +2938,7 @@ private:
                 master.peer_row_hash_sets(node_idx) = master.get_full_row_hashes(node, dst_cpu_id).get();
                 ns.state = repair_state::get_full_row_hashes_finished;
             }
-            rlogger.debug("After master.get_full_row_hashes for node {}, hash_sets={}",
+            LOGMACRO(rlogger, log_level::debug, "After master.get_full_row_hashes for node {}, hash_sets={}",
                 node, master.peer_row_hash_sets(node_idx).size());
 
             // With hashes of rows from peer node, we can figure out
@@ -2950,7 +2950,7 @@ private:
             // between repair master and repair follower 2.
             repair_hash_set set_diff = get_set_diff(master.peer_row_hash_sets(node_idx), master.working_row_hashes().get());
             // Request missing sets from peer node
-            rlogger.debug("Before get_row_diff to node {}, local={}, peer={}, set_diff={}",
+            LOGMACRO(rlogger, log_level::debug, "Before get_row_diff to node {}, local={}, peer={}, set_diff={}",
                     node, master.working_row_hashes().get().size(), master.peer_row_hash_sets(node_idx).size(), set_diff.size());
             // If we need to pull all rows from the peer. We can avoid
             // sending the row hashes on wire by setting needs_all_rows flag.
@@ -2964,7 +2964,7 @@ private:
                 master.get_row_diff(std::move(set_diff), needs_all_rows, node, node_idx, dst_cpu_id);
                 ns.state = repair_state::get_row_diff_finished;
             }
-            rlogger.debug("After get_row_diff node {}, hash_sets={}", master.myhostid(), master.working_row_hashes().get().size());
+            LOGMACRO(rlogger, log_level::debug, "After get_row_diff node {}, hash_sets={}", master.myhostid(), master.working_row_hashes().get().size());
           } catch (...) {
             rlogger.warn("repair[{}]: get_row_diff: got error from node={}, keyspace={}, table={}, range={}, error={}",
                     _shard_task.global_repair_id.uuid(), node, _shard_task.get_keyspace(), _cf_name, _range, std::current_exception());
@@ -2991,7 +2991,7 @@ private:
             auto dst_cpu_id = ns.shard;
             auto needs_all_rows = repair_meta::needs_all_rows_t(master.peer_row_hash_sets(idx).empty());
             auto& set_diff = set_diffs[idx];
-            rlogger.debug("Calling master.put_row_diff to node {}, set_diff={}, needs_all_rows={}", _all_live_peer_nodes[idx], set_diff.size(), needs_all_rows);
+            LOGMACRO(rlogger, log_level::debug, "Calling master.put_row_diff to node {}, set_diff={}, needs_all_rows={}", _all_live_peer_nodes[idx], set_diff.size(), needs_all_rows);
             auto& node = master.all_nodes()[idx].node;
             if (master.use_rpc_stream()) {
                 ns.state = repair_state::put_row_diff_with_rpc_stream_started;
@@ -3037,7 +3037,7 @@ private:
         // Update repair_history table only if all replicas have been repaired
         size_t repaired_replicas = _all_live_peer_nodes.size() + 1;
         if (_shard_task.get_total_rf() != repaired_replicas){
-            rlogger.debug("repair[{}]: Skipped to update system.repair_history total_rf={}, repaired_replicas={}, local={}, peers={}",
+            LOGMACRO(rlogger, log_level::debug, "repair[{}]: Skipped to update system.repair_history total_rf={}, repaired_replicas={}, local={}, peers={}",
                     _shard_task.global_repair_id.uuid(), _shard_task.get_total_rf(), repaired_replicas, my_address, _all_live_peer_nodes);
             co_return;
         }
@@ -3049,7 +3049,7 @@ private:
         // The tablet repair time for tombstone gc will be updated when the
         // system.tablet.repair_time is updated.
         if (_is_tablet && _shard_task.sched_by_scheduler) {
-            rlogger.debug("repair[{}]: Skipped to update system.repair_history for tablet repair scheduled by scheduler total_rf={} repaired_replicas={} local={} peers={}",
+            LOGMACRO(rlogger, log_level::debug, "repair[{}]: Skipped to update system.repair_history for tablet repair scheduled by scheduler total_rf={} repaired_replicas={} local={} peers={}",
                     _shard_task.global_repair_id.uuid(), _shard_task.get_total_rf(), repaired_replicas, my_address, _all_live_peer_nodes);
             co_return;
         }
@@ -3068,7 +3068,7 @@ private:
                 auto& ms = _shard_task.messaging.local();
                 repair_update_system_table_response resp = co_await ser::repair_rpc_verbs::send_repair_update_system_table(&ms, node, req);
                 (void)resp;  // nothing to do with the response yet
-                rlogger.debug("repair[{}]: Finished to update system.repair_history table of node {}", _shard_task.global_repair_id.uuid(), node);
+                LOGMACRO(rlogger, log_level::debug, "repair[{}]: Finished to update system.repair_history table of node {}", _shard_task.global_repair_id.uuid(), node);
             } catch (...) {
                 rlogger.warn("repair[{}]: Failed to update system.repair_history table of node {}: {}", _shard_task.global_repair_id.uuid(), node, std::current_exception());
             }
@@ -3135,7 +3135,7 @@ public:
                 }
             });
 
-            rlogger.debug(">>> Started Row Level Repair (Master): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, schema_version={}, range={}, seed={}, max_row_buf_size={}",
+            LOGMACRO(rlogger, log_level::debug, ">>> Started Row Level Repair (Master): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, schema_version={}, range={}, seed={}, max_row_buf_size={}",
                     master.myhostid(), _all_live_peer_nodes, master.repair_meta_id(), _shard_task.get_keyspace(), _cf_name, schema_version, _range, _seed, max_row_buf_size);
 
             std::exception_ptr ex = nullptr;
@@ -3228,7 +3228,7 @@ public:
             } else {
                 update_system_repair_table().get();
             }
-            rlogger.debug("<<< Finished Row Level Repair (Master): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, range={}, tx_hashes_nr={}, rx_hashes_nr={}, tx_row_nr={}, rx_row_nr={}, row_from_disk_bytes={}, row_from_disk_nr={}",
+            LOGMACRO(rlogger, log_level::debug, "<<< Finished Row Level Repair (Master): local={}, peers={}, repair_meta_id={}, keyspace={}, cf={}, range={}, tx_hashes_nr={}, rx_hashes_nr={}, tx_row_nr={}, rx_row_nr={}, row_from_disk_bytes={}, row_from_disk_nr={}",
                     master.myhostid(), _all_live_peer_nodes, master.repair_meta_id(), _shard_task.get_keyspace(), _cf_name, _range, master.stats().tx_hashes_nr, master.stats().rx_hashes_nr, master.stats().tx_row_nr, master.stats().rx_row_nr, master.stats().row_from_disk_bytes, master.stats().row_from_disk_nr);
         });
     }
@@ -3250,12 +3250,12 @@ public:
         : _repair_service(repair_service)
     {}
     future<> remove_row_level_repair(locator::host_id node) {
-        rlogger.debug("Started to remove row level repair on all shards for node {}", node);
+        LOGMACRO(rlogger, log_level::debug, "Started to remove row level repair on all shards for node {}", node);
         try {
             co_await _repair_service.container().invoke_on_all([node] (repair_service& local_repair) {
                 return local_repair.remove_repair_meta(node);
             });
-            rlogger.debug("Finished to remove row level repair on all shards for node {}", node);
+            LOGMACRO(rlogger, log_level::debug, "Finished to remove row level repair on all shards for node {}", node);
         } catch(...) {
             rlogger.warn("Failed to remove row level repair for node {}: {}", node, std::current_exception());
         }
@@ -3321,14 +3321,14 @@ future<> repair_service::start() {
 
 future<> repair_service::stop() {
   try {
-    rlogger.debug("Stopping repair task module");
+    LOGMACRO(rlogger, log_level::debug, "Stopping repair task module");
     co_await _repair_module->stop();
-    rlogger.debug("Waiting on load_history_done");
+    LOGMACRO(rlogger, log_level::debug, "Waiting on load_history_done");
     co_await std::move(_load_history_done);
-    rlogger.debug("Uninitializing messaging service handlers");
+    LOGMACRO(rlogger, log_level::debug, "Uninitializing messaging service handlers");
     co_await uninit_ms_handlers();
     if (this_shard_id() == 0) {
-        rlogger.debug("Unregistering gossiper helper");
+        LOGMACRO(rlogger, log_level::debug, "Unregistering gossiper helper");
         co_await _gossiper.local().unregister_(_gossip_helper);
     }
     _stopped = true;
@@ -3358,11 +3358,11 @@ repair_service::update_history(tasks::task_id repair_id, table_id table_id, dht:
         // Tablet repair runs only on one shard
         if (finished_shards == smp::count || is_tablet) {
             // All shards have finished repair the range. Send an rpc to ask peers to update system.repair_history table
-            rlogger.debug("repair[{}]: Finished range {} for table {} on all shards, updating system.repair_history table, finished_shards={}",
+            LOGMACRO(rlogger, log_level::debug, "repair[{}]: Finished range {} for table {} on all shards, updating system.repair_history table, finished_shards={}",
                     repair_id, range, table_id, finished_shards);
             co_return rh.repair_time;
         } else {
-            rlogger.debug("repair[{}]: Finished range {} for table {} on all shards, updating system.repair_historytable, finished_shards={}",
+            LOGMACRO(rlogger, log_level::debug, "repair[{}]: Finished range {} for table {} on all shards, updating system.repair_historytable, finished_shards={}",
                     repair_id, range, table_id, finished_shards);
             co_return std::nullopt;
         }
@@ -3373,7 +3373,7 @@ future<> repair_service::cleanup_history(tasks::task_id repair_id) {
     auto shard = repair_id_to_shard(repair_id);
     return container().invoke_on(shard, [repair_id] (repair_service& rs) mutable {
         rs._finished_ranges_history.erase(repair_id);
-        rlogger.debug("repair[{}]: Finished cleaning up repair_service history", repair_id);
+        LOGMACRO(rlogger, log_level::debug, "repair[{}]: Finished cleaning up repair_service history", repair_id);
     });
 }
 
@@ -3394,7 +3394,7 @@ future<> repair_service::load_history() {
             auto end = entry.range_end == std::numeric_limits<int64_t>::min() ? dht::maximum_token() : dht::token::from_int64(entry.range_end);
             auto range = dht::token_range(dht::token_range::bound(start, false), dht::token_range::bound(end, true));
             auto repair_time = to_gc_clock(entry.ts);
-            rlogger.debug("Loading repair history for keyspace={}, table={}, table_uuid={}, repair_time={}, range={}",
+            LOGMACRO(rlogger, log_level::debug, "Loading repair history for keyspace={}, table={}, table_uuid={}, repair_time={}, range={}",
                     entry.ks, entry.cf, entry.table_uuid, entry.ts, range);
             try {
                 co_await get_db().invoke_on_all([table_uuid = entry.table_uuid, range, repair_time] (replica::database& local_db) {
@@ -3465,7 +3465,7 @@ repair_service::insert_repair_meta(
         repair_meta_map()[id] = rm;
         rm->set_repair_state_for_local_node(repair_state::row_level_start_finished);
     } else {
-        rlogger.debug("insert_repair_meta: Inserted repair_meta_id {} for node {}", id.repair_meta_id, id.ip);
+        LOGMACRO(rlogger, log_level::debug, "insert_repair_meta: Inserted repair_meta_id {} for node {}", id.repair_meta_id, id.ip);
     }
 }
 
@@ -3483,15 +3483,15 @@ repair_service::remove_repair_meta(const locator::host_id& from,
     } else {
         auto rm = it->second;
         repair_meta_map().erase(it);
-        rlogger.debug("remove_repair_meta: Stop repair_meta_id {} for node {} started", id.repair_meta_id, id.ip);
+        LOGMACRO(rlogger, log_level::debug, "remove_repair_meta: Stop repair_meta_id {} for node {} started", id.repair_meta_id, id.ip);
         co_await rm->stop();
-        rlogger.debug("remove_repair_meta: Stop repair_meta_id {} for node {} finished", id.repair_meta_id, id.ip);
+        LOGMACRO(rlogger, log_level::debug, "remove_repair_meta: Stop repair_meta_id {} for node {} finished", id.repair_meta_id, id.ip);
     }
 }
 
 future<>
 repair_service::remove_repair_meta(locator::host_id from) {
-    rlogger.debug("Remove all repair_meta for single node {}", from);
+    LOGMACRO(rlogger, log_level::debug, "Remove all repair_meta for single node {}", from);
     auto repair_metas = make_lw_shared<utils::chunked_vector<repair_meta_ptr>>();
     for (auto it = repair_meta_map().begin(); it != repair_meta_map().end();) {
         if (it->first.ip == from) {
@@ -3505,12 +3505,12 @@ repair_service::remove_repair_meta(locator::host_id from) {
         co_await rm->stop();
         rm = {};
     });
-    rlogger.debug("Removed all repair_meta for single node {}", from);
+    LOGMACRO(rlogger, log_level::debug, "Removed all repair_meta for single node {}", from);
 }
 
 future<>
 repair_service::remove_repair_meta() {
-    rlogger.debug("Remove all repair_meta for all nodes");
+    LOGMACRO(rlogger, log_level::debug, "Remove all repair_meta for all nodes");
     auto repair_metas = make_lw_shared<utils::chunked_vector<repair_meta_ptr>>(
             repair_meta_map()
             | std::views::values | std::ranges::to<utils::chunked_vector<repair_meta_ptr>>());
@@ -3519,7 +3519,7 @@ repair_service::remove_repair_meta() {
         co_await rm->stop();
         rm = {};
     });
-    rlogger.debug("Removed all repair_meta for all nodes");
+    LOGMACRO(rlogger, log_level::debug, "Removed all repair_meta for all nodes");
 }
 
 future<uint32_t> repair_service::get_next_repair_meta_id() {

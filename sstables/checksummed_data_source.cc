@@ -78,7 +78,7 @@ public:
                 on_internal_error(sstlog, "Requested digest check but no digest was provided.");
             }
             if (_end_pos - _pos < _file_len) {
-                sstlog.debug("Checksummed reader cannot calculate digest with partial read: current pos={}, end pos={}, file len={}. Disabling digest check.",
+                LOGMACRO(sstlog, log_level::debug, "Checksummed reader cannot calculate digest with partial read: current pos={}, end pos={}, file len={}. Disabling digest check.",
                         _pos, _end_pos, _file_len);
                 _digests = {false};
             } else {
@@ -156,7 +156,7 @@ public:
     virtual future<temporary_buffer<char>> skip(uint64_t n) override {
         if constexpr (check_digest) {
             if (_digests.can_calculate_digest) {
-                sstlog.debug("Checksummed reader cannot calculate digest with skipped data: current pos={}, end pos={}, skip len={}. Disabling digest check.", _pos, _end_pos, n);
+                LOGMACRO(sstlog, log_level::debug, "Checksummed reader cannot calculate digest with skipped data: current pos={}, end pos={}, skip len={}. Disabling digest check.", _pos, _end_pos, n);
                 _digests.can_calculate_digest = false;
             }
         }

@@ -3182,13 +3182,13 @@ public:
             auto view_names = _views_to_build | std::views::transform([](auto v) {
                         return v->cf_name();
                     }) | std::ranges::to<std::vector<sstring>>();
-            vlogger.debug("Completed build step for base {}.{}, at token {}; views={}", _step.base->schema()->ks_name(),
+            LOGMACRO(vlogger, log_level::debug, "Completed build step for base {}.{}, at token {}; views={}", _step.base->schema()->ks_name(),
                           _step.base->schema()->cf_name(), _step.current_token(), view_names);
         }
         if (_step.reader.is_end_of_stream() && _step.reader.is_buffer_empty()) {
             if (_step.current_key.key().is_empty()) {
                 // consumer got end-of-stream without consuming a single partition
-                vlogger.debug("Reader didn't produce anything, marking views as built");
+                LOGMACRO(vlogger, log_level::debug, "Reader didn't produce anything, marking views as built");
                 while (!_step.build_status.empty()) {
                     _built_views.views.push_back(std::move(_step.build_status.back()));
                     _step.build_status.pop_back();
@@ -3264,7 +3264,7 @@ future<> view_builder::mark_existing_views_as_built() {
 
 future<> view_builder::maybe_mark_view_as_built(view_ptr view, dht::token next_token) {
     _built_views.emplace(view->id());
-    vlogger.debug("Shard finished building view {}.{}", view->ks_name(), view->cf_name());
+    LOGMACRO(vlogger, log_level::debug, "Shard finished building view {}.{}", view->ks_name(), view->cf_name());
     return container().map_reduce0(
             [view_id = view->id()] (view_builder& builder) {
                 return builder._built_views.contains(view_id);

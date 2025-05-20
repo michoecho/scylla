@@ -209,7 +209,7 @@ future<> filesystem_storage::seal(const sstable& sst) {
     co_await sst.sstable_write_io_check(rename_file, fmt::to_string(sst.filename(component_type::TemporaryTOC)), fmt::to_string(sst.filename(component_type::TOC)));
     co_await _dir.sync(sst._write_error_handler);
     // If this point was reached, sstable should be safe in disk.
-    sstlog.debug("SSTable with generation {} of {}.{} was sealed successfully.", sst._generation, sst._schema->ks_name(), sst._schema->cf_name());
+    LOGMACRO(sstlog, log_level::debug, "SSTable with generation {} of {}.{} was sealed successfully.", sst._generation, sst._schema->ks_name(), sst._schema->cf_name());
 }
 
 future<> filesystem_storage::touch_temp_dir(const sstable& sst) {
@@ -217,7 +217,7 @@ future<> filesystem_storage::touch_temp_dir(const sstable& sst) {
         co_return;
     }
     auto tmp = _dir.path() / fmt::format("{}{}", sst._generation, tempdir_extension);
-    sstlog.debug("Touching temp_dir={}", tmp);
+    LOGMACRO(sstlog, log_level::debug, "Touching temp_dir={}", tmp);
     co_await sst.sstable_touch_directory_io_check(tmp);
     _temp_dir = std::move(tmp);
 }
@@ -226,7 +226,7 @@ future<> filesystem_storage::remove_temp_dir() {
     if (!_temp_dir) {
         co_return;
     }
-    sstlog.debug("Removing temp_dir={}", _temp_dir);
+    LOGMACRO(sstlog, log_level::debug, "Removing temp_dir={}", _temp_dir);
     try {
         co_await remove_file(_temp_dir->native());
     } catch (...) {
@@ -395,7 +395,7 @@ future<> filesystem_storage::snapshot(const sstable& sst, sstring dir, absolute_
 future<> filesystem_storage::move(const sstable& sst, sstring new_dir, generation_type new_generation, delayed_commit_changes* delay_commit) {
     co_await touch_directory(new_dir);
     sstring old_dir = _dir.native();
-    sstlog.debug("Moving {} old_generation={} to {} new_generation={} do_sync_dirs={}",
+    LOGMACRO(sstlog, log_level::debug, "Moving {} old_generation={} to {} new_generation={} do_sync_dirs={}",
             sst.get_filename(), sst._generation, new_dir, new_generation, delay_commit == nullptr);
     co_await create_links_common(sst, new_dir, new_generation, mark_for_removal::yes);
     co_await change_dir(new_dir);
@@ -474,7 +474,7 @@ future<> filesystem_storage::wipe(const sstable& sst, sync_dir sync) noexcept {
                     if (!is_system_error_errno(ENOENT)) {
                         throw;
                     }
-                    sstlog.debug("Forgiving ENOENT when deleting file {}", fname);
+                    LOGMACRO(sstlog, log_level::debug, "Forgiving ENOENT when deleting file {}", fname);
                 }
             });
             if (sync) {
@@ -524,7 +524,7 @@ future<> filesystem_storage::atomic_delete_complete(atomic_delete_context ctx) c
         const auto& log = ctx.pending_delete_log;
         try {
             co_await remove_file(log);
-            sstlog.debug("{} removed.", log);
+            LOGMACRO(sstlog, log_level::debug, "{} removed.", log);
         } catch (...) {
             sstlog.warn("Error removing {}: {}. Ignoring.", log, std::current_exception());
         }

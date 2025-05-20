@@ -34,7 +34,7 @@ large_data_handler::large_data_handler(uint64_t partition_threshold_bytes, uint6
         , _collection_elements_count_threshold(collection_elements_count_threshold)
         , _sys_ks("large_data_handler::system_keyspace")
 {
-    large_data_logger.debug("partition_threshold_bytes={} row_threshold_bytes={} cell_threshold_bytes={} rows_count_threshold={} collection_elements_count_threshold={}",
+    LOGMACRO(large_data_logger, log_level::debug, "partition_threshold_bytes={} row_threshold_bytes={} cell_threshold_bytes={} rows_count_threshold={} collection_elements_count_threshold={}",
         partition_threshold_bytes, row_threshold_bytes, cell_threshold_bytes, rows_count_threshold, _collection_elements_count_threshold);
 }
 
@@ -128,13 +128,13 @@ cql_table_large_data_handler::cql_table_large_data_handler(gms::feature_service&
         return internal_record_large_partitions(sst, pk, partition_size, rows);
     })
     , _large_collection_detection_listener(_feat.large_collection_detection.when_enabled([this] {
-        large_data_logger.debug("Enabled large_collection detection");
+        LOGMACRO(large_data_logger, log_level::debug, "Enabled large_collection detection");
         _record_large_cells = [this] (const sstables::sstable& sst, const sstables::key& pk, const clustering_key_prefix* ck, const column_definition& cdef, uint64_t cell_size, uint64_t collection_elements) {
             return internal_record_large_cells_and_collections(sst, pk, ck, cdef, cell_size, collection_elements);
         };
     }))
     , _range_tombstone_and_dead_rows_detection_listener(_feat.range_tombstone_and_dead_rows_detection.when_enabled([this] {
-        large_data_logger.debug("Enabled detection or range tombstones and dead rows");
+        LOGMACRO(large_data_logger, log_level::debug, "Enabled detection or range tombstones and dead rows");
         _record_large_partitions = [this] (const sstables::sstable& sst, const sstables::key& pk, uint64_t partition_size, uint64_t rows, uint64_t range_tombstones, uint64_t dead_rows) {
             return internal_record_large_partitions_all_data(sst, pk, partition_size, rows, range_tombstones, dead_rows);
         };
@@ -246,7 +246,7 @@ future<> cql_table_large_data_handler::delete_large_data_entries(const schema& s
     const sstring req =
             seastar::format("DELETE FROM system.{} WHERE keyspace_name = ? AND table_name = ? AND sstable_name = ?",
                     large_table_name);
-    large_data_logger.debug("Dropping entries from {}: ks = {}, table = {}, sst = {}",
+    LOGMACRO(large_data_logger, log_level::debug, "Dropping entries from {}: ks = {}, table = {}, sst = {}",
             large_table_name, s.ks_name(), s.cf_name(), sstable_name);
     co_await sys_ks->execute_cql(req, s.ks_name(), s.cf_name(), sstable_name)
             .discard_result()

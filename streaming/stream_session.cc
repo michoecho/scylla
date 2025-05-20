@@ -76,7 +76,7 @@ public:
         // every mutation fragment we received. So it is worth the
         // optimization.
         if (now - last_update > std::chrono::seconds(30)) {
-            sslog.debug("[Stream #{}] Updated offstrategy trigger for ks={}, table={}, table_id={}",
+            LOGMACRO(sslog, log_level::debug, "[Stream #{}] Updated offstrategy trigger for ks={}, table={}, table_id={}",
                 _plan_id, _cf.schema()->ks_name(), _cf.schema()->cf_name(), _id);
             _cf.update_off_strategy_trigger();
             last_update = now;
@@ -283,13 +283,13 @@ void stream_manager::init_messaging_service_handler(abort_source& as) {
         if (failed && *failed) {
             return container().invoke_on(dst_cpu_id, [plan_id, from, dst_cpu_id] (auto& sm) {
                 auto session = sm.get_session(plan_id, from, "COMPLETE_MESSAGE");
-                sslog.debug("[Stream #{}] COMPLETE_MESSAGE with error flag from {} dst_cpu_id={}", plan_id, from, dst_cpu_id);
+                LOGMACRO(sslog, log_level::debug, "[Stream #{}] COMPLETE_MESSAGE with error flag from {} dst_cpu_id={}", plan_id, from, dst_cpu_id);
                 session->received_failed_complete_message();
                 return make_ready_future<>();
             });
         } else {
             // Be compatible with old version. Do nothing but return a ready future.
-            sslog.debug("[Stream #{}] COMPLETE_MESSAGE from {} dst_cpu_id={}", plan_id, from, dst_cpu_id);
+            LOGMACRO(sslog, log_level::debug, "[Stream #{}] COMPLETE_MESSAGE from {} dst_cpu_id={}", plan_id, from, dst_cpu_id);
             return make_ready_future<>();
         }
     });
@@ -329,11 +329,11 @@ future<> stream_session::on_initialization_complete() {
         prepare.summaries.emplace_back(x.second.get_summary());
     }
     auto id = this->peer;
-    sslog.debug("[Stream #{}] SEND PREPARE_MESSAGE to {}", plan_id(), id);
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] SEND PREPARE_MESSAGE to {}", plan_id(), id);
     return ser::streaming_rpc_verbs::send_prepare_message(&manager().ms(), id, std::move(prepare), plan_id(), description(), get_reason(), topo_guard()).then_wrapped([this, id] (auto&& f) {
         try {
             auto msg = f.get();
-            sslog.debug("[Stream #{}] GOT PREPARE_MESSAGE Reply from {}", this->plan_id(), this->peer);
+            LOGMACRO(sslog, log_level::debug, "[Stream #{}] GOT PREPARE_MESSAGE Reply from {}", this->plan_id(), this->peer);
             this->dst_cpu_id = msg.dst_cpu_id;
             for (auto& summary : msg.summaries) {
                 this->prepare_receiving(summary);
@@ -348,15 +348,15 @@ future<> stream_session::on_initialization_complete() {
         return make_ready_future<>();
     }).then([this, id] {
         auto plan_id = this->plan_id();
-        sslog.debug("[Stream #{}] SEND PREPARE_DONE_MESSAGE to {}", plan_id, id);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] SEND PREPARE_DONE_MESSAGE to {}", plan_id, id);
         return ser::streaming_rpc_verbs::send_prepare_done_message(&manager().ms(), id, plan_id, this->dst_cpu_id).then([this] {
-            sslog.debug("[Stream #{}] GOT PREPARE_DONE_MESSAGE Reply from {}", this->plan_id(), this->peer);
+            LOGMACRO(sslog, log_level::debug, "[Stream #{}] GOT PREPARE_DONE_MESSAGE Reply from {}", this->plan_id(), this->peer);
         }).handle_exception([id, plan_id] (auto ep) {
             sslog.warn("[Stream #{}] Fail to send PREPARE_DONE_MESSAGE to {}, {}", plan_id, id, ep);
             std::rethrow_exception(ep);
         });
     }).then([this] {
-        sslog.debug("[Stream #{}] Initiator starts to sent", this->plan_id());
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] Initiator starts to sent", this->plan_id());
         this->start_streaming_files();
     });
 }
@@ -373,7 +373,7 @@ void stream_session::received_failed_complete_message() {
 
 void stream_session::abort() {
     if (sslog.is_enabled(logging::log_level::debug)) {
-        sslog.debug("[Stream #{}] Aborted stream session={}, peer={}, is_initialized={}", plan_id(), fmt::ptr(this), peer, is_initialized());
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] Aborted stream session={}, peer={}, is_initialized={}", plan_id(), fmt::ptr(this), peer, is_initialized());
     } else {
         sslog.info("[Stream #{}] Aborted stream session, peer={}, is_initialized={}", plan_id(), peer, is_initialized());
     }
@@ -389,17 +389,17 @@ void stream_session::on_error() {
 future<prepare_message> stream_session::prepare(std::vector<stream_request> requests, std::vector<stream_summary> summaries) {
     auto plan_id = this->plan_id();
     auto nr_requests = requests.size();
-    sslog.debug("[Stream #{}] prepare requests nr={}, summaries nr={}", plan_id, nr_requests, summaries.size());
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] prepare requests nr={}, summaries nr={}", plan_id, nr_requests, summaries.size());
     // prepare tasks
     set_state(stream_session_state::PREPARING);
     for (auto& request : requests) {
         // always flush on stream request
-        sslog.debug("[Stream #{}] prepare stream_request={}", plan_id, request);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] prepare stream_request={}", plan_id, request);
         add_transfer_ranges(std::move(request.keyspace), std::move(request.ranges), std::move(request.column_families));
         co_await coroutine::maybe_yield();
     }
     for (auto& summary : summaries) {
-        sslog.debug("[Stream #{}] prepare stream_summary={}", plan_id, summary);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] prepare stream_summary={}", plan_id, summary);
         prepare_receiving(summary);
     }
 
@@ -419,7 +419,7 @@ future<prepare_message> stream_session::prepare(std::vector<stream_request> requ
 }
 
 void stream_session::follower_start_sent() {
-    sslog.debug("[Stream #{}] Follower start to sent", this->plan_id());
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] Follower start to sent", this->plan_id());
     this->start_streaming_files();
 }
 
@@ -437,21 +437,21 @@ session_info stream_session::make_session_info() {
 
 void stream_session::receive_task_completed(table_id cf_id) {
     _receivers.erase(cf_id);
-    sslog.debug("[Stream #{}] receive  task_completed: cf_id={} done, stream_receive_task.size={} stream_transfer_task.size={}",
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] receive  task_completed: cf_id={} done, stream_receive_task.size={} stream_transfer_task.size={}",
         plan_id(), cf_id, _receivers.size(), _transfers.size());
     maybe_completed();
 }
 
 void stream_session::transfer_task_completed(table_id cf_id) {
     _transfers.erase(cf_id);
-    sslog.debug("[Stream #{}] transfer task_completed: cf_id={} done, stream_receive_task.size={} stream_transfer_task.size={}",
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] transfer task_completed: cf_id={} done, stream_receive_task.size={} stream_transfer_task.size={}",
         plan_id(), cf_id, _receivers.size(), _transfers.size());
     maybe_completed();
 }
 
 void stream_session::transfer_task_completed_all() {
     _transfers.clear();
-    sslog.debug("[Stream #{}] transfer task_completed: all done, stream_receive_task.size={} stream_transfer_task.size={}",
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] transfer task_completed: all done, stream_receive_task.size={} stream_transfer_task.size={}",
         plan_id(), _receivers.size(), _transfers.size());
     maybe_completed();
 }
@@ -462,7 +462,7 @@ void stream_session::send_failed_complete_message() {
     }
     auto plan_id = this->plan_id();
     if (_received_failed_complete_message) {
-        sslog.debug("[Stream #{}] Skip sending failed message back to peer", plan_id);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] Skip sending failed message back to peer", plan_id);
         return;
     }
     if (!_complete_sent) {
@@ -470,21 +470,21 @@ void stream_session::send_failed_complete_message() {
     } else {
         return;
     }
-    sslog.debug("[Stream #{}] SEND COMPLETE_MESSAGE to {}", plan_id, peer);
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] SEND COMPLETE_MESSAGE to {}", plan_id, peer);
     auto session = shared_from_this();
     bool failed = true;
     //FIXME: discarded future.
     (void)ser::streaming_rpc_verbs::send_complete_message(&manager().ms(), peer, plan_id, dst_cpu_id, failed).then([session, peer = this->peer, plan_id] {
-        sslog.debug("[Stream #{}] GOT COMPLETE_MESSAGE Reply from {}", plan_id, peer);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] GOT COMPLETE_MESSAGE Reply from {}", plan_id, peer);
     }).handle_exception([session, peer = this->peer, plan_id] (auto ep) {
-        sslog.debug("[Stream #{}] COMPLETE_MESSAGE for {} has failed: {}", plan_id, peer, ep);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] COMPLETE_MESSAGE for {} has failed: {}", plan_id, peer, ep);
     });
 }
 
 bool stream_session::maybe_completed() {
     bool completed = _receivers.empty() && _transfers.empty();
     if (completed) {
-        sslog.debug("[Stream #{}] maybe_completed: {} -> COMPLETE: session={}, peer={}", plan_id(), _state, fmt::ptr(this), peer);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] maybe_completed: {} -> COMPLETE: session={}, peer={}", plan_id(), _state, fmt::ptr(this), peer);
         close_session(stream_session_state::COMPLETE);
     }
     return completed;
@@ -498,13 +498,13 @@ void stream_session::prepare_receiving(stream_summary& summary) {
 }
 
 void stream_session::start_streaming_files() {
-    sslog.debug("[Stream #{}] {}: {} transfers to send", plan_id(), __func__, _transfers.size());
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] {}: {} transfers to send", plan_id(), __func__, _transfers.size());
     if (!_transfers.empty()) {
         set_state(stream_session_state::STREAMING);
     }
     //FIXME: discarded future.
     (void)do_for_each(_transfers.begin(), _transfers.end(), [this] (auto& item) {
-        sslog.debug("[Stream #{}] Start to send cf_id={}", this->plan_id(), item.first);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] Start to send cf_id={}", this->plan_id(), item.first);
         return item.second.execute();
     }).then([this] {
         this->transfer_task_completed_all();
@@ -524,7 +524,7 @@ std::vector<replica::column_family*> stream_session::get_column_family_stores(co
             auto cf_name = cf.schema()->cf_name();
             auto ks_name = cf.schema()->ks_name();
             if (ks_name == keyspace) {
-                sslog.debug("Find ks={} cf={}", ks_name, cf_name);
+                LOGMACRO(sslog, log_level::debug, "Find ks={} cf={}", ks_name, cf_name);
                 stores.push_back(&cf);
             }
         });
@@ -564,7 +564,7 @@ future<> stream_session::receiving_failed(table_id cf_id)
 }
 
 void stream_session::close_session(stream_session_state final_state) {
-    sslog.debug("[Stream #{}] close_session session={}, state={}, is_aborted={}", plan_id(), fmt::ptr(this), final_state, _is_aborted);
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] close_session session={}, state={}, is_aborted={}", plan_id(), fmt::ptr(this), final_state, _is_aborted);
     if (!_is_aborted) {
         _is_aborted = true;
         set_state(final_state);
@@ -572,12 +572,12 @@ void stream_session::close_session(stream_session_state final_state) {
         if (final_state == stream_session_state::FAILED) {
             for (auto& x : _transfers) {
                 stream_transfer_task& task = x.second;
-                sslog.debug("[Stream #{}] close_session session={}, state={}, abort stream_transfer_task cf_id={}", plan_id(), fmt::ptr(this), final_state, task.cf_id);
+                LOGMACRO(sslog, log_level::debug, "[Stream #{}] close_session session={}, state={}, abort stream_transfer_task cf_id={}", plan_id(), fmt::ptr(this), final_state, task.cf_id);
                 task.abort();
             }
             for (auto& x : _receivers) {
                 stream_receive_task& task = x.second;
-                sslog.debug("[Stream #{}] close_session session={}, state={}, abort stream_receive_task cf_id={}", plan_id(), fmt::ptr(this), final_state, task.cf_id);
+                LOGMACRO(sslog, log_level::debug, "[Stream #{}] close_session session={}, state={}, abort stream_receive_task cf_id={}", plan_id(), fmt::ptr(this), final_state, task.cf_id);
                 //FIXME: discarded future.
                 (void)receiving_failed(x.first);
                 task.abort();
@@ -592,7 +592,7 @@ void stream_session::close_session(stream_session_state final_state) {
             _stream_result->handle_session_complete(shared_from_this());
         }
 
-        sslog.debug("[Stream #{}] close_session session={}, state={}", plan_id(), fmt::ptr(this), final_state);
+        LOGMACRO(sslog, log_level::debug, "[Stream #{}] close_session session={}, state={}", plan_id(), fmt::ptr(this), final_state);
     }
 }
 
@@ -603,7 +603,7 @@ void stream_session::start() {
         return;
     }
 
-    sslog.debug("[Stream #{}] Starting streaming to {}", plan_id(), peer);
+    LOGMACRO(sslog, log_level::debug, "[Stream #{}] Starting streaming to {}", plan_id(), peer);
 
     //FIXME: discarded future.
     (void)on_initialization_complete().handle_exception([this] (auto ep) {

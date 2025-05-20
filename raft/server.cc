@@ -471,7 +471,7 @@ future<bool> server_impl::trigger_snapshot(seastar::abort_source* as) {
     check_not_aborted();
 
     if (_applied_idx <= _snapshot_desc_idx) {
-        logger.debug(
+        LOGMACRO(logger, log_level::debug, 
             "[{}] trigger_snapshot: last persisted snapshot descriptor index is up-to-date"
             ", applied index: {}, persisted snapshot descriptor index: {}, last fsm log index: {}"
             ", last fsm snapshot index: {}", _id, _applied_idx, _snapshot_desc_idx,
@@ -485,7 +485,7 @@ future<bool> server_impl::trigger_snapshot(seastar::abort_source* as) {
     // Wait for persisted snapshot index to catch up to this index.
     auto awaited_idx = _applied_idx;
 
-    logger.debug("[{}] snapshot request waiting for index {}", _id, awaited_idx);
+    LOGMACRO(logger, log_level::debug, "[{}] snapshot request waiting for index {}", _id, awaited_idx);
 
     try {
         optimized_optional<abort_source::subscription> sub;
@@ -516,7 +516,7 @@ future<bool> server_impl::trigger_snapshot(seastar::abort_source* as) {
                                      _applied_idx));
     }
 
-    logger.debug(
+    LOGMACRO(logger, log_level::debug, 
         "[{}] snapshot request satisfied, awaited index {}, persisted snapshot descriptor index: {}"
         ", current applied index {}, last fsm log index {}, last fsm snapshot index {}",
         _id, awaited_idx, _snapshot_desc_idx, _applied_idx,
@@ -1035,7 +1035,7 @@ void server_impl::send_message(server_id id, Message m) {
                 try {
                     co_await server->_rpc->send_append_entries(id, m);
                 } catch(...) {
-                    logger.debug("[{}] io_fiber failed to send a message to {}: {}", server->_id, id, std::current_exception());
+                    LOGMACRO(logger, log_level::debug, "[{}] io_fiber failed to send a message to {}: {}", server->_id, id, std::current_exception());
                 }
                 server->_append_request_status[id].count--;
                 if (server->_append_request_status[id].count == 0) {
@@ -1164,7 +1164,7 @@ future<> server_impl::process_fsm_output(index_t& last_stable, fsm_output&& batc
             send_message(m.first, std::move(m.second));
         } catch(...) {
             // Not being able to send a message is not a critical error
-            logger.debug("[{}] io_fiber failed to send a message to {}: {}", _id, m.first, std::current_exception());
+            LOGMACRO(logger, log_level::debug, "[{}] io_fiber failed to send a message to {}: {}", _id, m.first, std::current_exception());
         }
     }
 

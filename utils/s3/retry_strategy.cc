@@ -10,6 +10,8 @@
 #include "aws_error.hh"
 #include "utils/log.hh"
 
+using seastar::log_level;
+
 using namespace std::chrono_literals;
 
 namespace aws {
@@ -26,7 +28,7 @@ seastar::future<bool> default_retry_strategy::should_retry(const aws_error& erro
     }
     bool should_retry = error.is_retryable() == retryable::yes;
     if (should_retry) {
-        rs_logger.debug("AWS HTTP client request failed. Reason: {}. Retry# {}", error.get_error_message(), attempted_retries);
+        LOGMACRO(rs_logger, log_level::debug, "AWS HTTP client request failed. Reason: {}. Retry# {}", error.get_error_message(), attempted_retries);
     } else {
         rs_logger.warn("AWS HTTP client encountered non-retryable error. Reason: {}. Code: {}. Retry# {}",
                        error.get_error_message(),

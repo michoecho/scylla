@@ -106,7 +106,7 @@ future<> node_ops_ctl::query_pending_op() {
     req.cmd = node_ops_cmd::query_pending_ops;
     co_await coroutine::parallel_for_each(sync_nodes, [this] (const locator::host_id& node) -> future<> {
         auto resp = co_await ser::node_ops_rpc_verbs::send_node_ops_cmd(&ss._messaging.local(), node, req);
-        nlogger.debug("{}[{}]: Got query_pending_ops response from node={}, resp.pending_ops={}", desc, uuid(), node, resp.pending_ops);
+        LOGMACRO(nlogger, log_level::debug, "{}[{}]: Got query_pending_ops response from node={}, resp.pending_ops={}", desc, uuid(), node, resp.pending_ops);
         if (std::ranges::find(resp.pending_ops, uuid()) == resp.pending_ops.end()) {
             throw std::runtime_error(::format("{}[{}]: Node {} no longer tracks the operation", desc, uuid(), node));
         }
@@ -156,7 +156,7 @@ future<> node_ops_ctl::send_to_all(node_ops_cmd cmd) {
         }
         try {
             co_await ser::node_ops_rpc_verbs::send_node_ops_cmd(&ss._messaging.local(), node, req);
-            nlogger.debug("{}[{}]: Got {} response from node={}", desc, uuid(), op_desc, node);
+            LOGMACRO(nlogger, log_level::debug, "{}[{}]: Got {} response from node={}", desc, uuid(), op_desc, node);
         } catch (const seastar::rpc::unknown_verb_error&) {
             if (cmd_category == node_ops_cmd_category::prepare) {
                 nlogger.warn("{}[{}]: Node {} does not support the {} verb", desc, uuid(), node, op_desc);
@@ -199,7 +199,7 @@ future<> node_ops_ctl::heartbeat_updater(node_ops_cmd cmd) {
         co_await coroutine::parallel_for_each(sync_nodes, [&] (const locator::host_id& node) -> future<> {
             try {
                 co_await ser::node_ops_rpc_verbs::send_node_ops_cmd(&ss._messaging.local(), node, req);
-                nlogger.debug("{}[{}]: Got heartbeat response from node={}", desc, uuid(), node);
+                LOGMACRO(nlogger, log_level::debug, "{}[{}]: Got heartbeat response from node={}", desc, uuid(), node);
             } catch (...) {
                 nlogger.warn("{}[{}]: Failed to get heartbeat response from node={}", desc, uuid(), node);
             };

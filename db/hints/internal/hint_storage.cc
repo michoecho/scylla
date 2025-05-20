@@ -59,7 +59,7 @@ future<> scan_shard_hint_directories(const fs::path& hint_directory,
         try {
             shard_id = std::stoi(de.name);
         } catch (std::invalid_argument& ex) {
-            manager_logger.debug("Ignore invalid directory {}", de.name);
+            LOGMACRO(manager_logger, log_level::debug, "Ignore invalid directory {}", de.name);
             return make_ready_future<>();
         }
 

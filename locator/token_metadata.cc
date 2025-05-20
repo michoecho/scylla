@@ -262,7 +262,7 @@ public:
 
     void invalidate_cached_rings() {
         _ring_version = ++_static_ring_version;
-        tlogger.debug("ring_version={}", _ring_version);
+        LOGMACRO(tlogger, log_level::debug, "ring_version={}", _ring_version);
     }
 
     token_metadata::version_t get_version() const {
@@ -450,7 +450,7 @@ future<> token_metadata_impl::update_normal_tokens(std::unordered_set<token> tok
         auto prev = _token_to_endpoint_map.insert(std::pair<token, host_id>(t, endpoint));
         should_sort_tokens |= prev.second; // new token inserted -> sort
         if (prev.first->second != endpoint) {
-            tlogger.debug("Token {} changing ownership from {} to {}", t, prev.first->second, endpoint);
+            LOGMACRO(tlogger, log_level::debug, "Token {} changing ownership from {} to {}", t, prev.first->second, endpoint);
             prev.first->second = endpoint;
         }
     }
@@ -1163,7 +1163,7 @@ void shared_token_metadata::set(mutable_token_metadata_ptr tmptr) noexcept {
         }
     }
 
-    tlogger.debug("new token_metadata is set, version {}", _shared->get_version());
+    LOGMACRO(tlogger, log_level::debug, "new token_metadata is set, version {}", _shared->get_version());
 }
 
 void shared_token_metadata::update_fence_version(token_metadata::version_t version) {
@@ -1186,7 +1186,7 @@ void shared_token_metadata::update_fence_version(token_metadata::version_t versi
                 _fence_version, version));
     }
     _fence_version = version;
-    tlogger.debug("new fence_version is set, version {}", _fence_version);
+    LOGMACRO(tlogger, log_level::debug, "new fence_version is set, version {}", _fence_version);
 }
 
 future<> shared_token_metadata::mutate_token_metadata(seastar::noncopyable_function<future<> (token_metadata&)> func) {

@@ -797,7 +797,7 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, shar
                 }
             }
         }
-        slogger.debug("Affected tables for keyspace {}: {}", keyspace_name, sel.tables);
+        LOGMACRO(slogger, log_level::debug, "Affected tables for keyspace {}: {}", keyspace_name, sel.tables);
     }
 
     // current state of the schema

@@ -856,7 +856,7 @@ future<> generation_service::on_change(gms::inet_address ep, locator::host_id id
 
     return on_application_state_change(ep, id, states, gms::application_state::CDC_GENERATION_ID, pid, [this] (gms::inet_address ep, locator::host_id id, const gms::versioned_value& v, gms::permit_id) {
         auto gen_id = gms::versioned_value::cdc_generation_id_from_string(v.value());
-        cdc_log.debug("Endpoint: {}, CDC generation ID change: {}", ep, gen_id);
+        LOGMACRO(cdc_log, log_level::debug, "Endpoint: {}, CDC generation ID change: {}", ep, gen_id);
 
         return legacy_handle_cdc_generation(gen_id);
     });
