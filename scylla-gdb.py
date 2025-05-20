@@ -6538,3 +6538,71 @@ scylla_gdb_func_sharded_local()
 scylla_gdb_func_variant_member()
 
 gdb.execute('set language c++')
+
+class scylla_tracer_dump(gdb.Command):
+    """Dumps collected tracepoint outputs to files.
+
+    For each shard, this command extracts the tracer's buffers (both old and current)
+    and writes the content to files named 'tracer_dump_shard_{N}_{level}.bin'
+    where N is the shard id and level is the event level (info or debug).
+    """
+
+    def __init__(self):
+        gdb.Command.__init__(self, 'scylla tracer_dump', gdb.COMMAND_USER, gdb.COMPLETE_COMMAND)
+
+    def invoke(self, arg, from_tty):
+        parser = argparse.ArgumentParser(description="Dump tracer buffers to files")
+        parser.add_argument("-o", "--output-dir", type=str, default=".",
+                            help="Directory to store the dump files (default: current directory)")
+
+        try:
+            args = parser.parse_args(arg.split())
+        except SystemExit:
+            return
+
+        output_dir = args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        event_levels = ["INFO", "DEBUG"]
+
+        for shard in range(cpus()):
+            gdb.write(f"Dumping tracer data for shard {shard}...\n")
+
+            # Switch to the shard's thread
+            gdb.execute(f"scylla shard {shard}")
+            
+            # Find the tracer instance for the current shard
+            tracer = gdb.parse_and_eval('seastar::local_tracer')
+
+            # Process each event level
+            for level_idx, level_name in enumerate(event_levels):
+                output_file = f"{output_dir}/tracer_dump_shard_{shard}_{level_name.lower()}.bin"
+
+                # Access the buffer group for this level
+                buffer_group = std_array(tracer['_groups'])[level_idx]
+
+                # Dump old buffers
+                old_buffers = std_list(buffer_group['_old'])
+
+                for i in range(len(old_buffers)):
+                    buf = old_buffers[i]
+                    cmd = f"append binary memory {output_file} {buf['_M_impl']['_M_start']} {buf['_M_impl']['_M_finish']}\n"
+                    gdb.write(cmd)
+                    if buf['_M_impl']['_M_start'] < buf['_M_impl']['_M_finish']:
+                        gdb.execute(cmd)
+
+                # Dump current buffer up to current position
+                current_buffer = buffer_group['_current']
+                cur_pos = int(buffer_group['_cur_pos'])
+
+                if cur_pos > 0:
+                    cmd = f"append binary memory {output_file} {buf['_M_impl']['_M_start']} {hex(int(buf['_M_impl']['_M_start']) + cur_pos)}"
+                    gdb.write(cmd)
+                    gdb.execute(cmd)
+
+                gdb.write(f"  Dumped {level_name} traces to {output_file}\n")
+
+        gdb.write("Tracer dump complete.\n")
+
+
+scylla_tracer_dump()
