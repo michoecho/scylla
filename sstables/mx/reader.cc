@@ -379,8 +379,6 @@ public:
                                    gc_clock::time_point local_deletion_time,
                                    bool is_deleted) {
         const std::optional<column_id>& column_id = column_info.id;
-        sstlog.trace("mp_row_consumer_m {}: consume_column(id={}, path={}, value={}, ts={}, ttl={}, del_time={}, deleted={})", fmt::ptr(this),
-            column_id, fmt_hex(cell_path), value, timestamp, ttl.count(), local_deletion_time.time_since_epoch().count(), is_deleted);
         check_column_missing_in_current_schema(column_info, timestamp);
         if (!column_id) {
             return data_consumer::proceed::yes;
@@ -1346,6 +1344,7 @@ private:
                 : get_index_reader().advance_to(dht::ring_position_view::for_after_key(*_current_partition_key))).then([this] {
             _index_in_current_partition = true;
             auto [start, end] = _index_reader->data_file_positions();
+            sstlog.trace("reader {}: advance_to_next_partition: start: {}, end: {}", fmt::ptr(this), start, end);
             if (end && start > *end) {
                 _read_enabled = false;
                 return make_ready_future<>();
@@ -1383,7 +1382,7 @@ private:
 
         _end_of_stream = true; // on_next_partition() will set it to true
         if (!_read_enabled) {
-            sstlog.trace("reader {}: eof", fmt::ptr(this));
+            sstlog.trace("reader {}: eof, _read_enabled", fmt::ptr(this));
             return make_ready_future<>();
         }
 
@@ -1563,6 +1562,7 @@ private:
 
         if (_single_partition_read) {
             _read_enabled = (begin != *end);
+            sstlog.trace("mx_sstable_mutation_reader {}: _single_pratition_read {} {}", fmt::ptr(this), begin, *end);
             if (reversed()) {
                 if (_integrity) {
                     on_internal_error(sstlog, "mx reader: integrity checking not supported for single-partition reversed reads");
@@ -1624,6 +1624,7 @@ public:
                 auto f1 = _index_reader->advance_to(pr);
                 return f1.then([this] {
                     auto [start, end] = _index_reader->data_file_positions();
+                    sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to(), start={}, end={}", fmt::ptr(this), start, end);
                     SCYLLA_ASSERT(end);
                     if (start != *end) {
                         _read_enabled = true;
