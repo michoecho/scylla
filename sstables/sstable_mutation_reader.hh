@@ -116,6 +116,7 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
+    sstables::sstlog.trace("data_consume_rows 0(): beg={} end={}", toread.start, toread.end);
     auto input = sst->data_stream(toread.start, last_end - toread.start,
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, sstable::raw_stream::no, integrity);
     return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end - toread.start);
