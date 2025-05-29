@@ -17,6 +17,17 @@ namespace sstables {
 enum class sstable_version_types { ka, la, mc, md, me };
 enum class sstable_format_types { big };
 
+constexpr sstable_format_types format_of_version(sstable_version_types v) {
+    switch (v) {
+        case sstable_version_types::ka:
+        case sstable_version_types::la:
+        case sstable_version_types::mc:
+        case sstable_version_types::md:
+        case sstable_version_types::me:
+            return sstable_format_types::big;
+    }
+}
+
 constexpr std::array<sstable_version_types, 5> all_sstable_versions = {
     sstable_version_types::ka,
     sstable_version_types::la,
