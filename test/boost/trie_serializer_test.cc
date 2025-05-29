@@ -332,3 +332,174 @@ SEASTAR_THREAD_TEST_CASE(test_chain) {
         test_one(transition_view, some_offset);
     }
 }
+
+class in_memory_file_impl : public file_impl {
+    const_bytes _view;
+    uint64_t _fake_start_pos;
+private:
+    [[noreturn]] void unsupported() {
+        throw_with_backtrace<std::logic_error>("unsupported operation");
+    }
+public:
+    in_memory_file_impl(const_bytes buf, uint64_t fake_start_pos)
+        : _view(buf)
+        , _fake_start_pos(fake_start_pos)
+    { }
+
+    // unsupported
+    virtual future<size_t> write_dma(uint64_t pos, const void* buffer, size_t len, io_intent*) override { unsupported(); }
+    virtual future<size_t> write_dma(uint64_t pos, std::vector<iovec> iov, io_intent*) override { unsupported(); }
+    virtual future<> flush(void) override { unsupported(); }
+    virtual future<> truncate(uint64_t length) override { unsupported(); }
+    virtual future<> discard(uint64_t offset, uint64_t length) override { unsupported(); }
+    virtual future<> allocate(uint64_t position, uint64_t length) override { unsupported(); }
+    virtual subscription<directory_entry> list_directory(std::function<future<>(directory_entry)>) override { unsupported(); }
+    virtual future<struct stat> stat(void) override { unsupported(); }
+    virtual std::unique_ptr<seastar::file_handle_impl> dup() override { unsupported(); }
+
+    // delegating
+    virtual future<uint64_t> size(void) override { return make_ready_future<uint64_t>(_view.size() + _fake_start_pos); }
+    virtual future<> close() override { return make_ready_future<>(); }
+    virtual future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t size, io_intent* intent) override {
+        SCYLLA_ASSERT(offset >= _fake_start_pos && offset <= _fake_start_pos + _view.size());
+        auto p = _view.subspan(offset - _fake_start_pos);
+        p = p.first(std::min(p.size(), size));
+        return make_ready_future<temporary_buffer<uint8_t>>(reinterpret_cast<const uint8_t*>(p.data()), p.size());
+    }
+
+    virtual future<size_t> read_dma(uint64_t pos, void* buffer, size_t len, io_intent*) override {
+        unsupported(); // FIXME
+    }
+
+    virtual future<size_t> read_dma(uint64_t pos, std::vector<iovec> iov, io_intent*) override {
+        unsupported(); // FIXME
+    }
+};
+
+struct cached_file_in_memory {
+    // cached_file has no default constructor, so it's a pain to initialize without optional<>
+    std::optional<cached_file> _cf;
+    std::vector<std::byte> _backing;
+    logalloc::region _region;
+    lru _cachelist;
+    cached_file_stats _stats;
+    cached_file_in_memory(const_bytes backing, uint64_t fake_start) {
+        uint64_t padding = fake_start % cached_file::page_size;
+        _backing.resize(padding);
+        _backing.insert(_backing.end(), backing.begin(), backing.end());
+        auto fake_file_impl = seastar::make_shared<in_memory_file_impl>(_backing, fake_start - padding);
+        auto fake_file = seastar::file(seastar::static_pointer_cast<file_impl>(fake_file_impl));
+        _cf.emplace(fake_file, _stats, _cachelist, _region, fake_start + backing.size());
+    }
+    cached_file_in_memory(cached_file_in_memory&&) = delete;
+    cached_file& get_cached_file() {
+        return *_cf;
+    }
+};
+
+SEASTAR_THREAD_TEST_CASE(test_bti_node_reader) {
+    std::vector<std::vector<uint8_t>> interesting_transition_sets = get_some_interesting_transition_sets();
+
+    // Arbitrary, but large enough to cover all interesting widths.
+    auto pos = sink_pos((uint64_t(1) << 60) + 1);
+    auto whatever = string_as_bytes("hahaha");
+    const auto custom_payload = trie_payload(0x7, string_as_bytes("lololo"));
+
+    for (int width = 1; width < 50; ++width)
+    for (const auto& child_transitions : interesting_transition_sets)
+    for (const auto& offsets : get_some_interesting_child_offsets(width, child_transitions.size()))
+    for (bool payload : {true, false}) {
+        testlog.trace("transitions={} offsets={}", child_transitions, offsets);
+        SCYLLA_ASSERT(offsets.size() == child_transitions.size());
+        trie::bump_allocator alctr(128 * 1024);
+        auto payload_opt = payload ? std::optional<trie_payload>(custom_payload) : std::optional<trie_payload>(); 
+        auto node = make_node(pos, whatever, child_transitions, offsets, payload_opt, alctr);
+    
+        for (node_type type = node_type(0); type < NODE_TYPE_COUNT; type = node_type(int(type) + 1)) {
+            testlog.trace("type={} payload={}", int(type), payload);
+            if (eligible(type, *node, pos)) {
+                auto serialized = serialize_body(*node, pos, type);
+                auto fake_file = cached_file_in_memory(serialized, pos.value);
+                bti_node_reader bnr(fake_file.get_cached_file());
+                bnr.load(pos.value).get();
+
+                auto basic_metadata = bnr.read_final_node(pos.value); 
+                BOOST_REQUIRE(basic_metadata.n_children >= int(child_transitions.size()));
+                BOOST_REQUIRE(basic_metadata.payload_bits == (payload ? custom_payload._payload_bits : 0));
+
+                if (payload) {
+                    auto p = bnr.get_payload(pos.value);
+                    SCYLLA_ASSERT(std::ranges::equal(custom_payload.blob(), p));
+                }
+
+                std::vector<int> padded_child_indices;
+
+                for (int b = 0; b < 256; ++b) {
+                    std::byte key[] = {std::byte(b)};
+                    auto result = bnr.traverse_node_by_key(pos.value, key);
+                    BOOST_REQUIRE(result.traversed_key_bytes == 0);
+                    BOOST_REQUIRE(result.body_pos == pos.value);
+                    BOOST_REQUIRE(result.payload_bits == basic_metadata.payload_bits);
+                    BOOST_REQUIRE(result.n_children == basic_metadata.n_children);
+                    auto it = std::ranges::lower_bound(child_transitions, b);
+                    if (it == child_transitions.end()) {
+                        BOOST_REQUIRE(result.found_byte == -1);
+                        BOOST_REQUIRE(result.found_idx == result.n_children);
+                    } else if (*it == b) {
+                        BOOST_REQUIRE(result.found_byte == b);
+                        BOOST_REQUIRE(result.found_idx < result.n_children);
+                        BOOST_REQUIRE(result.child_offset == offsets.at(it - child_transitions.begin()));
+                        padded_child_indices.push_back(result.found_idx);
+                    } else {
+                        BOOST_REQUIRE(result.found_byte > b);
+                        BOOST_REQUIRE(result.found_idx < result.n_children);
+                    }
+                }
+
+                {
+                    auto result = bnr.traverse_node_leftmost(pos.value);
+                    BOOST_REQUIRE(result.n_children == basic_metadata.n_children);
+                    BOOST_REQUIRE(result.payload_bits == basic_metadata.payload_bits);
+                    BOOST_REQUIRE(result.body_pos == pos.value);
+                    if (result.n_children > 0) {
+                        BOOST_REQUIRE(result.child_offset == offsets.front());
+                    }
+                }
+                {
+                    auto result = bnr.traverse_node_rightmost(pos.value);
+                    BOOST_REQUIRE(result.n_children == basic_metadata.n_children);
+                    BOOST_REQUIRE(result.payload_bits == basic_metadata.payload_bits);
+                    BOOST_REQUIRE(result.body_pos == pos.value);
+                    if (result.n_children > 0) {
+                        BOOST_REQUIRE(result.child_offset == offsets.back());
+                    }
+                }
+                {
+                    for (int i = 0; i < basic_metadata.n_children; ++i) {
+                        int next_child_idx, prev_child_idx;
+                        auto it = std::ranges::lower_bound(padded_child_indices, i);
+                        BOOST_REQUIRE(it != padded_child_indices.end());
+                        if (i == *it) {
+                            next_child_idx = it - padded_child_indices.begin();
+                            prev_child_idx = next_child_idx;
+                        } else {
+                            BOOST_REQUIRE(it != padded_child_indices.begin());
+                            next_child_idx = it - padded_child_indices.begin();
+                            prev_child_idx = next_child_idx - 1;
+                        }
+                        {
+                            auto result = bnr.get_child(pos.value, i, true);
+                            BOOST_REQUIRE(result.idx == padded_child_indices[next_child_idx]);
+                            BOOST_REQUIRE(result.offset == static_cast<uint64_t>(offsets[next_child_idx]));
+                        }
+                        {
+                            auto result = bnr.get_child(pos.value, i, false);
+                            BOOST_REQUIRE(result.idx == padded_child_indices[prev_child_idx]);
+                            BOOST_REQUIRE(result.offset == static_cast<uint64_t>(offsets[prev_child_idx]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
