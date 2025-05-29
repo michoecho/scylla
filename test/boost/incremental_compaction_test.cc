@@ -74,7 +74,7 @@ SEASTAR_TEST_CASE(incremental_compaction_test) {
 
         auto tmp = make_lw_shared<tmpdir>();
         auto sst_gen = [&env, s, tmp] () mutable {
-            auto sst = env.make_sstable(s, tmp->path().string(), env.new_generation(), sstable_version_types::md, big);
+            auto sst = env.make_sstable(s, tmp->path().string(), env.new_generation(), sstable_version_types::md);
             return sst;
         };
 
@@ -230,7 +230,7 @@ SEASTAR_THREAD_TEST_CASE(incremental_compaction_sag_test) {
         }
 
         shared_sstable make_sstable_with_size(size_t sstable_data_size) {
-            auto sst = _env.make_sstable(_cf->schema(), "/nowhere/in/particular", _env.new_generation(), sstable_version_types::md, big);
+            auto sst = _env.make_sstable(_cf->schema(), "/nowhere/in/particular", _env.new_generation(), sstable_version_types::md);
             auto keys = tests::generate_partition_keys(2, _cf->schema(), local_shard_only::yes);
             sstables::test(sst).set_values(keys[0].key(), keys[1].key(), stats_metadata{}, sstable_data_size);
             return sst;
@@ -331,7 +331,7 @@ SEASTAR_TEST_CASE(basic_garbage_collection_test) {
         auto close_cf = deferred_stop(cf);
 
         auto creator = [&] {
-            auto sst = env.make_sstable(s, tmp.path().string(), env.new_generation(), sstables::get_highest_sstable_version(), big);
+            auto sst = env.make_sstable(s, tmp.path().string(), env.new_generation(), sstables::get_highest_sstable_version());
             return sst;
         };
         auto sst = make_sstable_containing(creator, std::move(mutations));
@@ -432,7 +432,7 @@ SEASTAR_TEST_CASE(ics_reshape_test) {
         auto tmp = tmpdir();
 
         auto sst_gen = [&env, s, &tmp]() {
-            return env.make_sstable(s, tmp.path().string(), env.new_generation(), sstables::sstable::version_types::md, big);
+            return env.make_sstable(s, tmp.path().string(), env.new_generation(), sstables::sstable::version_types::md);
         };
 
         {

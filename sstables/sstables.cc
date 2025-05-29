@@ -878,7 +878,7 @@ future<std::unordered_map<component_type, file>> sstable::readable_file_for_all_
 
 future<entry_descriptor> sstable::clone(generation_type new_generation) const {
     co_await _storage->snapshot(*this, _storage->prefix(), storage::absolute_path::yes, new_generation);
-    co_return entry_descriptor(new_generation, _version, _format, component_type::TOC, _state);
+    co_return entry_descriptor(new_generation, _version, component_type::TOC, _state);
 }
 
 file_writer::~file_writer() {
@@ -1652,12 +1652,12 @@ future<foreign_sstable_open_info> sstable::get_open_info() & {
         }
         return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(),
             std::move(partition_index_handle), std::move(row_index_handle),
-            _generation, _version, _format, data_size(), _metadata_size_on_disk};
+            _generation, _version, data_size(), _metadata_size_on_disk};
     });
 }
 
 entry_descriptor sstable::get_descriptor(component_type c) const {
-    return entry_descriptor(_generation, _version, _format, c);
+    return entry_descriptor(_generation, _version, c);
 }
 
 future<>
@@ -2276,10 +2276,10 @@ void sstable::validate_originating_host_id() const {
 }
 
 sstring sstable::component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                                    format_types format, sstring component) {
+                                    sstring component) {
     sstring v = fmt::to_string(version);
     sstring g = to_sstring(generation);
-    sstring f = fmt::to_string(format);
+    sstring f = fmt::to_string(format_of_version(version));
     switch (version) {
     case sstable::version_types::ka:
         return ks + "-" + cf + "-" + v + "-" + g + "-" + component;
@@ -2294,19 +2294,19 @@ sstring sstable::component_basename(const sstring& ks, const sstring& cf, versio
 }
 
 sstring sstable::component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                          format_types format, component_type component) {
-    return component_basename(ks, cf, version, generation, format,
+                          component_type component) {
+    return component_basename(ks, cf, version, generation,
             sstable_version_constants::get_component_map(version).at(component));
 }
 
 sstring sstable::filename(const sstring& dir, const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                          format_types format, component_type component) {
-    return dir + "/" + component_basename(ks, cf, version, generation, format, component);
+                          component_type component) {
+    return dir + "/" + component_basename(ks, cf, version, generation, component);
 }
 
 sstring sstable::filename(const sstring& dir, const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                          format_types format, sstring component) {
-    return dir + "/" + component_basename(ks, cf, version, generation, format, component);
+                          sstring component) {
+    return dir + "/" + component_basename(ks, cf, version, generation, component);
 }
 
 std::vector<std::pair<component_type, sstring>> sstable::all_components() const {
@@ -2416,11 +2416,11 @@ static std::tuple<entry_descriptor, sstring, sstring> make_entry_descriptor(cons
     boost::smatch match;
 
     sstable::version_types version;
+    sstable_format_types format;
 
     const auto ks_cf_provided = provided_ks && provided_cf;
 
     sstring generation;
-    sstring format;
     sstring component;
     sstring ks;
     sstring cf;
@@ -2446,7 +2446,7 @@ static std::tuple<entry_descriptor, sstring, sstring> make_entry_descriptor(cons
         }
         version = version_from_string(match[1].str());
         generation = match[2].str();
-        format = sstring(match[3].str());
+        format = format_from_string(sstring(match[3].str()));
         component = sstring(match[4].str());
     } else if (boost::regex_match(s, match, ka)) {
         if (!ks_cf_provided) {
@@ -2454,13 +2454,16 @@ static std::tuple<entry_descriptor, sstring, sstring> make_entry_descriptor(cons
             cf = match[2].str();
         }
         version = sstable::version_types::ka;
-        format = sstring("big");
+        format = sstable_format_types::big;
         generation = match[3].str();
         component = sstring(match[4].str());
     } else {
         throw malformed_sstable_exception(seastar::format("invalid version for file {}. Name doesn't match any known version.", fname));
     }
-    return std::make_tuple(entry_descriptor(generation_type::from_string(generation), version, format_from_string(format), sstable::component_from_sstring(version, component)), ks, cf);
+    if (format != format_of_version(version)) {
+        throw malformed_sstable_exception(seastar::format("invalid version+format combination for file {}.", fname));
+    }
+    return std::make_tuple(entry_descriptor(generation_type::from_string(generation), version, sstable::component_from_sstring(version, component)), ks, cf);
 }
 
 std::tuple<entry_descriptor, sstring, sstring> parse_path(const std::filesystem::path& sst_path) {
@@ -3270,7 +3273,6 @@ sstable::sstable(schema_ptr schema,
         generation_type generation,
         sstable_state state,
         version_types v,
-        format_types f,
         db::large_data_handler& large_data_handler,
         sstables_manager& manager,
         gc_clock::time_point now,
@@ -3282,7 +3284,6 @@ sstable::sstable(schema_ptr schema,
     , _state(state)
     , _storage(make_storage(manager, storage, _state))
     , _version(v)
-    , _format(f)
     , _index_cache(std::make_unique<partition_index_cache>(
             manager.get_cache_tracker().get_lru(), manager.get_cache_tracker().region(), manager.get_cache_tracker().get_partition_index_cache_stats()))
     , _now(now)
@@ -3650,7 +3651,7 @@ public:
 
 std::unique_ptr<sstable_stream_sink> create_stream_sink(schema_ptr schema, sstables_manager& sstm, const data_dictionary::storage_options& s_opts, sstable_state state, std::string_view component_filename, bool last_component) {
     auto desc = parse_path(component_filename, schema->ks_name(), schema->cf_name());
-    auto sst = sstm.make_sstable(schema, s_opts, desc.generation, state, desc.version, desc.format);
+    auto sst = sstm.make_sstable(schema, s_opts, desc.generation, state, desc.version);
 
     auto type = desc.component;
     // Don't write actual TOC. Write temp, if successful, storage::seal will rename this to actual

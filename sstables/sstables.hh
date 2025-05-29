@@ -188,7 +188,6 @@ class sstable : public enable_lw_shared_from_this<sstable> {
     friend ::sstable_assertions;
 public:
     using version_types = sstable_version_types;
-    using format_types = sstable_format_types;
     using manager_list_link_type = bi::list_member_hook<bi::link_mode<bi::auto_unlink>>;
     using manager_set_link_type = bi::set_member_hook<bi::link_mode<bi::auto_unlink>>;
 public:
@@ -197,7 +196,6 @@ public:
             generation_type generation,
             sstable_state state,
             version_types v,
-            format_types f,
             db::large_data_handler& large_data_handler,
             sstables_manager& manager,
             gc_clock::time_point now,
@@ -228,13 +226,13 @@ public:
 
     static component_type component_from_sstring(version_types version, const sstring& s);
     static sstring component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                                      format_types format, component_type component);
+                                      component_type component);
     static sstring component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                                      format_types format, sstring component);
+                                      sstring component);
     static sstring filename(const sstring& dir, const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                            format_types format, component_type component);
+                            component_type component);
     static sstring filename(const sstring& dir, const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                            format_types format, sstring component);
+                            sstring component);
 
     // load sstable using components shared by a shard
     future<> load(foreign_sstable_open_info info) noexcept;
@@ -415,7 +413,7 @@ public:
     int compare_by_max_timestamp(const sstable& other) const;
 
     sstring component_basename(component_type f) const {
-        return component_basename(_schema->ks_name(), _schema->cf_name(), _version, _generation, _format, f);
+        return component_basename(_schema->ks_name(), _schema->cf_name(), _version, _generation, f);
     }
 
     component_name get_filename() const {
@@ -579,7 +577,6 @@ private:
     std::unique_ptr<storage> _storage;
 
     const version_types _version;
-    const format_types _format;
 
     filter_tracker _filter_tracker;
     std::unique_ptr<partition_index_cache> _index_cache;
