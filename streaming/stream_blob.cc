@@ -48,7 +48,7 @@ static future<> load_sstable_for_tablet(const file_stream_id& ops_id, replica::d
         replica::table& t = db.find_column_family(id);
         auto erm = t.get_effective_replication_map();
         auto& sstm = t.get_sstables_manager();
-        auto sst = sstm.make_sstable(t.schema(), t.get_storage_options(), desc.generation, state, desc.version, desc.format);
+        auto sst = sstm.make_sstable(t.schema(), t.get_storage_options(), desc.generation, state, desc.version);
         co_await sst->load(erm->get_sharder(*t.schema()));
         co_await t.add_sstable_and_update_cache(sst);
         blogger.info("stream_sstables[{}] Loaded sstable {} successfully", ops_id, sst->toc_filename());

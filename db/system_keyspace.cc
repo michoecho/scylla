@@ -3333,7 +3333,7 @@ system_keyspace::read_cdc_generation_opt(utils::UUID id) {
 future<> system_keyspace::sstables_registry_create_entry(table_id owner, sstring status, sstables::sstable_state state, sstables::entry_descriptor desc) {
     static const auto req = format("INSERT INTO system.{} (owner, generation, status, state, version, format) VALUES (?, ?, ?, ?, ?, ?)", SSTABLES_REGISTRY);
     slogger.trace("Inserting {}.{} into {}", owner, desc.generation, SSTABLES_REGISTRY);
-    co_await execute_cql(req, owner.id, desc.generation, status, sstables::state_to_dir(state), fmt::to_string(desc.version), fmt::to_string(desc.format)).discard_result();
+    co_await execute_cql(req, owner.id, desc.generation, status, sstables::state_to_dir(state), fmt::to_string(desc.version), fmt::to_string(sstables::format_of_version(desc.version))).discard_result();
 }
 
 future<> system_keyspace::sstables_registry_update_entry_status(table_id owner, sstables::generation_type gen, sstring status) {
@@ -3365,8 +3365,7 @@ future<> system_keyspace::sstables_registry_list(table_id owner, sstable_registr
         auto state = sstables::state_from_dir(row.get_as<sstring>("state"));
         auto gen = sstables::generation_type(row.get_as<utils::UUID>("generation"));
         auto ver = sstables::version_from_string(row.get_as<sstring>("version"));
-        auto fmt = sstables::format_from_string(row.get_as<sstring>("format"));
-        sstables::entry_descriptor desc(gen, ver, fmt, sstables::component_type::TOC);
+        sstables::entry_descriptor desc(gen, ver, sstables::component_type::TOC);
         co_await consumer(std::move(status), std::move(state), std::move(desc));
         co_return stop_iteration::no;
     });

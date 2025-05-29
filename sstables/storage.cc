@@ -54,7 +54,7 @@ private:
     template <typename Comp>
     requires std::is_same_v<Comp, component_type> || std::is_same_v<Comp, sstring>
     static auto filename(const sstable& sst, sstring dir, generation_type gen, Comp comp) {
-        return sstable::filename(dir, sst._schema->ks_name(), sst._schema->cf_name(), sst._version, gen, sst._format, comp);
+        return sstable::filename(dir, sst._schema->ks_name(), sst._schema->cf_name(), sst._version, gen, comp);
     }
 
     future<> check_create_links_replay(const sstable& sst, const sstring& dst_dir, generation_type dst_gen, const std::vector<std::pair<sstables::component_type, sstring>>& comps) const;
@@ -608,7 +608,7 @@ sstring s3_storage::make_s3_object_name(const sstable& sst, component_type type)
 }
 
 void s3_storage::open(sstable& sst) {
-    entry_descriptor desc(sst._generation, sst._version, sst._format, component_type::TOC);
+    entry_descriptor desc(sst._generation, sst._version, component_type::TOC);
     sst.manager().sstables_registry().create_entry(owner(), status_creating, sst._state, std::move(desc)).get();
 
     memory_data_sink_buffers bufs;
