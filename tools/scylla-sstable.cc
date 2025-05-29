@@ -366,7 +366,7 @@ const std::vector<sstables::shared_sstable> load_sstables(schema_ptr schema, sst
             const auto dir_path = sst_path.parent_path();
             options = data_dictionary::make_local_options(dir_path);
         }
-        auto sst = sst_man.make_sstable(schema, options, ed.generation, sstables::sstable_state::normal, ed.version, ed.format);
+        auto sst = sst_man.make_sstable(schema, options, ed.generation, sstables::sstable_state::normal, ed.version);
 
         try {
             co_await sst->load(schema->get_sharder(), sstables::sstable_open_config{.load_first_and_last_position_metadata = false});
@@ -921,15 +921,14 @@ private:
 
 private:
     sstables::shared_sstable do_make_sstable() const {
-        const auto format = sstables::sstable_format_types::big;
         const auto version = sstables::get_highest_sstable_version();
         auto generation = _generation_generator(uuid_identifiers::yes);
-        auto sst_name = sstables::sstable::filename(_output_dir, _schema->ks_name(), _schema->cf_name(), version, generation, format, component_type::Data);
+        auto sst_name = sstables::sstable::filename(_output_dir, _schema->ks_name(), _schema->cf_name(), version, generation, component_type::Data);
         if (file_exists(sst_name).get()) {
             throw std::runtime_error(fmt::format("cannot create output sstable {}, file already exists", sst_name));
         }
         auto local = data_dictionary::make_local_options(_output_dir);
-        return _sst_man.make_sstable(_schema, local, generation, sstables::sstable_state::normal, version, format);
+        return _sst_man.make_sstable(_schema, local, generation, sstables::sstable_state::normal, version);
     }
     sstables::sstable_writer_config do_configure_writer(sstring origin) const {
         return _sst_man.configure_writer(std::move(origin));
@@ -2625,11 +2624,10 @@ void write_operation(schema_ptr schema, reader_permit permit, const std::vector<
         throw std::invalid_argument("missing required option '--generation'");
     }
     auto generation = sstables::generation_type(vm["generation"].as<int64_t>());
-    auto format = sstables::sstable_format_types::big;
     auto version = sstables::get_highest_sstable_version();
 
     {
-        auto sst_name = sstables::sstable::filename(output_dir, schema->ks_name(), schema->cf_name(), version, generation, format, component_type::Data);
+        auto sst_name = sstables::sstable::filename(output_dir, schema->ks_name(), schema->cf_name(), version, generation, component_type::Data);
         if (file_exists(sst_name).get()) {
             throw std::invalid_argument(fmt::format("cannot create output sstable {}, file already exists", sst_name));
         }
@@ -2642,7 +2640,7 @@ void write_operation(schema_ptr schema, reader_permit permit, const std::vector<
     auto writer_cfg = manager.configure_writer("scylla-sstable");
     writer_cfg.validation_level = validation_level;
     auto local = data_dictionary::make_local_options(output_dir);
-    auto sst = manager.make_sstable(schema, local, generation, sstables::sstable_state::normal, version, format);
+    auto sst = manager.make_sstable(schema, local, generation, sstables::sstable_state::normal, version);
 
     sst->write_components(std::move(reader), 1, schema, writer_cfg, encoding_stats{}).get();
 }
