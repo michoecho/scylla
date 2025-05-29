@@ -175,10 +175,12 @@ const std::unordered_map<sstable_version_types, sstring, enum_hash<sstable_versi
     { sstable_version_types::mc , "mc" },
     { sstable_version_types::md , "md" },
     { sstable_version_types::me , "me" },
+    { sstable_version_types::da , "da" },
 };
 
 const std::unordered_map<sstable_format_types, sstring, enum_hash<sstable_format_types>> format_string = {
-    { sstable_format_types::big , "big" }
+    { sstable_format_types::big , "big" },
+    { sstable_format_types::bti , "bti" }
 };
 
 // This assumes that the mappings are small enough, and called unfrequent
@@ -2288,6 +2290,7 @@ sstring sstable::component_basename(const sstring& ks, const sstring& cf, versio
     case sstable::version_types::mc:
     case sstable::version_types::md:
     case sstable::version_types::me:
+    case sstable::version_types::da:
         return v + "-" + g + "-" + f + "-" + component;
     }
     SCYLLA_ASSERT(0 && "invalid version");
@@ -2407,7 +2410,7 @@ static std::tuple<entry_descriptor, sstring, sstring> make_entry_descriptor(cons
     //   la-42-big-Data.db
     //   ka-42-big-Data.db
     //   me-3g8w_00qf_4pbog2i7h2c7am0uoe-big-Data.db
-    static boost::regex la_mx("(la|m[cde])-([^-]+)-(\\w+)-(.*)");
+    static boost::regex la_mx("(la|m[cde]|da)-([^-]+)-(\\w+)-(.*)");
     static boost::regex ka("(\\w+)-(\\w+)-ka-(\\d+)-(.*)");
 
     static boost::regex dir(format(".*/([^/]*)/([^/]+)-[\\da-fA-F]+(?:/({}|{}|{}|{})(?:/[^/]+)?)?/?",
