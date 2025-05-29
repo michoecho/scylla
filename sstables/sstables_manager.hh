@@ -155,7 +155,6 @@ public:
             generation_type generation,
             sstable_state state = sstable_state::normal,
             sstable_version_types v = get_highest_sstable_version(),
-            sstable_format_types f = sstable_format_types::big,
             db_clock::time_point now = db_clock::now(),
             io_error_handler_gen error_handler_gen = default_io_error_handler_gen(),
             size_t buffer_size = default_sstable_buffer_size);
