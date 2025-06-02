@@ -855,7 +855,9 @@ void sstable::generate_toc() {
     _recognized_components.insert(component_type::Index);
     _recognized_components.insert(component_type::Summary);
     _recognized_components.insert(component_type::Data);
-    if (_schema->partition_key_type()->has_memcmp_comparable_form()) {
+    if (format_of_version(_version) == sstable_format_types::bti
+        && _schema->partition_key_type()->has_memcmp_comparable_form()
+    ) {
         _recognized_components.insert(component_type::Partitions);
         _recognized_components.insert(component_type::Rows);
     }
