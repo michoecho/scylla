@@ -689,6 +689,10 @@ SEASTAR_TEST_CASE(test_wrong_range_tombstone_order) {
 
     return test_env::do_with_async([] (test_env& env) {
       for (const auto version : all_sstable_versions) {
+        if (format_of_version(version) != sstables::sstable_format_types::big) {
+            // `compact storage` nonsense.
+            continue;
+        }
         auto s = schema_builder("ks", "wrong_range_tombstone_order")
             .with(schema_builder::compact_storage::yes)
             .with_column("p", int32_type, column_kind::partition_key)
@@ -2139,6 +2143,9 @@ SEASTAR_TEST_CASE(test_wrong_counter_shard_order) {
         // on a three-node Scylla 1.7.4 cluster.
         return test_env::do_with_async([] (test_env& env) {
           for (const auto version : all_sstable_versions) {
+            if (format_of_version(version) != big) {
+                continue;
+            }
             auto s = schema_builder("scylla_bench", "test_counters")
                     .with_column("pk", long_type, column_kind::partition_key)
                     .with_column("ck", long_type, column_kind::clustering_key)
@@ -2217,6 +2224,9 @@ SEASTAR_TEST_CASE(test_broken_promoted_index_is_skipped) {
     // delete from ks.test where pk = 1 and ck = 2;
     return test_env::do_with_async([] (test_env& env) {
       for (const auto version : all_sstable_versions) {
+        if (format_of_version(version) != big) {
+            continue;
+        }
         auto s = schema_builder("ks", "test")
                 .with_column("pk", int32_type, column_kind::partition_key)
                 .with_column("ck", int32_type, column_kind::clustering_key)

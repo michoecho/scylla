@@ -302,10 +302,10 @@ public:
         for (const auto& t : _types) {
             if (t->is_reversed()) {
                 const auto& t2 = t->underlying_type();
-                if (!(t2 == bytes_type || t2 == utf8_type || t2 == long_type || t2 == ascii_type)) {
+                if (!(t2 == bytes_type || t2 == utf8_type || t2 == long_type || t2 == ascii_type || t2 == int32_type)) {
                     return false;
                 }
-            } else if (!(t == bytes_type || t == utf8_type || t == long_type || t == ascii_type)) {
+            } else if (!(t == bytes_type || t == utf8_type || t == long_type || t == ascii_type || t == int32_type)) {
                 return false;
             }
         }
