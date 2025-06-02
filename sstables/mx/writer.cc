@@ -941,7 +941,10 @@ void writer::init_file_writers() {
     out = _sst._storage->make_data_or_index_sink(_sst, component_type::Index).get();
     _index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.index_filename());
 
-    if (_cfg.write_trie_index && _sst._schema->partition_key_type()->has_memcmp_comparable_form()) {
+    if (format_of_version(_sst._version) == sstable_format_types::bti
+        && _cfg.write_trie_index
+        && _sst._schema->partition_key_type()->has_memcmp_comparable_form()
+    ) {
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Partitions).get();
         _trie_index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::Partitions));
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Rows).get();
