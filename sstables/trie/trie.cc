@@ -1228,7 +1228,7 @@ finish:
     } else if (type == ascii_type || type == utf8_type) {
         append_to_vector(out, const_bytes{reinterpret_cast<const std::byte*>(linearized.data()), linearized.size()});
         out.push_back(std::byte(0x0));
-    } else if (type == long_type) {
+    } else if (type == long_type || type == int32_type) {
         append_to_vector(out, const_bytes{reinterpret_cast<const std::byte*>(linearized.data()), linearized.size()});
     }
     if (type_outer->is_reversed()) {
