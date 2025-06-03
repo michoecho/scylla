@@ -921,7 +921,7 @@ private:
 
 private:
     sstables::shared_sstable do_make_sstable() const {
-        const auto version = sstables::get_highest_sstable_version();
+        const auto version = _sst_man.get_highest_supported_format();
         auto generation = _generation_generator(uuid_identifiers::yes);
         auto sst_name = sstables::sstable::filename(_output_dir, _schema->ks_name(), _schema->cf_name(), version, generation, component_type::Data);
         if (file_exists(sst_name).get()) {
@@ -1045,6 +1045,11 @@ void scrub_operation(schema_ptr schema, reader_permit permit, const std::vector<
     auto output_dir = vm["output-dir"].as<std::string>();
     if (scrub_mode != compaction_type_options::scrub::mode::validate) {
         validate_output_dir(output_dir, vm.count("unsafe-accept-nonempty-output-dir"));
+    }
+
+    if (vm.count("output-version")) {
+        auto format_version = sstables::version_from_string(vm["output-version"].as<std::string>());
+        sst_man.set_format(format_version);
     }
 
     scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir);
@@ -3231,6 +3236,7 @@ for more information on this operation, including what the different modes do.
             {
                     typed_option<std::string>("scrub-mode", "scrub mode to use, one of (abort, skip, segregate, validate)"),
                     typed_option<std::string>("output-dir", ".", "directory to place the scrubbed sstables to"),
+                    typed_option<std::string>("output-version", "me", "sstable format version to use for the output"),
                     typed_option<>("unsafe-accept-nonempty-output-dir", "allow the operation to write into a non-empty output directory, acknowledging the risk that this may result in sstable clash"),
             }},
             scrub_operation},
