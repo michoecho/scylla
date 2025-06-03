@@ -1396,16 +1396,18 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
     _data_file_write_time = db_clock::from_time_t(st.st_mtime);
 
     if (has_component(component_type::Partitions)) {
+        _partition_index_file_size = co_await _partition_index_file.size();
+        _row_index_file_size = co_await _row_index_file.size();
         _partition_index_file_cached = seastar::make_shared<cached_file>(_partition_index_file,
                                                                 _manager.get_cache_tracker().get_partition_index_file_cached_stats(),
                                                                 _manager.get_cache_tracker().get_lru(),
                                                                 _manager.get_cache_tracker().region(),
-                                                                co_await _partition_index_file.size());
+                                                                _partition_index_file_size);
         _row_index_file_cached = seastar::make_shared<cached_file>(_row_index_file,
                                                                 _manager.get_cache_tracker().get_row_index_file_cached_stats(),
                                                                 _manager.get_cache_tracker().get_lru(),
                                                                 _manager.get_cache_tracker().region(),
-                                                                co_await _row_index_file.size());
+                                                                _row_index_file_size);
     }
     auto size = co_await _index_file.size();
     _index_file_size = size;
@@ -2204,10 +2206,10 @@ uint64_t sstable::bytes_on_disk() const {
     if (!_data_file_size) {
         on_internal_error(sstlog, "On-disk size of sstable data was not set");
     }
-    if (!_index_file_size) {
+    if (!_index_file_size && !_partition_index_file_size) {
         on_internal_error(sstlog, "On-disk size of sstable index was not set");
     }
-    return _metadata_size_on_disk + _data_file_size + _index_file_size;
+    return _metadata_size_on_disk + _data_file_size + _index_file_size + _partition_index_file_size + _row_index_file_size;
 }
 
 uint64_t sstable::filter_size() const {

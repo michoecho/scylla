@@ -551,7 +551,9 @@ private:
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;
     uint64_t _data_file_size;
-    uint64_t _index_file_size;
+    uint64_t _index_file_size = 0;
+    uint64_t _partition_index_file_size = 0;
+    uint64_t _row_index_file_size = 0;
     // on-disk size of components but data and index.
     uint64_t _metadata_size_on_disk = 0;
     db_clock::time_point _data_file_write_time;
