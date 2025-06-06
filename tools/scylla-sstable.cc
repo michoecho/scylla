@@ -2629,7 +2629,7 @@ void write_operation(schema_ptr schema, reader_permit permit, const std::vector<
         throw std::invalid_argument("missing required option '--generation'");
     }
     auto generation = sstables::generation_type(vm["generation"].as<int64_t>());
-    auto version = sstables::get_highest_sstable_version();
+    auto version = sstables::version_from_string(vm["output-version"].as<std::string>());
 
     {
         auto sst_name = sstables::sstable::filename(output_dir, schema->ks_name(), schema->cf_name(), version, generation, component_type::Data);
@@ -3282,8 +3282,8 @@ storage engine. The following is not supported:
 Parsing uses a streaming json parser, it is safe to pass in input-files
 of any size.
 
-The output sstable will use the BIG format, the highest supported sstable
-format and the specified generation (--generation). By default it is
+The output sstable will use the chosen SSTable format version ("me" by default)
+and the specified generation (--generation). By default it is
 placed in the local directory, can be changed with --output-dir. If the
 output sstable clashes with an existing sstable, the write will fail.
 
@@ -3293,6 +3293,7 @@ for more information on this operation, including the schema of the JSON input.
             {
                     typed_option<std::string>("input-file", "the file containing the input"),
                     typed_option<std::string>("output-dir", ".", "directory to place the output sstable(s) to"),
+                    typed_option<std::string>("output-version", "me", "sstable format version to use for the output"),
                     typed_option<sstables::generation_type::int_t>("generation", "generation of generated sstable"),
                     typed_option<std::string>("validation-level", "clustering_key", "degree of validation on the output, one of (partition_region, token, partition_key, clustering_key)"),
             }},
