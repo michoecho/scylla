@@ -1080,14 +1080,17 @@ void dump_index_operation(schema_ptr schema, reader_permit permit, const std::ve
         writer.Key(fmt::to_string(sst->get_filename()));
         writer.StartArray();
 
+        idx_reader->advance_to(dht::partition_range::make_open_ended_both_sides()).get();
         while (!idx_reader->eof()) {
             idx_reader->read_partition_data().get();
+            auto pkey_opt = idx_reader->get_partition_key();
             auto pos = idx_reader->get_data_file_position();
-            auto pkey = idx_reader->get_partition_key_prefix();
 
             writer.StartObject();
-            writer.Key("key");
-            writer.DataKey(*schema, pkey);
+            if (pkey_opt) {
+                writer.Key("key");
+                writer.DataKey(*schema, pkey_opt.value());
+            }
             writer.Key("pos");
             writer.Uint64(pos);
             writer.EndObject();
