@@ -74,10 +74,10 @@ test_using_reusable_sst(schema_ptr s, sstring dir, sstables::generation_type::in
     });
 }
 
-future<std::vector<partition_key>> index_read(schema_ptr schema, sstring path) {
+future<std::vector<std::optional<partition_key>>> index_read(schema_ptr schema, sstring path) {
     return test_using_reusable_sst(std::move(schema), std::move(path), 1, [] (test_env& env, sstable_ptr ptr) {
         auto indexes = sstables::test(ptr).read_indexes(env.make_reader_permit()).get();
-        return indexes | std::views::transform([] (const sstables::test::index_entry& e) { return e.key; }) | std::ranges::to<std::vector<partition_key>>();
+        return indexes | std::views::transform([] (const sstables::test::index_entry& e) { return e.key; }) | std::ranges::to<std::vector<std::optional<partition_key>>>();
     });
 }
 
@@ -360,7 +360,7 @@ SEASTAR_TEST_CASE(full_index_search) {
         auto index_list = sstables::test(sstp).read_indexes(env.make_reader_permit()).get();
         int idx = 0;
         for (auto& e : index_list) {
-            auto key = key::from_partition_key(*sstp->get_schema(), e.key);
+            auto key = key::from_partition_key(*sstp->get_schema(), e.key.value());
             BOOST_REQUIRE(sstables::binary_search(sstp->get_schema()->get_partitioner(), index_list, key) == idx++);
         }
     });
@@ -444,6 +444,10 @@ static future<shared_sstable> load_large_partition_sst(test_env& env, const ssta
 // search for anything.
 SEASTAR_TEST_CASE(promoted_index_read) {
   return for_each_sstable_version([] (const sstables::sstable::version_types version) {
+    if (format_of_version(version) == sstables::sstable_format_types::bti) {
+        // This test isn't easily applicable to BTI.
+        return make_ready_future<>();
+    }
     return test_env::do_with_async([version] (test_env& env) {
         auto sstp = load_large_partition_sst(env, version).get();
         std::vector<sstables::test::index_entry> vec = sstables::test(sstp).read_indexes(env.make_reader_permit()).get();

@@ -52,12 +52,12 @@ public:
     }
 
     struct index_entry {
-        sstables::key sstables_key;
-        partition_key key;
+        std::optional<sstables::key> sstables_key;
+        std::optional<partition_key> key;
         uint64_t promoted_index_size;
 
         key_view get_key() const {
-            return sstables_key;
+            return sstables_key.value();
         }
     };
 
@@ -67,11 +67,14 @@ public:
         auto ir = make_index_reader(std::move(permit));
         std::exception_ptr err = nullptr;
         try {
+            co_await ir->advance_to(dht::partition_range::make_open_ended_both_sides());
             while (!ir->eof()) {
                 co_await ir->read_partition_data();
-                auto pk = ir->get_partition_key_prefix();
-                entries.emplace_back(index_entry{sstables::key::from_partition_key(*s, pk),
-                                        pk, ir->get_promoted_index_size()});
+                auto pk_opt = ir->get_partition_key();
+                if (pk_opt) {
+                    entries.emplace_back(index_entry{sstables::key::from_partition_key(*s, pk_opt.value()),
+                                            pk_opt.value(), ir->get_promoted_index_size()});
+                }
                 co_await ir->advance_to_next_partition();
             }
         } catch (...) {
