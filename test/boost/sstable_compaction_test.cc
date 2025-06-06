@@ -2359,7 +2359,7 @@ public:
 
         auto close_mr = deferred_close(mr);
 
-        auto sst = env.make_sstable(schema);
+        auto sst = env.make_sstable(schema, sstable_version_types::me);
         sstable_writer_config cfg = env.manager().configure_writer();
         cfg.validation_level = mutation_fragment_stream_validation_level::partition_region; // this test violates key order on purpose
 
