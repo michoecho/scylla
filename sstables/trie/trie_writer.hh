@@ -45,7 +45,7 @@ namespace trie {
 
 // Enables code which is useful for debugging during development,
 // but too expensive to be compiled into release builds (even if dynamically disabled).
-constexpr bool developer_build = false;
+constexpr bool developer_build = true;
 // Adds expensive extra checks against use-after-free on pointers obtained from the bump_allocator.
 // Must be a macro so that it can affect whether some struct fields are defined or not.
 #define TRIE_SANITIZE_BUMP_ALLOCATOR developer_build
