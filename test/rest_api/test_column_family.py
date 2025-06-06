@@ -166,7 +166,7 @@ def test_sstables_total_disk_space_sanity(cql, this_dc, rest_api):
 
             total_real_size = 0
             for sst in sstables:
-                sstname = os.path.basename(sst).removesuffix('-big-Data.db')
+                sstname = os.path.basename(sst).removesuffix('-Data.db')
                 dirname = os.path.dirname(sst)
                 print(f'Collecting {sstname}')
                 for f in os.listdir(dirname):
