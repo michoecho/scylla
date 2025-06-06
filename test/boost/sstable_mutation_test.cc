@@ -1300,7 +1300,7 @@ SEASTAR_TEST_CASE(test_reading_serialization_header) {
         return int32_type->decompose(tests::random::get_int<int32_t>());
     };
 
-    auto td = tests::data_model::table_description({ { "pk", int32_type } }, { { "ck", utf8_type } });
+    auto td = tests::data_model::table_description({ { "pk", utf8_type } }, { { "ck", utf8_type } });
 
     auto td1 = td;
     td1.add_static_column("s1", int32_type);
