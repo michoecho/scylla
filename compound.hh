@@ -20,7 +20,8 @@
 enum class allow_prefixes { no, yes };
 
 namespace trie {
-void memcmp_comparable_form_inner(bytes_view, std::vector<std::byte>& out, const data_type&);
+bool has_memcmp_comparable_form(const abstract_type&);
+void memcmp_comparable_form_inner(managed_bytes_view, std::vector<std::byte>& out, const abstract_type&);
 } // namespace trie
 
 template<allow_prefixes AllowPrefixes = allow_prefixes::no>
@@ -300,12 +301,7 @@ public:
     }
     bool has_memcmp_comparable_form() {
         for (const auto& t : _types) {
-            if (t->is_reversed()) {
-                const auto& t2 = t->underlying_type();
-                if (!(t2 == bytes_type || t2 == utf8_type || t2 == long_type || t2 == ascii_type || t2 == int32_type)) {
-                    return false;
-                }
-            } else if (!(t == bytes_type || t == utf8_type || t == long_type || t == ascii_type || t == int32_type)) {
+            if (!trie::has_memcmp_comparable_form(*t)) {
                 return false;
             }
         }
@@ -314,10 +310,9 @@ public:
     void memcmp_comparable_form(managed_bytes_view v, std::vector<std::byte>& out) {
         out.reserve(v.size_bytes() * 2);
         auto t = _types.begin();
-        for (const managed_bytes_view comp : components(v)) {
+        for (const managed_bytes_view component : components(v)) {
             out.push_back(std::byte(0x40));
-            auto lin = linearized(comp);
-            trie::memcmp_comparable_form_inner(lin, out, *t++);
+            trie::memcmp_comparable_form_inner(component, out, **t++);
         }
     }
 };
