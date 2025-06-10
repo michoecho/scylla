@@ -82,6 +82,36 @@ inline void expensive_assert(bool expr, std::source_location srcloc = std::sourc
 // std::as_bytes() exists, after all.
 using const_bytes = std::span<const std::byte>;
 
+struct comparable_bytes_generator {
+    std::optional<std::span<const std::byte>> _frag = std::span<const std::byte>();
+    void maybe_advance_frag() {
+        while (_frag && _frag->empty()) {
+            _frag = next();
+        }
+    }
+public:
+    virtual std::optional<std::span<const std::byte>> next() = 0;
+    bool empty() {
+        maybe_advance_frag();
+        return !_frag.has_value();
+    }
+    std::span<const std::byte> current_fragment() {
+        return _frag.value();
+    }
+    void consume(size_t n) {
+        SCYLLA_ASSERT(_frag && n <= _frag->size());
+        _frag = _frag.value().subspan(n);
+    }
+};
+
+struct single_fragment_comparable_bytes_generator : public comparable_bytes_generator {
+    std::optional<std::span<const std::byte>> _only_frag;
+    single_fragment_comparable_bytes_generator(std::span<const std::byte> f) : _only_frag(f) {}
+    virtual std::optional<std::span<const std::byte>> next() {
+        return std::exchange(_only_frag, std::nullopt);
+    };
+};
+
 inline constexpr uint64_t round_down(uint64_t a, uint64_t factor) {
     return a - a % factor;
 }

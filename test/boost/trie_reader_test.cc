@@ -304,7 +304,8 @@ void test_traverse(std::span<const_bytes> key_domain, std::span<const_bytes> key
 
     auto traverse_from_root = [&] (const_bytes key) -> trie::traversal_state {
         auto traversal_state = trie::traversal_state{.next_pos = ref_trie._nodes.size() - 1};
-        trie::traverse(input, key, traversal_state).get();
+        auto keygen = trie::single_fragment_comparable_bytes_generator(key);
+        trie::traverse(input, keygen, traversal_state).get();
         return traversal_state;
     };
 
