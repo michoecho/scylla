@@ -566,10 +566,6 @@ private:
 
     tombstone _current_tombstone;
 
-    struct clustering_info {
-        clustering_key_prefix clustering;
-        bound_kind_m kind;
-    };
     struct pi_block {
         clustering_info first;
         clustering_info last;
@@ -850,7 +846,7 @@ writer::~writer() {
     close_writer(_data_writer);
 }
 
-void writer::maybe_set_pi_first_clustering(const writer::clustering_info& info, tombstone open) {
+void writer::maybe_set_pi_first_clustering(const clustering_info& info, tombstone open) {
     uint64_t pos = _data_writer->offset();
     if (!_pi_write_m.first_clustering) {
         _pi_write_m.first_clustering = info;
@@ -858,28 +854,6 @@ void writer::maybe_set_pi_first_clustering(const writer::clustering_info& info, 
         _pi_write_m.block_start_offset = pos;
         _pi_write_m.block_next_start_offset = pos + _pi_write_m.desired_block_size;
     }
-}
-
-std::byte convert_bound_to_byte(bound_kind_m b) {
-    switch (b) {
-    case sstables::bound_kind_m::excl_end: return std::byte(0x20);
-    case sstables::bound_kind_m::incl_start: return std::byte(0x20);
-    case sstables::bound_kind_m::excl_end_incl_start: return std::byte(0x20);
-    case sstables::bound_kind_m::clustering: return std::byte(0x40);
-    case sstables::bound_kind_m::static_clustering: return std::byte(0x40);
-    case sstables::bound_kind_m::excl_start: return std::byte(0x60);
-    case sstables::bound_kind_m::incl_end_excl_start: return std::byte(0x60);
-    case sstables::bound_kind_m::incl_end: return std::byte(0x60);
-    default: abort();
-    }
-}
-
-std::vector<std::byte> clustering_info_to_byte_comparable(const schema& s, const clustering_key_prefix& clustering, bound_kind_m kind) {
-    std::vector<std::byte> first;
-    first.reserve(clustering.representation().size() + 64);
-    s.clustering_key_type()->memcmp_comparable_form(clustering, first);
-    first.push_back(convert_bound_to_byte(kind));
-    return first;
 }
 
 void writer::add_pi_block() {
@@ -1444,10 +1418,8 @@ void writer::write_pi_block(const pi_block& block) {
         write(_sst.get_version(), blocks, to_deletion_time(*block.open_marker));
     }
     if (_ritw) {
-        auto first = clustering_info_to_byte_comparable(*_sst._schema, block.first.clustering, block.first.kind);
-        auto last = clustering_info_to_byte_comparable(*_sst._schema, block.last.clustering, block.last.kind);
         auto dt = deletion_time{block.tombstone_at_start.deletion_time.time_since_epoch().count(), block.tombstone_at_start.timestamp};
-        _ritw.add(std::as_bytes(std::span(first)), std::as_bytes(std::span(last)), block.offset, dt);
+        _ritw.add(*_sst._schema, block.first, block.last, block.offset, dt);
     }
 }
 
@@ -1499,17 +1471,6 @@ stop_iteration writer::consume(range_tombstone_change&& rtc) {
     return stop_iteration::no;
 }
 
-static std::vector<std::byte> decorated_key_byte_comparable(const schema& s, const dht::decorated_key& dk) {
-    std::vector<std::byte> res;
-    res.reserve(dk.key().representation().size() + 64);
-    res.push_back(std::byte(0x40));
-    trie::append_to_vector(res, object_representation(seastar::cpu_to_be<uint64_t>(dk.token().unbias())));
-    assert(res.size() == 9);
-    s.partition_key_type()->memcmp_comparable_form(dk.key(), res);
-    res.push_back(std::byte(0x38));
-    return res;
-}
-
 stop_iteration writer::consume_end_of_partition() {
     ensure_tombstone_is_written();
     ensure_static_row_is_written_if_needed();
@@ -1553,7 +1514,7 @@ stop_iteration writer::consume_end_of_partition() {
         }
         sstlog.trace("consume_end_of_partition: payload={}", pitw_payload);
         uint8_t hash_bits = trie::hash_bits_from_token(_dk->token());
-        _pitw.add(decorated_key_byte_comparable(*_sst._schema, *_dk), pitw_payload, hash_bits);
+        _pitw.add(*_sst._schema, *_dk, pitw_payload, hash_bits);
     }
 
     // compute size of the current row.

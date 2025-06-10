@@ -19,12 +19,14 @@ class cached_file;
 
 namespace dht {
     class token;
+    class decorated_key;
 }
 
 namespace sstables {
     class index_reader;
     class file_writer;
     class deletion_time;
+    class clustering_info;
 }
 
 namespace trie {
@@ -62,7 +64,7 @@ public:
 public:
     partition_trie_writer(bti_trie_sink&);
     // Add a new partition key to the index.
-    void add(const_bytes key, int64_t data_file_offset, uint8_t hash_bits);
+    void add(const schema&, const dht::decorated_key&, int64_t data_file_offset, uint8_t hash_bits);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
     // The writer can't be used again after this. (FIXME: it would be better to reset it and allow reuse).
@@ -85,7 +87,12 @@ public:
 public:
     row_trie_writer(bti_trie_sink&);
     // Add a new row index entry.
-    void add(const_bytes first_ck, const_bytes last_ck, uint64_t data_file_pos, sstables::deletion_time);
+    void add(
+        const schema& s,
+        const sstables::clustering_info& first_ck,
+        const sstables::clustering_info& last_ck,
+        uint64_t data_file_pos,
+        sstables::deletion_time);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
     // The writer can't be used again after this. (FIXME: it would be better to reset it and allow reuse).

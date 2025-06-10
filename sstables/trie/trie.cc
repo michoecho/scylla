@@ -42,6 +42,109 @@ bti_trie_sink::bti_trie_sink(std::unique_ptr<bti_trie_sink_impl> x) : _impl(std:
 
 static_assert(trie_writer_sink<bti_trie_sink_impl>);
 
+struct dk_generator : public comparable_bytes_generator {
+    std::generator<std::span<const std::byte>> make_generator() {
+        co_yield {};
+        {
+            std::array<std::byte, 1 + sizeof(uint64_t)> tmp;
+            tmp[0] = std::byte(0x40);
+            auto token = _key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : _key.token().unbias();
+            seastar::write_be<uint64_t>(reinterpret_cast<char*>(&tmp[1]), token);
+            co_yield tmp;
+        }
+        {
+            auto vec = std::vector<std::byte>();
+            _s.partition_key_type()->memcmp_comparable_form(*_key.key(), vec);
+            co_yield vec;
+        }
+        {
+            std::array<std::byte, 1> tmp;
+            if (_key.weight() < 0) {
+                tmp[0] = std::byte(0x20);
+            } else if (_key.weight() == 0) {
+                tmp[0] = std::byte(0x38);
+            } else {
+                tmp[0] = std::byte(0x60);
+            }
+            co_yield tmp;
+            if (_has_key) {
+                tmp[0] = std::byte(0x60);
+                co_yield tmp;
+            }
+        }
+    }
+public:
+    const schema& _s;
+    dht::ring_position_view _key;
+    bool _has_key;
+    std::generator<std::span<const std::byte>> _gen;
+    decltype(_gen.begin()) _gen_it;
+
+    dk_generator(dk_generator&&) = delete;
+    dk_generator(const schema& s, dht::ring_position_view k, bool has_key)
+        : _s(s)
+        , _key(k)
+        , _has_key(has_key)
+        , _gen(make_generator())
+        , _gen_it(_gen.begin()) {}
+
+    virtual std::optional<std::span<const std::byte>> next() {
+        if (_gen_it != _gen.end()) {
+            ++_gen_it;
+            return *_gen_it;
+        }
+        return std::nullopt;
+    }
+};
+
+struct lazy_comparable_bytes {
+    dht::decorated_key _dk;
+    utils::small_vector<bytes, 1> _frags;
+    dk_generator _gen;
+    lazy_comparable_bytes(const schema& s, dht::decorated_key dk)
+        : _dk(std::move(dk))
+        , _gen(s, dht::ring_position_view(_dk.token(), &_dk.key(), 0), 0)
+    {}
+    lazy_comparable_bytes(lazy_comparable_bytes&&) = delete;
+    void advance() {
+        auto span = _gen.current_fragment();
+        auto b = bytes(
+            reinterpret_cast<const bytes::value_type*>(span.data()),
+            span.size()
+        );
+        _frags.push_back(std::move(b));
+        _gen.consume(span.size());
+    }
+    struct iterator {
+        using difference_type = std::ptrdiff_t;
+        using value_type = managed_bytes;
+        lazy_comparable_bytes& _owner;
+        size_t _i = 0;
+        iterator(lazy_comparable_bytes& o) : _owner(o) {}
+        std::span<std::byte> operator*() const {
+            if (_i >= _owner._frags.size()) {
+                _owner.advance();
+            }
+            return std::as_writable_bytes(std::span(_owner._frags[_i]));
+        }
+        iterator& operator++() {
+            if (_i >= _owner._frags.size()) {
+                _owner.advance();
+            }
+            ++_i;
+            return *this;
+        }
+        void operator++(int) {
+            ++*this;
+        }
+        bool operator==(const std::default_sentinel_t&) {
+            return _i == _owner._frags.size() && _owner._gen.empty();
+        }
+    };
+    iterator begin() { return iterator(*this); }
+    std::default_sentinel_t end() { return std::default_sentinel; }
+};
+
 // The job of this class is to take a stream of partition keys and their index payloads
 // (Data.db or Rows.db position, and hash bits for filtering false positives out)
 // and translate it to a minimal trie which still allows for efficient queries.
@@ -73,9 +176,10 @@ static_assert(trie_writer_sink<bti_trie_sink_impl>);
 // so we instead make it a template parameter.
 template <trie_writer_sink Output>
 class partition_index_writer_impl {
+    void write_last_key(size_t needed_prefix);
 public:
     partition_index_writer_impl(Output&);
-    void add(const_bytes key, int64_t data_file_pos, uint8_t hash_bits);
+    void add(const schema&, const dht::decorated_key&, int64_t data_file_pos, uint8_t hash_bits);
     sink_pos finish();
 private:
     // The lower trie-writing layer, oblivious to the semantics of the partition index.
@@ -93,7 +197,9 @@ private:
     // from the successor, and we will be able to determine the shortest unique prefix. 
     size_t _last_key_mismatch = 0;
     // The key added most recently.
-    std::vector<std::byte> _last_key;
+    std::array<std::optional<lazy_comparable_bytes>, 2> _last_key_slots;
+    std::optional<lazy_comparable_bytes>* _last_key = &_last_key_slots[0];
+    std::optional<lazy_comparable_bytes>* _last_key_next = &_last_key_slots[1];
     // The payload of _last_key: the Data.db position and the hash bits. 
     int64_t _last_data_file_pos;
     uint8_t _last_hash_bits;
@@ -104,60 +210,92 @@ partition_index_writer_impl<Output>::partition_index_writer_impl(Output& out)
     : _wr(out) {
 }
 
+size_t lcb_mismatch(lazy_comparable_bytes& a, lazy_comparable_bytes& b) {
+    auto a_it = a.begin();
+    auto b_it = b.begin();
+    std::span<const std::byte> a_sp = *a_it;
+    std::span<const std::byte> b_sp = *b_it;
+    size_t i = 0;
+    while ((a_it != a.end() || !a_sp.empty()) && (b_it != b.end() || !b_sp.empty())) {
+        if (a_sp.empty()) {
+            a_sp = *a_it;
+            ++a_it;
+        }
+        if (b_sp.empty()) {
+            b_sp = *b_it;
+            ++b_it;
+        }
+        size_t mismatch_idx = std::ranges::mismatch(a_sp, b_sp).in2 - b_sp.begin();
+        i += mismatch_idx;
+        if (mismatch_idx < a_sp.size() && mismatch_idx < b_sp.size()) {
+            break;
+        }
+        a_sp = a_sp.subspan(mismatch_idx);
+        b_sp = b_sp.subspan(mismatch_idx);
+    }
+    return i;
+}
+
 template <trie_writer_sink Output>
-void partition_index_writer_impl<Output>::add(const_bytes key, int64_t data_file_pos, uint8_t hash_bits) {
-    expensive_log("partition_index_writer_impl::add: this={} key={}, data_file_pos={}", fmt::ptr(this), fmt_hex(key), data_file_pos); 
+void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
+    std::array<std::byte, 9> payload_bytes;
+    payload_bytes[0] = std::byte(_last_hash_bits);
+    auto payload_bits = div_ceil(std::bit_width<uint64_t>(std::abs(_last_data_file_pos)) + 1, 8);
+    uint64_t pos_be = seastar::cpu_to_be(_last_data_file_pos << 8*(8 - payload_bits));
+    memcpy(&payload_bytes[1], &pos_be, 8);
+    // Pass the new node chain and its payload to the lower layer.
+    // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
+    // (Even though currently they are always present).
+    size_t i = 0;
+    for (auto frag : **_last_key) {
+        if (i + frag.size() < _last_key_mismatch) {
+            i += frag.size();
+            continue;
+        }
+
+        if (i < _last_key_mismatch) {
+            auto skip = _last_key_mismatch - i;
+            i += skip;
+            frag = frag.subspan(skip);
+        }
+
+        if (i + frag.size() < needed_prefix) {
+            _wr.add_partial(i, frag);
+        } else {
+            _wr.add(i, frag.subspan(0, needed_prefix - i), trie_payload(payload_bits | 0x8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
+            break;
+        }
+
+        i += frag.size();
+    }
+}
+
+template <trie_writer_sink Output>
+void partition_index_writer_impl<Output>::add(const schema& s, const dht::decorated_key& dk, int64_t data_file_pos, uint8_t hash_bits) {
+    expensive_log("partition_index_writer_impl::add: this={} key={}, data_file_pos={}", fmt::ptr(this), dk, data_file_pos);
+    _last_key_next->emplace(s, dk);
     if (_added_keys > 0) {
         // First position where the new key differs from the last key.
-        size_t mismatch = std::ranges::mismatch(key, _last_key).in2 - _last_key.begin();
+        size_t mismatch = _last_key ? lcb_mismatch(**_last_key_next, **_last_key) : 0;
         // From `_last_key_mismatch` (mismatch position between `_last_key` and its predecessor)
         // and `mismatch` (mismatch position between `_last_key` and its successor),
         // compute the minimal needed prefix of `_last_key`.
-        // FIXME: the std::min(..., _last_key.size()) isn't really needed, since a key can't be a prefix of another key.
-        size_t needed_prefix = std::min(std::max(_last_key_mismatch, mismatch) + 1, _last_key.size());
-        // The new nodes/characters we have to add to the trie.
-        auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
-        // Serialize the payload.
-        std::array<std::byte, 9> payload_bytes;
-        payload_bytes[0] = std::byte(_last_hash_bits);
-        auto payload_bits = div_ceil(std::bit_width<uint64_t>(std::abs(_last_data_file_pos)) + 1, 8);
-        uint64_t pos_be = seastar::cpu_to_be(_last_data_file_pos << 8*(8 - payload_bits));
-        memcpy(&payload_bytes[1], &pos_be, 8);
-        // Pass the new node chain and its payload to the lower layer.
-        // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
-        // (Even though currently they are always present).
-        _wr.add(_last_key_mismatch, tail, trie_payload(payload_bits | 0x8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
+        size_t needed_prefix = std::max(_last_key_mismatch, mismatch) + 1;
+        write_last_key(needed_prefix);
         // Update _last_* variables with the new key.
         _last_key_mismatch = mismatch;
     }
     _added_keys += 1;
     // Update _last_* variables with the new key.
-    _last_key.assign(key.begin(), key.end());
+    std::swap(_last_key, _last_key_next);
     _last_data_file_pos = data_file_pos;
     _last_hash_bits = hash_bits;
 }
 template <trie_writer_sink Output>
 sink_pos partition_index_writer_impl<Output>::finish() {
     if (_added_keys > 0) {
-        // Mostly duplicates the code from add(), except there is only one mismatch position to care about,
-        // not two which we have to take a max() of.
-        //
-        // FIXME: the std::min(..., _last_key.size()) isn't really needed, since a key can't be a prefix of another key.
-        //
-        // FIXME: maybe somehow get rid of the code duplication between here and add().
-        size_t needed_prefix = std::min(_last_key_mismatch + 1, _last_key.size());
-        // The new nodes/characters we have to add to the trie.
-        auto tail = std::span(_last_key).subspan(_last_key_mismatch, needed_prefix - _last_key_mismatch);
-        // Serialize the payload.
-        std::array<std::byte, 9> payload_bytes;
-        uint64_t pos_be = seastar::cpu_to_be(_last_data_file_pos);
-        payload_bytes[0] = std::byte(_last_hash_bits);
-        auto payload_bits = div_ceil(std::bit_width<uint64_t>(std::abs(_last_data_file_pos)) + 1, 8);
-        std::memcpy(&payload_bytes[1], (const char*)(&pos_be) + 8 - payload_bits, payload_bits);
-        // Pass the new node chain and its payload to the lower layer.
-        // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
-        // (Even though currently they are always present, and the reader assumes so).
-        _wr.add(_last_key_mismatch, tail, trie_payload(payload_bits | 0x8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
+        size_t needed_prefix = _last_key_mismatch + 1;
+        write_last_key(needed_prefix);
     }
     return _wr.finish();
 }
@@ -176,8 +314,8 @@ partition_trie_writer& partition_trie_writer::operator=(partition_trie_writer&&)
 partition_trie_writer::partition_trie_writer(bti_trie_sink& out)
     : _impl(std::make_unique<impl>(*out._impl)){
 }
-void partition_trie_writer::add(const_bytes key, int64_t data_file_pos, uint8_t hash_bits) {
-    _impl->add(key, data_file_pos, hash_bits);
+void partition_trie_writer::add(const schema& s, const dht::decorated_key& dk, int64_t data_file_pos, uint8_t hash_bits) {
+    _impl->add(s, dk, data_file_pos, hash_bits);
 }
 int64_t partition_trie_writer::finish() {
     return _impl->finish().value;
@@ -815,62 +953,8 @@ future<row_index_header> bti_index_reader::read_row_index_header(uint64_t pos) {
 
 // Helper which translates a ring_position_view to a BTI byte-comparable form.
 auto translate_key(const schema& s, dht::ring_position_view key, bool has_key = false) {
-    struct generator : public comparable_bytes_generator {
-        std::generator<std::span<const std::byte>> make_generator() {
-            co_yield {};
-            {
-                std::array<std::byte, 1 + sizeof(uint64_t)> tmp;
-                tmp[0] = std::byte(0x40);
-                auto token = _key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : _key.token().unbias();
-                seastar::write_be<uint64_t>(reinterpret_cast<char*>(&tmp[1]), token);
-                co_yield tmp;
-            }
-            {
-                auto vec = std::vector<std::byte>();
-                _s.partition_key_type()->memcmp_comparable_form(*_key.key(), vec);
-                co_yield vec;
-            }
-            {
-                std::array<std::byte, 1> tmp;
-                if (_key.weight() < 0) {
-                    tmp[0] = std::byte(0x20);
-                } else if (_key.weight() == 0) {
-                    tmp[0] = std::byte(0x38);
-                } else {
-                    tmp[0] = std::byte(0x60);
-                }
-                co_yield tmp;
-                if (_has_key) {
-                    tmp[0] = std::byte(0x60);
-                    co_yield tmp;
-                }
-            }
-        }
-    public:
-        const schema& _s;
-        dht::ring_position_view _key;
-        bool _has_key;
-        std::generator<std::span<const std::byte>> _gen;
-        decltype(_gen.begin()) _gen_it;
-
-        generator(generator&&) = delete;
-        generator(const schema& s, dht::ring_position_view k, bool has_key)
-            : _s(s)
-            , _key(k)
-            , _has_key(has_key)
-            , _gen(make_generator())
-            , _gen_it(_gen.begin()) {}
-
-        virtual std::optional<std::span<const std::byte>> next() {
-            if (_gen_it != _gen.end()) {
-                ++_gen_it;
-                return *_gen_it;
-            }
-            return std::nullopt;
-        }
-    };
     //expensive_log("translate_key({}) = {}", key, fmt_hex(trie_key));
-    return generator(s, key, has_key);
+    return dk_generator(s, key, has_key);
 }
 sstables::data_file_positions_range bti_index_reader::data_file_positions() const {
     auto lo = _lower.data_file_pos(_total_file_size);
@@ -1101,7 +1185,12 @@ class row_index_writer_impl {
 public:
     row_index_writer_impl(Output&);
     ~row_index_writer_impl();
-    void add(const_bytes first_ck, const_bytes last_ck, uint64_t data_file_pos, sstables::deletion_time);
+    void add(
+        const schema& s,
+        const sstables::clustering_info& first_ck,
+        const sstables::clustering_info& last_ck,
+        uint64_t data_file_pos,
+        sstables::deletion_time);
     sink_pos finish();
     using buf = std::vector<std::byte>;
 
@@ -1146,22 +1235,47 @@ size_t mismatch_idx(const std::byte* __restrict__ a, const std::byte* __restrict
     return i;
 }
 
+static std::byte convert_bound_to_byte(sstables::bound_kind_m b) {
+    switch (b) {
+    case sstables::bound_kind_m::excl_end: return std::byte(0x20);
+    case sstables::bound_kind_m::incl_start: return std::byte(0x20);
+    case sstables::bound_kind_m::excl_end_incl_start: return std::byte(0x20);
+    case sstables::bound_kind_m::clustering: return std::byte(0x40);
+    case sstables::bound_kind_m::static_clustering: return std::byte(0x40);
+    case sstables::bound_kind_m::excl_start: return std::byte(0x60);
+    case sstables::bound_kind_m::incl_end_excl_start: return std::byte(0x60);
+    case sstables::bound_kind_m::incl_end: return std::byte(0x60);
+    default: abort();
+    }
+}
+
+static std::vector<std::byte> clustering_info_to_byte_comparable(const schema& s, const clustering_key_prefix& clustering, sstables::bound_kind_m kind) {
+    std::vector<std::byte> first;
+    first.reserve(clustering.representation().size() + 64);
+    s.clustering_key_type()->memcmp_comparable_form(clustering, first);
+    first.push_back(convert_bound_to_byte(kind));
+    return first;
+}
+
 template <trie_writer_sink Output>
 void row_index_writer_impl<Output>::add(
-    const_bytes first_ck,
-    const_bytes last_ck,
+    const schema& s,
+    const sstables::clustering_info& first_ck_info,
+    const sstables::clustering_info& last_ck_info,
     uint64_t data_file_pos,
     sstables::deletion_time dt
 ) {
-    expensive_log("row_index_writer_impl::add() this={} first_ck={} last_ck={} data_file_pos={} dt={} _last_key={} _last_sep={}",
+    expensive_log("row_index_writer_impl::add() this={} first_ck={},{} last_ck={},{} data_file_pos={} dt={} _last_key={} _last_sep={}",
         fmt::ptr(this),
-        fmt_hex(first_ck),
-        fmt_hex(last_ck),
+        first_ck_info.clustering, first_ck_info.kind,
+        last_ck_info.clustering, last_ck_info.kind,
         data_file_pos,
         dt,
         fmt_hex(_last_key),
         fmt_hex(_last_separator)
     );
+    auto first_ck = clustering_info_to_byte_comparable(s, first_ck_info.clustering, first_ck_info.kind);
+    auto last_ck = clustering_info_to_byte_comparable(s, last_ck_info.clustering, last_ck_info.kind);
     size_t n = std::min(first_ck.size(), _last_key.size());
     size_t separator_mismatch = mismatch_idx(first_ck.data(), _last_key.data(), n);
 
@@ -1251,9 +1365,17 @@ row_trie_writer& row_trie_writer::operator=(row_trie_writer&&) = default;
 row_trie_writer::row_trie_writer(bti_trie_sink& out)
     : _impl(std::make_unique<impl>(*out._impl)) {
 }
-void row_trie_writer::add(const_bytes first_ck, const_bytes last_ck, uint64_t data_file_pos, sstables::deletion_time dt) {
-    return _impl->add(first_ck, last_ck, data_file_pos, dt);
+
+void row_trie_writer::add(
+    const schema& s,
+    const sstables::clustering_info& first_ck,
+    const sstables::clustering_info& last_ck,
+    uint64_t data_file_pos,
+    sstables::deletion_time dt
+) {
+    return _impl->add(s, first_ck, last_ck, data_file_pos, dt);
 }
+
 int64_t row_trie_writer::finish() {
     return _impl->finish().value;
 }
