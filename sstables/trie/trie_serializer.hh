@@ -783,16 +783,18 @@ concept node_reader = requires(T& o, int64_t pos, const_bytes key, int child_idx
 
 inline void traverse_single_page(
     node_reader auto& page,
-    const_bytes key,
+    comparable_bytes_generator& key,
     traversal_state& state
 ) {
-    while (page.cached(state.next_pos) && state.edges_traversed < int(key.size())) {
-        node_traverse_result traverse_one = page.traverse_node_by_key(state.next_pos, key.subspan(state.edges_traversed));
+    while (page.cached(state.next_pos) && !key.empty()) {
+        node_traverse_result traverse_one = page.traverse_node_by_key(state.next_pos, key.current_fragment());
         state.edges_traversed += traverse_one.traversed_key_bytes;
-        bool can_continue = state.edges_traversed < int(key.size()) && traverse_one.found_byte == int(key[state.edges_traversed]);
+        key.consume(traverse_one.traversed_key_bytes);
+        bool can_continue = !key.empty() && traverse_one.found_byte == int(key.current_fragment()[0]);
         if (can_continue) {
             state.next_pos = traverse_one.body_pos - traverse_one.child_offset;
             state.edges_traversed += 1;
+            key.consume(1);
         } else {
             state.next_pos = -1;
         }
@@ -811,10 +813,10 @@ inline void traverse_single_page(
 
 inline future<> traverse(
     node_reader auto& input,
-    const_bytes key,
+    comparable_bytes_generator& key,
     traversal_state& state
 ) {
-    while (state.next_pos >= 0 && state.edges_traversed < int(key.size())) {
+    while (state.next_pos >= 0 && !key.empty()) {
         co_await input.load(state.next_pos);
         traverse_single_page(input, key, state);
     }

@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+#pragma clang optimize off
+
 #include "reader.hh"
 #include "concrete_types.hh"
 #include "mutation/mutation_fragment_stream_validator.hh"
