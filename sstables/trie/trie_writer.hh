@@ -38,6 +38,7 @@
 #include "utils/assert.hh"
 #include "utils/small_vector.hh"
 #include "bytes.hh"
+#include <generator>
 
 extern seastar::logger trie_logger;
 
@@ -82,6 +83,8 @@ inline void expensive_assert(bool expr, std::source_location srcloc = std::sourc
 // std::as_bytes() exists, after all.
 using const_bytes = std::span<const std::byte>;
 
+using comparable_bytes_iterator = decltype(std::declval<std::generator<std::span<const std::byte>>>().begin());
+
 struct comparable_bytes_generator {
     std::optional<std::span<const std::byte>> _frag = std::span<const std::byte>();
     void maybe_advance_frag() {
@@ -104,13 +107,9 @@ public:
     }
 };
 
-struct single_fragment_comparable_bytes_generator : public comparable_bytes_generator {
-    std::optional<std::span<const std::byte>> _only_frag;
-    single_fragment_comparable_bytes_generator(std::span<const std::byte> f) : _only_frag(f) {}
-    virtual std::optional<std::span<const std::byte>> next() {
-        return std::exchange(_only_frag, std::nullopt);
-    };
-};
+inline std::generator<std::span<const std::byte>> single_fragment_generator(std::span<const std::byte> only_frag) {
+    co_yield only_frag;
+}
 
 inline constexpr uint64_t round_down(uint64_t a, uint64_t factor) {
     return a - a % factor;
