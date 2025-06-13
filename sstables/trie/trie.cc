@@ -50,39 +50,38 @@ std::byte bound_weight_to_terminator(bound_weight b) {
     }
 }
 
-struct pip_generator : public comparable_bytes_generator {
-    std::generator<std::span<const std::byte>> make_generator() {
-        co_yield {};
-        if (_pipv.has_key()){
-            auto vec = std::vector<std::byte>();
-            _s.clustering_key_type()->memcmp_comparable_form(_pipv.key(), vec);
-            co_yield vec;
-        }
-        {
-            std::array<std::byte, 1> tmp;
-            tmp[0] = (bound_weight_to_terminator(_pipv.get_bound_weight()));
-            co_yield tmp;
-        }
+std::generator<std::span<const std::byte>> pipv_to_comparable(const schema& _s, position_in_partition_view _pipv) {
+    if (_pipv.has_key()){
+        auto vec = std::vector<std::byte>();
+        _s.clustering_key_type()->memcmp_comparable_form(_pipv.key(), vec);
+        co_yield vec;
     }
+    {
+        std::array<std::byte, 1> tmp;
+        tmp[0] = bound_weight_to_terminator(_pipv.get_bound_weight());
+        co_yield tmp;
+    }
+}
+
+struct pip_generator : public comparable_bytes_generator {
 public:
-    const schema& _s;
-    position_in_partition_view _pipv;
     std::generator<std::span<const std::byte>> _gen;
-    decltype(_gen.begin()) _gen_it;
+    std::optional<decltype(_gen.begin())> _gen_it;
 
     pip_generator(pip_generator&&) = delete;
     pip_generator(const schema& s, position_in_partition_view k)
-        : _s(s)
-        , _pipv(k)
-        , _gen(make_generator())
-        , _gen_it(_gen.begin()) {}
+        : _gen(pipv_to_comparable(s, k))
+        {}
 
     virtual std::optional<std::span<const std::byte>> next() {
-        if (_gen_it != _gen.end()) {
-            ++_gen_it;
-            return *_gen_it;
+        if (!_gen_it) {
+            _gen_it = _gen.begin();
+        } else if (_gen_it.value() == _gen.end()) {
+            return std::nullopt;
+        } else {
+            ++*_gen_it;
         }
-        return std::nullopt;
+        return **_gen_it;
     }
 };
 
@@ -164,58 +163,50 @@ struct lazy_comparable_bytes_from_pip {
     std::default_sentinel_t end() { return std::default_sentinel; }
 };
 
-struct dk_generator : public comparable_bytes_generator {
-    std::generator<std::span<const std::byte>> make_generator() {
-        co_yield {};
-        {
-            std::array<std::byte, 1 + sizeof(uint64_t)> tmp;
-            tmp[0] = std::byte(0x40);
-            auto token = _key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : _key.token().unbias();
-            seastar::write_be<uint64_t>(reinterpret_cast<char*>(&tmp[1]), token);
-            co_yield tmp;
-        }
-        {
-            auto vec = std::vector<std::byte>();
-            _s.partition_key_type()->memcmp_comparable_form(*_key.key(), vec);
-            co_yield vec;
-        }
-        {
-            std::array<std::byte, 1> tmp;
-            if (_key.weight() < 0) {
-                tmp[0] = std::byte(0x20);
-            } else if (_key.weight() == 0) {
-                tmp[0] = std::byte(0x38);
-            } else {
-                tmp[0] = std::byte(0x60);
-            }
-            co_yield tmp;
-            if (_has_key) {
-                tmp[0] = std::byte(0x60);
-                co_yield tmp;
-            }
-        }
+std::generator<std::span<const std::byte>> dk_to_comparable(const schema& _s, dht::ring_position_view _key) {
+    {
+        std::array<std::byte, 1 + sizeof(uint64_t)> tmp;
+        tmp[0] = std::byte(0x40);
+        auto token = _key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : _key.token().unbias();
+        seastar::write_be<uint64_t>(reinterpret_cast<char*>(&tmp[1]), token);
+        co_yield tmp;
     }
+    {
+        auto vec = std::vector<std::byte>();
+        _s.partition_key_type()->memcmp_comparable_form(*_key.key(), vec);
+        co_yield vec;
+    }
+    {
+        std::array<std::byte, 1> tmp;
+        if (_key.weight() < 0) {
+            tmp[0] = std::byte(0x20);
+        } else if (_key.weight() == 0) {
+            tmp[0] = std::byte(0x38);
+        } else {
+            tmp[0] = std::byte(0x60);
+        }
+        co_yield tmp;
+    }
+}
+
+struct dk_generator : public comparable_bytes_generator {
 public:
-    const schema& _s;
-    dht::ring_position_view _key;
-    bool _has_key;
     std::generator<std::span<const std::byte>> _gen;
-    decltype(_gen.begin()) _gen_it;
+    std::optional<decltype(_gen.begin())> _gen_it;
 
     dk_generator(dk_generator&&) = delete;
     dk_generator(const schema& s, dht::ring_position_view k, bool has_key)
-        : _s(s)
-        , _key(k)
-        , _has_key(has_key)
-        , _gen(make_generator())
-        , _gen_it(_gen.begin()) {}
-
+        : _gen(dk_to_comparable(s, k))
+        {}
     virtual std::optional<std::span<const std::byte>> next() {
-        if (_gen_it != _gen.end()) {
-            ++_gen_it;
-            return *_gen_it;
+        if (!_gen_it) {
+            _gen_it = _gen.begin();
+        } else if (_gen_it.value() == _gen.end()) {
+            return std::nullopt;
+        } else {
+            ++*_gen_it;
         }
-        return std::nullopt;
+        return **_gen_it;
     }
 };
 
@@ -638,7 +629,8 @@ public:
     // Checks whether the cursor is initialized.
     // Preconditions: none.
     bool initialized() const;
-    future<> set_to(uint64_t root, comparable_bytes_generator& key);
+    using comparable_bytes_generator2 = comparable_bytes_iterator;
+    future<> set_to(uint64_t root, comparable_bytes_generator2&& key);
     // Moves the cursor to the next key (or EOF).
     //
     // step() returns a set_result, but it can only return `eof` (when it steps beyond all keys),
@@ -687,11 +679,13 @@ class index_cursor {
     // FIXME: it actually doesn't do that, yet.
     reader_permit _permit;
     uint64_t _par_root;
+public:
+    using comparable_bytes_generator2 = comparable_bytes_iterator;
 private:
     // If the current partition has a row index, reads its header.
     future<> maybe_read_metadata();
     // The colder part of set_after_row, just to hint at inlining the hotter part.
-    future<> set_after_row_cold(comparable_bytes_generator&);
+    future<> set_after_row_cold(comparable_bytes_generator2&&);
 public:
     index_cursor(uint64_t par_root, Input par, Input row, reader_permit);
     index_cursor& operator=(const index_cursor&) = default;
@@ -710,19 +704,19 @@ public:
     // See the comments at trie_cursor::set_before for more elaboration.
     //
     // Resets the row cursor.
-    future<set_result> set_before_partition(comparable_bytes_generator& K);
+    future<set_result> set_before_partition(comparable_bytes_generator2&& K);
     // Sets the partition cursor to *some* position strictly greater than all entries smaller-or-equal to K.
     // See the comments at trie_cursor::set_after for details.
     //
     // Resets the row cursor.
-    future<> set_after_partition(comparable_bytes_generator& K);
+    future<> set_after_partition(comparable_bytes_generator2&& K);
     // Moves the partition cursor to the next position (next partition or eof).
     // Resets the row cursor.
     future<> next_partition();
     // Sets the row cursor to *some* position (within the current partition)
     // smaller-or-equal to all entries greater-or-equal to K.
     // See the comments at trie_cursor::set_before for more elaboration.
-    future<> set_before_row(comparable_bytes_generator&);
+    future<> set_before_row(comparable_bytes_generator2&&);
     // Sets the row cursor to *some* position (within the current partition)
     // smaller-or-equal to all entries greater-or-equal to K.
     // See the comments at trie_cursor::set_before for more elaboration.
@@ -730,7 +724,7 @@ public:
     // If the row cursor would go beyond the end of the partition,
     // it instead resets moves the partition cursor to the next partition
     // and resets the row cursor.
-    future<> set_after_row(comparable_bytes_generator&);
+    future<> set_after_row(comparable_bytes_generator2&&);
     // Checks if the row cursor is set.
     bool row_cursor_set() const;
     future<std::optional<uint64_t>> last_block_offset() const;
@@ -811,9 +805,9 @@ trie_cursor<Input>::trie_cursor(Input in)
 
 // Documented near the declaration.
 template <node_reader Input>
-future<> trie_cursor<Input>::set_to(uint64_t root, comparable_bytes_generator& key) {
+future<> trie_cursor<Input>::set_to(uint64_t root, comparable_bytes_generator2&& key) {
     traversal_state ts{.next_pos = root, .edges_traversed = 0};
-    co_await trie::traverse(_in, key, ts);
+    co_await trie::traverse(_in, std::move(key), ts);
     _trail = std::move(ts.trail);
 }
 
@@ -914,8 +908,7 @@ future<std::optional<uint64_t>> index_cursor<Input>::last_block_offset() const {
     //abort();
     auto cur = _row_cursor;
     const std::byte key[] = {std::byte(0x60)};
-    auto keygen = single_fragment_comparable_bytes_generator(key);
-    co_await cur.set_to(_partition_metadata->trie_root, keygen);
+    co_await cur.set_to(_partition_metadata->trie_root, single_fragment_generator(key).begin());
     co_await cur.step_back();
     if (cur.eof()) {
         co_return std::nullopt;
@@ -1002,11 +995,11 @@ future<> index_cursor<Input>::maybe_read_metadata() {
     return make_ready_future<>();
 }
 template <node_reader Input>
-future<set_result> index_cursor<Input>::set_before_partition(comparable_bytes_generator& key) {
+future<set_result> index_cursor<Input>::set_before_partition(comparable_bytes_generator2&& key) {
     //expensive_log("index_cursor::set_before_partition this={} key={}", fmt::ptr(this), fmt_hex(key));
     _row_cursor.reset();
     _partition_metadata.reset();
-    co_await _partition_cursor.set_to(_par_root, key);
+    co_await _partition_cursor.set_to(_par_root, std::move(key));
     if (_partition_cursor.at_leaf()) {
         _partition_cursor.snap_to_leaf();
         expensive_log("index_cursor::set_before_partition, points at key, trail={}", fmt::join(_partition_cursor._trail, ", "));
@@ -1021,11 +1014,11 @@ future<set_result> index_cursor<Input>::set_before_partition(comparable_bytes_ge
 }
 
 template <node_reader Input>
-future<> index_cursor<Input>::set_after_partition(comparable_bytes_generator& key) {
+future<> index_cursor<Input>::set_after_partition(comparable_bytes_generator2&& key) {
     //expensive_log("index_cursor::set_after_partition this={} key={}", fmt::ptr(this), fmt_hex(key));
     _row_cursor.reset();
     _partition_metadata.reset();
-    co_await _partition_cursor.set_to(_par_root, key);
+    co_await _partition_cursor.set_to(_par_root, std::move(key));
     co_await _partition_cursor.step();
     co_await maybe_read_metadata();
 }
@@ -1039,21 +1032,21 @@ future<> index_cursor<Input>::next_partition() {
     });
 }
 template <node_reader Input>
-future<> index_cursor<Input>::set_before_row(comparable_bytes_generator& key) {
+future<> index_cursor<Input>::set_before_row(comparable_bytes_generator2&& key) {
     //expensive_log("index_cursor::set_before_row this={} key={}", fmt::ptr(this), fmt_hex(key));
     if (!_partition_metadata) {
         co_return;
     }
     _row_cursor.reset();
-    co_await _row_cursor.set_to(_partition_metadata->trie_root, key);
+    co_await _row_cursor.set_to(_partition_metadata->trie_root, std::move(key));
     if (!_row_cursor.at_key()) {
         co_await _row_cursor.step_back();
     }
 }
 
 template <node_reader Input>
-future<> index_cursor<Input>::set_after_row_cold(comparable_bytes_generator& key) {
-    co_await _row_cursor.set_to(_partition_metadata->trie_root, key);
+future<> index_cursor<Input>::set_after_row_cold(comparable_bytes_generator2&& key) {
+    co_await _row_cursor.set_to(_partition_metadata->trie_root, std::move(key));
     co_await _row_cursor.step();
     if (_row_cursor.eof()) {
         co_await next_partition();
@@ -1062,12 +1055,12 @@ future<> index_cursor<Input>::set_after_row_cold(comparable_bytes_generator& key
 
 template <node_reader Input>
 [[gnu::always_inline]]
-future<> index_cursor<Input>::set_after_row(comparable_bytes_generator& key) {
+future<> index_cursor<Input>::set_after_row(comparable_bytes_generator2&& key) {
     //expensive_log("index_cursor::set_after_row this={} key={}", fmt::ptr(this), fmt_hex(key));
     if (!_partition_metadata) {
         return next_partition();
     }
-    return set_after_row_cold(key);
+    return set_after_row_cold(std::move(key));
 }
 
 future<row_index_header> bti_index_reader::read_row_index_header(uint64_t pos) {
@@ -1120,8 +1113,7 @@ auto byte_comparable(const schema& s, position_in_partition_view pipv) {
 }
 future<bool> bti_index_reader::advance_lower_and_check_if_present(dht::ring_position_view key) {
     trie_logger.debug("bti_index_reader::advance_lower_and_check_if_present: this={} key={}", fmt::ptr(this), key);
-    auto trie_key = translate_key(*_s, key);
-    auto res = co_await _lower.set_before_partition(trie_key);
+    auto res = co_await _lower.set_before_partition(dk_to_comparable(*_s, key).begin());
     _upper = _lower;
     if (res != set_result::possible_match) {
         co_return false;
@@ -1145,18 +1137,16 @@ sstables::indexable_element bti_index_reader::element_kind() const {
 }
 future<> bti_index_reader::advance_to(dht::ring_position_view pos) {
     trie_logger.debug("bti_index_reader::advance_to(partition) this={} pos={}", fmt::ptr(this), pos);
-    auto keygen = translate_key(*_s, pos);
-    co_await _lower.set_before_partition(keygen);
+    co_await _lower.set_before_partition(dk_to_comparable(*_s, pos).begin());
 }
 future<> bti_index_reader::advance_after_existing(const dht::decorated_key& dk) {
     trie_logger.debug("bti_index_reader::advance_after_existing(partition) this={} pos={}", fmt::ptr(this), dk);
-    auto keygen = translate_key(*_s, dht::ring_position_view(dk.token(), &dk.key(), 0));
-    co_await _lower.set_after_partition(keygen);
+    auto keygen = dk_to_comparable(*_s, dht::ring_position_view(dk.token(), &dk.key(), 0));
+    co_await _lower.set_after_partition(keygen.begin());
 }
 future<> bti_index_reader::advance_to(position_in_partition_view pos) {
     trie_logger.debug("bti_index_reader::advance_to(row) this={} pos={}", fmt::ptr(this), pos);
-    auto keygen = byte_comparable(*_s, pos);
-    co_await _lower.set_before_row(keygen);
+    co_await _lower.set_before_row(pipv_to_comparable(*_s, pos).begin());
 }
 std::optional<sstables::deletion_time> bti_index_reader::partition_tombstone() {
     std::optional<sstables::deletion_time> res;
@@ -1189,8 +1179,7 @@ bool bti_index_reader::partition_data_ready() const {
 future<> bti_index_reader::advance_reverse(position_in_partition_view pos) {
     trie_logger.debug("bti_index_reader::advance_reverse this={} pos={}", fmt::ptr(this), pos);
     _upper = _lower;
-    auto keygen = byte_comparable(*_s, pos);
-    co_await _upper.set_after_row(keygen);
+    co_await _upper.set_after_row(pipv_to_comparable(*_s, pos).begin());
 }
 future<> bti_index_reader::read_partition_data() {
     trie_logger.debug("bti_index_reader::read_partition_data this={}", fmt::ptr(this));
@@ -1199,19 +1188,15 @@ future<> bti_index_reader::read_partition_data() {
 future<> bti_index_reader::advance_to(const dht::partition_range& range) {
     trie_logger.debug("bti_index_reader::advance_to(range) this={} range={}", fmt::ptr(this), range);
     if (const auto s = range.start()) {
-        auto keygen = translate_key(*_s, s.value().value());
-        co_await _lower.set_before_partition(keygen);
+        co_await _lower.set_before_partition(dk_to_comparable(*_s, s.value().value()).begin());
     } else {
-        auto keygen = single_fragment_comparable_bytes_generator(const_bytes());
-        co_await _lower.set_before_partition(keygen);
+        co_await _lower.set_before_partition(single_fragment_generator(const_bytes()).begin());
     }
     if (const auto e = range.end()) {
-        auto keygen = translate_key(*_s, e.value().value(), e->value().has_key());
-        co_await _upper.set_after_partition(keygen);
+        co_await _upper.set_after_partition(dk_to_comparable(*_s, e.value().value()).begin());
     } else {
-        std::array<std::byte, 1> ending = {std::byte(0x60)};
-        auto keygen = single_fragment_comparable_bytes_generator(ending);
-        co_await _upper.set_after_partition(keygen);
+        std::byte ending[] = {std::byte(0x60)};
+        co_await _upper.set_after_partition(single_fragment_generator(ending).begin());
     }
 }
 future<> bti_index_reader::advance_reverse_to_next_partition() {
@@ -1221,8 +1206,7 @@ future<> bti_index_reader::advance_reverse_to_next_partition() {
 }
 future<> bti_index_reader::advance_upper_past(position_in_partition_view pos) {
     trie_logger.debug("bti_index_reader::advance_upper_past() this={} pos={}", fmt::ptr(this), pos);
-    auto keygen = byte_comparable(*_s, pos);
-    co_await _upper.set_after_row(keygen);
+    co_await _upper.set_after_row(pipv_to_comparable(*_s, pos).begin());
 }
 std::optional<sstables::open_rt_marker> bti_index_reader::end_open_marker() const {
     trie_logger.debug("bti_index_reader::end_open_marker() this={}", fmt::ptr(this));

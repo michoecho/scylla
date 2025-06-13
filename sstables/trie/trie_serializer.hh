@@ -783,18 +783,26 @@ concept node_reader = requires(T& o, int64_t pos, const_bytes key, int child_idx
 
 inline void traverse_single_page(
     node_reader auto& page,
-    comparable_bytes_generator& key,
+    comparable_bytes_iterator& key_it,
     traversal_state& state
 ) {
-    while (page.cached(state.next_pos) && !key.empty()) {
-        node_traverse_result traverse_one = page.traverse_node_by_key(state.next_pos, key.current_fragment());
+    while (key_it != std::default_sentinel && (*key_it).empty()) {
+        ++key_it;
+    }
+    while (page.cached(state.next_pos) && key_it != std::default_sentinel) {
+        expensive_assert(!(*key_it).empty());
+
+        node_traverse_result traverse_one = page.traverse_node_by_key(state.next_pos, *key_it);
         state.edges_traversed += traverse_one.traversed_key_bytes;
-        key.consume(traverse_one.traversed_key_bytes);
-        bool can_continue = !key.empty() && traverse_one.found_byte == int(key.current_fragment()[0]);
+        *key_it = (*key_it).subspan(traverse_one.traversed_key_bytes);
+        expensive_assert(!(*key_it).empty());
+
+        bool can_continue = traverse_one.found_byte == int((*key_it)[0]);
+
         if (can_continue) {
             state.next_pos = traverse_one.body_pos - traverse_one.child_offset;
             state.edges_traversed += 1;
-            key.consume(1);
+            *key_it = (*key_it).subspan(1);
         } else {
             state.next_pos = -1;
         }
@@ -808,17 +816,21 @@ inline void traverse_single_page(
                 .child_idx = traverse_one.found_idx,
                 .payload_bits = traverse_one.payload_bits});
         }
+
+        while (key_it != std::default_sentinel && (*key_it).empty()) {
+            ++key_it;
+        }
     }
 }
 
 inline future<> traverse(
     node_reader auto& input,
-    comparable_bytes_generator& key,
+    comparable_bytes_iterator&& key_it,
     traversal_state& state
 ) {
-    while (state.next_pos >= 0 && !key.empty()) {
+    while (state.next_pos >= 0 && key_it != std::default_sentinel) {
         co_await input.load(state.next_pos);
-        traverse_single_page(input, key, state);
+        traverse_single_page(input, key_it, state);
     }
     if (state.next_pos >= 0) {
         co_await input.load(state.next_pos);
