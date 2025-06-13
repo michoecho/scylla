@@ -138,7 +138,7 @@ def parse_cmd_line() -> argparse.Namespace:
     )
     parser.add_argument("--tmpdir", action="store", default=str(TOP_SRC_DIR / "testlog"),
                         help="Path to temporary test data and log files.  The data is further segregated per build mode.")
-    parser.add_argument("--gather-metrics", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--gather-metrics", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-failures", type=int, default=0,
                         help="Maximum number of failures to tolerate before cancelling rest of tests.")
     parser.add_argument('--mode', choices=ALL_MODES, action="append", dest="modes",
@@ -293,7 +293,7 @@ async def find_tests(options: argparse.Namespace) -> None:
 async def run_all_tests(signaled: asyncio.Event, options: argparse.Namespace) -> None:
     console = TabularConsoleOutput(options.verbose, TestSuite.test_count())
     signaled_task = asyncio.create_task(signaled.wait())
-    pending = {signaled_task}
+    pending: dict = {None: signaled_task}
 
     async def cancel(pending, msg):
         for task in pending:
@@ -318,29 +318,55 @@ async def run_all_tests(signaled: asyncio.Event, options: argparse.Namespace) ->
 
     await start_3rd_party_services(tempdir_base=pathlib.Path(options.tmpdir), toxiproxy_byte_limit=options.byte_limit)
 
+    metrics_path = "testlog/sqlite.db"
+    if os.path.exists(metrics_path):
+        import schedule
+        stats = schedule.analyze_test_metrics(metrics_path)
+        stats
+
     console.print_start_blurb()
     max_failures = options.max_failures
     failed = 0
+
+    mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') * 0.4
+
     try:
         TestSuite.artifacts.add_exit_artifact(None, TestSuite.hosts.cleanup)
         for test in TestSuite.all_tests():
             # +1 for 'signaled' event
-            if len(pending) > options.jobs:
+            should_run = True
+            def memory_usage(t):
+                if t is None:
+                    return 0
+                triplet = (t.mode, t.suite.name, t.shortname)
+                if triplet in stats:
+                    return stats[triplet]['max_memory_peak']
+                return mem_bytes / options.jobs
+
+            total_mem_usage = sum(memory_usage(t) for t in pending)
+            if total_mem_usage > mem_bytes:
+                print(f"total_mem_usage = {total_mem_usage}, waiting")
                 # Wait for some task to finish
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                failed += await reap(done, pending, signaled)
+                done, ppending = await asyncio.wait(pending.values(), return_when=asyncio.FIRST_COMPLETED)
+                pending = {k: v for k, v in pending.items() if v in ppending}
+                failed += await reap(done, pending.values(), signaled)
                 if max_failures != 0 and max_failures <= failed:
                     print("Too much failures, stopping")
-                    await cancel(pending, "Too much failures, stopping")
-            pending.add(asyncio.create_task(test.suite.run(test, options)))
+                    await cancel(pending.values(), "Too much failures, stopping")
+
+            total_mem_usage = sum(memory_usage(t) for t in pending)
+            print(f"total_mem_usage = {total_mem_usage}, running {test.suite.name}/{test.shortname} with {memory_usage(test)}")
+
+            pending[test] = asyncio.create_task(test.suite.run(test, options))
         # Wait & reap ALL tasks but signaled_task
         # Do not use asyncio.ALL_COMPLETED to print a nice progress report
         while len(pending) > 1:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            done, ppending = await asyncio.wait(pending.values(), return_when=asyncio.FIRST_COMPLETED)
+            pending = {k: v for k, v in pending.items() if v in ppending}
             failed += await reap(done, pending, signaled)
             if max_failures != 0 and max_failures <= failed:
                 print("Too much failures, stopping")
-                await cancel(pending, "Too much failures, stopping")
+                await cancel(pending.values(), "Too much failures, stopping")
     except asyncio.CancelledError:
         return
     finally:
