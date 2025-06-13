@@ -1165,6 +1165,7 @@ inline void trie_writer<Output>::complete_until_depth(size_t depth) {
 
 template <trie_writer_sink Output>
 inline void trie_writer<Output>::add(size_t depth, const_bytes key_tail, const trie_payload& p) {
+    expensive_log("writer_node::add_final: end, stack={}, depth={}, _current_depth={} tail={}", _stack.size(), depth, _current_depth, fmt_hex(key_tail));
     expensive_assert(_stack.size() >= 1);
     SCYLLA_ASSERT(_current_depth >= depth);
     // There is only one case where a zero-length tail is legal:
@@ -1182,6 +1183,7 @@ inline void trie_writer<Output>::add(size_t depth, const_bytes key_tail, const t
 
 template <trie_writer_sink Output>
 inline void trie_writer<Output>::add_partial(size_t depth, const_bytes key_tail) {
+    expensive_log("writer_node::add_partial: end, stack={}, depth={}, _current_depth={} tail={}", _stack.size(), depth, _current_depth, fmt_hex(key_tail));
     expensive_assert(_stack.size() >= 1);
     SCYLLA_ASSERT(_current_depth >= depth);
     // There is only one case where a zero-length tail is legal:
