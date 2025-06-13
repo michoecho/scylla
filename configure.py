@@ -2506,6 +2506,13 @@ def write_build_file(f,
             )
         )
         f.write(
+            'build {mode}-test-executables: phony {test_executables} $builddir/{mode}/scylla {wasms}\n'.format(
+                mode=mode,
+                test_executables=' '.join(['$builddir/{}/{}'.format(mode, binary) for binary in sorted(tests)]),
+                wasms=' '.join([f'$builddir/{binary}' for binary in sorted(wasms)]),
+            )
+        )
+        f.write(
             'build {mode}-check: phony {mode}-headers {mode}-test\n'.format(
                 mode=mode,
             )
