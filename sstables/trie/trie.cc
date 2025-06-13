@@ -189,6 +189,10 @@ std::generator<std::span<const std::byte>> dk_to_comparable(const schema& _s, dh
     }
 }
 
+std::generator<std::span<const std::byte>> dk_to_comparable(const schema& s, dht::decorated_key dk) {
+    co_yield std::ranges::elements_of(dk_to_comparable(s, dht::ring_position_view(dk.token(), &dk.key(), 0)));
+}
+
 struct dk_generator : public comparable_bytes_generator {
 public:
     std::generator<std::span<const std::byte>> _gen;
@@ -210,27 +214,67 @@ public:
     }
 };
 
+bytes_view bytespan_to_bv(std::span<const std::byte> s) {
+    return {reinterpret_cast<const bytes::value_type*>(s.data()), s.size()};
+}
+
+class lazy_comparable_bytes {
+    utils::small_vector<bytes, 1> _frags;
+    std::generator<std::span<const std::byte>> _gen;
+    decltype(_gen.begin()) _gen_it;
+    struct iterator {
+        using difference_type = std::ptrdiff_t;
+        using value_type = std::span<std::byte>;
+        lazy_comparable_bytes& _owner;
+        size_t _i = 0;
+        std::span<std::byte> operator*() const {
+            if (_i >= _owner._frags.size()) {
+                _owner._frags.emplace_back(bytespan_to_bv(*_owner._gen_it));
+                ++_owner._gen_it;
+            }
+            return std::as_writable_bytes(std::span(_owner._frags[_i]));
+        }
+        iterator& operator++() {
+            this->operator*(); // Ensure the current fragment has been pushed to _frags.
+            ++_i;
+            return *this;
+        }
+        void operator++(int) {
+            ++*this;
+        }
+        bool operator==(const std::default_sentinel_t&) {
+            return _i == _owner._frags.size() && _owner._gen_it == std::default_sentinel;
+        }
+    };
+public:
+    lazy_comparable_bytes(std::generator<std::span<const std::byte>> g)
+        : _gen(std::move(g))
+        , _gen_it(_gen.begin())
+    {}
+    iterator begin() { return iterator(*this); }
+    std::default_sentinel_t end() { return std::default_sentinel; }
+};
+
 struct lazy_comparable_bytes_from_dk {
     dht::decorated_key _dk;
     utils::small_vector<bytes, 1> _frags;
-    dk_generator _gen;
+    std::generator<std::span<const std::byte>> _gen;
+    comparable_bytes_iterator _gen_it;
     lazy_comparable_bytes_from_dk(const schema& s, dht::decorated_key dk)
         : _dk(std::move(dk))
-        , _gen(s, dht::ring_position_view(_dk.token(), &_dk.key(), 0), 0)
-    {}
+        , _gen(dk_to_comparable(s, dht::ring_position_view(_dk.token(), &_dk.key(), 0)))
+        , _gen_it(_gen.begin())
+    {
+        advance();
+    }
     lazy_comparable_bytes_from_dk(lazy_comparable_bytes_from_dk&&) = delete;
     void advance() {
-        auto span = _gen.current_fragment();
-        auto b = bytes(
-            reinterpret_cast<const bytes::value_type*>(span.data()),
-            span.size()
-        );
-        _frags.push_back(std::move(b));
-        _gen.consume(span.size());
+        _frags.emplace_back(bytespan_to_bv(*_gen_it));
+        ++_gen_it;
     }
     struct iterator {
         using difference_type = std::ptrdiff_t;
-        using value_type = managed_bytes;
+        using value_type = std::span<std::byte>;
         lazy_comparable_bytes_from_dk& _owner;
         size_t _i = 0;
         iterator(lazy_comparable_bytes_from_dk& o) : _owner(o) {}
@@ -241,9 +285,7 @@ struct lazy_comparable_bytes_from_dk {
             return std::as_writable_bytes(std::span(_owner._frags[_i]));
         }
         iterator& operator++() {
-            if (_i >= _owner._frags.size()) {
-                _owner.advance();
-            }
+            this->operator*(); // Ensure the current fragment has been pushed to _frags.
             ++_i;
             return *this;
         }
@@ -251,7 +293,7 @@ struct lazy_comparable_bytes_from_dk {
             ++*this;
         }
         bool operator==(const std::default_sentinel_t&) {
-            return _i == _owner._frags.size() && _owner._gen.empty();
+            return _i == _owner._frags.size() && _owner._gen_it == std::default_sentinel;
         }
     };
     iterator begin() { return iterator(*this); }
@@ -311,9 +353,9 @@ private:
     // from the successor, and we will be able to determine the shortest unique prefix. 
     size_t _last_key_mismatch = 0;
     // The key added most recently.
-    std::array<std::optional<lazy_comparable_bytes_from_dk>, 2> _last_key_slots;
-    std::optional<lazy_comparable_bytes_from_dk>* _last_key = &_last_key_slots[0];
-    std::optional<lazy_comparable_bytes_from_dk>* _last_key_next = &_last_key_slots[1];
+    std::array<std::optional<lazy_comparable_bytes>, 2> _last_key_slots;
+    std::optional<lazy_comparable_bytes>* _last_key = &_last_key_slots[0];
+    std::optional<lazy_comparable_bytes>* _last_key_next = &_last_key_slots[1];
     // The payload of _last_key: the Data.db position and the hash bits. 
     int64_t _last_data_file_pos;
     uint8_t _last_hash_bits;
@@ -325,7 +367,10 @@ partition_index_writer_impl<Output>::partition_index_writer_impl(Output& out)
 }
 
 template <typename T>
-requires (std::same_as<T, lazy_comparable_bytes_from_dk> || std::same_as<T, lazy_comparable_bytes_from_pip>)
+requires
+    (std::same_as<T, lazy_comparable_bytes_from_dk>
+    || std::same_as<T, lazy_comparable_bytes_from_pip>
+    || std::same_as<T, lazy_comparable_bytes>)
 std::pair<size_t, std::byte*> lcb_mismatch(T& a, T& b) {
     auto a_it = a.begin();
     auto b_it = b.begin();
@@ -389,7 +434,7 @@ void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
 template <trie_writer_sink Output>
 void partition_index_writer_impl<Output>::add(const schema& s, const dht::decorated_key& dk, int64_t data_file_pos, uint8_t hash_bits) {
     expensive_log("partition_index_writer_impl::add: this={} key={}, data_file_pos={}", fmt::ptr(this), dk, data_file_pos);
-    _last_key_next->emplace(s, dk);
+    _last_key_next->emplace(dk_to_comparable(s, dk));
     if (_added_keys > 0) {
         // First position where the new key differs from the last key.
         size_t mismatch = _last_key ? lcb_mismatch(**_last_key_next, **_last_key).first : 0;
