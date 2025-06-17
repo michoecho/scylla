@@ -9,4 +9,3 @@ extra_scylla_cmdline_options:
   - '--experimental-features=views-with-tablets'
   - '--enable-tablets=true'
   - '--tablets-initial-scale-factor=1'
-  - '--logger-log-level=trie=trace'

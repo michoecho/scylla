@@ -130,12 +130,11 @@ class ResourceGatherOff(ResourceGather):
     def cgroup_monitor(self, test_event: Event) -> Task:
         return self.loop.create_task(no_monitor())
 
-sqlite_writer = SQLiteWriter("testlog/sqlite.db")
 
 class ResourceGatherOn(ResourceGather):
     def __init__(self, test: TestPyTest):
         super().__init__(test)
-        self.sqlite_writer = sqlite_writer
+        self.sqlite_writer = SQLiteWriter(self.db_path)
         self.test_id: int = self.sqlite_writer.write_row_if_not_exist(
             Test(
                 architecture=platform.machine(),
