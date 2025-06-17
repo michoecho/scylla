@@ -63,6 +63,34 @@ std::generator<std::span<const std::byte>> pipv_to_comparable(const schema& _s, 
     }
 }
 
+static bound_weight convert_bound_to_bound_weight(sstables::bound_kind_m b) {
+    switch (b) {
+    case sstables::bound_kind_m::excl_end:
+    case sstables::bound_kind_m::incl_start:
+    case sstables::bound_kind_m::excl_end_incl_start:
+        return bound_weight::before_all_prefixed;
+    case sstables::bound_kind_m::clustering:
+    case sstables::bound_kind_m::static_clustering:
+        return bound_weight::equal;
+    case sstables::bound_kind_m::excl_start:
+    case sstables::bound_kind_m::incl_end_excl_start:
+    case sstables::bound_kind_m::incl_end:
+        return bound_weight::after_all_prefixed;
+    default: abort();
+    }
+}
+
+std::generator<std::span<const std::byte>> pipv_to_comparable(const schema& _s, sstables::clustering_info ci) {
+    auto vec = std::vector<std::byte>();
+    _s.clustering_key_type()->memcmp_comparable_form(ci.clustering, vec);
+    co_yield vec;
+    {
+        std::array<std::byte, 1> tmp;
+        tmp[0] = bound_weight_to_terminator(convert_bound_to_bound_weight(ci.kind));
+        co_yield tmp;
+    }
+}
+
 struct pip_generator : public comparable_bytes_generator {
 public:
     std::generator<std::span<const std::byte>> _gen;
@@ -84,23 +112,6 @@ public:
         return **_gen_it;
     }
 };
-
-static bound_weight convert_bound_to_bound_weight(sstables::bound_kind_m b) {
-    switch (b) {
-    case sstables::bound_kind_m::excl_end:
-    case sstables::bound_kind_m::incl_start:
-    case sstables::bound_kind_m::excl_end_incl_start:
-        return bound_weight::before_all_prefixed;
-    case sstables::bound_kind_m::clustering:
-    case sstables::bound_kind_m::static_clustering:
-        return bound_weight::equal;
-    case sstables::bound_kind_m::excl_start:
-    case sstables::bound_kind_m::incl_end_excl_start:
-    case sstables::bound_kind_m::incl_end:
-        return bound_weight::after_all_prefixed;
-    default: abort();
-    }
-}
 
 struct lazy_comparable_bytes_from_pip {
     position_in_partition _pip;
@@ -222,6 +233,7 @@ class lazy_comparable_bytes {
     utils::small_vector<bytes, 1> _frags;
     std::generator<std::span<const std::byte>> _gen;
     decltype(_gen.begin()) _gen_it;
+    bool _trimmed = false;
     struct iterator {
         using difference_type = std::ptrdiff_t;
         using value_type = std::span<std::byte>;
@@ -243,7 +255,7 @@ class lazy_comparable_bytes {
             ++*this;
         }
         bool operator==(const std::default_sentinel_t&) {
-            return _i == _owner._frags.size() && _owner._gen_it == std::default_sentinel;
+            return _i == _owner._frags.size() && (_owner._gen_it == std::default_sentinel || _owner._trimmed);
         }
     };
 public:
@@ -251,6 +263,26 @@ public:
         : _gen(std::move(g))
         , _gen_it(_gen.begin())
     {}
+    lazy_comparable_bytes(lazy_comparable_bytes&& o) = default;
+    lazy_comparable_bytes& operator=(lazy_comparable_bytes&& other) {
+        if (this != &other) {
+            this->~lazy_comparable_bytes();
+            new (this) lazy_comparable_bytes(std::move(other));
+        }
+        return *this;
+    }
+    void trim(const size_t n) {
+        size_t remaining = n;
+        for (size_t i = 0; i < _frags.size(); ++i) {
+            if (_frags[i].size() >= remaining) {
+                _frags[i].resize(remaining);
+                _frags.resize(i+1);
+                break;
+            }
+            remaining -= _frags[i].size();
+        }
+        _trimmed = true;
+    }
     iterator begin() { return iterator(*this); }
     std::default_sentinel_t end() { return std::default_sentinel; }
 };
@@ -353,9 +385,8 @@ private:
     // from the successor, and we will be able to determine the shortest unique prefix. 
     size_t _last_key_mismatch = 0;
     // The key added most recently.
-    std::array<std::optional<lazy_comparable_bytes>, 2> _last_key_slots;
-    std::optional<lazy_comparable_bytes>* _last_key = &_last_key_slots[0];
-    std::optional<lazy_comparable_bytes>* _last_key_next = &_last_key_slots[1];
+    std::optional<lazy_comparable_bytes> _last_key;
+    std::optional<lazy_comparable_bytes> _last_key_next;
     // The payload of _last_key: the Data.db position and the hash bits. 
     int64_t _last_data_file_pos;
     uint8_t _last_hash_bits;
@@ -408,7 +439,7 @@ void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
     // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
     // (Even though currently they are always present).
     size_t i = 0;
-    for (auto frag : **_last_key) {
+    for (auto frag : *_last_key) {
         if (i + frag.size() < _last_key_mismatch) {
             i += frag.size();
             continue;
@@ -434,10 +465,10 @@ void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
 template <trie_writer_sink Output>
 void partition_index_writer_impl<Output>::add(const schema& s, const dht::decorated_key& dk, int64_t data_file_pos, uint8_t hash_bits) {
     expensive_log("partition_index_writer_impl::add: this={} key={}, data_file_pos={}", fmt::ptr(this), dk, data_file_pos);
-    _last_key_next->emplace(dk_to_comparable(s, dk));
+    _last_key_next.emplace(dk_to_comparable(s, dk));
     if (_added_keys > 0) {
         // First position where the new key differs from the last key.
-        size_t mismatch = _last_key ? lcb_mismatch(**_last_key_next, **_last_key).first : 0;
+        size_t mismatch = _last_key ? lcb_mismatch(*_last_key_next, *_last_key).first : 0;
         // From `_last_key_mismatch` (mismatch position between `_last_key` and its predecessor)
         // and `mismatch` (mismatch position between `_last_key` and its successor),
         // compute the minimal needed prefix of `_last_key`.
@@ -1315,10 +1346,9 @@ public:
 private:
     trie_writer<Output> _wr;
     size_t _added_blocks = 0;
-    std::array<std::optional<lazy_comparable_bytes_from_pip>, 3> _last_key_slots;
-    std::optional<lazy_comparable_bytes_from_pip>* _last_separator = &_last_key_slots[0];
-    std::optional<lazy_comparable_bytes_from_pip>* _last_key = &_last_key_slots[1];
-    std::optional<lazy_comparable_bytes_from_pip>* _last_key_next = &_last_key_slots[2];
+    std::optional<lazy_comparable_bytes> _last_separator;
+    std::optional<lazy_comparable_bytes> _last_key;
+    std::optional<lazy_comparable_bytes> _last_key_next;
 };
 
 template <trie_writer_sink Output>
@@ -1368,8 +1398,8 @@ void row_index_writer_impl<Output>::add(
         //fmt_hex(_last_key),
         //fmt_hex(_last_separator)
     );
-    auto first_ck = lazy_comparable_bytes_from_pip(s, first_ck_info.clustering, first_ck_info.kind);
-    _last_key_next->emplace(s, last_ck_info.clustering, last_ck_info.kind);
+    auto first_ck = lazy_comparable_bytes(pipv_to_comparable(s, std::move(first_ck_info)));
+    _last_key_next.emplace(pipv_to_comparable(s, std::move(last_ck_info)));
 
     std::array<std::byte, 20> payload_bytes;
     std::byte* payload_bytes_it = payload_bytes.data();
@@ -1389,7 +1419,7 @@ void row_index_writer_impl<Output>::add(
     if (_added_blocks == 0) {
         _wr.add(0, {}, trie_payload(has_tombstone_flag | payload_bits, {payload_bytes.data(), payload_bytes_it}));
     } else {
-        auto [separator_mismatch_idx, separator_mismatch_ptr] = lcb_mismatch(first_ck, **_last_key);
+        auto [separator_mismatch_idx, separator_mismatch_ptr] = lcb_mismatch(first_ck, *_last_key);
         // We assume a prefix-free encoding here.
         // expensive_assert(separator_mismatch_idx < _last_key_size);
         //
@@ -1415,17 +1445,17 @@ void row_index_writer_impl<Output>::add(
         // Therefore, as an arbitrary compromise, we use the optimal-distance separator in the set
         // of optimal-length separators. Which means we just nudge the byte at the point of mismatch by 1.
         //
-        (**_last_key).trim(separator_mismatch_idx + 1);
         // The byte at the point of mismatch must be greater in the next key than in the previous key.
         // So the byte in the previous key can't possibly be 0xff.
         expensive_assert(*separator_mismatch_ptr != std::byte(0xff));
         *separator_mismatch_ptr = std::byte(uint8_t(*separator_mismatch_ptr) + 1);
+        (*_last_key).trim(separator_mismatch_idx + 1);
 
         // size_t needed_prefix = std::min(std::max(_last_sep_mismatch, mismatch) + 1, _last_separator.size());
-        size_t mismatch = _added_blocks > 1 ? lcb_mismatch(**_last_key, **_last_separator).first : 0;
+        size_t mismatch = _added_blocks > 1 ? lcb_mismatch(*_last_key, *_last_separator).first : 0;
 
         size_t i = 0;
-        for (auto frag : **_last_key) {
+        for (auto frag : *_last_key) {
             if (i + frag.size() <= mismatch) {
                 i += frag.size();
                 continue;
@@ -1460,9 +1490,9 @@ sink_pos row_index_writer_impl<Output>::finish() {
     expensive_log("row_index_writer_impl::finish() this={}", fmt::ptr(this));
     auto result = _wr.finish();
     _added_blocks = 0;
-    _last_key->reset();
-    _last_key_next->reset();
-    _last_separator->reset();
+    _last_key.reset();
+    _last_key_next.reset();
+    _last_separator.reset();
     return result;
 }
 
