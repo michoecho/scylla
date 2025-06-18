@@ -44,7 +44,7 @@ public:
 std::vector<uint64_t> get_partition_positions(shared_sstable sst, reader_permit permit) {
     std::vector<uint64_t> result;
     {
-        auto ir = make_index_reader(sst, permit, nullptr, use_caching::no, false, allow_trie::no);
+        auto ir = make_index_reader(sst, permit, nullptr, use_caching::no, false);
         ir->advance_to(dht::partition_range::make_open_ended_both_sides()).get();
         ir->read_partition_data().get();
         auto close_ir = deferred_close(*ir);

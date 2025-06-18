@@ -2307,7 +2307,7 @@ SEASTAR_TEST_CASE(summary_rebuild_sanity) {
             mutations.push_back(make_insert(partition_key::from_exploded(*s, {std::move(key)})));
         }
 
-        auto sst = make_sstable_containing(env.make_sstable(s), mutations);
+        auto sst = make_sstable_containing(env.make_sstable(s, sstable_version_types::me), mutations);
 
         summary s1 = std::move(sstables::test(sst)._summary());
         BOOST_REQUIRE(!(bool)sstables::test(sst)._summary()); // make sure std::move above took place

@@ -790,7 +790,7 @@ SEASTAR_TEST_CASE(test_has_partition_key) {
 }
 
 static std::unique_ptr<index_reader> get_index_reader(shared_sstable sst, reader_permit permit) {
-    return ::make_index_reader(sst, std::move(permit), nullptr, sstables::use_caching::yes, false, allow_trie::no);
+    return ::make_index_reader(sst, std::move(permit), nullptr, sstables::use_caching::yes, false);
 }
 
 SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic) {
@@ -830,7 +830,7 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic) {
         cfg.promoted_index_block_size = 1;
         cfg.promoted_index_auto_scale_threshold = 0; // disable auto-scaling
 
-        auto sst = make_sstable_easy(env, mt, cfg);
+        auto sst = make_sstable_easy(env, mt, cfg, sstable_version_types::me);
         assert_that(get_index_reader(sst, env.make_reader_permit())).has_monotonic_positions(*s);
     });
 }
@@ -865,7 +865,7 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_with_auto_scaling) {
         cfg.promoted_index_block_size = 1;
         cfg.promoted_index_auto_scale_threshold = 100;  // set to a low value to trigger auto-scaling
 
-        auto sst = make_sstable_easy(env, mt, cfg);
+        auto sst = make_sstable_easy(env, mt, cfg, sstable_version_types::me);
         assert_that(get_index_reader(sst, env.make_reader_permit())).has_monotonic_positions(*s);
     });
 }
@@ -873,6 +873,9 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_with_auto_scaling) {
 SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_compound_dense) {
    return test_env::do_with_async([] (test_env& env) {
       for (const auto version : writable_sstable_versions) {
+        if (format_of_version(version) == sstable_format_types::bti) {
+            continue;
+        }
         schema_builder builder("ks", "cf");
         builder.with_column("p", utf8_type, column_kind::partition_key);
         builder.with_column("c1", int32_type, column_kind::clustering_key);
@@ -926,6 +929,9 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_compound_dense) {
 SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_non_compound_dense) {
    return test_env::do_with_async([] (test_env& env) {
       for (const auto version : writable_sstable_versions) {
+        if (format_of_version(version) == sstable_format_types::bti) {
+            continue;
+        }
         schema_builder builder("ks", "cf");
         builder.with_column("p", utf8_type, column_kind::partition_key);
         builder.with_column("c1", int32_type, column_kind::clustering_key);
@@ -1052,6 +1058,9 @@ SEASTAR_TEST_CASE(test_range_tombstones_are_correctly_seralized_for_non_compound
 SEASTAR_TEST_CASE(test_promoted_index_is_absent_for_schemas_without_clustering_key) {
    return test_env::do_with_async([] (test_env& env) {
       for (const auto version : writable_sstable_versions) {
+        if (format_of_version(version) == sstable_format_types::bti) {
+            continue;
+        }
         schema_builder builder("ks", "cf");
         builder.with_column("p", utf8_type, column_kind::partition_key);
         builder.with_column("v", int32_type);
