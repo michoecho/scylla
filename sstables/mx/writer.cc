@@ -606,6 +606,8 @@ private:
     large_data_stats_entry _row_size_entry;
     large_data_stats_entry _cell_size_entry;
     large_data_stats_entry _elements_in_collection_entry;
+    std::optional<uint64_t> _estimated_partitions;
+    bool _writing_promoted_index = true;
 
     void init_file_writers();
 
@@ -764,7 +766,7 @@ private:
     }
 public:
 
-    writer(sstable& sst, const schema& s, uint64_t estimated_partitions,
+    writer(sstable& sst, const schema& s, std::optional<uint64_t> estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats,
         shard_id shard = this_shard_id())
         : sstable_writer::writer_impl(sst, s, cfg)
@@ -799,24 +801,36 @@ public:
                         .threshold = _sst.get_large_data_handler().get_collection_elements_count_threshold(),
                     }
                 )
+        //, _estimated_partitions(estimated_partitions)
+        , _estimated_partitions(std::nullopt)
     {
         // This can be 0 in some cases, which is albeit benign, can wreak havoc
         // in lower-level writer code, so clamp it to [1, +inf) here, which is
         // exactly what callers used to do anyway.
-        estimated_partitions = std::max(uint64_t(1), estimated_partitions);
+        if (_estimated_partitions) {
+            _estimated_partitions = std::max(uint64_t(1), *_estimated_partitions);
+        }
 
         _sst.open_sstable(cfg.origin);
+        if (!_sst.has_component(component_type::Index) && !_estimated_partitions) {
+            _sst._recognized_components.insert(component_type::TemporaryIndex);
+            _writing_promoted_index = false;
+        }
         _sst.create_data().get();
         _compression_enabled = !_sst.has_component(component_type::CRC);
         init_file_writers();
         _sst._shards = { shard };
 
         _cfg.monitor->on_write_started(_data_writer->offset_tracker());
-        _sst._components->filter = utils::i_filter::get_filter(estimated_partitions, _sst._schema->bloom_filter_fp_chance(), utils::filter_format::m_format);
+        if (_estimated_partitions) {
+            _sst._components->filter = utils::i_filter::get_filter(*_estimated_partitions, _sst._schema->bloom_filter_fp_chance(), utils::filter_format::m_format);
+        }
         _pi_write_m.promoted_index_block_size = cfg.promoted_index_block_size;
         _pi_write_m.promoted_index_auto_scale_threshold = cfg.promoted_index_auto_scale_threshold;
         _index_sampling_state.summary_byte_cost = _cfg.summary_byte_cost;
-        prepare_summary(_sst._components->summary, estimated_partitions, _schema.min_index_interval());
+        if (_sst.has_component(component_type::Summary)) {
+            prepare_summary(_sst._components->summary, _schema.min_index_interval());
+        }
     }
 
     ~writer();
@@ -914,7 +928,7 @@ void writer::init_file_writers() {
                 std::move(compressor)), _sst.get_filename());
     }
 
-    if (format_of_version(_sst._version) == sstable_format_types::bti
+    if (_sst.has_component(component_type::Partitions)
         && _cfg.write_trie_index
         && _sst._schema->partition_key_type()->has_memcmp_comparable_form()
     ) {
@@ -928,9 +942,13 @@ void writer::init_file_writers() {
             _trwofw = trie::make_bti_trie_sink(*_trie_row_index_writer, 4096);
             _ritw = make_row_trie_writer(_trwofw);
         }
-    } else {
+    }
+    if (_sst.has_component(component_type::Index)) {
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Index).get();
         _index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.index_filename());
+    } else if (_sst.has_component(component_type::TemporaryIndex)) {
+        out = _sst._storage->make_data_or_index_sink(_sst, component_type::TemporaryIndex).get();
+        _index_writer = std::make_unique<file_writer>(output_stream<char>(std::move(out)), _sst.filename(component_type::TemporaryIndex));
     }
 }
 
@@ -961,7 +979,9 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     maybe_add_summary_entry(dk.token(), bytes_view(*_partition_key));
   }
 
+  if (_sst._components->filter) {
     _sst._components->filter->add(bytes_view(*_partition_key));
+  }
     _collector.add_key(bytes_view(*_partition_key));
     _num_partitions_consumed++;
 
@@ -973,6 +993,7 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     // Write an index entry minus the "promoted index" (sample of columns)
     // part. We can only write that after processing the entire partition
     // and collecting the sample of columns.
+    //fmt::println("index::add {}", fmt_hex(p_key.value));
     write(_sst.get_version(), *_index_writer, p_key);
     write_vint(*_index_writer, _data_writer->offset());
   }
@@ -1413,7 +1434,7 @@ void writer::write_promoted_index() {
 }
 
 void writer::write_pi_block(const pi_block& block) {
-  if (_index_writer) {
+  if (_index_writer && _writing_promoted_index) {
     static constexpr size_t width_base = 65536;
     bytes_ostream& blocks = _pi_write_m.blocks;
     uint32_t offset = blocks.size();
@@ -1580,7 +1601,17 @@ void writer::consume_end_of_stream() {
   if (_sst.has_component(component_type::Summary)) {
     _sst.write_summary();
   }
-    _sst.maybe_rebuild_filter_from_index(_num_partitions_consumed);
+    abort_source dummy_abort_source;
+    _sst.maybe_rebuild_filter_from_index(_num_partitions_consumed, _cfg.abortable ? _sst.manager().get_abort_source() : dummy_abort_source);
+  if (_sst.has_component(component_type::TemporaryIndex)) {
+      try {
+          _sst.unlink_component(component_type::TemporaryIndex).get();
+      } catch (...) {
+          sstlog.error("{}", std::current_exception());
+          abort();
+      }
+    _sst._recognized_components.erase(component_type::TemporaryIndex);
+  }
     _sst.write_filter();
     _sst.write_statistics();
     _sst.write_compression();
@@ -1609,7 +1640,7 @@ void writer::consume_end_of_stream() {
 
 std::unique_ptr<sstable_writer::writer_impl> make_writer(sstable& sst,
         const schema& s,
-        uint64_t estimated_partitions,
+        std::optional<uint64_t> estimated_partitions,
         const sstable_writer_config& cfg,
         encoding_stats enc_stats,
         shard_id shard) {

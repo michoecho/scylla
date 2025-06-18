@@ -193,6 +193,13 @@ void sstable_directory::filesystem_components_lister::handle(sstables::entry_des
         // and we'll go with it.
         _state->files_for_removal.insert(filename.native());
         break;
+    case component_type::TemporaryIndex:
+        // We generate TemporaryStatistics when we rewrite the Statistics file,
+        // for instance on mutate_level. We should delete it - so we mark it for deletion
+        // here, but just the component. The old statistics file should still be there
+        // and we'll go with it.
+        _state->files_for_removal.insert(filename.native());
+        break;
     case component_type::TOC:
         _state->descriptors.emplace(desc.generation, std::move(desc));
         break;

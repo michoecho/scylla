@@ -31,6 +31,8 @@ custom_args:
         - '-c1 -m2G'
     sstable_datafile_test:
         - '-c1 -m2G'
+    sstable_resharding_test:
+        - '-c1 -m2G --logger-log-level sstable=debug'
     sstable_compaction_test:
         - '-c1 -m2G --logger-log-level compaction=debug --logger-log-level compaction_manager=debug'
     sstable_conforms_to_mutation_source_test:

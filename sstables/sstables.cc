@@ -149,6 +149,7 @@ read_monitor_generator& default_read_monitor_generator() {
 
 future<file> sstable::new_sstable_component_file(const io_error_handler& error_handler, component_type type, open_flags flags, file_open_options options) const noexcept {
   try {
+    sstlog.debug("Opening file {}", filename(type));
     auto f = _storage->open_component(*this, type, flags, options, _manager.config().enable_sstable_data_integrity_check());
 
     f = with_file_close_on_failure(std::move(f), [&error_handler] (file f) {
@@ -1346,10 +1347,16 @@ future<> sstable::init_trie_reader() {
 }
 
 future<> sstable::open_or_create_data(open_flags oflags, file_open_options options) noexcept {
+    if (has_component(component_type::Index) && has_component(component_type::TemporaryIndex)) {
+        on_internal_error(sstlog, fmt::format("sstable {} has both Index and TemporaryIndex", this->filename(component_type::TOC)));
+    }
     co_await when_all_succeed(
         open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
         has_component(component_type::Index)
             ? open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); })
+            : make_ready_future<>(),
+        has_component(component_type::TemporaryIndex)
+            ? open_file(component_type::TemporaryIndex, oflags, options).then([this] (file f) { _index_file = std::move(f); })
             : make_ready_future<>(),
         has_component(component_type::Partitions)
             ? open_file(component_type::Partitions, oflags, options).then([this] (file f) { _partition_index_file = std::move(f); })
@@ -1489,15 +1496,17 @@ void sstable::write_filter() {
     write_simple<component_type::Filter>(filter_ref);
 }
 
-void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
-    if (!has_component(component_type::Filter) || !has_component(component_type::Index)) {
+void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions, const abort_source& as) {
+    if (!has_component(component_type::Filter) || !(has_component(component_type::Index) || has_component(component_type::TemporaryIndex))) {
         return;
     }
 
     // Skip rebuilding the bloom filter if the false positive rate based
     // on the current bitset size is within 75% to 125% of the configured
     // false positive rate.
-    auto curr_bitset_size = downcast_ptr<utils::filter::bloom_filter>(_components->filter.get())->bits().memory_size();
+    size_t curr_bitset_size = 0;
+  if (auto* filter = _components->filter.get()) {
+    curr_bitset_size = downcast_ptr<utils::filter::bloom_filter>(filter)->bits().memory_size();
     auto bitset_size_lower_bound = utils::i_filter::get_filter_size(num_partitions,
                                                                     _schema->bloom_filter_fp_chance() * 1.25);
     auto bitset_size_upper_bound = utils::i_filter::get_filter_size(num_partitions,
@@ -1505,6 +1514,7 @@ void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
     if (bitset_size_lower_bound <= curr_bitset_size && curr_bitset_size <= bitset_size_upper_bound) {
         return;
     }
+  }
 
     // Consumer that adds the keys from index entries to the given bloom filter
     class bloom_filter_builder {
@@ -1521,7 +1531,10 @@ void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
     sstlog.info("Rebuilding bloom filter {}: resizing bitset from {} bytes to {} bytes. sstable origin: {}", filename(component_type::Filter), curr_bitset_size,
                 downcast_ptr<utils::filter::bloom_filter>(optimal_filter.get())->bits().memory_size(), _origin);
 
-    auto index_file = open_file(component_type::Index, open_flags::ro).get();
+    auto index_file = has_component(component_type::Index)
+        ? open_file(component_type::Index, open_flags::ro).get()
+        : open_file(component_type::TemporaryIndex, open_flags::ro).get();
+
     auto index_file_closer = deferred_action([&index_file] {
         try {
             index_file.close().get();
@@ -1538,16 +1551,21 @@ void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
 
     // rebuild the filter using index_consume_entry_context
     bloom_filter_builder bfb_consumer(optimal_filter);
+    abort_source dummy_abort_source;
     index_consume_entry_context<bloom_filter_builder> consumer_ctx(
             *this, sem.make_tracking_only_permit(_schema, "rebuild_filter_from_index", db::no_timeout, {}), bfb_consumer, trust_promoted_index::no,
             make_file_input_stream(index_file, 0, index_file_size, {.buffer_size = sstable_buffer_size}), 0, index_file_size,
-            get_column_translation(*_schema), _manager._abort);
+            get_column_translation(*_schema), as);
     auto consumer_ctx_closer = deferred_close(consumer_ctx);
     try {
         consumer_ctx.consume_input().get();
-    } catch (...) {
-        sstlog.warn("Failed to rebuild bloom filter {} : {}. Existing bloom filter will be written to disk.", filename(component_type::Filter), std::current_exception());
-        return;
+    } catch (const abort_requested_exception&) {
+        if (_components->filter) {
+            sstlog.warn("Failed to rebuild bloom filter {} : {}. Existing bloom filter will be written to disk.", filename(component_type::Filter), std::current_exception());
+            return;
+        } else {
+            throw;
+        }
     }
 
     // Replace the existing filter with the new optimal filter.
@@ -1716,19 +1734,9 @@ sstable::load_owner_shards(const dht::sharder& sharder) {
     sstlog.trace("{}: shards={}", get_filename(), _shards);
 }
 
-void prepare_summary(summary& s, uint64_t expected_partition_count, uint32_t min_index_interval) {
-    SCYLLA_ASSERT(expected_partition_count >= 1);
-
+void prepare_summary(summary& s, uint32_t min_index_interval) {
     s.header.min_index_interval = min_index_interval;
     s.header.sampling_level = downsampling::BASE_SAMPLING_LEVEL;
-    uint64_t max_expected_entries =
-            (expected_partition_count / min_index_interval) +
-            !!(expected_partition_count % min_index_interval);
-    // FIXME: handle case where max_expected_entries is greater than max value stored by uint32_t.
-    if (max_expected_entries > std::numeric_limits<uint32_t>::max()) {
-        throw malformed_sstable_exception("Current sampling level (" + to_sstring(downsampling::BASE_SAMPLING_LEVEL) + ") not enough to generate summary.");
-    }
-
     s.header.memory_size = 0;
 }
 
@@ -1736,6 +1744,9 @@ future<> seal_summary(summary& s,
         std::optional<key>&& first_key,
         std::optional<key>&& last_key,
         const index_sampling_state& state) {
+    if (s.entries.size() > std::numeric_limits<uint32_t>::max()) {
+        throw malformed_sstable_exception("Current sampling level (" + to_sstring(downsampling::BASE_SAMPLING_LEVEL) + ") not enough to generate summary.");
+    }
     s.header.size = s.entries.size();
     s.header.size_at_full_sampling = sstable::get_size_at_full_sampling(state.partition_count, s.header.min_index_interval);
 
@@ -1987,7 +1998,7 @@ future<> sstable::seal_sstable(bool backup)
     }
 }
 
-sstable_writer sstable::get_writer(const schema& s, uint64_t estimated_partitions,
+sstable_writer sstable::get_writer(const schema& s, std::optional<uint64_t> estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats, shard_id shard)
 {
     // Mark sstable for implicit deletion if destructed before it is sealed.
@@ -2098,7 +2109,7 @@ void sstable::assert_large_data_handler_is_running() {
 
 future<> sstable::write_components(
         mutation_reader mr,
-        uint64_t estimated_partitions,
+        std::optional<uint64_t> estimated_partitions,
         schema_ptr schema,
         const sstable_writer_config& cfg,
         encoding_stats stats) {
@@ -2153,9 +2164,7 @@ future<> sstable::generate_summary() {
 
     try {
         auto index_size = co_await index_file.size();
-        // an upper bound. Surely to be less than this.
-        auto estimated_partitions = std::max<uint64_t>(index_size / sizeof(uint64_t), 1);
-        prepare_summary(_components->summary, estimated_partitions, _schema->min_index_interval());
+        prepare_summary(_components->summary, _schema->min_index_interval());
 
         file_input_stream_options options;
         options.buffer_size = sstable_buffer_size;
@@ -3151,6 +3160,10 @@ sstable::unlink(storage::sync_dir sync) noexcept {
     co_await std::move(remove_fut);
     _stats.on_delete();
     _manager.on_unlink(this);
+}
+
+future<> sstable::unlink_component(component_type type) noexcept {
+    return _storage->unlink_component(*this, type);
 }
 
 thread_local sstables_stats::stats sstables_stats::_shard_stats;

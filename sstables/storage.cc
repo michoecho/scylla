@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+#pragma clang optimize off
 #include "storage.hh"
 
 #include <cerrno>
@@ -87,6 +88,7 @@ public:
     // runs in async context
     virtual void open(sstable& sst) override;
     virtual future<> wipe(const sstable& sst, sync_dir) noexcept override;
+    virtual future<> unlink_component(const sstable& sst, component_type) noexcept override;
     virtual future<file> open_component(const sstable& sst, component_type type, open_flags flags, file_open_options options, bool check_integrity) override;
     virtual future<data_sink> make_data_or_index_sink(sstable& sst, component_type type) override;
     virtual future<data_sink> make_component_sink(sstable& sst, component_type type, open_flags oflags, file_output_stream_options options) override;
@@ -110,6 +112,7 @@ future<data_sink> filesystem_storage::make_data_or_index_sink(sstable& sst, comp
     switch (type) {
         case component_type::Data: f = std::move(sst._data_file); break;
         case component_type::Index: f = std::move(sst._index_file); break;
+        case component_type::TemporaryIndex: f = std::move(sst._index_file); break;
         case component_type::Partitions: f = std::move(sst._partition_index_file); break;
         case component_type::Rows: f = std::move(sst._row_index_file); break;
         default: abort(); break;
@@ -508,6 +511,21 @@ future<> filesystem_storage::wipe(const sstable& sst, sync_dir sync) noexcept {
     }
 }
 
+future<> filesystem_storage::unlink_component(const sstable& sst, component_type type) noexcept {
+    std::string name;
+    try {
+        name = fmt::to_string(sst.filename(type));
+        co_await sst.sstable_write_io_check(remove_file, name);
+    } catch (...) {
+        // Log and ignore the failure since there is nothing much we can do about it at this point.
+        // a. Compaction will retry deleting the sstable in the next pass, and
+        // b. in the future sstables_manager is planned to handle sstables deletion.
+        // c. Eventually we may want to record these failures in a system table
+        //    and notify the administrator about that for manual handling (rather than aborting).
+        sstlog.warn("Failed to delete {}: {}. Ignoring.", name, std::current_exception());
+    }
+}
+
 future<atomic_delete_context> filesystem_storage::atomic_delete_prepare(const std::vector<shared_sstable>& ssts) const {
     atomic_delete_context res;
 
@@ -575,6 +593,7 @@ public:
     // runs in async context
     virtual void open(sstable& sst) override;
     virtual future<> wipe(const sstable& sst, sync_dir) noexcept override;
+    virtual future<> unlink_component(const sstable& sst, component_type) noexcept override;
     virtual future<file> open_component(const sstable& sst, component_type type, open_flags flags, file_open_options options, bool check_integrity) override;
     virtual future<data_sink> make_data_or_index_sink(sstable& sst, component_type type) override;
     virtual future<data_sink> make_component_sink(sstable& sst, component_type type, open_flags oflags, file_output_stream_options options) override;
@@ -647,7 +666,7 @@ static future<data_sink> maybe_wrap_sink(const sstable& sst, component_type type
 }
 
 future<data_sink> s3_storage::make_data_or_index_sink(sstable& sst, component_type type) {
-    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index || type == component_type::Partitions || type == component_type::Rows);
+    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index || type == component_type::Partitions || type == component_type::Rows || type == component_type::TemporaryIndex);
     // FIXME: if we have file size upper bound upfront, it's better to use make_upload_sink() instead
     return maybe_wrap_sink(sst, type, _client->make_upload_jumbo_sink(make_s3_object_name(sst, type), std::nullopt, _as));
 }
@@ -680,6 +699,10 @@ future<> s3_storage::wipe(const sstable& sst, sync_dir) noexcept {
     });
 
     co_await sstables_registry.delete_entry(owner(), sst.generation());
+}
+
+future<> s3_storage::unlink_component(const sstable& sst, component_type type) noexcept {
+    co_await _client->delete_object(make_s3_object_name(sst, type));
 }
 
 future<atomic_delete_context> s3_storage::atomic_delete_prepare(const std::vector<shared_sstable>&) const {

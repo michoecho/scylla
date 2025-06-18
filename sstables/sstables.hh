@@ -112,6 +112,7 @@ struct sstable_writer_config {
     sstring origin;
     bool correct_pi_block_width = true;
     bool write_trie_index = true;
+    bool abortable = true;
 
 private:
     explicit sstable_writer_config() {}
@@ -298,13 +299,13 @@ public:
     mutation_source as_mutation_source();
 
     future<> write_components(mutation_reader mr,
-            uint64_t estimated_partitions,
+            std::optional<uint64_t> estimated_partitions,
             schema_ptr schema,
             const sstable_writer_config&,
             encoding_stats stats);
 
     sstable_writer get_writer(const schema& s,
-        uint64_t estimated_partitions,
+        std::optional<uint64_t> estimated_partitions,
         const sstable_writer_config&,
         encoding_stats enc_stats,
         shard_id shard = this_shard_id());
@@ -443,6 +444,7 @@ public:
     // Caller may pass sync_dir::no for batching multiple deletes in the same directory,
     // and make sure the directory is sync'ed on or after the last call.
     future<> unlink(storage::sync_dir sync = storage::sync_dir::yes) noexcept;
+    future<> unlink_component(component_type type) noexcept;
 
     db::large_data_handler& get_large_data_handler() {
         return _large_data_handler;
@@ -527,9 +529,11 @@ private:
 
     const size_t sstable_buffer_size;
 
+public:
     component_name filename(component_type f) const {
         return component_name(*this, f);
     }
+private:
 
     std::unordered_set<component_type, enum_hash<component_type>> _recognized_components;
     std::vector<sstring> _unrecognized_components;
@@ -675,7 +679,7 @@ private:
     // partitions, if the partition estimate provided during bloom
     // filter initialisation was not good.
     // This should be called only before an sstable is sealed.
-    void maybe_rebuild_filter_from_index(uint64_t num_partitions);
+    void maybe_rebuild_filter_from_index(uint64_t num_partitions, const abort_source&);
 
     future<> update_info_for_opened_data(sstable_open_config cfg = {});
 

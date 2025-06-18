@@ -664,6 +664,7 @@ public:
                             sstables::component_type::Filter,
                             sstables::component_type::Statistics,
                             sstables::component_type::TemporaryStatistics,
+                            sstables::component_type::TemporaryIndex,
             }) {
                 if (mask & (1 << int(c))) {
                     ccs.emplace_back(c);

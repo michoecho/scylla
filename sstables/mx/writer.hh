@@ -17,7 +17,7 @@ namespace mc {
 
 std::unique_ptr<sstable_writer::writer_impl> make_writer(sstable& sst,
     const schema& s,
-    uint64_t estimated_partitions,
+    std::optional<uint64_t> estimated_partitions,
     const sstable_writer_config& cfg,
     encoding_stats enc_stats,
     shard_id shard);

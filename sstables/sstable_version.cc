@@ -72,6 +72,7 @@ const sstable_version_constants::component_map_t sstable_version_constants_d::cr
     result.emplace(component_type::Partitions, "Partitions.db");
     result.emplace(component_type::Rows, "Rows.db");
     result.emplace(component_type::Index, "Index.db");
+    result.emplace(component_type::TemporaryIndex, "Index.db.tmp");
     return result;
 }
 

@@ -327,9 +327,9 @@ future<> test_env::do_with_async(noncopyable_function<void (test_env&)> func, te
             auto stop_sstm = defer([&] { sstm.stop().get(); });
             auto scf = make_sstable_compressor_factory_for_tests_in_thread();
             test_env env(std::move(cfg), *scf, &sstm.local());
+            auto unplu = defer([&env] { env.manager().unplug_sstables_registry(); });
             auto close_env = defer([&] { env.stop().get(); });
             env.manager().plug_sstables_registry(std::make_unique<mock_sstables_registry>());
-            auto unplu = defer([&env] { env.manager().unplug_sstables_registry(); });
             func(env);
         });
     }
