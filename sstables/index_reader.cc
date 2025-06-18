@@ -1386,7 +1386,7 @@ make_index_reader(
     bool single_partition_read,
     allow_trie trie_allow
 ) {
-    if (trie_allow && sst->has_component(component_type::Partitions) && !sst->get_schema()->ks_name().contains("system")) {
+    if (trie_allow && sst->has_component(component_type::Partitions)) {
         sstlog.debug("Using trie index for table {}.{}", sst->get_schema()->ks_name(), sst->get_schema()->cf_name());
         return trie::make_bti_index_reader(
             *sst->_partition_index_file_cached,
