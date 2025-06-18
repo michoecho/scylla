@@ -28,6 +28,7 @@ enum class component_type {
     Statistics,
     TemporaryTOC,
     TemporaryStatistics,
+    TemporaryIndex,
     Scylla,
     Unknown,
 };
@@ -77,6 +78,8 @@ struct fmt::formatter<sstables::component_type> : fmt::formatter<string_view> {
             return formatter<string_view>::format("TemporaryTOC", ctx);
         case TemporaryStatistics:
             return formatter<string_view>::format("TemporaryStatistics", ctx);
+        case TemporaryIndex:
+            return formatter<string_view>::format("TemporaryIndex", ctx);
         case Scylla:
             return formatter<string_view>::format("Scylla", ctx);
         case Unknown:

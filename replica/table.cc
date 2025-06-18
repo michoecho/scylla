@@ -3525,6 +3525,7 @@ write_memtable_to_sstable(mutation_reader reader,
     cfg.replay_position = mt.replay_position();
     cfg.monitor = &monitor;
     cfg.origin = "memtable";
+    cfg.abortable = false;
     schema_ptr s = reader.schema();
     return sst->write_components(std::move(reader), estimated_partitions, s, cfg, mt.get_encoding_stats());
 }

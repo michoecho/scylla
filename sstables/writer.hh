@@ -543,7 +543,7 @@ void write_counter_value(counter_cell_view ccv, W& out, sstable_version_types v,
 void maybe_add_summary_entry(summary&, const dht::token&, bytes_view key, uint64_t data_offset,
     uint64_t index_offset, index_sampling_state&);
 
-void prepare_summary(summary& s, uint64_t expected_partition_count, uint32_t min_index_interval);
+void prepare_summary(summary& s,  uint32_t min_index_interval);
 
 future<> seal_summary(summary& s,
     std::optional<key>&& first_key,
