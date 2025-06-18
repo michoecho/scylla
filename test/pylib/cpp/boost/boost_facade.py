@@ -136,7 +136,7 @@ class BoostTestFacade(CppTestFacade):
                 f'for test {test_name} failed ({return_code=}):\n'
                 f'output file:{stdout_file_path.absolute()}\n'
                 f'log:{log}\n'
-                f'command to repeat:{" ".join(args)}\n'
+                f'{" ".join(args)}\n'
             )
             failure = CppTestFailure(
                 file_name.name,
