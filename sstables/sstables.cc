@@ -852,14 +852,15 @@ void sstable::generate_toc() {
     _recognized_components.insert(component_type::TOC);
     _recognized_components.insert(component_type::Statistics);
     _recognized_components.insert(component_type::Digest);
-    _recognized_components.insert(component_type::Index);
-    _recognized_components.insert(component_type::Summary);
     _recognized_components.insert(component_type::Data);
+    _recognized_components.insert(component_type::Summary);
     if (format_of_version(_version) == sstable_format_types::bti
         && _schema->partition_key_type()->has_memcmp_comparable_form()
     ) {
         _recognized_components.insert(component_type::Partitions);
         _recognized_components.insert(component_type::Rows);
+    } else {
+        _recognized_components.insert(component_type::Index);
     }
     if (_schema->bloom_filter_fp_chance() != 1.0) {
         _recognized_components.insert(component_type::Filter);
@@ -1321,6 +1322,9 @@ future<> sstable::read_summary() noexcept {
         }
     }
 
+    if (!has_component(component_type::Index)) {
+        throw std::runtime_error(format("No Index or Summary file for {}", this->filename(component_type::TOC)));
+    }
     co_await generate_summary();
 }
 
@@ -1345,8 +1349,10 @@ future<> sstable::init_trie_reader() {
 
 future<> sstable::open_or_create_data(open_flags oflags, file_open_options options) noexcept {
     co_await when_all_succeed(
-        open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }),
         open_file(component_type::Data, oflags, options).then([this] (file f) { _data_file = std::move(f); }),
+        has_component(component_type::Index)
+            ? open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); })
+            : make_ready_future<>(),
         has_component(component_type::Partitions)
             ? open_file(component_type::Partitions, oflags, options).then([this] (file f) { _partition_index_file = std::move(f); })
             : make_ready_future<>(),
@@ -1411,6 +1417,7 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
                                                                 _manager.get_cache_tracker().region(),
                                                                 _row_index_file_size);
     }
+  if (has_component(component_type::Index)) {
     auto size = co_await _index_file.size();
     _index_file_size = size;
     SCYLLA_ASSERT(!_cached_index_file);
@@ -1420,6 +1427,7 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
                                                             _manager.get_cache_tracker().region(),
                                                             _index_file_size);
     _index_file = make_cached_seastar_file(*_cached_index_file);
+  }
 
     this->set_min_max_position_range();
     this->set_first_and_last_keys();
@@ -1443,7 +1451,9 @@ future<> sstable::create_data() noexcept {
 }
 
 future<> sstable::drop_caches() {
-    co_await _cached_index_file->evict_gently();
+    if (_cached_index_file) {
+        co_await _cached_index_file->evict_gently();
+    }
     co_await _index_cache->evict_gently();
 }
 
@@ -1482,7 +1492,7 @@ void sstable::write_filter() {
 }
 
 void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions) {
-    if (!has_component(component_type::Filter)) {
+    if (!has_component(component_type::Filter) || !has_component(component_type::Index)) {
         return;
     }
 
@@ -1633,7 +1643,9 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
     co_await read_toc();
     _components = std::move(info.components);
     _data_file = make_checked_file(_read_error_handler, info.data.to_file());
-    _index_file = make_checked_file(_read_error_handler, info.index.to_file());
+  if (info.index) {
+    _index_file = make_checked_file(_read_error_handler, info.index.value().to_file());
+  }
     if (info.trie_index) {
         _partition_index_file = make_checked_file(_read_error_handler, info.trie_index->to_file());
         _row_index_file = make_checked_file(_read_error_handler, info.row_index.value().to_file());
@@ -1653,12 +1665,16 @@ future<foreign_sstable_open_info> sstable::get_open_info() & {
     return _components.copy().then([this] (auto c) mutable {
         std::optional<seastar::file_handle> partition_index_handle;
         std::optional<seastar::file_handle> row_index_handle;
+        std::optional<seastar::file_handle> index_handle;
         if (_partition_index_file) {
             assert(_row_index_file);
             partition_index_handle = _partition_index_file.dup();
             row_index_handle = _row_index_file.dup();
         }
-        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), _index_file.dup(),
+        if (_index_file) {
+            index_handle = _index_file.dup();
+        }
+        return foreign_sstable_open_info{std::move(c), this->get_shards_for_this_sstable(), _data_file.dup(), std::move(index_handle),
             std::move(partition_index_handle), std::move(row_index_handle),
             _generation, _version, data_size(), _metadata_size_on_disk};
     });
