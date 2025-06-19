@@ -66,6 +66,8 @@ std::ostream& operator<<(std::ostream& os, const std::vector<sstring>& v) {
 }
 }
 
+std::atomic<bool> in_special_scrub_mode;
+
 namespace {
 
 const auto app_name = "sstable";
@@ -987,7 +989,7 @@ void validate_output_dir(std::filesystem::path output_dir, bool accept_nonempty_
         return make_ready_future<>();
     }).done().get();
     if (entries && !accept_nonempty_output_dir) {
-        throw std::invalid_argument("output-directory is not empty, pass --unsafe-accept-nonempty-output-dir if you are sure you want to write into this directory");
+        throw std::invalid_argument("output-dir is not empty, pass --unsafe-accept-nonempty-output-dir if you are sure you want to write into this directory");
     }
 }
 
@@ -1024,6 +1026,7 @@ void scrub_operation(schema_ptr schema, reader_permit permit, const std::vector<
         {"skip", compaction_type_options::scrub::mode::skip},
         {"segregate", compaction_type_options::scrub::mode::segregate},
         {"validate", compaction_type_options::scrub::mode::validate},
+        {"special", compaction_type_options::scrub::mode::special},
     };
 
     if (sstables.empty()) {
@@ -1056,6 +1059,13 @@ void scrub_operation(schema_ptr schema, reader_permit permit, const std::vector<
     compaction_descriptor.replacer = [] (sstables::compaction_completion_desc) { };
 
     auto compaction_data = sstables::compaction_data{};
+
+    if (scrub_mode == compaction_type_options::scrub::mode::special) {
+        if (schema->clustering_key_size() != 1 || *schema->clustering_key_prefix_type()->types().begin() != utf8_type) {
+            throw std::invalid_argument("special scrub makes any sense only for tables with a single-column clustering key of type `text`");
+        }
+        in_special_scrub_mode.store(true, std::memory_order_relaxed);
+    }
 
     compaction_progress_monitor progress_monitor;
     sstables::compact_sstables(std::move(compaction_descriptor), compaction_data, table_state, progress_monitor).get();
@@ -3217,7 +3227,7 @@ for more information on this operation.
 R"(
 Read and re-write the sstable, getting rid of or fixing broken parts, depending
 on the selected mode.
-Output sstables are written to the directory specified via `--output-directory`.
+Output sstables are written to the directory specified via `--output-dir`.
 They will be written with the BIG format and the highest supported sstable
 format, with generations chosen by scylla-sstable. Generations are chosen such
 that they are unique between the sstables written by the current scrub.

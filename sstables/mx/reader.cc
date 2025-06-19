@@ -18,6 +18,10 @@
 #include "utils/to_string.hh"
 #include "utils/value_or_reference.hh"
 
+extern std::atomic<bool> in_special_scrub_mode;
+std::atomic<uint64_t> special_scrub_unique_id;
+const char* special_scrub_magic = "5a7acb6456980c1da225d42cef228fe1ec030d41f60f46c8f36f8d1a0bfa8df3";
+
 namespace sstables {
 namespace mx {
 
@@ -912,8 +916,35 @@ private:
             setup_ck(_column_translation.clustering_column_value_fix_legths());
             while (!no_more_ck_blocks()) {
                 if (should_read_block_header()) {
-                    co_yield this->read_unsigned_vint(*_processing_data);
-                    _ck_blocks_header = this->_u64;
+                    if (in_special_scrub_mode.load(std::memory_order_relaxed)) {
+                        co_yield this->read_8(*_processing_data);
+                        if (this->_u8 != 0) {
+
+                            auto key = fmt::format("{}:{}:{}",
+                                                   special_scrub_magic,
+                                                   this->_sst->generation(),
+                                                   special_scrub_unique_id.fetch_add(1, std::memory_order_relaxed));
+                            sstlog.warn("special scrub: suspicious clustering block header at pos {}. Injecting clustering key {}.",
+                                        this->position() - _processing_data->size(),
+                                        key);
+
+                            std::array<bytes::value_type, max_vint_length> encoding_buffer;
+                            const auto vint_size = unsigned_vint::serialize(key.size(), encoding_buffer.begin());
+
+                            auto buf = temporary_buffer<char>(vint_size + key.size() + 1 + _processing_data->size());
+
+                            std::memcpy(&buf.get_write()[0], encoding_buffer.data(), vint_size);
+                            std::memcpy(&buf.get_write()[vint_size], key.data(), key.size());
+                            buf.get_write()[vint_size + key.size()] = this->_u8;
+                            std::memcpy(&buf.get_write()[vint_size + key.size() + 1],  _processing_data->get(), _processing_data->size());
+
+                            *_processing_data = std::move(buf);
+                        }
+                        _ck_blocks_header = 0;
+                    } else {
+                        co_yield this->read_unsigned_vint(*_processing_data);
+                        _ck_blocks_header = this->_u64;
+                    }
                 }
                 if (is_block_null()) {
                     _null_component_occured = true;
@@ -2098,6 +2129,10 @@ public:
     }
 };
 
+struct fatal_validation_error : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 future<uint64_t> validate(
         shared_sstable sstable,
         reader_permit permit,
@@ -2111,6 +2146,8 @@ future<uint64_t> validate(
     std::optional<sstables::index_reader> idx_reader;
     idx_reader.emplace(sstable, permit, tracing::trace_state_ptr{}, sstables::use_caching::no, false);
 
+    std::exception_ptr ep;
+
     try {
         monitor.on_read_started(context->reader_position());
         while (!context->eof() && !abort.abort_requested()) {
@@ -2118,9 +2155,13 @@ future<uint64_t> validate(
             clustered_index_cursor* idx_cursor = nullptr;
 
             if (idx_reader && idx_reader->eof()) {
-                consumer.report_error("mismatching index/data: index is at EOF, but data file has more data");
+                auto error = "mismatching index/data: index is at EOF, but data file has more data";
+                consumer.report_error(error);
                 co_await idx_reader->close();
                 idx_reader.reset();
+                if (in_special_scrub_mode.load(std::memory_order_relaxed)) {
+                    throw fatal_validation_error(format("{}. Special scrub can't deal with this kind of corruption.", error));
+                }
             }
 
             if (idx_reader) {
@@ -2132,7 +2173,11 @@ future<uint64_t> validate(
                 const auto data_pos = context->position();
                 sstlog.trace("validate(): index-data position check for partition {}: {} == {}", idx_reader->get_partition_key(), data_pos, index_pos);
                 if (index_pos != data_pos) {
-                    consumer.report_error(format("mismatching index/data: position mismatch: index: {}, data: {}", index_pos, data_pos));
+                    auto error = format("mismatching index/data: position mismatch: index: {}, data: {}", index_pos, data_pos);
+                    consumer.report_error(error);
+                    if (in_special_scrub_mode.load(std::memory_order_relaxed)) {
+                        throw fatal_validation_error(format("{}. Special scrub can't deal with this kind of corruption.", error));
+                    }
                 }
                 current_partition_pos = data_pos;
 
@@ -2170,11 +2215,19 @@ future<uint64_t> validate(
                     if (first_block) {
                         first_block = false;
                         if (data_pos > index_pos) {
-                            consumer.report_error(format("mismatching index/data: position mismatch: first promoted index block: {}, data: {}", index_pos, data_pos));
+                            auto error = format("mismatching index/data: position mismatch: first promoted index block: {}, data: {}", index_pos, data_pos);
+                            consumer.report_error(error);
+                            if (in_special_scrub_mode.load(std::memory_order_relaxed)) {
+                                throw fatal_validation_error(format("{}. Special scrub can't deal with this kind of corruption.", error));
+                            }
                         }
                     } else {
                         if (data_pos != index_pos) {
-                            consumer.report_error(format("mismatching index/data: position mismatch: promoted index: {}, data: {}", index_pos, data_pos));
+                            auto error = format("mismatching index/data: position mismatch: promoted index: {}, data: {}", index_pos, data_pos);
+                            consumer.report_error(error);
+                            if (in_special_scrub_mode.load(std::memory_order_relaxed)) {
+                                throw fatal_validation_error(format("{}. Special scrub can't deal with this kind of corruption.", error));
+                            }
                         }
                     }
 
@@ -2192,9 +2245,13 @@ future<uint64_t> validate(
 
             // Check if promoted index still has more entries.
             if (idx_cursor && (current_pi_block = co_await idx_cursor->next_entry())) {
-                consumer.report_error(format("mismatching index/data: promoted index has more blocks, but it is end of partition {} ({})",
+                auto error = format("mismatching index/data: promoted index has more blocks, but it is end of partition {} ({})",
                         idx_reader->get_partition_key().with_schema(*schema),
-                        idx_reader->get_partition_key()));
+                        idx_reader->get_partition_key());
+                consumer.report_error(error);
+                if (in_special_scrub_mode.load(std::memory_order_relaxed)) {
+                    throw fatal_validation_error(format("{}. Special scrub can't deal with this kind of corruption.", error));
+                }
             }
 
             if (idx_reader) {
@@ -2202,7 +2259,8 @@ future<uint64_t> validate(
             }
         }
     } catch (...) {
-        consumer.report_error(format("unexpected exception: {}", std::current_exception()));
+        ep = std::current_exception();
+        consumer.report_error(format("unexpected exception: {}", ep));
     }
 
     monitor.on_read_completed();
@@ -2211,6 +2269,10 @@ future<uint64_t> validate(
     }
 
     co_await context->close();
+
+    if (ep && in_special_scrub_mode.load(std::memory_order_relaxed)) {
+        std::rethrow_exception(ep);
+    }
     co_return consumer.error_count();
 }
 

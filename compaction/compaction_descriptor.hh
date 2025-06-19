@@ -58,6 +58,7 @@ public:
             abort, // abort scrub on the first sign of corruption
             skip, // skip corrupt data, including range of rows and/or partitions that are out-of-order
             segregate, // segregate out-of-order data into streams that all contain data with correct order
+            special, // special-purpose scrub
             validate, // validate data, printing all errors found (sstables are only read, not rewritten)
         };
         mode operation_mode = mode::abort;
@@ -132,6 +133,7 @@ public:
     }
 
     const options_variant& options() const { return _options; }
+    options_variant& options_mutable() { return _options; }
 
     compaction_type type() const;
 };

@@ -15,6 +15,7 @@
 #include <utility>
 #include <assert.h>
 #include <algorithm>
+#include <rapidjson/document.h>
 
 #include <boost/range/join.hpp>
 
@@ -53,6 +54,9 @@
 #include "tombstone_gc.hh"
 #include "replica/database.hh"
 #include "timestamp.hh"
+
+extern std::atomic<bool> in_special_scrub_mode;
+extern const char* special_scrub_magic;
 
 namespace sstables {
 
@@ -115,6 +119,8 @@ std::string_view to_string(compaction_type_options::scrub::mode scrub_mode) {
             return "skip";
         case compaction_type_options::scrub::mode::segregate:
             return "segregate";
+        case compaction_type_options::scrub::mode::special:
+            return "special";
         case compaction_type_options::scrub::mode::validate:
             return "validate";
     }
@@ -1564,6 +1570,30 @@ private:
             utils::get_local_injector().inject("rest_api_keyspace_scrub_abort", [] { throw compaction_aborted_exception("", "", "scrub compaction found invalid data"); });
             while (!_reader.is_buffer_empty() && !is_buffer_full()) {
                 auto mf = _reader.pop_mutation_fragment();
+                if (mf.is_clustering_row() && in_special_scrub_mode) {
+                    mf.mutate_as_clustering_row(*_schema, [this] (clustering_row& cr) {
+                        auto vec = _schema->clustering_key_prefix_type()->deserialize_value(cr.key());
+                        SCYLLA_ASSERT(vec.size() == 1);
+                        auto keystr = std::string(value_cast<sstring>(utf8_type->deserialize_value(vec[0])));
+                        if (keystr.starts_with(special_scrub_magic)) {
+                            auto cdef = _schema->get_column_definition(bytes("value"));
+                            SCYLLA_ASSERT(cdef);
+                            auto value = cr.as_deletable_row().cells().cell_at(cdef->id).as_atomic_cell(*cdef).value();
+                            auto valstr = std::string(value_cast<sstring>(utf8_type->deserialize_value(value)));
+                            rapidjson::Document doc;
+                            doc.Parse(valstr.c_str());
+                            SCYLLA_ASSERT(doc.IsObject());
+                            SCYLLA_ASSERT(!doc.HasParseError());
+                            SCYLLA_ASSERT(doc.HasMember("sub_key"));
+                            SCYLLA_ASSERT(doc.HasMember("artifact_type"));
+                            auto subkey = doc["sub_key"].GetString();
+                            auto artifact_type = doc["artifact_type"].GetString();
+                            auto repaired_key = format("artifact:{}:{}", artifact_type, subkey);
+                            auto crp = clustering_key_prefix::from_bytes(_schema->clustering_key_prefix_type()->serialize_single(data_value(repaired_key).serialize_nonnull()));
+                            cr = clustering_row(std::move(crp), std::move(cr).as_deletable_row());
+                        }
+                    });
+                }
                 if (mf.is_partition_start()) {
                     // First check that fragment kind monotonicity stands.
                     // When skipping to another partition the fragment
@@ -1720,7 +1750,7 @@ public:
     }
 
     bool use_interposer_consumer() const override {
-        return _options.operation_mode == compaction_type_options::scrub::mode::segregate;
+        return _options.operation_mode == compaction_type_options::scrub::mode::segregate || _options.operation_mode == compaction_type_options::scrub::mode::special;
     }
 
     compaction_result finish(std::chrono::time_point<db_clock> started_at, std::chrono::time_point<db_clock> ended_at) override {
@@ -1956,15 +1986,20 @@ future<compaction_result> scrub_sstables_validate_mode(sstables::compaction_desc
 future<compaction_result>
 compact_sstables(sstables::compaction_descriptor descriptor, compaction_data& cdata, table_state& table_s, compaction_progress_monitor& progress_monitor) {
     if (descriptor.sstables.empty()) {
-        return make_exception_future<compaction_result>(std::runtime_error(format("Called {} compaction with empty set on behalf of {}.{}",
+        co_await coroutine::return_exception(std::runtime_error(format("Called {} compaction with empty set on behalf of {}.{}",
                 compaction_name(descriptor.options.type()), table_s.schema()->ks_name(), table_s.schema()->cf_name())));
     }
     if (descriptor.options.type() == compaction_type::Scrub
             && std::get<compaction_type_options::scrub>(descriptor.options.options()).operation_mode == compaction_type_options::scrub::mode::validate) {
         // Bypass the usual compaction machinery for dry-mode scrub
-        return scrub_sstables_validate_mode(std::move(descriptor), cdata, table_s, progress_monitor);
+        co_return co_await scrub_sstables_validate_mode(std::move(descriptor), cdata, table_s, progress_monitor);
     }
-    return compaction::run(make_compaction(table_s, std::move(descriptor), cdata, progress_monitor));
+    if (descriptor.options.type() == compaction_type::Scrub
+            && std::get<compaction_type_options::scrub>(descriptor.options.options()).operation_mode == compaction_type_options::scrub::mode::special) {
+        co_await scrub_sstables_validate_mode(descriptor, cdata, table_s, progress_monitor);
+        std::get<compaction_type_options::scrub>(descriptor.options.options_mutable()).operation_mode = compaction_type_options::scrub::mode::segregate;
+    }
+    co_return co_await compaction::run(make_compaction(table_s, std::move(descriptor), cdata, progress_monitor));
 }
 
 std::unordered_set<sstables::shared_sstable>
