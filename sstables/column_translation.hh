@@ -22,15 +22,19 @@ using column_values_fixed_lengths = std::vector<std::optional<uint32_t>>;
 /*
  * A helper method to get fixed lengths of clustering key values
  */
-inline column_values_fixed_lengths get_clustering_values_fixed_lengths(const serialization_header& header) {
+inline column_values_fixed_lengths get_clustering_values_fixed_lengths(const decltype(serialization_header::clustering_key_types_names)& type_names) {
     column_values_fixed_lengths lengths;
-    lengths.reserve(header.clustering_key_types_names.elements.size());
-    for (auto&& t : header.clustering_key_types_names.elements) {
+    lengths.reserve(type_names.elements.size());
+    for (auto&& t : type_names.elements) {
         auto type = db::marshal::type_parser::parse(to_string_view(t.value));
         lengths.push_back(type->value_length_if_fixed());
     }
 
     return lengths;
+}
+
+inline column_values_fixed_lengths get_clustering_values_fixed_lengths(const serialization_header& header) {
+    return get_clustering_values_fixed_lengths(header.clustering_key_types_names);
 }
 
 /*
