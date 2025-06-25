@@ -44,6 +44,7 @@
 #include "service/migration_manager.hh"
 #include "streaming/consumer.hh"
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/loop.hh>
 #include <seastar/coroutine/all.hh>
 #include <seastar/coroutine/as_future.hh>
 #include "db/config.hh"
@@ -1007,14 +1008,7 @@ private:
     }
 
     future<uint64_t> do_estimate_partitions_on_local_shard() {
-        auto& cf = _db.local().find_column_family(_schema->id());
-        lw_shared_ptr<const sstable_list> sstables = cf.get_sstables();
-        uint64_t partition_count = 0;
-        for (const sstables::shared_sstable& sst : *sstables) {
-            partition_count += sst->estimated_keys_for_range(_range);
-            co_await coroutine::maybe_yield();
-        }
-        co_return partition_count;
+        return _db.local().find_column_family(_schema->id()).estimated_partitions_in_range(_range);
     }
 
     future<uint64_t> get_estimated_partitions() {
