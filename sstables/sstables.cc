@@ -704,6 +704,116 @@ struct streaming_histogram_element {
     auto describe_type(sstable_version_types v, Describer f) { return f(key, value); }
 };
 
+future<std::vector<bytes>> parse_clustering_prefix(
+    const schema& s,
+    sstable_version_types v,
+    random_access_reader& in,
+    std::span<const std::optional<uint32_t>> fixed_sizes,
+    uint16_t n_components
+) {
+    std::vector<bytes> components;
+    if (n_components > fixed_sizes.size()) {
+        throw malformed_sstable_exception(fmt::format("Number of components {} in key exceeds number of types {}", n_components, fixed_sizes.size()));
+    }
+    vint<uint64_t> header;
+    for (uint64_t i = 0; i < n_components; ++i) {
+        if (i % 32 == 0) {
+            co_await parse(s, v, in, header);
+        }
+        if (header.value & (uint64_t(1) << (2*i + 1))) {
+            continue;
+        } else if (header.value & (uint64_t(1) << 2*i)) {
+            components.push_back(bytes());
+        } else if (auto len = fixed_sizes[i]) {
+            bytes value;
+            co_await parse(s, v, in, *len, value);
+            components.push_back(std::move(value));
+        } else {
+            disk_string_vint_size value;
+            co_await parse(s, v, in, value);
+            components.push_back(std::move(value.value));
+        }
+    }
+    co_return components;
+}
+
+future<> parse(const schema& s, sstable_version_types v, random_access_reader& in, covered_slice& out) {
+    if (v >= sstable_version_types::da) {
+        co_await parse(s, v, in, out.type_names);
+        auto fixed_lengths = get_clustering_values_fixed_lengths(out.type_names);
+        uint16_t sz;
+        co_await parse(s, v, in, out.min_kind);
+        co_await parse(s, v, in, sz);
+        out.min = co_await parse_clustering_prefix(s, v, in, fixed_lengths, sz);
+        co_await parse(s, v, in, out.max_kind);
+        co_await parse(s, v, in, sz);
+        out.max = co_await parse_clustering_prefix(s, v, in, fixed_lengths, sz);
+    } else {
+        for (auto bound : {std::ref(out.min), std::ref(out.max)}) {
+            disk_array<uint32_t, disk_string<uint16_t>> prefix;
+            co_await parse(s, v, in, prefix);
+            std::vector<bytes> vec;
+            vec.reserve(prefix.elements.size());
+            for (const auto& v : prefix.elements) {
+                vec.push_back(v.value);
+            }
+            bound.get() = std::move(vec);
+        }
+    }
+}
+
+void write_clustering_prefix(
+    sstable_version_types v,
+    file_writer& out,
+    std::span<const std::optional<uint32_t>> fixed_sizes,
+    std::span<const bytes> components
+) {
+    for (uint64_t k = 0; k < components.size(); k += 32) {
+        uint64_t header = 0;
+        for (uint64_t i = 0; k + i < components.size(); ++i) {
+            if (k + i >= components.size()) {
+                header |= (uint64_t(1) << (2*i + 1));
+            } else if (components[k+i].empty()) {
+                header |= (uint64_t(1) << (2*i + 0));
+            }
+        }
+        write_vint(out, header);
+        for (uint64_t i = 0; k + i < components.size(); ++i) {
+            if (components[k+i].empty()) {
+                continue;
+            } else if (fixed_sizes[k+i]) {
+                write(v, out, components[k+i]);
+            } else {
+                uint32_t len;
+                check_truncate_and_assign(len, components[k+i].size());
+                write_vint(out, len);
+                write(v, out, components[k+i]);
+            }
+        }
+    }
+}
+
+void write(sstable_version_types v, file_writer& out, const covered_slice& cs) {
+    if (v >= sstable_version_types::da) {
+        write(v, out, cs.type_names);
+        auto fixed_lengths = get_clustering_values_fixed_lengths(cs.type_names);
+        write(v, out, cs.min_kind);
+        write(v, out, static_cast<uint16_t>(cs.min.size()));
+        write_clustering_prefix(v, out, std::span(fixed_lengths), std::span(cs.min));
+        write(v, out, cs.max_kind);
+        write(v, out, static_cast<uint16_t>(cs.max.size()));
+        write_clustering_prefix(v, out, fixed_lengths, cs.max);
+    } else {
+        for (auto bound : {std::ref(cs.min), std::ref(cs.max)}) {
+            disk_array<uint32_t, disk_string_view<uint16_t>> prefix;
+            for (bytes_view v : bound.get()) {
+                prefix.elements.emplace_back(v);
+            }
+            write(v, out, prefix);
+        }
+    }
+}
+
 future<> parse(const schema& s, sstable_version_types v, random_access_reader& in, utils::streaming_histogram& sh) {
     auto a = disk_array<uint32_t, streaming_histogram_element>();
 
@@ -1109,16 +1219,6 @@ void sstable::validate_min_max_metadata() {
     }
 
     stats_metadata& s = *static_cast<stats_metadata *>(p.get());
-    auto clear_incorrect_min_max_column_names = [&s] {
-        s.min_column_names.elements.clear();
-        s.max_column_names.elements.clear();
-    };
-    auto& min_column_names = s.min_column_names.elements;
-    auto& max_column_names = s.max_column_names.elements;
-
-    if (min_column_names.empty() && max_column_names.empty()) {
-        return;
-    }
 
     // The min/max metadata is wrong if:
     // - it's not empty and schema defines no clustering key.
@@ -1133,8 +1233,7 @@ void sstable::validate_min_max_metadata() {
     // - now that we store min/max metadata for range tombstones,
     //   their size may differ.
     if (!_schema->clustering_key_size()) {
-        clear_incorrect_min_max_column_names();
-        return;
+        s.slice = covered_slice();
     }
 }
 
@@ -1151,24 +1250,19 @@ void sstable::set_min_max_position_range() {
         return;
     }
 
-    auto& min_elements = get_stats_metadata().min_column_names.elements;
-    auto& max_elements = get_stats_metadata().max_column_names.elements;
+    auto& slice = get_stats_metadata().slice;
 
-    if (min_elements.empty() && max_elements.empty()) {
-        return;
-    }
-
-    auto pip = [] (const utils::chunked_vector<disk_string<uint16_t>>& column_names, bound_kind kind) {
-        std::vector<bytes> key_bytes;
-        key_bytes.reserve(column_names.size());
-        for (auto& value : column_names) {
-            key_bytes.emplace_back(bytes_view(value));
+    auto pip = [] (const clustering_key_prefix& ckp, bound_kind_m kind) {
+        if (is_bound_kind(kind)) {
+            return position_in_partition(position_in_partition::range_tag_t(), to_bound_kind(kind), clustering_key_prefix(ckp));
+        } else {
+            return position_in_partition(position_in_partition::clustering_row_tag_t(), ckp);
         }
-        auto ckp = clustering_key_prefix(std::move(key_bytes));
-        return position_in_partition(position_in_partition::range_tag_t(), kind, std::move(ckp));
     };
 
-    _min_max_position_range = position_range(pip(min_elements, bound_kind::incl_start), pip(max_elements, bound_kind::incl_end));
+    _min_max_position_range = position_range(
+        pip(slice.min, slice.min_kind),
+        pip(slice.max, slice.max_kind));
 }
 
 future<std::optional<position_in_partition>>

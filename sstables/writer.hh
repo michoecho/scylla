@@ -559,5 +559,6 @@ void write(sstable_version_types, file_writer&, const utils::estimated_histogram
 void write(sstable_version_types, file_writer&, const utils::streaming_histogram&);
 void write(sstable_version_types, file_writer&, const commitlog_interval&);
 void write(sstable_version_types, file_writer&, const compression&);
+void write(sstable_version_types v, file_writer& out, const covered_slice&);
 
 }

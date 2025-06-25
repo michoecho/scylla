@@ -1325,6 +1325,10 @@ private:
         visit(field, val.value);
     }
 
+    void visit(const void* const field, const sstables::covered_slice& val) {
+        _writer.String("covered_slice");
+    }
+
     void visit(const void* const field, const sstables::serialization_header::column_desc& val) {
         auto prev_name_resolver = std::exchange(_name_resolver, [&val] (const void* const field) {
             if (field == &val.name) { return "name"; }
@@ -1405,17 +1409,22 @@ void dump_stats_metadata(json_writer& writer, sstables::sstable_version_types ve
         else if (field == &metadata.estimated_tombstone_drop_time) { return "estimated_tombstone_drop_time"; }
         else if (field == &metadata.sstable_level) { return "sstable_level"; }
         else if (field == &metadata.repaired_at) { return "repaired_at"; }
-        else if (field == &metadata.min_column_names) { return "min_column_names"; }
-        else if (field == &metadata.max_column_names) { return "max_column_names"; }
+        else if (field == &metadata.slice) { return "covered_slice"; }
         else if (field == &metadata.has_legacy_counter_shards) { return "has_legacy_counter_shards"; }
         else if (field == &metadata.columns_count) { return "columns_count"; }
         else if (field == &metadata.rows_count) { return "rows_count"; }
         else if (field == &metadata.commitlog_lower_bound) { return "commitlog_lower_bound"; }
         else if (field == &metadata.commitlog_intervals) { return "commitlog_intervals"; }
+        else if (field == &metadata.pending_repair) { return "pending_repair"; }
+        else if (field == &metadata.is_transient) { return "is_transient"; }
+        else if (field == &metadata.has_partition_level_deletions) { return "has_partition_level_deletions"; }
         else if (field == &metadata.originating_host_id) { return "originating_host_id"; }
+        else if (field == &metadata.first_key) { return "first_key"; }
+        else if (field == &metadata.last_key) { return "last_key"; }
+        else if (field == &metadata.token_space_coverage) { return "token_space_coverage"; }
         else { throw std::invalid_argument("invalid field offset"); }
     }, [&metadata] (const void* const field, bytes_view value) {
-        if (field == &metadata.min_column_names || field == &metadata.max_column_names) {
+        if (field == &metadata.first_key || field == &metadata.last_key) {
             return to_hex(value);
         }
         return json_dumper::default_disk_string_converter(field, value);

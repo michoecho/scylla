@@ -310,6 +310,18 @@ struct compaction_metadata : public metadata_base<compaction_metadata> {
     }
 };
 
+struct covered_slice {
+    disk_array_vint_size<disk_string_vint_size> type_names;
+    //std::optional<disk_array<uint32_t, disk_string_vint_size>> clustering_type_names;
+    bound_kind_m min_kind = bound_kind_m::incl_start;
+    std::vector<bytes> min;
+    //clustering_key_prefix min{std::vector<bytes>()};
+    bound_kind_m max_kind = bound_kind_m::incl_end;
+    //clustering_key_prefix max{std::vector<bytes>()};
+    std::vector<bytes> max;
+    covered_slice() = default;
+};
+
 struct stats_metadata : public metadata_base<stats_metadata> {
     utils::estimated_histogram estimated_partition_size;
     utils::estimated_histogram estimated_cells_count;
@@ -326,19 +338,24 @@ struct stats_metadata : public metadata_base<stats_metadata> {
     // There is not meaningful value to put in this field, since we have no
     // incremental repair. Before we have it, let's set it to 0.
     uint64_t repaired_at = 0;
-    disk_array<uint32_t, disk_string<uint16_t>> min_column_names;
-    disk_array<uint32_t, disk_string<uint16_t>> max_column_names;
+
+    covered_slice slice;
     bool has_legacy_counter_shards;
     int64_t columns_count; // 3_x only
     int64_t rows_count; // 3_x only
     db::replay_position commitlog_lower_bound; // 3_x only
     disk_array<uint32_t, commitlog_interval> commitlog_intervals; // 3_x only
+    std::optional<utils::UUID> pending_repair; // na format
+    bool is_transient = false; // na format
     std::optional<locator::host_id> originating_host_id; // 3_11_11 and later (me format)
+    bool has_partition_level_deletions = true; // oa format
+    disk_string_vint_size first_key; // oa format
+    disk_string_vint_size last_key; // oa format
+    double token_space_coverage = 0.0; // oa format
 
     template <typename Describer>
     auto describe_type(sstable_version_types v, Describer f) {
         switch (v) {
-        case sstable_version_types::me:
         case sstable_version_types::da:
             return f(
                 estimated_partition_size,
@@ -354,8 +371,36 @@ struct stats_metadata : public metadata_base<stats_metadata> {
                 estimated_tombstone_drop_time,
                 sstable_level,
                 repaired_at,
-                min_column_names,
-                max_column_names,
+                slice,
+                has_legacy_counter_shards,
+                columns_count,
+                rows_count,
+                commitlog_lower_bound,
+                commitlog_intervals,
+                pending_repair,
+                is_transient,
+                originating_host_id,
+                has_partition_level_deletions,
+                first_key,
+                last_key,
+                token_space_coverage
+            );
+        case sstable_version_types::me:
+            return f(
+                estimated_partition_size,
+                estimated_cells_count,
+                position,
+                min_timestamp,
+                max_timestamp,
+                min_local_deletion_time,
+                max_local_deletion_time,
+                min_ttl,
+                max_ttl,
+                compression_ratio,
+                estimated_tombstone_drop_time,
+                sstable_level,
+                repaired_at,
+                slice,
                 has_legacy_counter_shards,
                 columns_count,
                 rows_count,
@@ -379,8 +424,7 @@ struct stats_metadata : public metadata_base<stats_metadata> {
                 estimated_tombstone_drop_time,
                 sstable_level,
                 repaired_at,
-                min_column_names,
-                max_column_names,
+                slice,
                 has_legacy_counter_shards,
                 columns_count,
                 rows_count,
@@ -400,8 +444,7 @@ struct stats_metadata : public metadata_base<stats_metadata> {
                 estimated_tombstone_drop_time,
                 sstable_level,
                 repaired_at,
-                min_column_names,
-                max_column_names,
+                slice,
                 has_legacy_counter_shards
             );
         }

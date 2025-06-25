@@ -155,7 +155,9 @@ private:
      */
     hll::HyperLogLog _cardinality = hyperloglog(13, 25);
 private:
-    void convert(disk_array<uint32_t, disk_string<uint16_t>>&to, const std::optional<position_in_partition>& from);
+    void convert(covered_slice&,
+                 const std::optional<position_in_partition>& min,
+                 const std::optional<position_in_partition>& max);
 public:
     explicit metadata_collector(const schema& schema, component_name name, const locator::host_id& host_id)
         : _schema(schema)
@@ -246,8 +248,7 @@ public:
         m.compression_ratio = _compression_ratio;
         m.estimated_tombstone_drop_time = std::move(_estimated_tombstone_drop_time);
         m.sstable_level = _sstable_level;
-        convert(m.min_column_names, _min_clustering_pos);
-        convert(m.max_column_names, _max_clustering_pos);
+        convert(m.slice, _min_clustering_pos, _max_clustering_pos);
         m.has_legacy_counter_shards = _has_legacy_counter_shards;
         m.columns_count = _columns_count;
         m.rows_count = _rows_count;
