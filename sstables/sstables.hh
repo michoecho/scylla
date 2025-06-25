@@ -336,7 +336,7 @@ public:
         return get_estimated_key_count(_components->summary.header.size_at_full_sampling, _components->summary.header.min_index_interval);
     }
 
-    uint64_t estimated_keys_for_range(const dht::token_range& range);
+    future<uint64_t> estimated_keys_for_range(const dht::token_range& range);
 
     std::vector<dht::decorated_key> get_key_samples(const schema& s, const dht::token_range& range);
 

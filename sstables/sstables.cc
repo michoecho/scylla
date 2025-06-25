@@ -3066,21 +3066,39 @@ std::vector<dht::decorated_key> sstable::get_key_samples(const schema& s, const 
     return res;
 }
 
-uint64_t sstable::estimated_keys_for_range(const dht::token_range& range) {
-    auto page_range = get_index_pages_for_range(range);
-    if (!page_range) {
-        return 0;
+future<uint64_t> sstable::estimated_keys_for_range(const dht::token_range& range) {
+    if (_recognized_components.contains(component_type::Summary)) {
+        auto page_range = get_index_pages_for_range(range);
+        if (!page_range) {
+            co_return 0;
+        }
+        using uint128_t = unsigned __int128;
+        uint64_t range_pages = page_range->second - page_range->first;
+        auto total_keys = get_estimated_key_count();
+        auto total_pages = _components->summary.entries.size();
+        uint64_t estimated_keys = (uint128_t)range_pages * total_keys / total_pages;
+        co_return std::max(uint64_t(1), estimated_keys);
+    } else if (_recognized_components.contains(component_type::Index) || _recognized_components.contains(component_type::Partitions)) {
+        auto sem = reader_concurrency_semaphore(reader_concurrency_semaphore::no_limits{}, "sstables::estimated_keys_for_range()",
+                reader_concurrency_semaphore::register_metrics::no);
+        auto index_ptr = make_index_reader(shared_from_this(),
+                                           sem.make_tracking_only_permit(_schema, fmt::to_string(get_filename()), db::no_timeout, {}));
+        co_await index_ptr->advance_to(to_partition_range(range));
+        auto [begin, end] = index_ptr->data_file_positions();
+        auto data_file_size = data_size();
+        auto concrete_end = end.value_or(data_file_size);
+        auto full_key_count = get_estimated_key_count();
+        auto fraction = double(concrete_end - begin) / double(data_file_size);
+        if (fraction == 1.0) {
+            co_return full_key_count;
+        }
+        co_return fraction * full_key_count;
+    } else {
+        co_return 1;
     }
-    using uint128_t = unsigned __int128;
-    uint64_t range_pages = page_range->second - page_range->first;
-    auto total_keys = get_estimated_key_count();
-    auto total_pages = _components->summary.entries.size();
-    uint64_t estimated_keys = (uint128_t)range_pages * total_keys / total_pages;
-    return std::max(uint64_t(1), estimated_keys);
 }
 
-std::vector<unsigned>
-sstable::compute_shards_for_this_sstable(const dht::sharder& sharder_) const {
+std::vector<unsigned> sstable::compute_shards_for_this_sstable(const dht::sharder& sharder_) const {
     std::unordered_set<unsigned> shards;
     dht::partition_range_vector token_ranges;
     const auto* sm = _components->scylla_metadata

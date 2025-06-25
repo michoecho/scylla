@@ -1305,6 +1305,22 @@ future<utils::chunked_vector<sstables::shared_sstable>> table::take_sstable_set_
     co_return result;
 }
 
+future<uint64_t> table::estimated_partitions_in_range(dht::token_range tr) {
+    // FIXME: use a better estimation for the set than a simple sum of estimations for individual sstables.
+    //
+    // If we assume that sstables cover a continuous token range (always the case with tablets?)
+    // then we can use sstable cardinality sketches (hyperloglog) to get a more accurate
+    // total keys estimate for each tablet.
+    // Then we can sum the results weighted by the fraction of the tablet's token range
+    // which is covered by the queried token range.
+    auto sstables = co_await take_sstable_set_snapshot();
+    uint64_t partition_count = 0;
+    co_await seastar::max_concurrent_for_each(sstables, 10, [&partition_count, &tr] (sstables::shared_sstable sst) -> future<> {
+        partition_count += co_await sst->estimated_keys_for_range(tr);
+    });
+    co_return partition_count;
+}
+
 future<utils::chunked_vector<sstables::entry_descriptor>>
 table::clone_tablet_storage(locator::tablet_id tid) {
     utils::chunked_vector<sstables::entry_descriptor> ret;
