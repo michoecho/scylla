@@ -1325,6 +1325,22 @@ private:
         visit(field, val.value);
     }
 
+    void visit(const void* const field, const sstables::covered_slice& val) {
+        auto pip = [] (const clustering_key_prefix& ckp, bound_kind_m kind) {
+            if (is_bound_kind(kind)) {
+                return position_in_partition(position_in_partition::range_tag_t(), to_bound_kind(kind), clustering_key_prefix(ckp));
+            } else {
+                return position_in_partition(position_in_partition::clustering_row_tag_t(), ckp);
+            }
+        };
+        _writer.StartObject();
+        _writer.Key("min");
+        _writer.String(fmt::to_string(pip(val.min, val.min_kind)));
+        _writer.Key("max");
+        _writer.String(fmt::to_string(pip(val.max, val.max_kind)));
+        _writer.EndObject();
+    }
+
     void visit(const void* const field, const sstables::serialization_header::column_desc& val) {
         auto prev_name_resolver = std::exchange(_name_resolver, [&val] (const void* const field) {
             if (field == &val.name) { return "name"; }
@@ -1390,7 +1406,7 @@ void dump_compaction_metadata(json_writer& writer, sstables::sstable_version_typ
     });
 }
 
-void dump_stats_metadata(json_writer& writer, sstables::sstable_version_types version, const sstables::stats_metadata& metadata) {
+void dump_stats_metadata(const schema& s, json_writer& writer, sstables::sstable_version_types version, const sstables::stats_metadata& metadata) {
     json_dumper::dump(writer, version, metadata, "stats", [&metadata] (const void* const field) {
         if (field == &metadata.estimated_partition_size) { return "estimated_partition_size"; }
         else if (field == &metadata.estimated_cells_count) { return "estimated_cells_count"; }
@@ -1405,18 +1421,24 @@ void dump_stats_metadata(json_writer& writer, sstables::sstable_version_types ve
         else if (field == &metadata.estimated_tombstone_drop_time) { return "estimated_tombstone_drop_time"; }
         else if (field == &metadata.sstable_level) { return "sstable_level"; }
         else if (field == &metadata.repaired_at) { return "repaired_at"; }
-        else if (field == &metadata.min_column_names) { return "min_column_names"; }
-        else if (field == &metadata.max_column_names) { return "max_column_names"; }
+        else if (field == &metadata.slice) { return "covered_slice"; }
         else if (field == &metadata.has_legacy_counter_shards) { return "has_legacy_counter_shards"; }
         else if (field == &metadata.columns_count) { return "columns_count"; }
         else if (field == &metadata.rows_count) { return "rows_count"; }
         else if (field == &metadata.commitlog_lower_bound) { return "commitlog_lower_bound"; }
         else if (field == &metadata.commitlog_intervals) { return "commitlog_intervals"; }
+        else if (field == &metadata.pending_repair) { return "pending_repair"; }
+        else if (field == &metadata.is_transient) { return "is_transient"; }
+        else if (field == &metadata.has_partition_level_deletions) { return "has_partition_level_deletions"; }
         else if (field == &metadata.originating_host_id) { return "originating_host_id"; }
+        else if (field == &metadata.first_key) { return "first_key"; }
+        else if (field == &metadata.last_key) { return "last_key"; }
+        else if (field == &metadata.token_space_coverage) { return "token_space_coverage"; }
         else { throw std::invalid_argument("invalid field offset"); }
-    }, [&metadata] (const void* const field, bytes_view value) {
-        if (field == &metadata.min_column_names || field == &metadata.max_column_names) {
-            return to_hex(value);
+    }, [&metadata, &s] (const void* const field, bytes_view value) {
+        if (field == &metadata.first_key || field == &metadata.last_key) {
+            auto first_key = dht::decorate_key(s, sstables::key_view(value).to_partition_key(s));
+            return sstring(fmt::to_string(first_key));
         }
         return json_dumper::default_disk_string_converter(field, value);
     });
@@ -1478,7 +1500,7 @@ void dump_statistics_operation(schema_ptr schema, reader_permit permit, const st
                     dump_compaction_metadata(writer, version, *dynamic_cast<const sstables::compaction_metadata*>(metadata_ptr.get()));
                     break;
                 case sstables::metadata_type::Stats:
-                    dump_stats_metadata(writer, version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
+                    dump_stats_metadata(*schema, writer, version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
                     break;
                 case sstables::metadata_type::Serialization:
                     dump_serialization_header(writer, version, *dynamic_cast<const sstables::serialization_header*>(metadata_ptr.get()));
