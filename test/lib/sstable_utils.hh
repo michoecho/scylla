@@ -74,6 +74,8 @@ public:
                 if (pk_opt) {
                     entries.emplace_back(index_entry{sstables::key::from_partition_key(*s, pk_opt.value()),
                                             pk_opt.value(), ir->get_promoted_index_size()});
+                } else {
+                    entries.emplace_back(std::nullopt, std::nullopt, ir->get_promoted_index_size());
                 }
                 co_await ir->advance_to_next_partition();
             }
