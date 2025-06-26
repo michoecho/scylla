@@ -1,3 +1,4 @@
+#pragma clang optimize off
 /*
  * Copyright (C) 2015-present ScyllaDB
  */
