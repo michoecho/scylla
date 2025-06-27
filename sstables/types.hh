@@ -109,24 +109,11 @@ struct option {
 
 struct filter {
     uint32_t hashes;
-    disk_array<uint32_t, uint64_t> buckets;
-
-    template <typename Describer>
-    auto describe_type(sstable_version_types v, Describer f) { return f(hashes, buckets); }
+    utils::chunked_vector<uint64_t> buckets;
 
     // Create an always positive filter if nothing else is specified.
     filter() : hashes(0), buckets({}) {}
     explicit filter(int hashes, utils::chunked_vector<uint64_t> buckets) : hashes(hashes), buckets({std::move(buckets)}) {}
-};
-
-// Do this so we don't have to copy on write time. We can just keep a reference.
-struct filter_ref {
-    uint32_t hashes;
-    disk_array_ref<uint32_t, uint64_t> buckets;
-
-    template <typename Describer>
-    auto describe_type(sstable_version_types v, Describer f) { return f(hashes, buckets); }
-    explicit filter_ref(int hashes, const utils::chunked_vector<uint64_t>& buckets) : hashes(hashes), buckets(buckets) {}
 };
 
 enum class indexable_element {
