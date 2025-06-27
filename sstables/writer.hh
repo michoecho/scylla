@@ -323,7 +323,7 @@ write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Mem
 
 template <std::integral Members>
 inline void
-write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Members>& arr) {
+write_chunked_vector_of_integral(file_writer& out, const utils::chunked_vector<Members>& arr, std::endian endian) {
     std::vector<Members> tmp;
     size_t per_loop = 100000 / sizeof(Members);
     tmp.resize(per_loop);
@@ -332,14 +332,36 @@ write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Mem
         auto now = std::min(arr.size() - idx, per_loop);
         // copy arr into tmp converting each entry into big-endian representation.
         auto nr = arr.begin() + idx;
-        for (size_t i = 0; i < now; i++) {
-            tmp[i] = net::hton(nr[i]);
+        if (endian == std::endian::native) {
+            for (size_t i = 0; i < now; i++) {
+                tmp[i] = nr[i];
+            }
+        } else {
+            for (size_t i = 0; i < now; i++) {
+                tmp[i] = std::byteswap(nr[i]);
+            }
         }
         auto p = reinterpret_cast<const char*>(tmp.data());
         auto bytes = now * sizeof(Members);
         out.write(p, bytes);
         idx += now;
     }
+}
+
+template <std::integral Members>
+inline void
+write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Members>& arr) {
+    write_chunked_vector_of_integral(out, arr, std::endian::big);
+}
+
+inline void
+write(sstable_version_types v, file_writer& out, const filter& bf) {
+    write(v, out, bf.hashes);
+    uint32_t len = 0;
+    check_truncate_and_assign(len, bf.buckets.size());
+    write(v, out, len);
+    auto endian = version_has_byteswapped_bloom_filters(v) ? std::endian::big : std::endian::little;
+    write_chunked_vector_of_integral(out, bf.buckets, endian);
 }
 
 template <typename Contents>

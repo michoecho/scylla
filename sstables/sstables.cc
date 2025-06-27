@@ -342,7 +342,9 @@ parse(const schema& s, sstable_version_types v, random_access_reader& in, Size& 
 
 template <typename Size, std::integral Members>
 future<>
-parse(const schema&, sstable_version_types, random_access_reader& in, Size& len, utils::chunked_vector<Members>& arr) {
+parse_chunked_vector_of_integral(random_access_reader& in, const Size& len, utils::chunked_vector<Members>& arr, std::endian endian) {
+    arr.resize(0);
+    arr.reserve(len);
     Size now = arr.max_chunk_capacity();
     for (auto count = len; count; count -= now) {
         if (now > count) {
@@ -350,10 +352,29 @@ parse(const schema&, sstable_version_types, random_access_reader& in, Size& len,
         }
         auto buf = co_await in.read_exactly(now * sizeof(Members));
         check_buf_size(buf, now * sizeof(Members));
-        for (size_t i = 0; i < now; ++i) {
-            arr.push_back(net::ntoh(read_unaligned<Members>(buf.get() + i * sizeof(Members))));
+        if (endian == std::endian::native) {
+            for (size_t i = 0; i < now; ++i) {
+                arr.push_back(read_unaligned<Members>(buf.get() + i * sizeof(Members)));
+            }
+        } else {
+            for (size_t i = 0; i < now; ++i) {
+                arr.push_back(std::byteswap(read_unaligned<Members>(buf.get() + i * sizeof(Members))));
+            }
         }
     }
+}
+
+template <typename Size, std::integral Members>
+future<> parse(const schema&, sstable_version_types, random_access_reader& in, Size& len, utils::chunked_vector<Members>& arr) {
+    return parse_chunked_vector_of_integral(in, len, arr, std::endian::big);
+}
+
+future<> parse(const schema& s, sstable_version_types v, random_access_reader& in, filter& bf) {
+    co_await parse(s, v, in, bf.hashes);
+    uint32_t number_of_longlongs;
+    co_await parse(s, v, in, number_of_longlongs);
+    auto endian = version_has_byteswapped_bloom_filters(v) ? std::endian::big : std::endian::little;
+    co_await parse_chunked_vector_of_integral<uint32_t, uint64_t>(in, number_of_longlongs, bf.buckets, endian);
 }
 
 template <typename Contents>
@@ -1573,8 +1594,9 @@ future<> sstable::read_filter(sstable_open_config cfg) {
     return seastar::async([this] () mutable {
         sstables::filter filter;
         read_simple<component_type::Filter>(filter).get();
-        auto nr_bits = filter.buckets.elements.size() * std::numeric_limits<typename decltype(filter.buckets.elements)::value_type>::digits;
-        large_bitset bs(nr_bits, std::move(filter.buckets.elements));
+        sstlog.warn("Read hashes={} buckets={}", filter.hashes, filter.buckets.size());
+        auto nr_bits = filter.buckets.size() * std::numeric_limits<typename decltype(filter.buckets)::value_type>::digits;
+        large_bitset bs(nr_bits, std::move(filter.buckets));
         _components->filter = utils::filter::create_filter(filter.hashes, std::move(bs), get_filter_format(_version));
     });
 }
@@ -1587,8 +1609,9 @@ void sstable::write_filter() {
     auto f = downcast_ptr<utils::filter::murmur3_bloom_filter>(_components->filter.get());
 
     auto&& bs = f->bits();
-    auto filter_ref = sstables::filter_ref(f->num_hashes(), bs.get_storage());
-    write_simple<component_type::Filter>(filter_ref);
+    sstlog.warn("Writing hashes={} buckets={}", f->num_hashes(), bs.get_storage().size());
+    auto filter = sstables::filter(f->num_hashes(), bs.get_storage());
+    write_simple<component_type::Filter>(filter);
 }
 
 void sstable::maybe_rebuild_filter_from_index(uint64_t num_partitions, const abort_source& as) {
