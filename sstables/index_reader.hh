@@ -104,8 +104,11 @@ enum class index_consume_entry_context_state {
     PROMOTED_SIZE,
     PARTITION_HEADER_LENGTH_1,
     PARTITION_HEADER_LENGTH_2,
-    LOCAL_DELETION_TIME,
-    MARKED_FOR_DELETE_AT,
+    LOCAL_DELETION_TIME_OLD,
+    MARKED_FOR_DELETE_AT_OLD,
+    DELETION_TIME_FLAG_UNSIGNED,
+    LOCAL_DELETION_TIME_UNSIGNED,
+    MARKED_FOR_DELETE_AT_UNSIGNED,
     NUM_PROMOTED_INDEX_BLOCKS,
     CONSUME_ENTRY,
 };
@@ -120,8 +123,11 @@ inline std::string_view format_as(index_consume_entry_context_state s) {
     case PROMOTED_SIZE: return "PROMOTED_SIZE";
     case PARTITION_HEADER_LENGTH_1: return "PARTITION_HEADER_LENGTH_1";
     case PARTITION_HEADER_LENGTH_2: return "PARTITION_HEADER_LENGTH_2";
-    case LOCAL_DELETION_TIME: return "LOCAL_DELETION_TIME";
-    case MARKED_FOR_DELETE_AT: return "MARKED_FOR_DELETE_AT";
+    case LOCAL_DELETION_TIME_OLD: return "LOCAL_DELETION_TIME_OLD";
+    case MARKED_FOR_DELETE_AT_OLD: return "MARKED_FOR_DELETE_AT_OLD";
+    case DELETION_TIME_FLAG_UNSIGNED: return "DELETION_TIME_UNSIGNED";
+    case LOCAL_DELETION_TIME_UNSIGNED: return "LOCAL_DELETION_TIME_UNSIGNED";
+    case MARKED_FOR_DELETE_AT_UNSIGNED: return "MARKED_FOR_DELETE_AT_UNSIGNED";
     case NUM_PROMOTED_INDEX_BLOCKS: return "NUM_PROMOTED_INDEX_BLOCKS";
     case CONSUME_ENTRY: return "CONSUME_ENTRY";
     }
@@ -158,6 +164,7 @@ private:
     column_translation _ctr;
     tracing::trace_state_ptr _trace_state;
     const abort_source& _abort;
+    const bool _has_unsigned_deletion_time;
 
     inline bool is_mc_format() const {
         return !_ctr.empty();
@@ -237,8 +244,8 @@ public:
             }
             if (!is_mc_format()) {
                 // SSTables ka/la don't have a partition_header_length field
-                _state = state::LOCAL_DELETION_TIME;
-                goto state_LOCAL_DELETION_TIME;
+                _state = state::LOCAL_DELETION_TIME_OLD;
+                goto state_LOCAL_DELETION_TIME_OLD;
             }
             if (this->read_unsigned_vint(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::PARTITION_HEADER_LENGTH_2;
@@ -249,26 +256,62 @@ public:
         case state::PARTITION_HEADER_LENGTH_2:
             sstlog.trace("{}: pos {} state {} {}", fmt::ptr(this), current_pos(), state::PARTITION_HEADER_LENGTH_2, this->_u64);
             _partition_header_length = this->_u64;
-        state_LOCAL_DELETION_TIME:
+            if (_has_unsigned_deletion_time) {
+                goto state_DELETION_TIME_FLAG_UNSIGNED;
+            }
+        state_LOCAL_DELETION_TIME_OLD:
             [[fallthrough]];
-        case state::LOCAL_DELETION_TIME:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
+        case state::LOCAL_DELETION_TIME_OLD:
+            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME_OLD);
             _deletion_time.emplace();
             if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::MARKED_FOR_DELETE_AT;
+                _state = state::MARKED_FOR_DELETE_AT_OLD;
                 break;
             }
             [[fallthrough]];
-        case state::MARKED_FOR_DELETE_AT:
-            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
+        case state::MARKED_FOR_DELETE_AT_OLD:
+            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT_OLD);
             _deletion_time->local_deletion_time = this->_u32;
+            if (this->_u32 == std::numeric_limits<int32_t>::max()) {
+                this->_u32 = std::numeric_limits<uint32_t>::max();
+            }
             if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::NUM_PROMOTED_INDEX_BLOCKS;
                 break;
             }
+            goto state_NUM_PROMOTED_INDEX_BLOCKS;
+        state_DELETION_TIME_FLAG_UNSIGNED:
+        case state::DELETION_TIME_FLAG_UNSIGNED:
+            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::DELETION_TIME_FLAG_UNSIGNED);
+            if (this->read_8(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::MARKED_FOR_DELETE_AT_UNSIGNED;
+                break;
+            }
+            [[fallthrough]];
+        case state::MARKED_FOR_DELETE_AT_UNSIGNED:
+            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT_UNSIGNED);
+            if (this->_u8 & 0x80) {
+                _deletion_time = deletion_time::make_live();
+                this->_u64 = _deletion_time->marked_for_delete_at;
+                goto state_NUM_PROMOTED_INDEX_BLOCKS;
+            }
+            if (this->read_56(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::LOCAL_DELETION_TIME_UNSIGNED;
+                break;
+            }
+            [[fallthrough]];
+        case state::LOCAL_DELETION_TIME_UNSIGNED:
+            this->_u64 |= uint64_t(this->_u8) << uint64_t(56);
+            sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME_UNSIGNED);
+            if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::NUM_PROMOTED_INDEX_BLOCKS;
+                break;
+            }
+        state_NUM_PROMOTED_INDEX_BLOCKS:
             [[fallthrough]];
         case state::NUM_PROMOTED_INDEX_BLOCKS:
             sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::NUM_PROMOTED_INDEX_BLOCKS);
+            _deletion_time->local_deletion_time = this->_u32;
             _deletion_time->marked_for_delete_at = this->_u64;
             if (read_vint_or_uint32(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::CONSUME_ENTRY;
@@ -321,6 +364,7 @@ public:
         , _ctr(std::move(ctr))
         , _trace_state(std::move(trace_state))
         , _abort(abort)
+        , _has_unsigned_deletion_time(version_has_unsigned_deletion_time(sst.get_version()))
     {}
 };
 

@@ -35,6 +35,7 @@ class partition_header_context : public data_consumer::continuous_data_consumer<
     bool _finished = false;
     processing_result_generator _gen;
     temporary_buffer<char>* _processing_data;
+    bool _has_unsigned_deletion_time;
 public:
     bool non_consuming() const {
         return false;
@@ -62,13 +63,23 @@ private:
     processing_result_generator do_process_state() {
         // length of the partition key
         co_yield read_16(*_processing_data);
-        co_yield skip(*_processing_data,
-                // skip partition key
-                uint32_t{_u16}
-                // skip deletion_time::local_deletion_time
-                + sizeof(uint32_t)
-                // skip deletion_time::marked_for_delete_at
-                + sizeof(uint64_t));
+        if (_has_unsigned_deletion_time) {
+            co_yield skip(*_processing_data,
+                    // skip partition key
+                    uint32_t{_u16});
+            co_yield read_8(*_processing_data);
+            if ((this->_u8 & 0x80) == 0) {
+                co_yield skip(*_processing_data, 11);
+            }
+        } else {
+            co_yield skip(*_processing_data,
+                    // skip partition key
+                    uint32_t{_u16}
+                    // skip deletion_time::local_deletion_time
+                    + sizeof(uint32_t)
+                    // skip deletion_time::marked_for_delete_at
+                    + sizeof(uint64_t));
+        }
 
         // Peek the first row or tombstone. If it's a static row, determine where it ends,
         // i.e. where the sequence of clustering rows starts.
@@ -97,9 +108,10 @@ private:
     }
 public:
 
-    partition_header_context(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit permit)
+    partition_header_context(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit permit, bool has_unsigned_deletion_time)
                 : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
                 , _gen(do_process_state())
+                , _has_unsigned_deletion_time(has_unsigned_deletion_time)
     {}
 };
 
@@ -474,7 +486,8 @@ public:
 
     virtual future<temporary_buffer<char>> get() override {
         if (!_partition_header_context) {
-            _partition_header_context.emplace(data_stream(_partition_start, _partition_end), _partition_start, _partition_end - _partition_start, _permit);
+            _partition_header_context.emplace(data_stream(_partition_start, _partition_end), _partition_start, _partition_end - _partition_start, _permit,
+                                              version_has_unsigned_deletion_time(_sst->get_version()));
             co_await _partition_header_context->consume_input();
             _clustering_range_start = _partition_header_context->header_end_pos();
             co_return co_await data_read(_partition_start, _clustering_range_start);

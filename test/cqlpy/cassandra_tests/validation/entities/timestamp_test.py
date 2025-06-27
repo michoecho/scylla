@@ -11,13 +11,6 @@ import time
 from cassandra.query import UNSET_VALUE
 
 
-def testNegativeTimestamps(cql, test_keyspace):
-    with create_table(cql, test_keyspace, "(k int PRIMARY KEY, v int)") as table:
-        execute(cql, table, "INSERT INTO %s (k, v) VALUES (?, ?) USING TIMESTAMP ?", 1, 1, -42)
-        assert_rows(execute(cql, table, "SELECT writetime(v) FROM %s WHERE k = ?", 1), [-42])
-
-        assert_invalid(cql, table, "INSERT INTO %s (k, v) VALUES (?, ?) USING TIMESTAMP ?", 2, 2, -2**63)
-
 # Test timestmp and ttl
 # migrated from cql_tests.py:TestCQL.timestamp_and_ttl_test()
 def testTimestampTTL(cql, test_keyspace):

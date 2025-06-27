@@ -324,7 +324,7 @@ SEASTAR_TEST_CASE(basic_garbage_collection_test) {
         auto remaining = total_keys-expired_keys;
         auto expiration_time = (now + gc_clock::duration(3600)).time_since_epoch().count();
         for (auto i = 0; i < remaining; i++) {
-            mutations.push_back(make_insert(to_bytes("key" + to_sstring(i)), 3600, expiration_time));
+            mutations.push_back(make_insert(to_bytes("alive_key" + to_sstring(i)), 3600, expiration_time));
         }
 
         table_for_tests cf = env.make_table_for_tests(s);

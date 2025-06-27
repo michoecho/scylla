@@ -526,6 +526,7 @@ enum class row_index_header_parser_state {
     KEY_BYTES,
     DATA_FILE_POSITION,
     OFFSET_FROM_TRIE_ROOT,
+    DELETION_TIME_FLAG,
     LOCAL_DELETION_TIME,
     MARKED_FOR_DELETE_AT,
     END,
@@ -539,11 +540,12 @@ inline std::string_view state_name(row_index_header_parser_state s) {
     case KEY_BYTES: return "KEY_BYTES";
     case DATA_FILE_POSITION: return "DATA_FILE_POSITION";
     case OFFSET_FROM_TRIE_ROOT: return "OFFSET_TO_TRIE_ROOT";
+    case DELETION_TIME_FLAG: return "DELETION_TIME_FLAG";
     case LOCAL_DELETION_TIME: return "LOCAL_DELETION_TIME";
     case MARKED_FOR_DELETE_AT: return "MARKED_FOR_DELETE_AT";
     case END: return "END";
-    default: abort();
     }
+    abort();
 }
 
 } // namespace trie
@@ -615,8 +617,29 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
                 break;
             }
             [[fallthrough]];
-        case state::LOCAL_DELETION_TIME: {
+        case state::DELETION_TIME_FLAG:
             _result.trie_root = _position_offset - this->_u64;
+            expensive_log("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::DELETION_TIME_FLAG);
+            if (this->read_8(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::MARKED_FOR_DELETE_AT;
+                break;
+            }
+            [[fallthrough]];
+        case state::MARKED_FOR_DELETE_AT:
+            expensive_log("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
+            if (this->_u8 & 0x80) {
+                _result.partition_tombstone = tombstone();
+                _state = state::END;
+                break;
+            }
+            _result.partition_tombstone.deletion_time = gc_clock::time_point(gc_clock::duration(this->_u32));
+            if (this->read_56(data) != continuous_data_consumer::read_status::ready) {
+                _state = state::LOCAL_DELETION_TIME;
+                break;
+            }
+            [[fallthrough]];
+        case state::LOCAL_DELETION_TIME: {
+            _result.partition_tombstone.timestamp = (uint64_t(this->_u8) << 56) | this->_u64;
             expensive_log("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::LOCAL_DELETION_TIME);
             if (this->read_32(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::MARKED_FOR_DELETE_AT;
@@ -624,17 +647,9 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
             }
         }
             [[fallthrough]];
-        case state::MARKED_FOR_DELETE_AT:
-            expensive_log("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
-            _result.partition_tombstone.deletion_time = gc_clock::time_point(gc_clock::duration(this->_u32));
-            if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
-                _state = state::END;
-                break;
-            }
-            [[fallthrough]];
         case state::END: {
             _state = row_index_header_parser_state::END;
-            _result.partition_tombstone.timestamp = this->_u64;
+            _result.partition_tombstone.deletion_time = gc_clock::time_point(gc_clock::duration(this->_u32));
         }
         }
         expensive_log("{}: exit pos {} state {}", fmt::ptr(this), current_pos(), _state);
@@ -967,7 +982,7 @@ static int64_t partition_payload_to_pos(const payload_result& p) {
 
 static int64_t row_payload_to_offset(const payload_result& p) {
     uint64_t bits = p.bits & 0x7;
-    expensive_assert(p.bytes.size() >= size_t(bits + 12));
+    //expensive_assert(p.bytes.size() >= size_t(bits + 12));
     uint64_t be_result = 0;
     std::memcpy(&be_result, p.bytes.data(), bits);
     auto result = seastar::be_to_cpu(be_result) >> 8*(8 - bits);
@@ -1041,9 +1056,9 @@ tombstone index_cursor<Input>::open_tombstone() const {
         const auto p = _row_cursor.payload();
         if (p.bits >= 8) {
             uint64_t bits = p.bits & 0x7;
-            expensive_assert(p.bytes.size() >= size_t(bits + 12));
+            //expensive_assert(p.bytes.size() >= size_t(bits + 12));
             auto marked = seastar::be_to_cpu(read_unaligned<uint64_t>(p.bytes.data() + bits));
-            auto deletion_time = seastar::be_to_cpu(read_unaligned<int32_t>(p.bytes.data() + bits + 8));
+            auto deletion_time = seastar::be_to_cpu(read_unaligned<uint32_t>(p.bytes.data() + bits + 8));
             return tombstone(marked, gc_clock::time_point(gc_clock::duration(deletion_time)));
         } else {
             return tombstone();

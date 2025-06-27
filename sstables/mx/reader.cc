@@ -701,6 +701,7 @@ private:
     const serialization_header& _header;
     column_translation _column_translation;
     const bool _has_shadowable_tombstones;
+    const bool _has_unsigned_deletion_time;
 
     temporary_buffer<char> _pk;
 
@@ -846,11 +847,27 @@ private:
             _state = state::DELETION_TIME;
             co_yield this->read_short_length_bytes(*_processing_data, _pk);
             _state = state::OTHER;
-            co_yield this->read_32(*_processing_data);
-            co_yield this->read_64(*_processing_data);
             deletion_time del;
-            del.local_deletion_time = this->_u32;
-            del.marked_for_delete_at = this->_u64;
+            if (_has_unsigned_deletion_time) {
+                co_yield this->read_8(*_processing_data);
+                if (this->_u8 & 0x80) {
+                    // Live.
+                    del = deletion_time::make_live();
+                } else {
+                    co_yield this->read_56(*_processing_data);
+                    co_yield this->read_32(*_processing_data);
+                    del.marked_for_delete_at = this->_u64 | (uint64_t(this->_u8) << uint64_t(56));
+                    del.local_deletion_time = this->_u32;
+                }
+            } else {
+                co_yield this->read_32(*_processing_data);
+                co_yield this->read_64(*_processing_data);
+                del.local_deletion_time = this->_u32;
+                del.marked_for_delete_at = this->_u64;
+                if (del.local_deletion_time == std::numeric_limits<int32_t>::max()) {
+                    del.local_deletion_time = std::numeric_limits<uint32_t>::max();
+                }
+            }
             auto ret = _consumer.consume_partition_start(key_view(to_bytes_view(_pk)), del);
             // after calling the consume function, we can release the
             // buffers we held for it.
@@ -1198,6 +1215,7 @@ public:
         , _header(sst->get_serialization_header())
         , _column_translation(sst->get_column_translation(s, _header, sst->features()))
         , _has_shadowable_tombstones(sst->has_shadowable_tombstones())
+        , _has_unsigned_deletion_time(version_has_unsigned_deletion_time(_sst->get_version()))
         , _gen(do_process_state())
     {
         setup_columns(_regular_row, _column_translation.regular_columns());
