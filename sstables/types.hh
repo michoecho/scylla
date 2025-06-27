@@ -75,14 +75,14 @@ struct commitlog_interval {
 };
 
 struct deletion_time {
-    int32_t local_deletion_time;
+    uint32_t local_deletion_time;
     int64_t marked_for_delete_at;
 
-    template <typename Describer>
-    auto describe_type(sstable_version_types v, Describer f) { return f(local_deletion_time, marked_for_delete_at); }
+    // template <typename Describer>
+    // auto describe_type(sstable_version_types v, Describer f) { return f(local_deletion_time, marked_for_delete_at); }
 
     bool live() const {
-        return (local_deletion_time == std::numeric_limits<int32_t>::max()) &&
+        return (local_deletion_time == std::numeric_limits<uint32_t>::max()) &&
                (marked_for_delete_at == std::numeric_limits<int64_t>::min());
     }
 
@@ -328,8 +328,8 @@ struct stats_metadata : public metadata_base<stats_metadata> {
     db::replay_position position;
     int64_t min_timestamp;
     int64_t max_timestamp;
-    int32_t min_local_deletion_time; // 3_x only
-    int32_t max_local_deletion_time;
+    uint32_t min_local_deletion_time; // 3_x only
+    uint32_t max_local_deletion_time;
     int32_t min_ttl; // 3_x only
     int32_t max_ttl; // 3_x only
     double compression_ratio;
@@ -754,19 +754,32 @@ inline bool is_expired_liveness_ttl(gc_clock::duration ttl) {
 }
 
 // Corresponding to Cassandra's NO_DELETION_TIME
-constexpr static int64_t no_deletion_time = std::numeric_limits<int32_t>::max();
+constexpr static int64_t no_deletion_time = std::numeric_limits<uint32_t>::max();
+constexpr static int64_t no_deletion_time_old = std::numeric_limits<int32_t>::max();
 
 // Corresponding to Cassandra's MAX_DELETION_TIME
-constexpr static int64_t max_deletion_time = std::numeric_limits<int32_t>::max() - 1;
+constexpr static int64_t max_deletion_time = std::numeric_limits<uint32_t>::max() - 1;
+constexpr static int64_t max_deletion_time_old = std::numeric_limits<int32_t>::max() - 1;
 
-inline int32_t adjusted_local_deletion_time(gc_clock::time_point local_deletion_time, bool& capped) {
+inline uint32_t adjusted_local_deletion_time(gc_clock::time_point local_deletion_time, bool& capped, bool has_unsigned_deletion_time) {
     int64_t ldt = local_deletion_time.time_since_epoch().count();
-    if (ldt <= max_deletion_time) {
-        capped = false;
-        return static_cast<int32_t>(ldt);
+    if (has_unsigned_deletion_time) {
+        if (ldt <= max_deletion_time) {
+            capped = false;
+            return static_cast<uint32_t>(ldt);
+        } else {
+            capped = true;
+            return static_cast<uint32_t>(max_deletion_time);
+        }
+    } else {
+        if (ldt <= max_deletion_time_old) {
+            capped = false;
+            return static_cast<uint32_t>(ldt);
+        } else {
+            capped = true;
+            return static_cast<uint32_t>(max_deletion_time_old);
+        }
     }
-    capped = true;
-    return static_cast<int32_t>(max_deletion_time);
 }
 
 struct statistics {

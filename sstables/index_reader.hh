@@ -158,6 +158,7 @@ private:
     column_translation _ctr;
     tracing::trace_state_ptr _trace_state;
     const abort_source& _abort;
+    const bool _has_unsigned_deletion_time;
 
     inline bool is_mc_format() const {
         return !_ctr.empty();
@@ -262,6 +263,9 @@ public:
         case state::MARKED_FOR_DELETE_AT:
             sstlog.trace("{}: pos {} state {}", fmt::ptr(this), current_pos(), state::MARKED_FOR_DELETE_AT);
             _deletion_time->local_deletion_time = this->_u32;
+            if (!_has_unsigned_deletion_time && _deletion_time->local_deletion_time == std::numeric_limits<int32_t>::max()) {
+                _deletion_time->local_deletion_time = std::numeric_limits<uint32_t>::max();
+            }
             if (this->read_64(data) != continuous_data_consumer::read_status::ready) {
                 _state = state::NUM_PROMOTED_INDEX_BLOCKS;
                 break;
@@ -321,6 +325,7 @@ public:
         , _ctr(std::move(ctr))
         , _trace_state(std::move(trace_state))
         , _abort(abort)
+        , _has_unsigned_deletion_time(version_has_unsigned_deletion_time(sst.get_version()))
     {}
 };
 

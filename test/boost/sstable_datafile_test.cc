@@ -840,7 +840,7 @@ SEASTAR_TEST_CASE(test_sstable_max_local_deletion_time) {
                 builder.with_column("r1", utf8_type);
                 schema_ptr s = builder.build(schema_builder::compact_storage::no);
                 auto mt = make_lw_shared<replica::memtable>(s);
-                int32_t last_expiry = 0;
+                uint32_t last_expiry = 0;
                 for (auto i = 0; i < 10; i++) {
                     auto key = partition_key::from_exploded(*s, {to_bytes("key" + to_sstring(i))});
                     mutation m(s, key);

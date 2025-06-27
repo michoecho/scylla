@@ -1525,7 +1525,7 @@ SEASTAR_TEST_CASE(test_sstable_max_local_deletion_time_2) {
                 auto sst_gen = env.make_sst_factory(s, version);
                 auto mt = make_lw_shared<replica::memtable>(s);
                 auto now = gc_clock::now();
-                int32_t last_expiry = 0;
+                uint32_t last_expiry = 0;
                 auto add_row = [&now, &mt, &s, &last_expiry](mutation &m, bytes column_name, uint32_t ttl) {
                     auto c_key = clustering_key::from_exploded(*s, {column_name});
                     last_expiry = (now + gc_clock::duration(ttl)).time_since_epoch().count();

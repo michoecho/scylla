@@ -205,6 +205,16 @@ static void write(sstable_version_types v, W& out, const clustering_block& block
 
 template <typename W>
 requires Writer<W>
+static void write(sstable_version_types v, W& out, deletion_time dt) {
+    if (!version_has_unsigned_deletion_time(v) && dt.local_deletion_time == no_deletion_time) {
+        dt.local_deletion_time = no_deletion_time_old;
+    }
+    write(v, out, dt.local_deletion_time);
+    write(v, out, dt.marked_for_delete_at);
+}
+
+template <typename W>
+requires Writer<W>
 void write_clustering_prefix(sstable_version_types v, W& out, const schema& s,
     const clustering_key_prefix& prefix, ephemerally_full_prefix is_ephemerally_full) {
     clustering_blocks_input_range range{s, prefix, is_ephemerally_full};
@@ -608,6 +618,7 @@ private:
     large_data_stats_entry _elements_in_collection_entry;
     std::optional<uint64_t> _estimated_partitions;
     bool _writing_promoted_index = true;
+    bool _has_unsigned_deletion_time;
 
     void init_file_writers();
 
@@ -668,7 +679,11 @@ private:
             do_write_delta_deletion_time(writer, t);
         } else {
             sstables::mc::write_delta_timestamp(writer, api::missing_timestamp, _enc_stats);
-            sstables::mc::write_delta_local_deletion_time(writer, no_deletion_time, _enc_stats);
+            if (_has_unsigned_deletion_time) {
+                sstables::mc::write_delta_local_deletion_time(writer, no_deletion_time, _enc_stats);
+            } else {
+                sstables::mc::write_delta_local_deletion_time(writer, no_deletion_time_old, _enc_stats);
+            }
         }
     }
 
@@ -676,7 +691,7 @@ private:
         deletion_time dt;
         if (t) {
             bool capped;
-            int32_t ldt = adjusted_local_deletion_time(t.deletion_time, capped);
+            uint32_t ldt = adjusted_local_deletion_time(t.deletion_time, capped, _has_unsigned_deletion_time);
             if (capped) {
                 slogger.warn("Capping tombstone local_deletion_time {} to max {}", t.deletion_time.time_since_epoch().count(), ldt);
                 slogger.warn("Capping tombstone in sstable = {}, partition_key = {}", _sst.get_filename(), _partition_key->to_partition_key(_schema));
@@ -803,6 +818,7 @@ public:
                 )
         //, _estimated_partitions(estimated_partitions)
         , _estimated_partitions(std::nullopt)
+        , _has_unsigned_deletion_time(version_has_unsigned_deletion_time(_sst._version))
     {
         // This can be 0 in some cases, which is albeit benign, can wreak havoc
         // in lower-level writer code, so clamp it to [1, +inf) here, which is
@@ -1022,7 +1038,7 @@ void writer::consume(tombstone t) {
     auto dt = to_deletion_time(t);
     write(_sst.get_version(), *_data_writer, dt);
     _partition_header_length += (_data_writer->offset() - current_pos);
-    _c_stats.update(t);
+    _c_stats.update(t, _has_unsigned_deletion_time);
 
     _pi_write_m.tomb = t;
     _tombstone_written = true;
@@ -1147,7 +1163,7 @@ void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clus
     auto timestamp = cell.timestamp();
     if (is_deleted) {
         _c_stats.update_timestamp(timestamp, is_live::no);
-        _c_stats.update_local_deletion_time_and_tombstone_histogram(cell.deletion_time());
+        _c_stats.update_local_deletion_time_and_tombstone_histogram(cell.deletion_time(), _has_unsigned_deletion_time);
         _sst.get_stats().on_cell_tombstone_write();
         return;
     }
@@ -1159,7 +1175,7 @@ void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clus
         // tombstone histogram is updated with expiration time because if ttl is longer
         // than gc_grace_seconds for all data, sstable will be considered fully expired
         // when actually nothing is expired.
-        _c_stats.update_local_deletion_time_and_tombstone_histogram(cell.expiry());
+        _c_stats.update_local_deletion_time_and_tombstone_histogram(cell.expiry(), _has_unsigned_deletion_time);
     } else { // regular live cell
         _c_stats.update_local_deletion_time(std::numeric_limits<int>::max());
     }
@@ -1182,7 +1198,7 @@ void writer::write_liveness_info(bytes_ostream& writer, const row_marker& marker
 
     auto write_expiring_liveness_info = [this, &writer] (gc_clock::duration ttl, gc_clock::time_point ldt) {
         _c_stats.update_ttl(ttl);
-        _c_stats.update_local_deletion_time_and_tombstone_histogram(ldt);
+        _c_stats.update_local_deletion_time_and_tombstone_histogram(ldt, _has_unsigned_deletion_time);
         write_delta_ttl(writer, ttl);
         write_delta_local_deletion_time(writer, ldt);
     };
@@ -1204,7 +1220,7 @@ void writer::write_collection(bytes_ostream& writer, const clustering_key_prefix
     collection.with_deserialized(*cdef.type, [&] (collection_mutation_view_description mview) {
         if (has_complex_deletion) {
             write_delta_deletion_time(writer, mview.tomb);
-            _c_stats.update(mview.tomb);
+            _c_stats.update(mview.tomb, _has_unsigned_deletion_time);
         }
 
         collection_elements = mview.cells.size();
@@ -1249,7 +1265,7 @@ void writer::write_cells(bytes_ostream& writer, const clustering_key_prefix* clu
 void writer::write_row_body(bytes_ostream& writer, const clustering_row& row, bool has_complex_deletion) {
     write_liveness_info(writer, row.marker());
     auto write_tombstone_and_update_stats = [this, &writer] (const tombstone& t) {
-        _c_stats.do_update(t);
+        _c_stats.do_update(t, _has_unsigned_deletion_time);
         do_write_delta_deletion_time(writer, t);
     };
     if (row.tomb().regular()) {
@@ -1459,10 +1475,10 @@ void writer::write_clustered(const rt_marker& marker, uint64_t prev_row_size) {
     write_clustering_prefix(_sst.get_version(), *_data_writer, marker.kind, _schema, marker.clustering);
     auto write_marker_body = [this, &marker] (bytes_ostream& writer) {
         write_delta_deletion_time(writer, marker.tomb);
-        _c_stats.update(marker.tomb);
+        _c_stats.update(marker.tomb, _has_unsigned_deletion_time);
         if (marker.boundary_tomb) {
             do_write_delta_deletion_time(writer, *marker.boundary_tomb);
-            _c_stats.do_update(*marker.boundary_tomb);
+            _c_stats.do_update(*marker.boundary_tomb, _has_unsigned_deletion_time);
         }
     };
 

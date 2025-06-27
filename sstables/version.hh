@@ -30,6 +30,10 @@ constexpr sstable_format_types format_of_version(sstable_version_types v) {
     }
 }
 
+inline bool version_has_unsigned_deletion_time(sstable_version_types v) {
+    return v >= sstable_version_types::da;
+}
+
 constexpr std::array<sstable_version_types, 6> all_sstable_versions = {
     sstable_version_types::ka,
     sstable_version_types::la,
