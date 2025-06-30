@@ -2967,13 +2967,20 @@ void sstable::set_first_and_last_keys() {
         auto pk = key::from_bytes(value).to_partition_key(*_schema);
         return dht::decorate_key(*_schema, std::move(pk));
     };
-    auto first = decorate_key("first", _components->summary.first_key.value);
-    auto last = decorate_key("last", _components->summary.last_key.value);
-    if (first.tri_compare(*_schema, last) > 0) {
-        throw malformed_sstable_exception(format("{}: first and last keys of summary are misordered: first={} > last={}", get_filename(), first, last));
+    if (has_component(component_type::Summary)) {
+        _first = decorate_key("first", _components->summary.first_key.value);
+        _last = decorate_key("last", _components->summary.last_key.value);
+    } else if (has_component(component_type::Statistics)) {
+        const auto& stats_meta = get_stats_metadata();
+        _first = decorate_key("first", stats_meta.first_key.value);
+        _last = decorate_key("last", stats_meta.last_key.value);
     }
-    _first = std::move(first);
-    _last = std::move(last);
+    if (_first->tri_compare(*_schema, *_last) > 0) {
+        throw malformed_sstable_exception(format("{}: first and last keys of summary are misordered: first={} > last={}", get_filename(), *_first, *_last));
+    }
+    if (!_first || !_last) {
+        throw malformed_sstable_exception(format("Can't deal with a sstable which doesn't have first and last partition key info"));
+    }
 }
 
 const partition_key& sstable::get_first_partition_key() const {
