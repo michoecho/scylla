@@ -922,7 +922,15 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     uint64_t data_len = 0;
     uint32_t chunk_len = 0;
 
-    co_await parse(s, v, in, c.name, c.options, chunk_len, data_len);
+    co_await parse(s, v, in, c.name, c.options, chunk_len);
+    if (version_has_max_compressed_chunk_length(v)) {
+        uint32_t max_compressed_chunk_length;
+        co_await parse(s, v, in, max_compressed_chunk_length);
+        if (max_compressed_chunk_length != std::numeric_limits<int32_t>::max()) {
+            c.max_compressed_chunk_length = max_compressed_chunk_length;
+        }
+    }
+    co_await parse(s, v, in, data_len);
     if (chunk_len == 0) {
         throw malformed_sstable_exception("CompressionInfo is malformed: zero chunk_len");
     }
@@ -945,7 +953,11 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
 }
 
 void write(sstable_version_types v, file_writer& out, const compression& c) {
-    write(v, out, c.name, c.options, c.uncompressed_chunk_length(), c.uncompressed_file_length());
+    write(v, out, c.name, c.options, c.uncompressed_chunk_length());
+    if (version_has_max_compressed_chunk_length(v)) {
+        write(v, out, c.max_compressed_chunk_length.value_or(std::numeric_limits<int32_t>::max()));
+    }
+    write(v, out, c.uncompressed_file_length());
 
     write(v, out, static_cast<uint32_t>(c.offsets.size()));
 
@@ -1473,10 +1485,9 @@ future<> sstable::read_summary() noexcept {
         }
     }
 
-    if (!has_component(component_type::Index)) {
-        throw std::runtime_error(format("No Index or Summary file for {}", this->filename(component_type::TOC)));
+    if (has_component(component_type::Index)) {
+        co_await generate_summary();
     }
-    co_await generate_summary();
 }
 
 future<file> sstable::open_file(component_type type, open_flags flags, file_open_options opts) const noexcept {
