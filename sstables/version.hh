@@ -39,6 +39,10 @@ inline bool version_has_byteswapped_bloom_filters(sstable_version_types v) {
     return v < sstable_version_types::da;
 }
 
+inline bool version_has_checksummed_metadata(sstable_version_types v) {
+    return v >= sstable_version_types::da;
+}
+
 constexpr std::array<sstable_version_types, 6> all_sstable_versions = {
     sstable_version_types::ka,
     sstable_version_types::la,

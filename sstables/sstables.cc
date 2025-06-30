@@ -612,7 +612,22 @@ inline void write(sstable_version_types v, file_writer& out, const std::unique_p
 
 future<> parse(const schema& schema, sstable_version_types v, random_access_reader& in, statistics& s) {
     try {
-        co_await parse(schema, v, in, s.offsets);
+        if (version_has_checksummed_metadata(v)) {
+            uint32_t n_components;
+            co_await parse(schema, v, in, n_components);
+            uint32_t checksum;
+            co_await parse(schema, v, in, checksum);
+            s.offsets.elements.resize(0);
+            s.offsets.elements.reserve(n_components);
+            for (uint32_t i = 0; i < n_components; ++i) {
+                decltype(s.offsets.elements)::value_type pair;
+                co_await parse(schema, v, in, pair);
+                s.offsets.elements.push_back(std::move(pair));
+            }
+            co_await parse(schema, v, in, checksum);
+        } else {
+            co_await parse(schema, v, in, s.offsets);
+        }
         // Old versions of Scylla do not respect the order.
         // See https://github.com/scylladb/scylla/issues/3937
         std::ranges::sort(s.offsets.elements, std::ranges::less(), std::mem_fn(&std::pair<metadata_type, unsigned int>::first));
@@ -649,9 +664,28 @@ future<> parse(const schema& schema, sstable_version_types v, random_access_read
 }
 
 inline void write(sstable_version_types v, file_writer& out, const statistics& s) {
-    write(v, out, s.offsets);
+    if (version_has_checksummed_metadata(v)) {
+        uint32_t offsets_len;
+        check_truncate_and_assign(offsets_len, s.offsets.elements.size());
+        write(v, out, offsets_len);
+        // FIXME: fill
+        uint32_t checksum = 0x12345678;
+        write(v, out, checksum);
+        for (const auto& e : s.offsets.elements) {
+            write(v, out, e);
+        }
+        // FIXME: fill
+        checksum = 0x12345678;
+        write(v, out, checksum);
+    } else {
+        write(v, out, s.offsets);
+    }
     for (auto&& e : s.offsets.elements) {
         s.contents.at(e.first)->write(v, out);
+        if (version_has_checksummed_metadata(v)) {
+            uint32_t checksum = 0x12345678;
+            write(v, out, checksum);
+        }
     }
 }
 
@@ -1901,10 +1935,16 @@ populate_statistics_offsets(sstable_version_types v, statistics& s) {
     }
 
     auto offset = serialized_size(v, s.offsets);
+    if (version_has_checksummed_metadata(v)) {
+        offset += sizeof(uint32_t) * 2;
+    }
     s.offsets.elements.clear();
     for (auto t : types) {
         s.offsets.elements.emplace_back(t, offset);
         offset += s.contents[t]->serialized_size(v);
+        if (version_has_checksummed_metadata(v)) {
+            offset += sizeof(uint32_t);
+        }
     }
 }
 
