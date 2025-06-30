@@ -1595,7 +1595,7 @@ void writer::consume_end_of_stream() {
     _cfg.monitor->on_data_write_completed();
 
     if (_sst.has_component(component_type::Summary)) {
-        seal_summary(_sst._components->summary, std::move(_first_key), std::move(_last_key), _index_sampling_state).get();
+        seal_summary(_sst._components->summary, _first_key, _last_key, _index_sampling_state).get();
     }
 
     if (_sst.has_component(component_type::CompressionInfo)) {
@@ -1628,7 +1628,7 @@ void writer::consume_end_of_stream() {
     _sst._components->statistics.contents[metadata_type::Serialization] = std::make_unique<serialization_header>(std::move(_sst_schema.header));
     seal_statistics(_sst.get_version(), _sst._components->statistics, _collector,
         _sst._schema->get_partitioner().name(), _sst._schema->bloom_filter_fp_chance(),
-        _sst._schema, _sst.get_first_decorated_key(), _sst.get_last_decorated_key(), _enc_stats);
+        _sst._schema, _first_key, _last_key, _enc_stats);
     close_data_writer();
   if (_sst.has_component(component_type::Summary)) {
     _sst.write_summary();

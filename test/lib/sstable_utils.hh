@@ -157,9 +157,15 @@ public:
         _sst->_metadata_size_on_disk = std::max(1UL, uint64_t(data_file_size * 0.01));
         // scylla component must be present for a sstable to be considered fully expired.
         _sst->_recognized_components.insert(component_type::Scylla);
+        auto first = sstables::key::from_partition_key(*_sst->_schema, first_key).get_bytes();
+        auto last = sstables::key::from_partition_key(*_sst->_schema, last_key).get_bytes();
+        stats.first_key.value = bytes(first);
+        stats.last_key.value = bytes(last);
         _sst->_components->statistics.contents[metadata_type::Stats] = std::make_unique<stats_metadata>(std::move(stats));
-        _sst->_components->summary.first_key.value = sstables::key::from_partition_key(*_sst->_schema, first_key).get_bytes();
-        _sst->_components->summary.last_key.value = sstables::key::from_partition_key(*_sst->_schema, last_key).get_bytes();
+        _sst->_components->summary.first_key.value = first;
+        _sst->_components->summary.last_key.value = last;
+        _sst->_recognized_components.insert(component_type::Statistics);
+        _sst->_recognized_components.insert(component_type::Summary);
         _sst->set_first_and_last_keys();
         _sst->_components->statistics.contents[metadata_type::Compaction] = std::make_unique<compaction_metadata>();
         _sst->_run_identifier = run_id::create_random_id();

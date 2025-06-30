@@ -1861,8 +1861,8 @@ void prepare_summary(summary& s, uint32_t min_index_interval) {
 }
 
 future<> seal_summary(summary& s,
-        std::optional<key>&& first_key,
-        std::optional<key>&& last_key,
+        const std::optional<key>& first_key,
+        const std::optional<key>& last_key,
         const index_sampling_state& state) {
     if (s.entries.size() > std::numeric_limits<uint32_t>::max()) {
         throw malformed_sstable_exception("Current sampling level (" + to_sstring(downsampling::BASE_SAMPLING_LEVEL) + ") not enough to generate summary.");
@@ -1959,7 +1959,7 @@ create_sharding_metadata(schema_ptr schema, const dht::decorated_key& first_key,
 // map each metadata type to its correspondent position in the file.
 void seal_statistics(sstable_version_types v, statistics& s, metadata_collector& collector,
         const sstring partitioner, double bloom_filter_fp_chance, schema_ptr schema,
-        const dht::decorated_key& first_key, const dht::decorated_key& last_key,
+        const std::optional<key>& first_key, const std::optional<key>& last_key,
         const encoding_stats& enc_stats, const std::set<int>& compaction_ancestors) {
     validation_metadata validation;
     compaction_metadata compaction;
@@ -1976,6 +1976,11 @@ void seal_statistics(sstable_version_types v, statistics& s, metadata_collector&
     s.contents[metadata_type::Compaction] = std::make_unique<compaction_metadata>(std::move(compaction));
 
     collector.construct_stats(stats);
+    if (first_key) {
+        SCYLLA_ASSERT(last_key);
+        stats.first_key = disk_string_vint_size(first_key->get_bytes());
+        stats.last_key = disk_string_vint_size(last_key->get_bytes());
+    }
     s.contents[metadata_type::Stats] = std::make_unique<stats_metadata>(std::move(stats));
 
     populate_statistics_offsets(v, s);

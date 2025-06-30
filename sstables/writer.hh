@@ -568,13 +568,13 @@ void maybe_add_summary_entry(summary&, const dht::token&, bytes_view key, uint64
 void prepare_summary(summary& s,  uint32_t min_index_interval);
 
 future<> seal_summary(summary& s,
-    std::optional<key>&& first_key,
-    std::optional<key>&& last_key,
+    const std::optional<key>& first_key,
+    const std::optional<key>& last_key,
     const index_sampling_state& state);
 
 void seal_statistics(sstable_version_types, statistics&, metadata_collector&,
     const sstring partitioner, double bloom_filter_fp_chance, schema_ptr,
-    const dht::decorated_key& first_key, const dht::decorated_key& last_key,
+    const std::optional<key>& first_key, const std::optional<key>& last_key,
     const encoding_stats& enc_stats = {}, const std::set<int>& compaction_ancestors = {});
 
 void write(sstable_version_types, file_writer&, const utils::estimated_histogram&);
