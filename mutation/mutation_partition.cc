@@ -895,9 +895,7 @@ auto fmt::formatter<mutation_partition::printer>::format(const mutation_partitio
     auto out = ctx.out();
     auto& mp = p._mutation_partition;
     out = fmt::format_to(out, "mutation_partition: {{\n");
-    if (mp._tombstone) {
-        out = fmt::format_to(out, "{}tombstone: {},\n", indent, mp._tombstone);
-    }
+    out = fmt::format_to(out, "{}tombstone: {},\n", indent, mp._tombstone);
     if (!mp._row_tombstones.empty()) {
         out = fmt::format_to(out, "{}range_tombstones: {{{}}},\n", indent, fmt::join(prefixed("\n    ", mp._row_tombstones), ","));
     }
@@ -1084,10 +1082,12 @@ bool mutation_partition::equal(const schema& this_schema, const mutation_partiti
     SCYLLA_ASSERT(_schema_version == this_schema.version());
     SCYLLA_ASSERT(p._schema_version == p_schema.version());
 #endif
+    mplog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
     if (_tombstone != p._tombstone) {
         return false;
     }
 
+    mplog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
     if (!std::ranges::equal(non_dummy_rows(), p.non_dummy_rows(),
         [&] (const rows_entry& e1, const rows_entry& e2) {
             return e1.equal(this_schema, e2, p_schema);
@@ -1095,6 +1095,7 @@ bool mutation_partition::equal(const schema& this_schema, const mutation_partiti
     )) {
         return false;
     }
+    mplog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
 
     if (!std::equal(_row_tombstones.begin(), _row_tombstones.end(),
         p._row_tombstones.begin(), p._row_tombstones.end(),
@@ -1102,6 +1103,7 @@ bool mutation_partition::equal(const schema& this_schema, const mutation_partiti
     )) {
         return false;
     }
+    mplog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
 
     return _static_row.equal(column_kind::static_column, this_schema, p._static_row, p_schema);
 }

@@ -94,24 +94,31 @@ SEASTAR_TEST_CASE(datafile_generation_09) {
         mutation m(s, key);
         m.set_clustered_cell(c_key, r1_col, make_atomic_cell(int32_type, int32_type->decompose(1)));
 
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         auto sst = make_sstable_containing(env.make_sstable(s), {std::move(m)});
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         auto sst2 = env.reusable_sst(sst).get();
 
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         sstables::test(sst2).read_summary().get();
         const summary& sst1_s = sst->get_summary();
         const summary& sst2_s = sst2->get_summary();
 
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         BOOST_REQUIRE(::memcmp(&sst1_s.header, &sst2_s.header, sizeof(summary::header)) == 0);
         BOOST_REQUIRE(sst1_s.positions == sst2_s.positions);
         BOOST_REQUIRE(sst1_s.entries == sst2_s.entries);
         BOOST_REQUIRE(sst1_s.first_key.value == sst2_s.first_key.value);
         BOOST_REQUIRE(sst1_s.last_key.value == sst2_s.last_key.value);
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
 
         sstables::test(sst2).read_toc().get();
         auto& sst1_c = sstables::test(sst).get_components();
         auto& sst2_c = sstables::test(sst2).get_components();
 
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         BOOST_REQUIRE(sst1_c == sst2_c);
+        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
     });
 }
 

@@ -868,6 +868,13 @@ private:
                     del.local_deletion_time = std::numeric_limits<uint32_t>::max();
                 }
             }
+            sstlog.trace("pos={} {} {} {} {}",
+                         this->position() - _processing_data->size(),
+                         std::source_location::current(),
+                         _has_unsigned_deletion_time,
+                         del.local_deletion_time,
+                         del.marked_for_delete_at
+            );
             auto ret = _consumer.consume_partition_start(key_view(to_bytes_view(_pk)), del);
             // after calling the consume function, we can release the
             // buffers we held for it.
@@ -1987,6 +1994,7 @@ data_consumer::proceed mp_row_consumer_reader_mx::on_next_partition(dht::decorat
     _before_partition = false;
     _end_of_stream = false;
     _current_partition_key = std::move(key);
+    sstlog.trace("pos={} {}", std::source_location::current(), tomb);
     push_mutation_fragment(
             mutation_fragment_v2(*_schema, _permit, partition_start(*_current_partition_key, tomb)));
     _sst->get_stats().on_partition_read();

@@ -761,9 +761,7 @@ auto fmt::formatter<mutation_partition_v2::printer>::format(const mutation_parti
 
     auto& mp = p._mutation_partition;
     auto out = fmt::format_to(ctx.out(), "mutation_partition_v2: {{\n");
-    if (mp._tombstone) {
-        out = fmt::format_to(out, "{:2}tombstone: {},\n", indent, mp._tombstone);
-    }
+    out = fmt::format_to(out, "{:2}tombstone: {},\n", indent, mp._tombstone);
 
     if (!mp.static_row().empty()) {
         out = fmt::format_to(out, "{:2}static_row: {{\n", indent);
