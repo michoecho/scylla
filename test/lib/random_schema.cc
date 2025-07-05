@@ -587,7 +587,7 @@ value_generator::value_generator()
             {long_type.get(), &generate_long_value},
             {ascii_type.get(), &generate_ascii_value},
             {bytes_type.get(), &generate_bytes_value},
-            {utf8_type.get(), &generate_utf8_value},
+            {utf8_type.get(), &generate_ascii_value},
             {boolean_type.get(), &generate_boolean_value},
             {date_type.get(), &generate_date_value},
             {timeuuid_type.get(), &generate_timeuuid_value},
@@ -601,6 +601,7 @@ value_generator::value_generator()
             {varint_type.get(), &generate_varint_value},
             {decimal_type.get(), &generate_decimal_value},
             {duration_type.get(), &generate_duration_value}} {
+    (void)generate_utf8_value;
     std::mt19937 engine;
     for (const auto& [regular_type, regular_value_gen] : _regular_value_generators) {
         _regular_value_min_sizes.emplace(regular_type, regular_value_gen(engine, size_t{}, size_t{}).serialized_size());

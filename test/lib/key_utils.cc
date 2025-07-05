@@ -35,6 +35,9 @@ std::vector<DecoratedKey> generate_keys(
     components.reserve(types.size());
 
     while (keys.size() != n) {
+        if (keys.size() % 10000 == 0) {
+            fmt::println("At key {}", keys.size());
+        }
         components.clear();
         auto component_count = allow_prefixes ? component_count_dist(engine) : types.size();
         for (size_t i = 0; i < component_count; ++i) {
