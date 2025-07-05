@@ -13,7 +13,7 @@
 
 namespace sstables {
 
-sstable_writer::sstable_writer(sstable& sst, const schema& s, std::optional<uint64_t> estimated_partitions,
+sstable_writer::sstable_writer(sstable& sst, const schema& s, uint64_t estimated_partitions,
         const sstable_writer_config& cfg, encoding_stats enc_stats, shard_id shard) {
     if (sst.get_version() < oldest_writable_sstable_format) {
         on_internal_error(sstlog, format("writing sstables with too old format: {}", static_cast<int>(sst.get_version())));

@@ -18,7 +18,7 @@ namespace api {
 
 using timestamp_type = int64_t;
 timestamp_type constexpr missing_timestamp = std::numeric_limits<timestamp_type>::min();
-timestamp_type constexpr min_timestamp = 0;
+timestamp_type constexpr min_timestamp = std::numeric_limits<timestamp_type>::min() + 1;
 timestamp_type constexpr max_timestamp = std::numeric_limits<timestamp_type>::max();
 
 // Used for generating server-side mutation timestamps.

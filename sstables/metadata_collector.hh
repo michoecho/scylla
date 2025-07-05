@@ -51,7 +51,7 @@ struct column_stats {
      ** for the purpose of tombstone garbage collection of shadowable tombstones **/
     min_tracker<api::timestamp_type> min_live_row_marker_timestamp_tracker;
 
-    min_max_tracker<uint32_t> local_deletion_time_tracker;
+    min_max_tracker<int32_t> local_deletion_time_tracker;
     min_max_tracker<int32_t> ttl_tracker;
     /** histogram of tombstone drop time */
     utils::streaming_histogram tombstone_histogram;
@@ -89,12 +89,12 @@ struct column_stats {
         min_live_row_marker_timestamp_tracker.update(value);
     }
 
-    void update_local_deletion_time(uint32_t value) {
+    void update_local_deletion_time(int32_t value) {
         local_deletion_time_tracker.update(value);
     }
-    void update_local_deletion_time_and_tombstone_histogram(gc_clock::time_point value, bool has_unsigned_deletion_time) {
+    void update_local_deletion_time_and_tombstone_histogram(gc_clock::time_point value) {
         bool capped;
-        uint32_t ldt = adjusted_local_deletion_time(value, capped, has_unsigned_deletion_time);
+        int32_t ldt = adjusted_local_deletion_time(value, capped);
         local_deletion_time_tracker.update(ldt);
         tombstone_histogram.update(ldt);
         capped_local_deletion_time |= capped;
@@ -105,13 +105,13 @@ struct column_stats {
     void update_ttl(gc_clock::duration value) {
         ttl_tracker.update(gc_clock::as_int32(value));
     }
-    void do_update(const tombstone& t, bool has_unsigned_deletion_time) {
+    void do_update(const tombstone& t) {
         update_timestamp(t.timestamp, is_live::no);
-        update_local_deletion_time_and_tombstone_histogram(t.deletion_time, has_unsigned_deletion_time);
+        update_local_deletion_time_and_tombstone_histogram(t.deletion_time);
     }
-    void update(const tombstone& t, bool has_unsigned_deletion_time) {
+    void update(const tombstone& t) {
         if (t) {
-            do_update(t, has_unsigned_deletion_time);
+            do_update(t);
         }
     }
 };
@@ -136,7 +136,7 @@ private:
     min_max_tracker<api::timestamp_type> _timestamp_tracker;
     min_tracker<api::timestamp_type> _min_live_timestamp_tracker;
     min_tracker<api::timestamp_type> _min_live_row_marker_timestamp_tracker;
-    min_max_tracker<uint32_t> _local_deletion_time_tracker{std::numeric_limits<uint32_t>::max(), std::numeric_limits<uint32_t>::max()};
+    min_max_tracker<int32_t> _local_deletion_time_tracker{std::numeric_limits<int32_t>::max(), std::numeric_limits<int32_t>::max()};
     min_max_tracker<int32_t> _ttl_tracker{0, 0};
     double _compression_ratio = NO_COMPRESSION_RATIO;
     utils::streaming_histogram _estimated_tombstone_drop_time{TOMBSTONE_HISTOGRAM_BIN_SIZE};
@@ -155,9 +155,7 @@ private:
      */
     hll::HyperLogLog _cardinality = hyperloglog(13, 25);
 private:
-    void convert(covered_slice&,
-                 const std::optional<position_in_partition>& min,
-                 const std::optional<position_in_partition>& max);
+    void convert(disk_array<uint32_t, disk_string<uint16_t>>&to, const std::optional<position_in_partition>& from);
 public:
     explicit metadata_collector(const schema& schema, component_name name, const locator::host_id& host_id)
         : _schema(schema)
@@ -248,7 +246,8 @@ public:
         m.compression_ratio = _compression_ratio;
         m.estimated_tombstone_drop_time = std::move(_estimated_tombstone_drop_time);
         m.sstable_level = _sstable_level;
-        convert(m.slice, _min_clustering_pos, _max_clustering_pos);
+        convert(m.min_column_names, _min_clustering_pos);
+        convert(m.max_column_names, _max_clustering_pos);
         m.has_legacy_counter_shards = _has_legacy_counter_shards;
         m.columns_count = _columns_count;
         m.rows_count = _rows_count;

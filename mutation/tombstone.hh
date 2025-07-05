@@ -66,10 +66,15 @@ template <>
 struct fmt::formatter<tombstone> : fmt::formatter<string_view> {
     template <typename FormatContext>
     auto format(const tombstone& t, FormatContext& ctx) const {
-        return fmt::format_to(ctx.out(),
-                                "{{tombstone: timestamp={}, deletion_time={}}}",
-                                t.timestamp, t.deletion_time.time_since_epoch().count());
-    }
+        if (t) {
+            return fmt::format_to(ctx.out(),
+                                  "{{tombstone: timestamp={}, deletion_time={}}}",
+                                  t.timestamp, t.deletion_time.time_since_epoch().count());
+        } else {
+            return fmt::format_to(ctx.out(),
+                                  "{{tombstone: none}}");
+        }
+     }
 };
 
 inline std::ostream& operator<<(std::ostream& out, const tombstone& t) {

@@ -10,14 +10,22 @@
 
 #include "utils/assert.hh"
 #include "clustering_bounds_comparator.hh"
-#include "sstables/types.hh"
 #include <iosfwd>
 
 namespace sstables {
 
-struct clustering_info {
-    clustering_key_prefix clustering;
-    bound_kind_m kind;
+// This enum corresponds to Origin's ClusteringPrefix.Kind.
+// It is a superset of values of the bound_kind enum
+// declared in clustering_bounds_comparator.hh
+enum class bound_kind_m : uint8_t {
+    excl_end = 0,
+    incl_start = 1,
+    excl_end_incl_start = 2,
+    static_clustering = 3,
+    clustering = 4,
+    incl_end_excl_start = 5,
+    incl_end = 6,
+    excl_start = 7,
 };
 
 inline bool is_bound_kind(bound_kind_m kind) {

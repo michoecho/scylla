@@ -48,16 +48,16 @@ public:
     }
 
     std::unique_ptr<index_reader> make_index_reader(reader_permit permit) {
-        return ::make_index_reader(_sst, std::move(permit));
+        return std::make_unique<index_reader>(_sst, std::move(permit));
     }
 
     struct index_entry {
-        std::optional<sstables::key> sstables_key;
-        std::optional<partition_key> key;
+        sstables::key sstables_key;
+        partition_key key;
         uint64_t promoted_index_size;
 
         key_view get_key() const {
-            return sstables_key.value();
+            return sstables_key;
         }
     };
 
@@ -67,16 +67,11 @@ public:
         auto ir = make_index_reader(std::move(permit));
         std::exception_ptr err = nullptr;
         try {
-            co_await ir->advance_to(dht::partition_range::make_open_ended_both_sides());
             while (!ir->eof()) {
                 co_await ir->read_partition_data();
-                auto pk_opt = ir->get_partition_key();
-                if (pk_opt) {
-                    entries.emplace_back(index_entry{sstables::key::from_partition_key(*s, pk_opt.value()),
-                                            pk_opt.value(), ir->get_promoted_index_size()});
-                } else {
-                    entries.emplace_back(std::nullopt, std::nullopt, ir->get_promoted_index_size());
-                }
+                auto pk = ir->get_partition_key();
+                entries.emplace_back(index_entry{sstables::key::from_partition_key(*s, pk),
+                                        pk, ir->get_promoted_index_size()});
                 co_await ir->advance_to_next_partition();
             }
         } catch (...) {
@@ -157,15 +152,9 @@ public:
         _sst->_metadata_size_on_disk = std::max(1UL, uint64_t(data_file_size * 0.01));
         // scylla component must be present for a sstable to be considered fully expired.
         _sst->_recognized_components.insert(component_type::Scylla);
-        auto first = sstables::key::from_partition_key(*_sst->_schema, first_key).get_bytes();
-        auto last = sstables::key::from_partition_key(*_sst->_schema, last_key).get_bytes();
-        stats.first_key.value = bytes(first);
-        stats.last_key.value = bytes(last);
         _sst->_components->statistics.contents[metadata_type::Stats] = std::make_unique<stats_metadata>(std::move(stats));
-        _sst->_components->summary.first_key.value = first;
-        _sst->_components->summary.last_key.value = last;
-        _sst->_recognized_components.insert(component_type::Statistics);
-        _sst->_recognized_components.insert(component_type::Summary);
+        _sst->_components->summary.first_key.value = sstables::key::from_partition_key(*_sst->_schema, first_key).get_bytes();
+        _sst->_components->summary.last_key.value = sstables::key::from_partition_key(*_sst->_schema, last_key).get_bytes();
         _sst->set_first_and_last_keys();
         _sst->_components->statistics.contents[metadata_type::Compaction] = std::make_unique<compaction_metadata>();
         _sst->_run_identifier = run_id::create_random_id();

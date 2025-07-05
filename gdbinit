@@ -9,7 +9,6 @@ set auto-load safe-path /opt/scylladb/libreloc
 add-auto-load-safe-path /lib64
 add-auto-load-safe-path /usr/lib64
 set debug libthread-db 1
-set history save on
 
 # Register pretty-printer helpers for printing common
 # std-c++ stl containers.

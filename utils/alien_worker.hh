@@ -45,14 +45,15 @@ public:
     template <typename T>
     seastar::future<T> submit(seastar::noncopyable_function<T()> f) {
         auto p = seastar::promise<T>();
-        auto wrapper = [&p, f = std::move(f), shard = seastar::this_shard_id(), &alien = seastar::engine().alien()] () mutable noexcept {
+        auto fut = p.get_future();
+        auto wrapper = [p = std::move(p), f = std::move(f), shard = seastar::this_shard_id(), &alien = seastar::engine().alien()] () mutable noexcept {
             try {
                 auto v = f();
-                seastar::alien::run_on(alien, shard, [&p, v = std::move(v)] () mutable noexcept {
+                seastar::alien::run_on(alien, shard, [v = std::move(v), p = std::move(p)] () mutable noexcept {
                     p.set_value(std::move(v));
                 });
             } catch (...) {
-                seastar::alien::run_on(alien, shard, [&p, ep = std::current_exception()] () mutable noexcept {
+                seastar::alien::run_on(alien, shard, [p = std::move(p), ep = std::current_exception()] () mutable noexcept {
                     p.set_exception(ep);
                 });
             }
@@ -62,7 +63,7 @@ public:
             _pending.push(std::move(wrapper));
         }
         _cv.notify_one();
-        co_return co_await p.get_future();
+        return fut;
     }
 };
 

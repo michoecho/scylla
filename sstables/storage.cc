@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
-#pragma clang optimize on
 #include "storage.hh"
 
 #include <cerrno>
@@ -55,7 +54,7 @@ private:
     template <typename Comp>
     requires std::is_same_v<Comp, component_type> || std::is_same_v<Comp, sstring>
     static auto filename(const sstable& sst, sstring dir, generation_type gen, Comp comp) {
-        return sstable::filename(dir, sst._schema->ks_name(), sst._schema->cf_name(), sst._version, gen, comp);
+        return sstable::filename(dir, sst._schema->ks_name(), sst._schema->cf_name(), sst._version, gen, sst._format, comp);
     }
 
     future<> check_create_links_replay(const sstable& sst, const sstring& dst_dir, generation_type dst_gen, const std::vector<std::pair<sstables::component_type, sstring>>& comps) const;
@@ -88,7 +87,6 @@ public:
     // runs in async context
     virtual void open(sstable& sst) override;
     virtual future<> wipe(const sstable& sst, sync_dir) noexcept override;
-    virtual future<> unlink_component(const sstable& sst, component_type) noexcept override;
     virtual future<file> open_component(const sstable& sst, component_type type, open_flags flags, file_open_options options, bool check_integrity) override;
     virtual future<data_sink> make_data_or_index_sink(sstable& sst, component_type type) override;
     virtual future<data_sink> make_component_sink(sstable& sst, component_type type, open_flags oflags, file_output_stream_options options) override;
@@ -108,16 +106,8 @@ future<data_sink> filesystem_storage::make_data_or_index_sink(sstable& sst, comp
     options.buffer_size = sst.sstable_buffer_size;
     options.write_behind = 10;
 
-    seastar::file f;
-    switch (type) {
-        case component_type::Data: f = std::move(sst._data_file); break;
-        case component_type::Index: f = std::move(sst._index_file); break;
-        case component_type::TemporaryIndex: f = std::move(sst._index_file); break;
-        case component_type::Partitions: f = std::move(sst._partition_index_file); break;
-        case component_type::Rows: f = std::move(sst._row_index_file); break;
-        default: abort(); break;
-    }
-    return make_file_data_sink(std::move(f), options);
+    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index);
+    return make_file_data_sink(type == component_type::Data ? std::move(sst._data_file) : std::move(sst._index_file), options);
 }
 
 future<data_sink> filesystem_storage::make_component_sink(sstable& sst, component_type type, open_flags oflags, file_output_stream_options options) {
@@ -511,21 +501,6 @@ future<> filesystem_storage::wipe(const sstable& sst, sync_dir sync) noexcept {
     }
 }
 
-future<> filesystem_storage::unlink_component(const sstable& sst, component_type type) noexcept {
-    std::string name;
-    try {
-        name = fmt::to_string(sst.filename(type));
-        co_await sst.sstable_write_io_check(remove_file, name);
-    } catch (...) {
-        // Log and ignore the failure since there is nothing much we can do about it at this point.
-        // a. Compaction will retry deleting the sstable in the next pass, and
-        // b. in the future sstables_manager is planned to handle sstables deletion.
-        // c. Eventually we may want to record these failures in a system table
-        //    and notify the administrator about that for manual handling (rather than aborting).
-        sstlog.warn("Failed to delete {}: {}. Ignoring.", name, std::current_exception());
-    }
-}
-
 future<atomic_delete_context> filesystem_storage::atomic_delete_prepare(const std::vector<shared_sstable>& ssts) const {
     atomic_delete_context res;
 
@@ -593,7 +568,6 @@ public:
     // runs in async context
     virtual void open(sstable& sst) override;
     virtual future<> wipe(const sstable& sst, sync_dir) noexcept override;
-    virtual future<> unlink_component(const sstable& sst, component_type) noexcept override;
     virtual future<file> open_component(const sstable& sst, component_type type, open_flags flags, file_open_options options, bool check_integrity) override;
     virtual future<data_sink> make_data_or_index_sink(sstable& sst, component_type type) override;
     virtual future<data_sink> make_component_sink(sstable& sst, component_type type, open_flags oflags, file_output_stream_options options) override;
@@ -627,7 +601,7 @@ sstring s3_storage::make_s3_object_name(const sstable& sst, component_type type)
 }
 
 void s3_storage::open(sstable& sst) {
-    entry_descriptor desc(sst._generation, sst._version, component_type::TOC);
+    entry_descriptor desc(sst._generation, sst._version, sst._format, component_type::TOC);
     sst.manager().sstables_registry().create_entry(owner(), status_creating, sst._state, std::move(desc)).get();
 
     memory_data_sink_buffers bufs;
@@ -666,7 +640,7 @@ static future<data_sink> maybe_wrap_sink(const sstable& sst, component_type type
 }
 
 future<data_sink> s3_storage::make_data_or_index_sink(sstable& sst, component_type type) {
-    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index || type == component_type::Partitions || type == component_type::Rows || type == component_type::TemporaryIndex);
+    SCYLLA_ASSERT(type == component_type::Data || type == component_type::Index);
     // FIXME: if we have file size upper bound upfront, it's better to use make_upload_sink() instead
     return maybe_wrap_sink(sst, type, _client->make_upload_jumbo_sink(make_s3_object_name(sst, type), std::nullopt, _as));
 }
@@ -699,10 +673,6 @@ future<> s3_storage::wipe(const sstable& sst, sync_dir) noexcept {
     });
 
     co_await sstables_registry.delete_entry(owner(), sst.generation());
-}
-
-future<> s3_storage::unlink_component(const sstable& sst, component_type type) noexcept {
-    co_await _client->delete_object(make_s3_object_name(sst, type));
 }
 
 future<atomic_delete_context> s3_storage::atomic_delete_prepare(const std::vector<shared_sstable>&) const {

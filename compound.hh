@@ -19,11 +19,6 @@
 
 enum class allow_prefixes { no, yes };
 
-namespace trie {
-bool has_memcmp_comparable_form(const abstract_type&);
-void memcmp_comparable_form_inner(managed_bytes_view, std::vector<std::byte>& out, const abstract_type&);
-} // namespace trie
-
 template<allow_prefixes AllowPrefixes = allow_prefixes::no>
 class compound_type final {
 private:
@@ -298,22 +293,6 @@ public:
         }
         // FIXME: call equal() on each component
         return compare(v1, v2) == 0;
-    }
-    bool has_memcmp_comparable_form() {
-        for (const auto& t : _types) {
-            if (!trie::has_memcmp_comparable_form(*t)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    void memcmp_comparable_form(managed_bytes_view v, std::vector<std::byte>& out) {
-        out.reserve(v.size_bytes() * 2);
-        auto t = _types.begin();
-        for (const managed_bytes_view component : components(v)) {
-            out.push_back(std::byte(0x40));
-            trie::memcmp_comparable_form_inner(component, out, **t++);
-        }
     }
 };
 

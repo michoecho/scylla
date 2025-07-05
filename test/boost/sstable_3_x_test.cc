@@ -55,6 +55,7 @@ class sstable_assertions final : public sstables::test {
                             path,
                             generation,
                             version,
+                            sstable_format_types::big,
                             1))
         , _env(env)
     { }
@@ -3171,9 +3172,9 @@ static void compare_sstables(const std::filesystem::path& result_path, sstring t
                            component_type::Filter}) {
         auto orig_filename =
                 sstable::filename(get_write_test_path(table_name),
-                                  "ks", table_name, sstables::sstable_version_types::mc, generation_from_value(1), file_type);
+                                  "ks", table_name, sstables::sstable_version_types::mc, generation_from_value(1), big, file_type);
         auto result_filename =
-                sstable::filename(result_path.string(), "ks", table_name, sst->get_version(), sst->generation(), file_type);
+                sstable::filename(result_path.string(), "ks", table_name, sst->get_version(), sst->generation(), big, file_type);
         auto eq = tests::compare_files(orig_filename, result_filename).get();
         if (!eq) {
             BOOST_FAIL(format("Files {} and {} are different", orig_filename, result_filename));
@@ -3284,8 +3285,8 @@ static void do_validate_stats_metadata(schema_ptr s, sstable_assertions& written
     BOOST_REQUIRE_EQUAL(orig_stats.min_ttl, written_stats.min_ttl);
     BOOST_REQUIRE_EQUAL(orig_stats.max_ttl, written_stats.max_ttl);
     if (orig_sst->has_correct_min_max_column_names() && written_sst->has_correct_min_max_column_names()) {
-        BOOST_REQUIRE(orig_stats.slice.min == written_stats.slice.min);
-        BOOST_REQUIRE(orig_stats.slice.min == written_stats.slice.min);
+        BOOST_REQUIRE(orig_stats.min_column_names.elements == written_stats.min_column_names.elements);
+        BOOST_REQUIRE(orig_stats.max_column_names.elements == written_stats.max_column_names.elements);
     }
     BOOST_REQUIRE_EQUAL(orig_stats.columns_count, written_stats.columns_count);
     BOOST_REQUIRE_EQUAL(orig_stats.rows_count, written_stats.rows_count);
@@ -3295,14 +3296,14 @@ static void do_validate_stats_metadata(schema_ptr s, sstable_assertions& written
 
 static void check_min_max_column_names(sstable_assertions& written_sst, std::vector<bytes> min_components, std::vector<bytes> max_components) {
     const auto& st = written_sst->get_stats_metadata();
-    BOOST_TEST_MESSAGE(fmt::format("min {}/{} max {}/{}", st.slice.min.size(), min_components.size(), st.slice.max.size(), max_components.size()));
-    BOOST_REQUIRE(st.slice.min.size() == min_components.size());
-    for (auto i = 0U; i < st.slice.min.size(); i++) {
-        BOOST_REQUIRE(min_components[i] == st.slice.min[i]);
+    BOOST_TEST_MESSAGE(fmt::format("min {}/{} max {}/{}", st.min_column_names.elements.size(), min_components.size(), st.max_column_names.elements.size(), max_components.size()));
+    BOOST_REQUIRE(st.min_column_names.elements.size() == min_components.size());
+    for (auto i = 0U; i < st.min_column_names.elements.size(); i++) {
+        BOOST_REQUIRE(min_components[i] == st.min_column_names.elements[i].value);
     }
-    BOOST_REQUIRE(st.slice.max.size() == max_components.size());
-    for (auto i = 0U; i < st.slice.max.size(); i++) {
-        BOOST_REQUIRE(max_components[i] == st.slice.max[i]);
+    BOOST_REQUIRE(st.max_column_names.elements.size() == max_components.size());
+    for (auto i = 0U; i < st.max_column_names.elements.size(); i++) {
+        BOOST_REQUIRE(max_components[i] == st.max_column_names.elements[i].value);
     }
 }
 
@@ -4528,7 +4529,7 @@ static sstring get_read_index_test_path(sstring table_name) {
 }
 
 static std::unique_ptr<index_reader> get_index_reader(shared_sstable sst, reader_permit permit) {
-    return ::make_index_reader(sst, std::move(permit));
+    return std::make_unique<index_reader>(sst, std::move(permit));
 }
 
 shared_sstable make_test_sstable(test_env& env, schema_ptr schema, const sstring& table_name) {

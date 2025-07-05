@@ -226,7 +226,6 @@ docker_common_args+=(
        -v /etc/localtime:/etc/localtime:ro \
        --env CARGO_HOME \
        -v "${CARGO_HOME}:${CARGO_HOME}" \
-       -v "${HOME}/.config/gdb/gdbinit:${HOME}/.config/gdb/gdbinit:ro" \
        -w "$PWD" \
        -e HOME="$HOME" \
        "${docker_args[@]}" \

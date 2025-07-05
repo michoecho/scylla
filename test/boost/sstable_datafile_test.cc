@@ -94,31 +94,24 @@ SEASTAR_TEST_CASE(datafile_generation_09) {
         mutation m(s, key);
         m.set_clustered_cell(c_key, r1_col, make_atomic_cell(int32_type, int32_type->decompose(1)));
 
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         auto sst = make_sstable_containing(env.make_sstable(s), {std::move(m)});
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         auto sst2 = env.reusable_sst(sst).get();
 
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         sstables::test(sst2).read_summary().get();
         const summary& sst1_s = sst->get_summary();
         const summary& sst2_s = sst2->get_summary();
 
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         BOOST_REQUIRE(::memcmp(&sst1_s.header, &sst2_s.header, sizeof(summary::header)) == 0);
         BOOST_REQUIRE(sst1_s.positions == sst2_s.positions);
         BOOST_REQUIRE(sst1_s.entries == sst2_s.entries);
         BOOST_REQUIRE(sst1_s.first_key.value == sst2_s.first_key.value);
         BOOST_REQUIRE(sst1_s.last_key.value == sst2_s.last_key.value);
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
 
         sstables::test(sst2).read_toc().get();
         auto& sst1_c = sstables::test(sst).get_components();
         auto& sst2_c = sstables::test(sst2).get_components();
 
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
         BOOST_REQUIRE(sst1_c == sst2_c);
-        testlog.info("{}:{}", std::source_location::current().file_name(), std::source_location::current().line());
     });
 }
 
@@ -696,10 +689,6 @@ SEASTAR_TEST_CASE(test_wrong_range_tombstone_order) {
 
     return test_env::do_with_async([] (test_env& env) {
       for (const auto version : all_sstable_versions) {
-        if (format_of_version(version) != sstables::sstable_format_types::big) {
-            // `compact storage` nonsense.
-            continue;
-        }
         auto s = schema_builder("ks", "wrong_range_tombstone_order")
             .with(schema_builder::compact_storage::yes)
             .with_column("p", int32_type, column_kind::partition_key)
@@ -847,7 +836,7 @@ SEASTAR_TEST_CASE(test_sstable_max_local_deletion_time) {
                 builder.with_column("r1", utf8_type);
                 schema_ptr s = builder.build(schema_builder::compact_storage::no);
                 auto mt = make_lw_shared<replica::memtable>(s);
-                uint32_t last_expiry = 0;
+                int32_t last_expiry = 0;
                 for (auto i = 0; i < 10; i++) {
                     auto key = partition_key::from_exploded(*s, {to_bytes("key" + to_sstring(i))});
                     mutation m(s, key);
@@ -924,14 +913,14 @@ SEASTAR_TEST_CASE(test_promoted_index_read) {
 
 static void check_min_max_column_names(const sstable_ptr& sst, std::vector<bytes> min_components, std::vector<bytes> max_components) {
     const auto& st = sst->get_stats_metadata();
-    BOOST_TEST_MESSAGE(fmt::format("min {}/{} max {}/{}", st.slice.min.size(), min_components.size(), st.slice.max.size(), max_components.size()));
-    BOOST_REQUIRE(st.slice.min.size() == min_components.size());
-    for (auto i = 0U; i < st.slice.min.size(); i++) {
-        BOOST_REQUIRE(min_components[i] == st.slice.min[i]);
+    BOOST_TEST_MESSAGE(fmt::format("min {}/{} max {}/{}", st.min_column_names.elements.size(), min_components.size(), st.max_column_names.elements.size(), max_components.size()));
+    BOOST_REQUIRE(st.min_column_names.elements.size() == min_components.size());
+    for (auto i = 0U; i < st.min_column_names.elements.size(); i++) {
+        BOOST_REQUIRE(min_components[i] == st.min_column_names.elements[i].value);
     }
-    BOOST_REQUIRE(st.slice.max.size() == max_components.size());
-    for (auto i = 0U; i < st.slice.max.size(); i++) {
-        BOOST_REQUIRE(max_components[i] == st.slice.max[i]);
+    BOOST_REQUIRE(st.max_column_names.elements.size() == max_components.size());
+    for (auto i = 0U; i < st.max_column_names.elements.size(); i++) {
+        BOOST_REQUIRE(max_components[i] == st.max_column_names.elements[i].value);
     }
 }
 
@@ -2150,9 +2139,6 @@ SEASTAR_TEST_CASE(test_wrong_counter_shard_order) {
         // on a three-node Scylla 1.7.4 cluster.
         return test_env::do_with_async([] (test_env& env) {
           for (const auto version : all_sstable_versions) {
-            if (format_of_version(version) != big) {
-                continue;
-            }
             auto s = schema_builder("scylla_bench", "test_counters")
                     .with_column("pk", long_type, column_kind::partition_key)
                     .with_column("ck", long_type, column_kind::clustering_key)
@@ -2217,7 +2203,7 @@ SEASTAR_TEST_CASE(test_wrong_counter_shard_order) {
 }
 
 static std::unique_ptr<index_reader> get_index_reader(shared_sstable sst, reader_permit permit) {
-    return ::make_index_reader(sst, std::move(permit));
+    return std::make_unique<index_reader>(sst, std::move(permit));
 }
 
 SEASTAR_TEST_CASE(test_broken_promoted_index_is_skipped) {
@@ -2231,9 +2217,6 @@ SEASTAR_TEST_CASE(test_broken_promoted_index_is_skipped) {
     // delete from ks.test where pk = 1 and ck = 2;
     return test_env::do_with_async([] (test_env& env) {
       for (const auto version : all_sstable_versions) {
-        if (format_of_version(version) != big) {
-            continue;
-        }
         auto s = schema_builder("ks", "test")
                 .with_column("pk", int32_type, column_kind::partition_key)
                 .with_column("ck", int32_type, column_kind::clustering_key)
@@ -2314,7 +2297,7 @@ SEASTAR_TEST_CASE(summary_rebuild_sanity) {
             mutations.push_back(make_insert(partition_key::from_exploded(*s, {std::move(key)})));
         }
 
-        auto sst = make_sstable_containing(env.make_sstable(s, sstable_version_types::me), mutations);
+        auto sst = make_sstable_containing(env.make_sstable(s), mutations);
 
         summary s1 = std::move(sstables::test(sst)._summary());
         BOOST_REQUIRE(!(bool)sstables::test(sst)._summary()); // make sure std::move above took place

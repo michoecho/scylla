@@ -101,11 +101,15 @@ struct send_info {
         });
     }
     future<size_t> estimate_partitions() {
-        uint64_t result = 0;
-        for (const auto& r : ranges) {
-            result += co_await cf->estimated_partitions_in_range(r);
-        }
-        co_return result;
+        return do_with(cf->get_sstables(), size_t(0), [this] (auto& sstables, size_t& partition_count) {
+            return do_for_each(*sstables, [this, &partition_count] (auto& sst) {
+                return do_for_each(ranges, [&sst, &partition_count] (auto& range) {
+                    partition_count += sst->estimated_keys_for_range(range);
+                });
+            }).then([&partition_count] {
+                return partition_count;
+            });
+        });
     }
 };
 

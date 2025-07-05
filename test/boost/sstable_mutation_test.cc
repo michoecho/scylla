@@ -488,7 +488,7 @@ static schema_ptr tombstone_overlap_schema() {
 
 
 static future<sstable_ptr> ka_sst(sstables::test_env& env, schema_ptr schema, sstring dir, sstables::generation_type::int_t generation) {
-    return env.reusable_sst(std::move(schema), std::move(dir), sstables::generation_from_value(generation), sstables::sstable::version_types::ka, sstable_open_config{});
+    return env.reusable_sst(std::move(schema), std::move(dir), sstables::generation_from_value(generation), sstables::sstable::version_types::ka, big, sstable_open_config{});
 }
 
 //  Considering the schema above, the sstable looks like:
@@ -790,7 +790,7 @@ SEASTAR_TEST_CASE(test_has_partition_key) {
 }
 
 static std::unique_ptr<index_reader> get_index_reader(shared_sstable sst, reader_permit permit) {
-    return ::make_index_reader(sst, std::move(permit), nullptr, sstables::use_caching::yes, false);
+    return std::make_unique<index_reader>(sst, std::move(permit));
 }
 
 SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic) {
@@ -830,7 +830,7 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic) {
         cfg.promoted_index_block_size = 1;
         cfg.promoted_index_auto_scale_threshold = 0; // disable auto-scaling
 
-        auto sst = make_sstable_easy(env, mt, cfg, sstable_version_types::me);
+        auto sst = make_sstable_easy(env, mt, cfg);
         assert_that(get_index_reader(sst, env.make_reader_permit())).has_monotonic_positions(*s);
     });
 }
@@ -865,7 +865,7 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_with_auto_scaling) {
         cfg.promoted_index_block_size = 1;
         cfg.promoted_index_auto_scale_threshold = 100;  // set to a low value to trigger auto-scaling
 
-        auto sst = make_sstable_easy(env, mt, cfg, sstable_version_types::me);
+        auto sst = make_sstable_easy(env, mt, cfg);
         assert_that(get_index_reader(sst, env.make_reader_permit())).has_monotonic_positions(*s);
     });
 }
@@ -873,9 +873,6 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_with_auto_scaling) {
 SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_compound_dense) {
    return test_env::do_with_async([] (test_env& env) {
       for (const auto version : writable_sstable_versions) {
-        if (format_of_version(version) == sstable_format_types::bti) {
-            continue;
-        }
         schema_builder builder("ks", "cf");
         builder.with_column("p", utf8_type, column_kind::partition_key);
         builder.with_column("c1", int32_type, column_kind::clustering_key);
@@ -929,9 +926,6 @@ SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_compound_dense) {
 SEASTAR_TEST_CASE(test_promoted_index_blocks_are_monotonic_non_compound_dense) {
    return test_env::do_with_async([] (test_env& env) {
       for (const auto version : writable_sstable_versions) {
-        if (format_of_version(version) == sstable_format_types::bti) {
-            continue;
-        }
         schema_builder builder("ks", "cf");
         builder.with_column("p", utf8_type, column_kind::partition_key);
         builder.with_column("c1", int32_type, column_kind::clustering_key);
@@ -1058,9 +1052,6 @@ SEASTAR_TEST_CASE(test_range_tombstones_are_correctly_seralized_for_non_compound
 SEASTAR_TEST_CASE(test_promoted_index_is_absent_for_schemas_without_clustering_key) {
    return test_env::do_with_async([] (test_env& env) {
       for (const auto version : writable_sstable_versions) {
-        if (format_of_version(version) == sstable_format_types::bti) {
-            continue;
-        }
         schema_builder builder("ks", "cf");
         builder.with_column("p", utf8_type, column_kind::partition_key);
         builder.with_column("v", int32_type);
@@ -1187,14 +1178,14 @@ SEASTAR_TEST_CASE(test_key_count_estimation) {
             testlog.trace("est = {}", max_est);
 
             {
-                auto est = sst->estimated_keys_for_range(dht::token_range::make_open_ended_both_sides()).get();
+                auto est = sst->estimated_keys_for_range(dht::token_range::make_open_ended_both_sides());
                 testlog.trace("est([-inf; +inf]) = {}", est);
                 BOOST_REQUIRE_EQUAL(est, sst->get_estimated_key_count());
             }
 
             for (int size : {1, 64, 256, 512, 1024, 4096, count}) {
                 auto r = dht::token_range::make(pks[0].token(), pks[size - 1].token());
-                auto est = sst->estimated_keys_for_range(r).get();
+                auto est = sst->estimated_keys_for_range(r);
                 testlog.trace("est([0; {}] = {}", size - 1, est);
                 BOOST_REQUIRE_GE(est, size);
                 BOOST_REQUIRE_LE(est, max_est);
@@ -1204,7 +1195,7 @@ SEASTAR_TEST_CASE(test_key_count_estimation) {
                 auto lower = 5000;
                 auto upper = std::min(count - 1, lower + size - 1);
                 auto r = dht::token_range::make(pks[lower].token(), pks[upper].token());
-                auto est = sst->estimated_keys_for_range(r).get();
+                auto est = sst->estimated_keys_for_range(r);
                 testlog.trace("est([{}; {}]) = {}", lower, upper, est);
                 BOOST_REQUIRE_GE(est, upper - lower + 1);
                 BOOST_REQUIRE_LE(est, max_est);
@@ -1212,14 +1203,14 @@ SEASTAR_TEST_CASE(test_key_count_estimation) {
 
             {
                 auto r = dht::token_range::make(all_pks[0].token(), all_pks[0].token());
-                auto est = sst->estimated_keys_for_range(r).get();
+                auto est = sst->estimated_keys_for_range(r);
                 testlog.trace("est(non-overlapping to the left) = {}", est);
                 BOOST_REQUIRE_EQUAL(est, 0);
             }
 
             {
                 auto r = dht::token_range::make(all_pks[all_pks.size() - 1].token(), all_pks[all_pks.size() - 1].token());
-                auto est = sst->estimated_keys_for_range(r).get();
+                auto est = sst->estimated_keys_for_range(r);
                 testlog.trace("est(non-overlapping to the right) = {}", est);
                 BOOST_REQUIRE_EQUAL(est, 0);
             }
@@ -1309,7 +1300,7 @@ SEASTAR_TEST_CASE(test_reading_serialization_header) {
         return int32_type->decompose(tests::random::get_int<int32_t>());
     };
 
-    auto td = tests::data_model::table_description({ { "pk", utf8_type } }, { { "ck", utf8_type } });
+    auto td = tests::data_model::table_description({ { "pk", int32_type } }, { { "ck", utf8_type } });
 
     auto td1 = td;
     td1.add_static_column("s1", int32_type);

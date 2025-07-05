@@ -90,17 +90,17 @@ SEASTAR_THREAD_TEST_CASE(mutation_fragment_sanity_check) {
 
     {
         mutation_fragment f(*s.schema(), permit, s.make_row(permit, s.make_ckey(1), "abc"));
-        check_hash(f, 0xd984ef9e20e928e7ull);
+        check_hash(f, 0x8ae8c4860ca108bbull);
     }
 
     {
         mutation_fragment f(*s.schema(), permit, s.make_static_row(permit, "def"));
-        check_hash(f, 0xd7014910b84fb24bull);
+        check_hash(f, 0x2b8119e27581bbeeull);
     }
 
     {
         mutation_fragment f(*s.schema(), permit, s.make_range_tombstone(query::clustering_range::make(s.make_ckey(2), s.make_ckey(3)), ts));
-        check_hash(f, 0xd55ef54f832f6026ull);
+        check_hash(f, 0x5092daca1b27ea26ull);
     }
 }
 

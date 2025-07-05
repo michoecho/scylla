@@ -119,8 +119,7 @@ int scylla_sstable_main(int argc, char** argv) {
         ("testdir", bpo::value<sstring>()->default_value("/var/lib/scylla/perf-tests"), "directory in which to store the sstables")
         ("compaction-strategy", bpo::value<sstring>()->default_value("SizeTieredCompactionStrategy"), "compaction strategy to use, one of "
              "(SizeTieredCompactionStrategy, LeveledCompactionStrategy, DateTieredCompactionStrategy, TimeWindowCompactionStrategy)")
-        ("timestamp-range", bpo::value<api::timestamp_type>()->default_value(0), "Timestamp values to use, chosen uniformly from: [-x, +x]")
-        ("sstable_version", bpo::value<sstring>()->default_value("me"), "SSTable format version (me/da/...)");
+        ("timestamp-range", bpo::value<api::timestamp_type>()->default_value(0), "Timestamp values to use, chosen uniformly from: [-x, +x]");
 
     return app.run(argc, argv, [&app] {
         return async([&app] {
@@ -133,7 +132,6 @@ int scylla_sstable_main(int argc, char** argv) {
             cfg.key_size = app.configuration()["key_size"].as<unsigned>();
             cfg.buffer_size = app.configuration()["buffer_size"].as<unsigned>() << 10;
             cfg.sstables = app.configuration()["sstables"].as<unsigned>();
-            cfg.version = sstables::version_from_string(app.configuration()["sstable_version"].as<sstring>());
             sstring dir = app.configuration()["testdir"].as<sstring>();
             cfg.dir = dir;
             auto mode = app.configuration()["mode"].as<test_modes>();

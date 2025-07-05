@@ -366,7 +366,7 @@ const std::vector<sstables::shared_sstable> load_sstables(schema_ptr schema, sst
             const auto dir_path = sst_path.parent_path();
             options = data_dictionary::make_local_options(dir_path);
         }
-        auto sst = sst_man.make_sstable(schema, options, ed.generation, sstables::sstable_state::normal, ed.version);
+        auto sst = sst_man.make_sstable(schema, options, ed.generation, sstables::sstable_state::normal, ed.version, ed.format);
 
         try {
             co_await sst->load(schema->get_sharder(), sstables::sstable_open_config{.load_first_and_last_position_metadata = false});
@@ -921,14 +921,15 @@ private:
 
 private:
     sstables::shared_sstable do_make_sstable() const {
-        const auto version = _sst_man.get_highest_supported_format();
+        const auto format = sstables::sstable_format_types::big;
+        const auto version = sstables::get_highest_sstable_version();
         auto generation = _generation_generator(uuid_identifiers::yes);
-        auto sst_name = sstables::sstable::filename(_output_dir, _schema->ks_name(), _schema->cf_name(), version, generation, component_type::Data);
+        auto sst_name = sstables::sstable::filename(_output_dir, _schema->ks_name(), _schema->cf_name(), version, generation, format, component_type::Data);
         if (file_exists(sst_name).get()) {
             throw std::runtime_error(fmt::format("cannot create output sstable {}, file already exists", sst_name));
         }
         auto local = data_dictionary::make_local_options(_output_dir);
-        return _sst_man.make_sstable(_schema, local, generation, sstables::sstable_state::normal, version);
+        return _sst_man.make_sstable(_schema, local, generation, sstables::sstable_state::normal, version, format);
     }
     sstables::sstable_writer_config do_configure_writer(sstring origin) const {
         return _sst_man.configure_writer(std::move(origin));
@@ -1047,11 +1048,6 @@ void scrub_operation(schema_ptr schema, reader_permit permit, const std::vector<
         validate_output_dir(output_dir, vm.count("unsafe-accept-nonempty-output-dir"));
     }
 
-    if (vm.count("output-version")) {
-        auto format_version = sstables::version_from_string(vm["output-version"].as<std::string>());
-        sst_man.set_format(format_version);
-    }
-
     scylla_sstable_table_state table_state(schema, permit, sst_man, output_dir);
 
     auto compaction_descriptor = sstables::compaction_descriptor(std::move(sstables));
@@ -1074,28 +1070,25 @@ void dump_index_operation(schema_ptr schema, reader_permit permit, const std::ve
     json_writer writer;
     writer.StartStream();
     for (auto& sst : sstables) {
-        auto idx_reader = make_index_reader(sst, permit);
-        auto close_idx_reader = deferred_close(*idx_reader);
+        sstables::index_reader idx_reader(sst, permit);
+        auto close_idx_reader = deferred_close(idx_reader);
 
         writer.Key(fmt::to_string(sst->get_filename()));
         writer.StartArray();
 
-        idx_reader->advance_to(dht::partition_range::make_open_ended_both_sides()).get();
-        while (!idx_reader->eof()) {
-            idx_reader->read_partition_data().get();
-            auto pkey_opt = idx_reader->get_partition_key();
-            auto pos = idx_reader->get_data_file_position();
+        while (!idx_reader.eof()) {
+            idx_reader.read_partition_data().get();
+            auto pos = idx_reader.get_data_file_position();
+            auto pkey = idx_reader.get_partition_key();
 
             writer.StartObject();
-            if (pkey_opt) {
-                writer.Key("key");
-                writer.DataKey(*schema, pkey_opt.value());
-            }
+            writer.Key("key");
+            writer.DataKey(*schema, pkey);
             writer.Key("pos");
             writer.Uint64(pos);
             writer.EndObject();
 
-            idx_reader->advance_to_next_partition().get();
+            idx_reader.advance_to_next_partition().get();
         }
         writer.EndArray();
     }
@@ -1325,22 +1318,6 @@ private:
         visit(field, val.value);
     }
 
-    void visit(const void* const field, const sstables::covered_slice& val) {
-        auto pip = [] (const clustering_key_prefix& ckp, bound_kind_m kind) {
-            if (is_bound_kind(kind)) {
-                return position_in_partition(position_in_partition::range_tag_t(), to_bound_kind(kind), clustering_key_prefix(ckp));
-            } else {
-                return position_in_partition(position_in_partition::clustering_row_tag_t(), ckp);
-            }
-        };
-        _writer.StartObject();
-        _writer.Key("min");
-        _writer.String(fmt::to_string(pip(val.min, val.min_kind)));
-        _writer.Key("max");
-        _writer.String(fmt::to_string(pip(val.max, val.max_kind)));
-        _writer.EndObject();
-    }
-
     void visit(const void* const field, const sstables::serialization_header::column_desc& val) {
         auto prev_name_resolver = std::exchange(_name_resolver, [&val] (const void* const field) {
             if (field == &val.name) { return "name"; }
@@ -1406,7 +1383,7 @@ void dump_compaction_metadata(json_writer& writer, sstables::sstable_version_typ
     });
 }
 
-void dump_stats_metadata(const schema& s, json_writer& writer, sstables::sstable_version_types version, const sstables::stats_metadata& metadata) {
+void dump_stats_metadata(json_writer& writer, sstables::sstable_version_types version, const sstables::stats_metadata& metadata) {
     json_dumper::dump(writer, version, metadata, "stats", [&metadata] (const void* const field) {
         if (field == &metadata.estimated_partition_size) { return "estimated_partition_size"; }
         else if (field == &metadata.estimated_cells_count) { return "estimated_cells_count"; }
@@ -1421,24 +1398,18 @@ void dump_stats_metadata(const schema& s, json_writer& writer, sstables::sstable
         else if (field == &metadata.estimated_tombstone_drop_time) { return "estimated_tombstone_drop_time"; }
         else if (field == &metadata.sstable_level) { return "sstable_level"; }
         else if (field == &metadata.repaired_at) { return "repaired_at"; }
-        else if (field == &metadata.slice) { return "covered_slice"; }
+        else if (field == &metadata.min_column_names) { return "min_column_names"; }
+        else if (field == &metadata.max_column_names) { return "max_column_names"; }
         else if (field == &metadata.has_legacy_counter_shards) { return "has_legacy_counter_shards"; }
         else if (field == &metadata.columns_count) { return "columns_count"; }
         else if (field == &metadata.rows_count) { return "rows_count"; }
         else if (field == &metadata.commitlog_lower_bound) { return "commitlog_lower_bound"; }
         else if (field == &metadata.commitlog_intervals) { return "commitlog_intervals"; }
-        else if (field == &metadata.pending_repair) { return "pending_repair"; }
-        else if (field == &metadata.is_transient) { return "is_transient"; }
-        else if (field == &metadata.has_partition_level_deletions) { return "has_partition_level_deletions"; }
         else if (field == &metadata.originating_host_id) { return "originating_host_id"; }
-        else if (field == &metadata.first_key) { return "first_key"; }
-        else if (field == &metadata.last_key) { return "last_key"; }
-        else if (field == &metadata.token_space_coverage) { return "token_space_coverage"; }
         else { throw std::invalid_argument("invalid field offset"); }
-    }, [&metadata, &s] (const void* const field, bytes_view value) {
-        if (field == &metadata.first_key || field == &metadata.last_key) {
-            auto first_key = dht::decorate_key(s, sstables::key_view(value).to_partition_key(s));
-            return sstring(fmt::to_string(first_key));
+    }, [&metadata] (const void* const field, bytes_view value) {
+        if (field == &metadata.min_column_names || field == &metadata.max_column_names) {
+            return to_hex(value);
         }
         return json_dumper::default_disk_string_converter(field, value);
     });
@@ -1500,7 +1471,7 @@ void dump_statistics_operation(schema_ptr schema, reader_permit permit, const st
                     dump_compaction_metadata(writer, version, *dynamic_cast<const sstables::compaction_metadata*>(metadata_ptr.get()));
                     break;
                 case sstables::metadata_type::Stats:
-                    dump_stats_metadata(*schema, writer, version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
+                    dump_stats_metadata(writer, version, *dynamic_cast<const sstables::stats_metadata*>(metadata_ptr.get()));
                     break;
                 case sstables::metadata_type::Serialization:
                     dump_serialization_header(writer, version, *dynamic_cast<const sstables::serialization_header*>(metadata_ptr.get()));
@@ -2654,10 +2625,11 @@ void write_operation(schema_ptr schema, reader_permit permit, const std::vector<
         throw std::invalid_argument("missing required option '--generation'");
     }
     auto generation = sstables::generation_type(vm["generation"].as<int64_t>());
-    auto version = sstables::version_from_string(vm["output-version"].as<std::string>());
+    auto format = sstables::sstable_format_types::big;
+    auto version = sstables::get_highest_sstable_version();
 
     {
-        auto sst_name = sstables::sstable::filename(output_dir, schema->ks_name(), schema->cf_name(), version, generation, component_type::Data);
+        auto sst_name = sstables::sstable::filename(output_dir, schema->ks_name(), schema->cf_name(), version, generation, format, component_type::Data);
         if (file_exists(sst_name).get()) {
             throw std::invalid_argument(fmt::format("cannot create output sstable {}, file already exists", sst_name));
         }
@@ -2670,7 +2642,7 @@ void write_operation(schema_ptr schema, reader_permit permit, const std::vector<
     auto writer_cfg = manager.configure_writer("scylla-sstable");
     writer_cfg.validation_level = validation_level;
     auto local = data_dictionary::make_local_options(output_dir);
-    auto sst = manager.make_sstable(schema, local, generation, sstables::sstable_state::normal, version);
+    auto sst = manager.make_sstable(schema, local, generation, sstables::sstable_state::normal, version, format);
 
     sst->write_components(std::move(reader), 1, schema, writer_cfg, encoding_stats{}).get();
 }
@@ -3261,7 +3233,6 @@ for more information on this operation, including what the different modes do.
             {
                     typed_option<std::string>("scrub-mode", "scrub mode to use, one of (abort, skip, segregate, validate)"),
                     typed_option<std::string>("output-dir", ".", "directory to place the scrubbed sstables to"),
-                    typed_option<std::string>("output-version", "me", "sstable format version to use for the output"),
                     typed_option<>("unsafe-accept-nonempty-output-dir", "allow the operation to write into a non-empty output directory, acknowledging the risk that this may result in sstable clash"),
             }},
             scrub_operation},
@@ -3307,8 +3278,8 @@ storage engine. The following is not supported:
 Parsing uses a streaming json parser, it is safe to pass in input-files
 of any size.
 
-The output sstable will use the chosen SSTable format version ("me" by default)
-and the specified generation (--generation). By default it is
+The output sstable will use the BIG format, the highest supported sstable
+format and the specified generation (--generation). By default it is
 placed in the local directory, can be changed with --output-dir. If the
 output sstable clashes with an existing sstable, the write will fail.
 
@@ -3318,7 +3289,6 @@ for more information on this operation, including the schema of the JSON input.
             {
                     typed_option<std::string>("input-file", "the file containing the input"),
                     typed_option<std::string>("output-dir", ".", "directory to place the output sstable(s) to"),
-                    typed_option<std::string>("output-version", "me", "sstable format version to use for the output"),
                     typed_option<sstables::generation_type::int_t>("generation", "generation of generated sstable"),
                     typed_option<std::string>("validation-level", "clustering_key", "degree of validation on the output, one of (partition_region, token, partition_key, clustering_key)"),
             }},

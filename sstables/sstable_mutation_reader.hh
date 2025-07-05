@@ -47,10 +47,8 @@ protected:
     // When set, the consumer is positioned right before a partition or at end of the data file.
     // _index_in_current_partition applies to the partition which is about to be read.
     bool _before_partition = true;
-    bool _right_after_pk = false;
 
     std::optional<dht::decorated_key> _current_partition_key;
-    tombstone _current_tomb;
 public:
     mp_row_consumer_reader_base(shared_sstable sst);
 
@@ -118,7 +116,6 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
-    sstables::sstlog.trace("data_consume_rows 0(): beg={} end={}", toread.start, toread.end);
     auto input = sst->data_stream(toread.start, last_end - toread.start,
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, sstable::raw_stream::no, integrity);
     return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end - toread.start);
@@ -170,10 +167,10 @@ inline std::unique_ptr<DataConsumeRowsContext> data_consume_rows(const schema& s
 template<typename T>
 concept RowConsumer =
     requires(T t,
-                    const dht::decorated_key& dk,
+                    const partition_key& pk,
                     position_range cr) {
         { t.is_mutation_end() } -> std::same_as<bool>;
-        { t.setup_for_partition(dk) } -> std::same_as<void>;
+        { t.setup_for_partition(pk) } -> std::same_as<void>;
         { t.push_ready_fragments() } -> std::same_as<void>;
         { t.maybe_skip() } -> std::same_as<std::optional<position_in_partition_view>>;
         { t.fast_forward_to(std::move(cr)) } -> std::same_as<std::optional<position_in_partition_view>>;

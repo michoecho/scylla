@@ -24,7 +24,6 @@
 #include "locator/host_id.hh"
 #include "reader_concurrency_semaphore.hh"
 #include "utils/s3/creds.hh"
-#include "sstables_registry.hh"
 #include <boost/intrusive/list.hpp>
 #include "sstable_compressor_factory.hh"
 #include "sstables/sstables_manager_subscription.hh"
@@ -155,6 +154,7 @@ public:
             generation_type generation,
             sstable_state state = sstable_state::normal,
             sstable_version_types v = get_highest_sstable_version(),
+            sstable_format_types f = sstable_format_types::big,
             db_clock::time_point now = db_clock::now(),
             io_error_handler_gen error_handler_gen = default_io_error_handler_gen(),
             size_t buffer_size = default_sstable_buffer_size);

@@ -1028,30 +1028,6 @@ struct from_comparable_bytes_visitor {
     }
 };
 
-namespace trie {
-bool has_memcmp_comparable_form(const abstract_type& t) {
-    if (t.is_collection() || t.is_tuple() || t.is_counter() || t.is_vector() || &t == &*date_type || (t.is_reversed() && &*t.underlying_type() == &*date_type)) {
-        return false;
-    }
-    return true;
-}
-void memcmp_comparable_form_inner(managed_bytes_view v, std::vector<std::byte>& out, const abstract_type& type_outer) noexcept {
-    auto initial_size = out.size();
-    const auto& type = type_outer.is_reversed() ? *type_outer.underlying_type() : type_outer;
-    auto cb = comparable_bytes(type, v);
-    for (auto frag : fragment_range(cb.as_managed_bytes_view())) {
-        std::span<const std::byte> sp = std::as_bytes(std::span(frag));
-        out.insert(out.end(), sp.begin(), sp.end());
-    }
-    if (type_outer.is_reversed()) {
-        for (size_t i = initial_size; i < out.size(); ++i) {
-            out[i] = std::byte(~uint8_t(out[i]));
-        }
-    }
-}
-
-} // namespace trie
-
 managed_bytes_opt comparable_bytes::to_serialized_bytes(const abstract_type& type) const {
     if (_encoded_bytes.empty()) {
         return managed_bytes_opt();

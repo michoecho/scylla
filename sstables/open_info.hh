@@ -31,13 +31,14 @@ enum class sstable_state {
 struct entry_descriptor {
     generation_type generation;
     sstable_version_types version;
+    sstable_format_types format;
     component_type component;
     std::optional<sstable_state> state;
 
     entry_descriptor(generation_type generation,
-                     sstable_version_types version,
+                     sstable_version_types version, sstable_format_types format,
                      component_type component, std::optional<sstable_state> state = {})
-        : generation(generation), version(version), component(component), state(state) {}
+        : generation(generation), version(version), format(format), component(component), state(state) {}
 };
 
 // Parses sstable file path extracting entry_descriptor from it. Returns the descriptor
@@ -54,11 +55,10 @@ struct foreign_sstable_open_info {
     foreign_ptr<lw_shared_ptr<shareable_components>> components;
     std::vector<shard_id> owners;
     seastar::file_handle data;
-    std::optional<seastar::file_handle> index;
-    std::optional<seastar::file_handle> trie_index;
-    std::optional<seastar::file_handle> row_index;
+    seastar::file_handle index;
     generation_type generation;
     sstable_version_types version;
+    sstable_format_types format;
     uint64_t uncompressed_data_size;
     uint64_t metadata_size_on_disk;
 };

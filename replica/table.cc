@@ -480,7 +480,7 @@ static bool belongs_to_other_shard(const std::vector<shard_id>& shards) {
 
 sstables::shared_sstable table::make_sstable(sstables::sstable_state state) {
     auto& sstm = get_sstables_manager();
-    return sstm.make_sstable(_schema, *_storage_opts, calculate_generation_for_new_table(), state, sstm.get_highest_supported_format());
+    return sstm.make_sstable(_schema, *_storage_opts, calculate_generation_for_new_table(), state, sstm.get_highest_supported_format(), sstables::sstable::format_types::big);
 }
 
 sstables::shared_sstable table::make_sstable() {
@@ -1303,22 +1303,6 @@ future<utils::chunked_vector<sstables::shared_sstable>> table::take_sstable_set_
         result.push_back(sst);
     });
     co_return result;
-}
-
-future<uint64_t> table::estimated_partitions_in_range(dht::token_range tr) {
-    // FIXME: use a better estimation for the set than a simple sum of estimations for individual sstables.
-    //
-    // If we assume that sstables cover a continuous token range (always the case with tablets?)
-    // then we can use sstable cardinality sketches (hyperloglog) to get a more accurate
-    // total keys estimate for each tablet.
-    // Then we can sum the results weighted by the fraction of the tablet's token range
-    // which is covered by the queried token range.
-    auto sstables = co_await take_sstable_set_snapshot();
-    uint64_t partition_count = 0;
-    co_await seastar::max_concurrent_for_each(sstables, 10, [&partition_count, &tr] (sstables::shared_sstable sst) -> future<> {
-        partition_count += co_await sst->estimated_keys_for_range(tr);
-    });
-    co_return partition_count;
 }
 
 future<utils::chunked_vector<sstables::entry_descriptor>>
@@ -3541,7 +3525,6 @@ write_memtable_to_sstable(mutation_reader reader,
     cfg.replay_position = mt.replay_position();
     cfg.monitor = &monitor;
     cfg.origin = "memtable";
-    cfg.abortable = false;
     schema_ptr s = reader.schema();
     return sst->write_components(std::move(reader), estimated_partitions, s, cfg, mt.get_encoding_stats());
 }

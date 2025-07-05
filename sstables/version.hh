@@ -14,53 +14,21 @@
 
 namespace sstables {
 
-enum class sstable_version_types { ka, la, mc, md, me, da };
-enum class sstable_format_types { big, bti };
+enum class sstable_version_types { ka, la, mc, md, me };
+enum class sstable_format_types { big };
 
-constexpr sstable_format_types format_of_version(sstable_version_types v) {
-    switch (v) {
-        case sstable_version_types::ka:
-        case sstable_version_types::la:
-        case sstable_version_types::mc:
-        case sstable_version_types::md:
-        case sstable_version_types::me:
-            return sstable_format_types::big;
-        case sstable_version_types::da:
-            return sstable_format_types::bti;
-    }
-}
-
-inline bool version_has_unsigned_deletion_time(sstable_version_types v) {
-    return v >= sstable_version_types::da;
-}
-
-inline bool version_has_byteswapped_bloom_filters(sstable_version_types v) {
-    return true;
-    return v < sstable_version_types::da;
-}
-
-inline bool version_has_checksummed_metadata(sstable_version_types v) {
-    return v >= sstable_version_types::da;
-}
-
-inline bool version_has_max_compressed_chunk_length(sstable_version_types v) {
-    return v >= sstable_version_types::da;
-}
-
-constexpr std::array<sstable_version_types, 6> all_sstable_versions = {
+constexpr std::array<sstable_version_types, 5> all_sstable_versions = {
     sstable_version_types::ka,
     sstable_version_types::la,
     sstable_version_types::mc,
     sstable_version_types::md,
     sstable_version_types::me,
-    sstable_version_types::da,
 };
 
-constexpr std::array<sstable_version_types, 4> writable_sstable_versions = {
+constexpr std::array<sstable_version_types, 3> writable_sstable_versions = {
     sstable_version_types::mc,
     sstable_version_types::md,
     sstable_version_types::me,
-    sstable_version_types::da,
 };
 
 constexpr sstable_version_types oldest_writable_sstable_format = sstable_version_types::mc;

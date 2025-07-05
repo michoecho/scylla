@@ -310,9 +310,7 @@ def test_scylla_sstable_write(cql, test_keyspace, scylla_path, scylla_data_dir, 
             with open(input_file, 'w') as f:
                 json.dump(original_json, f)
 
-            subprocess.check_call([scylla_path, "sstable", "write", "--schema-file", schema_file, "--input-file", input_file,
-                                   "--output-dir", tmp_dir, "--generation", str(generation), '--logger-log-level', 'scylla-sstable=trace',
-                                   "--output-version", "me"])
+            subprocess.check_call([scylla_path, "sstable", "write", "--schema-file", schema_file, "--input-file", input_file, "--output-dir", tmp_dir, "--generation", str(generation), '--logger-log-level', 'scylla-sstable=trace'])
 
             sstable_file = os.path.join(tmp_dir, f"me-{generation}-big-Data.db")
 
@@ -1359,22 +1357,22 @@ def test_scylla_sstable_format_version(cql, test_keyspace, scylla_data_dir):
     #
     # an sstable component filename looks like:
     #  me-3g8w_00qf_4pbog2i7h2c7am0uoe-big-Data.db
-    sstable_re = re.compile(r"""(?P<version>la|m[cde]|da)- # the sstable version
-                                (?P<id>[^-]+)-             # sstable identifier
-                                (?P<format>\w+)-           # format: 'big' or 'bti'
-                                (?P<component>.*)          # component: e.g., 'Data'""", re.X)
+    sstable_re = re.compile(r"""(?P<version>la|m[cde])- # the sstable version
+                                (?P<id>[^-]+)-          # sstable identifier
+                                (?P<format>\w+)-        # format: 'big'
+                                (?P<component>.*)       # component: e.g., 'Data'""", re.X)
     with scylla_sstable(simple_clustering_table, cql, test_keyspace, scylla_data_dir) as (_, _, sstables):
         for fn in sstables:
             stem = pathlib.Path(fn).stem
             matched = sstable_re.match(stem)
             assert matched is not None, f"unmatched sstable component path: {fn}"
             sstable_version = matched["version"]
-            # "da" is specified by sstables_manager::_format, so new sstables
-            # created by a scylla instance are always persisted with "da" sstable
+            # "me" is specified by sstables_manager::_format, so new sstables
+            # created by a scylla instance are always persisted with "me" sstable
             # format, unless the "sstable_format" setting persisted in
             # "system.scylla_local" system tables has a different setting. but in a
             # new installation of scylla, this setting does not exist.
-            assert sstable_version == "da", f"unexpected sstable format: {sstable_version}"
+            assert sstable_version == "me", f"unexpected sstable format: {sstable_version}"
 
 def test_create_local_key_file(scylla_path):
     with tempfile.TemporaryDirectory() as dir:

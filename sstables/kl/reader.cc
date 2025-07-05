@@ -16,6 +16,7 @@
 #include "clustering_ranges_walker.hh"
 #include "concrete_types.hh"
 #include "utils/assert.hh"
+#include "utils/to_string.hh"
 #include "utils/value_or_reference.hh"
 
 namespace sstables {
@@ -415,16 +416,16 @@ public:
             return proceed::yes;
         }
         auto pk = key.to_partition_key(*_schema);
+        setup_for_partition(pk);
         auto dk = dht::decorate_key(*_schema, pk);
-        setup_for_partition(dk);
         _reader->on_next_partition(std::move(dk), tombstone(deltime));
         return proceed::yes;
     }
 
-    void setup_for_partition(const dht::decorated_key& dk) {
+    void setup_for_partition(const partition_key& pk) {
         _is_mutation_end = false;
         _skip_in_progress = false;
-        set_up_ck_ranges(dk.key());
+        set_up_ck_ranges(pk);
     }
 
     proceed flush() {
@@ -1192,7 +1193,7 @@ private:
     index_reader& get_index_reader() {
         if (!_index_reader) {
             auto caching = use_caching(global_cache_index_pages && !_slice.options.contains(query::partition_slice::option::bypass_cache));
-            _index_reader = make_index_reader(_sst, _consumer.permit(),
+            _index_reader = std::make_unique<index_reader>(_sst, _consumer.permit(),
                                                            _consumer.trace_state(), caching, _single_partition_read);
         }
         return *_index_reader;
@@ -1229,12 +1230,8 @@ private:
             return read_from_datafile();
         }
         auto pk = _index_reader->get_partition_key();
-        if (!pk) {
-            sstlog.trace("reader {}: no full pk", fmt::ptr(this));
-            return read_from_datafile();
-        }
-        auto key = dht::decorate_key(*_schema, std::move(*pk));
-        _consumer.setup_for_partition(key);
+        auto key = dht::decorate_key(*_schema, std::move(pk));
+        _consumer.setup_for_partition(key.key());
         on_next_partition(std::move(key), tombstone(*tomb));
         return make_ready_future<>();
     }

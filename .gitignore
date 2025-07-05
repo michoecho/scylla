@@ -35,6 +35,3 @@ compile_commands.json
 .envrc
 clang_build
 .idea/
-nuke
-tools
-seastar/dpkd

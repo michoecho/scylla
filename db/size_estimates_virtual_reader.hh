@@ -50,7 +50,7 @@ private:
     future<> get_next_partition();
     future<> close_partition_reader() noexcept;
 
-    future<std::vector<db::system_keyspace::range_estimates>>
+    std::vector<db::system_keyspace::range_estimates>
     estimates_for_current_keyspace(std::vector<token_range> local_ranges) const;
 };
 

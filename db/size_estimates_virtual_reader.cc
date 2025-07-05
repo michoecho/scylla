@@ -158,7 +158,7 @@ static dht::partition_range as_ring_position_range(dht::token_range& r) {
 /**
  * Add a new range_estimates for the specified range, considering the sstables associated with `cf`.
  */
-static future<system_keyspace::range_estimates> estimate(const replica::column_family& cf, const token_range& r) {
+static system_keyspace::range_estimates estimate(const replica::column_family& cf, const token_range& r) {
     int64_t count{0};
     utils::estimated_histogram hist{0};
     auto from_bytes = [] (auto& b) {
@@ -172,11 +172,11 @@ static future<system_keyspace::range_estimates> estimate(const replica::column_f
     for (auto&& r : ranges) {
         auto rp_range = as_ring_position_range(r);
         for (auto&& sstable : cf.select_sstables(rp_range)) {
-            count += co_await sstable->estimated_keys_for_range(r);
+            count += sstable->estimated_keys_for_range(r);
             hist.merge(sstable->get_stats_metadata().estimated_partition_size);
         }
     }
-    co_return system_keyspace::range_estimates{cf.schema(), r.start, r.end, count, count > 0 ? hist.mean() : 0};
+    return {cf.schema(), r.start, r.end, count, count > 0 ? hist.mean() : 0};
 }
 
 /**
@@ -235,20 +235,22 @@ future<> size_estimates_mutation_reader::get_next_partition() {
     }
     if (_current_partition == _keyspaces->end()) {
         _end_of_stream = true;
-        co_return;
+        return make_ready_future<>();
     }
-    auto ag = reader_permit::awaits_guard(_permit);
-    auto ranges = co_await get_local_ranges(_db, _sys_ks);
-    auto estimates = co_await this->estimates_for_current_keyspace(std::move(ranges));
-    auto mutations = db::system_keyspace::make_size_estimates_mutation(*_current_partition, std::move(estimates));
-    ++_current_partition;
-    std::vector<mutation> ms;
-    ms.emplace_back(std::move(mutations));
-    auto reader = make_mutation_reader_from_mutations(_schema, _permit, std::move(ms), _fwd);
-    if (_partition_reader) {
-        co_await _partition_reader->close();
-    }
-    _partition_reader = std::move(reader);
+    return do_with(reader_permit::awaits_guard(_permit), [this] (reader_permit::awaits_guard&) {
+        return get_local_ranges(_db, _sys_ks);
+    }).then([this] (auto&& ranges) {
+        auto estimates = this->estimates_for_current_keyspace(std::move(ranges));
+        auto mutations = db::system_keyspace::make_size_estimates_mutation(*_current_partition, std::move(estimates));
+        ++_current_partition;
+        std::vector<mutation> ms;
+        ms.emplace_back(std::move(mutations));
+        auto reader = make_mutation_reader_from_mutations(_schema, _permit, std::move(ms), _fwd);
+        auto close_partition_reader = _partition_reader ? _partition_reader->close() : make_ready_future<>();
+        return close_partition_reader.then([this, reader = std::move(reader)] () mutable {
+            _partition_reader = std::move(reader);
+        });
+    });
 }
 
 future<> size_estimates_mutation_reader::close_partition_reader() noexcept {
@@ -301,7 +303,7 @@ future<> size_estimates_mutation_reader::close() noexcept {
     return close_partition_reader();
 }
 
-future<std::vector<db::system_keyspace::range_estimates>>
+std::vector<db::system_keyspace::range_estimates>
 size_estimates_mutation_reader::estimates_for_current_keyspace(std::vector<token_range> local_ranges) const {
     // For each specified range, estimate (crudely) mean partition size and partitions count.
     auto pkey = partition_key::from_single_value(*_schema, utf8_type->decompose(*_current_partition));
@@ -321,13 +323,13 @@ size_estimates_mutation_reader::estimates_for_current_keyspace(std::vector<token
         auto rows_to_estimate = range.slice(rows, virtual_row_comparator(_schema));
         for (auto&& r : rows_to_estimate) {
             auto& cf = _db.find_column_family(*_current_partition, utf8_type->to_string(r.cf_name));
-            estimates.push_back(co_await estimate(cf, r.tokens));
+            estimates.push_back(estimate(cf, r.tokens));
             if (estimates.size() >= _slice.partition_row_limit()) {
-                co_return estimates;
+                return estimates;
             }
         }
     }
-    co_return estimates;
+    return estimates;
 }
 
 } // namespace size_estimates

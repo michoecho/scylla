@@ -14,26 +14,14 @@ logging::logger mdclogger("metadata_collector");
 
 namespace sstables {
 
-void metadata_collector::convert(
-    covered_slice& slice,
-    const std::optional<position_in_partition>& min,
-    const std::optional<position_in_partition>& max
-) {
-    disk_array_vint_size<disk_string_vint_size> type_names;
-    for (const auto& ck_column : _schema.clustering_key_columns()) {
-        auto ck_type_name = disk_string_vint_size{to_bytes(ck_column.type->name())};
-        type_names.elements.push_back(std::move(ck_type_name));
+void metadata_collector::convert(disk_array<uint32_t, disk_string<uint16_t>>& to, const std::optional<position_in_partition>& from) {
+    if (!from) {
+        mdclogger.trace("{}: convert: empty", _name);
+        return;
     }
-    slice.type_names = std::move(type_names);
-    if (min) {
-        for (auto& value : min->key().components()) {
-            slice.min.push_back(to_bytes(value));
-        }
-    }
-    if (max) {
-        for (auto& value : max->key().components()) {
-            slice.max.push_back(to_bytes(value));
-        }
+    mdclogger.trace("{}: convert: {}", _name, position_in_partition_view::printer(_schema, *from));
+    for (auto& value : from->key().components()) {
+        to.elements.push_back(disk_string<uint16_t>{to_bytes(value)});
     }
 }
 

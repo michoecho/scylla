@@ -4498,35 +4498,27 @@ class scylla_sstables(gdb.Command):
 
         Should mirror `sstables::sstable::component_basename()`.
         """
-        old_pattern = '{keyspace}-{table}-{version}-{generation}-Data.db'
-        new_pattern = '{version}-{generation}-{format}-Data.db'
-        version_to_pattern = {
-            'ka': old_pattern,
-            'la': new_pattern,
-            'mc': new_pattern,
-            'md': new_pattern,
-            'me': new_pattern,
-            'da': new_pattern,
-        }
+        old_format = '{keyspace}-{table}-{version}-{generation}-Data.db'
+        new_format = '{version}-{generation}-{format}-Data.db'
         version_to_format = {
-            'ka': 'big',
-            'la': 'big',
-            'mc': 'big',
-            'md': 'big',
-            'me': 'big',
-            'da': 'bti',
+            'ka': old_format,
+            'la': new_format,
+            'mc': new_format,
+            'md': new_format,
+            'me': new_format
         }
+        format_to_str = ['big']
         schema = schema_ptr(sst['_schema'])
         int_type = gdb.lookup_type('int')
         version_number = int(sst['_version'])
         version_name = list(version_to_format)[version_number]
         generation = sst['_generation']
-        return version_to_pattern[version_name].format(
+        return version_to_format[version_name].format(
                 keyspace=str(schema.ks_name)[1:-1],
                 table=str(schema.cf_name)[1:-1],
                 version=version_name,
                 generation=generation,
-                format=version_to_format[version_name],
+                format=format_to_str[int(sst['_format'].cast(int_type))],
             )
 
     def invoke(self, arg, from_tty):

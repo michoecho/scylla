@@ -224,7 +224,7 @@ SEASTAR_TEST_CASE(test_bloom_filters_with_bad_partition_estimate) {
              }) {
             // create sstable with the estimated partition count
             auto sst = make_sstable_easy(env, make_mutation_reader_from_mutations(schema, env.make_reader_permit(), mutations),
-                                         env.manager().configure_writer(), sstable_version_types::me, estimated_partition_count);
+                                         env.manager().configure_writer(), sstables::get_highest_sstable_version(), estimated_partition_count);
 
             // Verify that the filter was rebuilt into the optimal size
             bloom_filters_require_equal(sstables::test(sst).get_filter(), optimal_filter);

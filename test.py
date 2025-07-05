@@ -140,7 +140,7 @@ def parse_cmd_line() -> argparse.Namespace:
     )
     parser.add_argument("--tmpdir", action="store", default=str(TOP_SRC_DIR / "testlog"),
                         help="Path to temporary test data and log files.  The data is further segregated per build mode.")
-    parser.add_argument("--gather-metrics", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--gather-metrics", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-failures", type=int, default=0,
                         help="Maximum number of failures to tolerate before cancelling rest of tests.")
     parser.add_argument('--mode', choices=ALL_MODES, action="append", dest="modes",

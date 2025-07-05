@@ -27,7 +27,7 @@ public:
 private:
     std::unique_ptr<writer_impl> _impl;
 public:
-    sstable_writer(sstable& sst, const schema& s, std::optional<uint64_t> estimated_partitions,
+    sstable_writer(sstable& sst, const schema& s, uint64_t estimated_partitions,
             const sstable_writer_config&, encoding_stats enc_stats,
             shard_id shard = this_shard_id());
 

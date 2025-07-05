@@ -12,6 +12,7 @@
 #include "version.hh"
 #include "shared_sstable.hh"
 #include "open_info.hh"
+#include "sstables_registry.hh"
 #include <seastar/core/file.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/future.hh>
@@ -111,8 +112,6 @@ struct sstable_writer_config {
     size_t summary_byte_cost;
     sstring origin;
     bool correct_pi_block_width = true;
-    bool write_trie_index = true;
-    bool abortable = true;
 
 private:
     explicit sstable_writer_config() {}
@@ -189,6 +188,7 @@ class sstable : public enable_lw_shared_from_this<sstable> {
     friend ::sstable_assertions;
 public:
     using version_types = sstable_version_types;
+    using format_types = sstable_format_types;
     using manager_list_link_type = bi::list_member_hook<bi::link_mode<bi::auto_unlink>>;
     using manager_set_link_type = bi::set_member_hook<bi::link_mode<bi::auto_unlink>>;
 public:
@@ -197,6 +197,7 @@ public:
             generation_type generation,
             sstable_state state,
             version_types v,
+            format_types f,
             db::large_data_handler& large_data_handler,
             sstables_manager& manager,
             db_clock::time_point now,
@@ -205,7 +206,6 @@ public:
     sstable& operator=(const sstable&) = delete;
     sstable(const sstable&) = delete;
     sstable(sstable&&) = delete;
-    ~sstable();
 
     // disk_read_range describes a byte ranges covering part of an sstable
     // row that we need to read from disk. Usually this is the whole byte
@@ -227,13 +227,13 @@ public:
 
     static component_type component_from_sstring(version_types version, const sstring& s);
     static sstring component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                                      component_type component);
+                                      format_types format, component_type component);
     static sstring component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                                      sstring component);
+                                      format_types format, sstring component);
     static sstring filename(const sstring& dir, const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                            component_type component);
+                            format_types format, component_type component);
     static sstring filename(const sstring& dir, const sstring& ks, const sstring& cf, version_types version, generation_type generation,
-                            sstring component);
+                            format_types format, sstring component);
 
     // load sstable using components shared by a shard
     future<> load(foreign_sstable_open_info info) noexcept;
@@ -299,13 +299,13 @@ public:
     mutation_source as_mutation_source();
 
     future<> write_components(mutation_reader mr,
-            std::optional<uint64_t> estimated_partitions,
+            uint64_t estimated_partitions,
             schema_ptr schema,
             const sstable_writer_config&,
             encoding_stats stats);
 
     sstable_writer get_writer(const schema& s,
-        std::optional<uint64_t> estimated_partitions,
+        uint64_t estimated_partitions,
         const sstable_writer_config&,
         encoding_stats enc_stats,
         shard_id shard = this_shard_id());
@@ -336,7 +336,7 @@ public:
         return get_estimated_key_count(_components->summary.header.size_at_full_sampling, _components->summary.header.min_index_interval);
     }
 
-    future<uint64_t> estimated_keys_for_range(const dht::token_range& range);
+    uint64_t estimated_keys_for_range(const dht::token_range& range);
 
     std::vector<dht::decorated_key> get_key_samples(const schema& s, const dht::token_range& range);
 
@@ -375,12 +375,6 @@ public:
     file& index_file() {
         return _index_file;
     }
-    file& trie_index_file() {
-        return _partition_index_file;
-    }
-    uint64_t trie_root_offset() {
-        return _trie_index_header.root_pos;
-    }
     file uncached_index_file();
     // Returns size of bloom filter data.
     uint64_t filter_size() const;
@@ -414,7 +408,7 @@ public:
     int compare_by_max_timestamp(const sstable& other) const;
 
     sstring component_basename(component_type f) const {
-        return component_basename(_schema->ks_name(), _schema->cf_name(), _version, _generation, f);
+        return component_basename(_schema->ks_name(), _schema->cf_name(), _version, _generation, _format, f);
     }
 
     component_name get_filename() const {
@@ -444,7 +438,6 @@ public:
     // Caller may pass sync_dir::no for batching multiple deletes in the same directory,
     // and make sure the directory is sync'ed on or after the last call.
     future<> unlink(storage::sync_dir sync = storage::sync_dir::yes) noexcept;
-    future<> unlink_component(component_type type) noexcept;
 
     db::large_data_handler& get_large_data_handler() {
         return _large_data_handler;
@@ -529,11 +522,9 @@ private:
 
     const size_t sstable_buffer_size;
 
-public:
     component_name filename(component_type f) const {
         return component_name(*this, f);
     }
-private:
 
     std::unordered_set<component_type, enum_hash<component_type>> _recognized_components;
     std::vector<sstring> _unrecognized_components;
@@ -545,24 +536,10 @@ private:
     // it is then used to generate the ancestors metadata in the statistics or scylla components.
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
-    file _partition_index_file;
-    file _row_index_file;
-public:
-    seastar::shared_ptr<cached_file> _partition_index_file_cached;
-    seastar::shared_ptr<cached_file> _row_index_file_cached;
-private:
-    struct trie_index_header {
-        uint64_t serialized_minmax_pk_pos = 0;
-        uint64_t n_keys = 0;
-        uint64_t root_pos = 0;
-    };
-    trie_index_header _trie_index_header;
     seastar::shared_ptr<cached_file> _cached_index_file;
     file _data_file;
     uint64_t _data_file_size;
-    uint64_t _index_file_size = 0;
-    uint64_t _partition_index_file_size = 0;
-    uint64_t _row_index_file_size = 0;
+    uint64_t _index_file_size;
     // on-disk size of components but data and index.
     uint64_t _metadata_size_on_disk = 0;
     db_clock::time_point _data_file_write_time;
@@ -588,6 +565,7 @@ private:
     std::unique_ptr<storage> _storage;
 
     const version_types _version;
+    const format_types _format;
 
     filter_tracker _filter_tracker;
     std::unique_ptr<partition_index_cache> _index_cache;
@@ -684,7 +662,7 @@ private:
     // partitions, if the partition estimate provided during bloom
     // filter initialisation was not good.
     // This should be called only before an sstable is sealed.
-    void maybe_rebuild_filter_from_index(uint64_t num_partitions, const abort_source&);
+    void maybe_rebuild_filter_from_index(uint64_t num_partitions);
 
     future<> update_info_for_opened_data(sstable_open_config cfg = {});
 
@@ -805,7 +783,6 @@ private:
     }
 
     future<> open_or_create_data(open_flags oflags, file_open_options options = {}) noexcept;
-    future<> init_trie_reader();
     // runs in async context (called from storage::open)
     void write_toc(file_writer w);
 public:
@@ -1064,7 +1041,6 @@ public:
 
     friend class mc::writer;
     friend class index_reader;
-    friend class index_reader_old;
     friend class promoted_index;
     friend class sstables_manager;
     template <typename DataConsumeRowsContext>
@@ -1213,8 +1189,6 @@ public:
 // Creates a sink object which can receive a component file sourced from above source object data.
 
 std::unique_ptr<sstable_stream_sink> create_stream_sink(schema_ptr, sstables_manager&, const data_dictionary::storage_options&, sstable_state, std::string_view component_filename, bool last_component);
-
-sstable_version_types version_from_string(std::string_view s);
 
 } // namespace sstables
 

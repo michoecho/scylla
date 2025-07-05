@@ -654,8 +654,6 @@ public:
             ccs.reserve(9);
             auto mask = ser::deserialize_from_buffer(exta->map.at(encrypted_components_attribute_ds).value, std::type_identity<uint32_t>{}, 0);
             for (auto c : { sstables::component_type::Index,
-                            sstables::component_type::Partitions,
-                            sstables::component_type::Rows,
                             sstables::component_type::CompressionInfo,
                             sstables::component_type::Data,
                             sstables::component_type::Summary,
@@ -664,7 +662,6 @@ public:
                             sstables::component_type::Filter,
                             sstables::component_type::Statistics,
                             sstables::component_type::TemporaryStatistics,
-                            sstables::component_type::TemporaryIndex,
             }) {
                 if (mask & (1 << int(c))) {
                     ccs.emplace_back(c);

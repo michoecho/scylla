@@ -469,7 +469,6 @@ scylla_tests = set([
     'test/boost/chunked_vector_test',
     'test/boost/clustering_ranges_walker_test',
     'test/boost/compaction_group_test',
-    'test/boost/comparable_bytes_test',
     'test/boost/compound_test',
     'test/boost/compress_test',
     'test/boost/config_test',
@@ -550,7 +549,6 @@ scylla_tests = set([
     'test/boost/sstable_3_x_test',
     'test/boost/sstable_conforms_to_mutation_source_test',
     'test/boost/sstable_datafile_test',
-    'test/boost/sstable_2_test',
     'test/boost/sstable_generation_test',
     'test/boost/sstable_move_test',
     'test/boost/sstable_mutation_test',
@@ -566,9 +564,6 @@ scylla_tests = set([
     'test/boost/top_k_test',
     'test/boost/transport_test',
     'test/boost/symmetric_key_test',
-    'test/boost/trie_serializer_test',
-    'test/boost/trie_reader_test',
-    'test/boost/trie_writer_test',
     'test/boost/types_test',
     'test/boost/utf8_test',
     'test/boost/vint_serialization_test',
@@ -842,7 +837,6 @@ scylla_core = (['message/messaging_service.cc',
                 'sstables/storage.cc',
                 'sstables/mx/partition_reversing_data_source.cc',
                 'sstables/mx/reader.cc',
-                'sstables/index_reader.cc',
                 'sstables/mx/writer.cc',
                 'sstables/kl/reader.cc',
                 'sstables/sstable_version.cc',
@@ -865,8 +859,6 @@ scylla_core = (['message/messaging_service.cc',
                 'sstables/random_access_reader.cc',
                 'sstables/metadata_collector.cc',
                 'sstables/writer.cc',
-                'sstables/trie/trie.cc',
-                'sstables/trie/trie_writer.cc',
                 'transport/cql_protocol_extension.cc',
                 'transport/event.cc',
                 'transport/event_notifier.cc',
@@ -965,7 +957,6 @@ scylla_core = (['message/messaging_service.cc',
                 'utils/uuid.cc',
                 'utils/big_decimal.cc',
                 'types/types.cc',
-                'types/comparable_bytes.cc',
                 'validation.cc',
                 'service/migration_manager.cc',
                 'service/tablet_allocator.cc',
@@ -2068,13 +2059,12 @@ abseil_libs = ['absl/' + lib for lib in [
 def query_seastar_flags(pc_file, use_shared_libs, link_static_cxx=False):
     if use_shared_libs:
         opt = '--shared'
-        opt = '--static'
     else:
         opt = '--static'
     cflags = pkg_config(pc_file, '--cflags', opt)
     libs = pkg_config(pc_file, '--libs', opt)
     if use_shared_libs:
-        rpath = os.path.dirname([x for x in libs.split() if x.endswith("libseastar.so")][0])
+        rpath = os.path.dirname(libs.split()[0])
         libs = f"-Wl,-rpath='{rpath}' {libs}"
     if link_static_cxx:
         libs = libs.replace('-lstdc++ ', '')
@@ -2502,13 +2492,6 @@ def write_build_file(f,
 
         f.write(
             'build {mode}-test: test.{mode} {test_executables} $builddir/{mode}/scylla {wasms}\n'.format(
-                mode=mode,
-                test_executables=' '.join(['$builddir/{}/{}'.format(mode, binary) for binary in sorted(tests)]),
-                wasms=' '.join([f'$builddir/{binary}' for binary in sorted(wasms)]),
-            )
-        )
-        f.write(
-            'build {mode}-test-executables: phony {test_executables} $builddir/{mode}/scylla {wasms}\n'.format(
                 mode=mode,
                 test_executables=' '.join(['$builddir/{}/{}'.format(mode, binary) for binary in sorted(tests)]),
                 wasms=' '.join([f'$builddir/{binary}' for binary in sorted(wasms)]),

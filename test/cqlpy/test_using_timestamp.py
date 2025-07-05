@@ -32,6 +32,30 @@ def ensure_sync_with_tick(millis = 100):
         t = time.time()
     return t
 
+# In Cassandra, timestamps can be any *signed* 64-bit integer, not including
+# the most negative 64-bit integer (-2^63) which for deletion times is
+# reserved for marking *not deleted* cells.
+# As proposed in issue #5619, Scylla forbids timestamps higher than the
+# current time in microseconds plus three days. Still, any negative is
+# timestamp is still allowed in Scylla. If we ever choose to expand #5619
+# and also forbid negative timestamps, we will need to remove this test -
+# but for now, while they are allowed, let's test that they are.
+def test_negative_timestamp(cql, table1):
+    p = unique_key_int()
+    write = cql.prepare(f"INSERT INTO {table1} (k, v) VALUES (?, ?) USING TIMESTAMP ?")
+    read = cql.prepare(f"SELECT writetime(v) FROM {table1} where k = ?")
+    # Note we need to order the loop in increasing timestamp if we want
+    # the read to see the latest value:
+    for ts in [-2**63+1, -100, -1]:
+        print(ts)
+        cql.execute(write, [p, 1, ts])
+        assert ts == cql.execute(read, [p]).one()[0]
+    # The specific value -2**63 is not allowed as a timestamp - although it
+    # is a legal signed 64-bit integer, it is reserved to mean "not deleted"
+    # in the deletion time of cells.
+    with pytest.raises(InvalidRequest, match='bound'):
+        cql.execute(write, [p, 1, -2**63])
+
 # As explained above, after issue #5619 Scylla can forbid timestamps higher
 # than the current time in microseconds plus three days. This test will
 # check that it actually does. Starting with #12527 this restriction can

@@ -74,10 +74,10 @@ test_using_reusable_sst(schema_ptr s, sstring dir, sstables::generation_type::in
     });
 }
 
-future<std::vector<std::optional<partition_key>>> index_read(schema_ptr schema, sstring path) {
+future<std::vector<partition_key>> index_read(schema_ptr schema, sstring path) {
     return test_using_reusable_sst(std::move(schema), std::move(path), 1, [] (test_env& env, sstable_ptr ptr) {
         auto indexes = sstables::test(ptr).read_indexes(env.make_reader_permit()).get();
-        return indexes | std::views::transform([] (const sstables::test::index_entry& e) { return e.key; }) | std::ranges::to<std::vector<std::optional<partition_key>>>();
+        return indexes | std::views::transform([] (const sstables::test::index_entry& e) { return e.key; }) | std::ranges::to<std::vector<partition_key>>();
     });
 }
 
@@ -179,8 +179,8 @@ static future<> write_sst_info(schema_ptr schema, sstring load_dir, sstring writ
 static future<> check_component_integrity(component_type component) {
     tmpdir tmp;
     co_await write_sst_info(make_schema_for_compressed_sstable(), "test/resource/sstables/compressed", tmp.path().string(), sstables::generation_type(1));
-    auto file_path_a = sstable::filename("test/resource/sstables/compressed", "ks", "cf", la, sstables::generation_type(1), component);
-    auto file_path_b = sstable::filename(tmp.path().string(), "ks", "cf", la, sstables::generation_type(2), component);
+    auto file_path_a = sstable::filename("test/resource/sstables/compressed", "ks", "cf", la, sstables::generation_type(1), big, component);
+    auto file_path_b = sstable::filename(tmp.path().string(), "ks", "cf", la, sstables::generation_type(2), big, component);
     auto eq = co_await tests::compare_files(file_path_a, file_path_b);
     BOOST_REQUIRE(eq);
 }
@@ -360,7 +360,7 @@ SEASTAR_TEST_CASE(full_index_search) {
         auto index_list = sstables::test(sstp).read_indexes(env.make_reader_permit()).get();
         int idx = 0;
         for (auto& e : index_list) {
-            auto key = key::from_partition_key(*sstp->get_schema(), e.key.value());
+            auto key = key::from_partition_key(*sstp->get_schema(), e.key);
             BOOST_REQUIRE(sstables::binary_search(sstp->get_schema()->get_partitioner(), index_list, key) == idx++);
         }
     });
@@ -403,7 +403,7 @@ SEASTAR_TEST_CASE(statistics_rewrite) {
         }
 
         auto sstp = env.reusable_sst(uncompressed_schema(), uncompressed_dir_copy.native()).get();
-        auto file_path = sstable::filename(uncompressed_dir_copy.native(), "ks", "cf", la, generation_from_value(1), component_type::Data);
+        auto file_path = sstable::filename(uncompressed_dir_copy.native(), "ks", "cf", la, generation_from_value(1), big, component_type::Data);
         auto exists = file_exists(file_path).get();
         BOOST_REQUIRE(exists);
 
@@ -444,10 +444,6 @@ static future<shared_sstable> load_large_partition_sst(test_env& env, const ssta
 // search for anything.
 SEASTAR_TEST_CASE(promoted_index_read) {
   return for_each_sstable_version([] (const sstables::sstable::version_types version) {
-    if (format_of_version(version) == sstables::sstable_format_types::bti) {
-        // This test isn't easily applicable to BTI.
-        return make_ready_future<>();
-    }
     return test_env::do_with_async([version] (test_env& env) {
         auto sstp = load_large_partition_sst(env, version).get();
         std::vector<sstables::test::index_entry> vec = sstables::test(sstp).read_indexes(env.make_reader_permit()).get();
@@ -775,6 +771,7 @@ BOOST_AUTO_TEST_CASE(test_parse_path_good) {
             entry_descriptor{
                 generation_type{2},
                 sstable_version_types::mc,
+                sstable_format_types::big,
                 component_type::Data
             }
         },
@@ -785,6 +782,7 @@ BOOST_AUTO_TEST_CASE(test_parse_path_good) {
             entry_descriptor{
                 generation_type{3},
                 sstable_version_types::mc,
+                sstable_format_types::big,
                 component_type::Summary
             }
         },
@@ -795,6 +793,7 @@ BOOST_AUTO_TEST_CASE(test_parse_path_good) {
             entry_descriptor{
                 generation_type::from_string("3g9p_0938_0ecz429c6f019i7yuf"),
                 sstable_version_types::me,
+                sstable_format_types::big,
                 component_type::Index
             }
          },
@@ -805,6 +804,7 @@ BOOST_AUTO_TEST_CASE(test_parse_path_good) {
             entry_descriptor{
                 generation_type::from_string("3g9r_04ux_4be4w2d7t8bg6u7nok"),
                 sstable_version_types::md,
+                sstable_format_types::big,
                 component_type::Statistics
             }
         },
@@ -815,6 +815,7 @@ BOOST_AUTO_TEST_CASE(test_parse_path_good) {
             entry_descriptor{
                 generation_type::from_string("3g9r_04ux_4be4w2d7t8bg6u7nok"),
                 sstable_version_types::md,
+                sstable_format_types::big,
                 component_type::Unknown
             }
         }
@@ -825,6 +826,7 @@ BOOST_AUTO_TEST_CASE(test_parse_path_good) {
         BOOST_CHECK_EQUAL(cf, expected_cf);
         BOOST_CHECK_EQUAL(expected_desc.generation, desc.generation);
         BOOST_CHECK_EQUAL(expected_desc.version, desc.version);
+        BOOST_CHECK_EQUAL(expected_desc.format, desc.format);
         BOOST_CHECK_EQUAL(expected_desc.component, desc.component);
     }
 }

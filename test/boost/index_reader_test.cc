@@ -23,7 +23,7 @@ SEASTAR_TEST_CASE(test_abort_during_index_read) {
         auto schema_ptr = ss.schema();
         auto mut = mutation(schema_ptr, ss.make_pkey());
         auto mut_reader = make_mutation_reader_from_mutations(schema_ptr, env.make_reader_permit(), std::move(mut));
-        auto sst = make_sstable_easy(env, std::move(mut_reader), env.manager().configure_writer(), sstable_version_types::me);
+        auto sst = make_sstable_easy(env, std::move(mut_reader), env.manager().configure_writer());
 
         struct dummy_index_consumer {
             dummy_index_consumer() {}
@@ -74,13 +74,13 @@ SEASTAR_TEST_CASE(test_promoted_index_parsing_page_crossing_and_retries) {
 
         env.manager().set_promoted_index_block_size(1); // force entry for each row
         auto mut_reader = make_mutation_reader_from_mutations(s, env.make_reader_permit(), std::move(mut));
-        auto sst = make_sstable_easy(env, std::move(mut_reader), env.manager().configure_writer(), sstable_version_types::me);
+        auto sst = make_sstable_easy(env, std::move(mut_reader), env.manager().configure_writer());
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
         auto permit = semaphore.make_permit();
         tracing::trace_state_ptr trace = nullptr;
 
-        auto index = make_index_reader(sst, permit, trace, use_caching::yes, true);
+        auto index = std::make_unique<index_reader>(sst, permit, trace, use_caching::yes, true);
         auto close_index = deferred_close(*index);
 
         index->advance_to(dht::ring_position_view(pk)).get();
@@ -187,19 +187,19 @@ SEASTAR_TEST_CASE(test_no_data_file_read_on_missing_clustering_keys_with_dense_i
 
         env.manager().set_promoted_index_block_size(1); // force entry for each row
         auto mut_reader = make_mutation_reader_from_mutations(s, env.make_reader_permit(), std::move(mut));
-        auto sst = make_sstable_easy(env, std::move(mut_reader), env.manager().configure_writer(), sstable_version_types::me);
+        auto sst = make_sstable_easy(env, std::move(mut_reader), env.manager().configure_writer());
 
         tests::reader_concurrency_semaphore_wrapper semaphore;
         auto permit = semaphore.make_permit();
         tracing::trace_state_ptr trace = nullptr;
 
-        auto index = make_index_reader(sst, permit, trace, use_caching::yes, true);
+        auto index = std::make_unique<index_reader>(sst, permit, trace, use_caching::yes, true);
         auto close_index = deferred_close(*index);
 
         index->advance_to(dht::ring_position_view(pk)).get();
         index->read_partition_data().get();
 
-        auto index2 = make_index_reader(sst, permit, trace, use_caching::yes, true);
+        auto index2 = std::make_unique<index_reader>(sst, permit, trace, use_caching::yes, true);
         auto close_index2 = deferred_close(*index2);
         index2->advance_to(dht::ring_position_view(pk)).get();
         index2->advance_to_next_partition().get();

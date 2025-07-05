@@ -1525,7 +1525,7 @@ SEASTAR_TEST_CASE(test_sstable_max_local_deletion_time_2) {
                 auto sst_gen = env.make_sst_factory(s, version);
                 auto mt = make_lw_shared<replica::memtable>(s);
                 auto now = gc_clock::now();
-                uint32_t last_expiry = 0;
+                int32_t last_expiry = 0;
                 auto add_row = [&now, &mt, &s, &last_expiry](mutation &m, bytes column_name, uint32_t ttl) {
                     auto c_key = clustering_key::from_exploded(*s, {column_name});
                     last_expiry = (now + gc_clock::duration(ttl)).time_since_epoch().count();
@@ -1888,14 +1888,14 @@ SEASTAR_TEST_CASE(time_window_strategy_size_tiered_behavior_correctness) {
 
 static void check_min_max_column_names(const sstable_ptr& sst, std::vector<bytes> min_components, std::vector<bytes> max_components) {
     const auto& st = sst->get_stats_metadata();
-    BOOST_TEST_MESSAGE(fmt::format("min {}/{} max {}/{}", st.slice.min.size(), min_components.size(), st.slice.max.size(), max_components.size()));
-    BOOST_REQUIRE(st.slice.min.size() == min_components.size());
-    for (auto i = 0U; i < st.slice.min.size(); i++) {
-        BOOST_REQUIRE(min_components[i] == st.slice.min[i]);
+    BOOST_TEST_MESSAGE(fmt::format("min {}/{} max {}/{}", st.min_column_names.elements.size(), min_components.size(), st.max_column_names.elements.size(), max_components.size()));
+    BOOST_REQUIRE(st.min_column_names.elements.size() == min_components.size());
+    for (auto i = 0U; i < st.min_column_names.elements.size(); i++) {
+        BOOST_REQUIRE(min_components[i] == st.min_column_names.elements[i].value);
     }
-    BOOST_REQUIRE(st.slice.max.size() == max_components.size());
-    for (auto i = 0U; i < st.slice.max.size(); i++) {
-        BOOST_REQUIRE(max_components[i] == st.slice.max[i]);
+    BOOST_REQUIRE(st.max_column_names.elements.size() == max_components.size());
+    for (auto i = 0U; i < st.max_column_names.elements.size(); i++) {
+        BOOST_REQUIRE(max_components[i] == st.max_column_names.elements[i].value);
     }
 }
 
@@ -2004,7 +2004,7 @@ SEASTAR_TEST_CASE(sstable_expired_data_ratio) {
         auto remaining = total_keys-expired_keys;
         auto expiration_time = (now + gc_clock::duration(3600)).time_since_epoch().count();
         for (auto i = 0; i < remaining; i++) {
-            insert_key(to_bytes("alive_key" + to_sstring(i)), 3600, expiration_time);
+            insert_key(to_bytes("key" + to_sstring(i)), 3600, expiration_time);
         }
         auto sst = make_sstable_containing(sst_gen, mt);
         const auto& stats = sst->get_stats_metadata();
@@ -2021,7 +2021,6 @@ SEASTAR_TEST_CASE(sstable_expired_data_ratio) {
         auto info = compact_sstables(env, sstables::compaction_descriptor({ sst }), stcs_table, creator).get();
         BOOST_REQUIRE(info.new_sstables.size() == 1);
         BOOST_REQUIRE(info.new_sstables.front()->estimate_droppable_tombstone_ratio(now, gc_state, stcs_schema) == 0.0f);
-        testlog.trace("actual={}, expected={}", info.new_sstables.front()->data_size(), uncompacted_size*(1-expired));
         BOOST_REQUIRE_CLOSE(info.new_sstables.front()->data_size(), uncompacted_size*(1-expired), 5);
 
         std::map<sstring, sstring> options;
@@ -2360,7 +2359,7 @@ public:
 
         auto close_mr = deferred_close(mr);
 
-        auto sst = env.make_sstable(schema, sstable_version_types::me);
+        auto sst = env.make_sstable(schema);
         sstable_writer_config cfg = env.manager().configure_writer();
         cfg.validation_level = mutation_fragment_stream_validation_level::partition_region; // this test violates key order on purpose
 
@@ -2878,7 +2877,7 @@ SEASTAR_TEST_CASE(sstable_validate_test) {
         auto rd = make_mutation_reader_from_fragments(schema, permit, std::move(frags));
         auto config = env.manager().configure_writer();
         config.validation_level = mutation_fragment_stream_validation_level::partition_region; // this test violates key order on purpose
-        return make_sstable_easy(env, std::move(rd), std::move(config), sstable_version_types::me, local_keys.size());
+        return make_sstable_easy(env, std::move(rd), std::move(config), sstables::get_highest_sstable_version(), local_keys.size());
     };
 
     auto info = make_lw_shared<compaction_data>();

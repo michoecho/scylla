@@ -62,7 +62,6 @@ bool bloom_filter::is_present(hashed_key key) {
 }
 
 void bloom_filter::add(const bytes_view& key) {
-    //fmt::println("bloom::add {}", fmt_hex(key));
     for_each_index(make_hashed_key(key), _hash_count, _bitset.size(), _format, [this] (auto i) {
         _bitset.set(i);
         return stop_iteration::no;

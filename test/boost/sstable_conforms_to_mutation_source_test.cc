@@ -32,7 +32,7 @@ static db_clock::time_point to_db_clock(gc_clock::time_point tp) {
 static
 mutation_source make_sstable_mutation_source(sstables::test_env& env, schema_ptr s, sstring dir, std::vector<mutation> mutations,
         sstable_writer_config cfg, sstables::sstable::version_types version, gc_clock::time_point query_time = gc_clock::now()) {
-    auto sst = env.make_sstable(s, dir, env.new_generation(), version, default_sstable_buffer_size, to_db_clock(query_time));
+    auto sst = env.make_sstable(s, dir, env.new_generation(), version, sstable_format_types::big, default_sstable_buffer_size, to_db_clock(query_time));
     auto mt = make_memtable(s, mutations);
     auto mr = mt->make_mutation_reader(s, env.make_reader_permit());
     sst->write_components(std::move(mr), mutations.size(), s, cfg, mt->get_encoding_stats()).get();
@@ -142,20 +142,8 @@ SEASTAR_TEST_CASE(test_sstable_conforms_to_mutation_source_md_large) {
     return test_sstable_conforms_to_mutation_source(writable_sstable_versions[1], block_sizes[2]);
 }
 
-SEASTAR_TEST_CASE(test_sstable_conforms_to_mutation_source_da_tiny) {
-    return test_sstable_conforms_to_mutation_source(writable_sstable_versions[3], block_sizes[0]);
-}
-
-SEASTAR_TEST_CASE(test_sstable_conforms_to_mutation_source_da_medium) {
-    return test_sstable_conforms_to_mutation_source(writable_sstable_versions[3], block_sizes[1]);
-}
-
-SEASTAR_TEST_CASE(test_sstable_conforms_to_mutation_source_da_large) {
-    return test_sstable_conforms_to_mutation_source(writable_sstable_versions[3], block_sizes[2]);
-}
-
 // This SCYLLA_ASSERT makes sure we don't miss writable vertions
-static_assert(writable_sstable_versions.size() == 4);
+static_assert(writable_sstable_versions.size() == 3);
 
 // `keys` may contain repetitions.
 // The generated position ranges are non-empty. The start of each range in the vector is greater than the end of the previous range.

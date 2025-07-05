@@ -323,7 +323,7 @@ write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Mem
 
 template <std::integral Members>
 inline void
-write_chunked_vector_of_integral(file_writer& out, const utils::chunked_vector<Members>& arr, std::endian endian) {
+write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Members>& arr) {
     std::vector<Members> tmp;
     size_t per_loop = 100000 / sizeof(Members);
     tmp.resize(per_loop);
@@ -332,36 +332,14 @@ write_chunked_vector_of_integral(file_writer& out, const utils::chunked_vector<M
         auto now = std::min(arr.size() - idx, per_loop);
         // copy arr into tmp converting each entry into big-endian representation.
         auto nr = arr.begin() + idx;
-        if (endian == std::endian::native) {
-            for (size_t i = 0; i < now; i++) {
-                tmp[i] = nr[i];
-            }
-        } else {
-            for (size_t i = 0; i < now; i++) {
-                tmp[i] = std::byteswap(nr[i]);
-            }
+        for (size_t i = 0; i < now; i++) {
+            tmp[i] = net::hton(nr[i]);
         }
         auto p = reinterpret_cast<const char*>(tmp.data());
         auto bytes = now * sizeof(Members);
         out.write(p, bytes);
         idx += now;
     }
-}
-
-template <std::integral Members>
-inline void
-write(sstable_version_types v, file_writer& out, const utils::chunked_vector<Members>& arr) {
-    write_chunked_vector_of_integral(out, arr, std::endian::big);
-}
-
-inline void
-write(sstable_version_types v, file_writer& out, const filter& bf) {
-    write(v, out, bf.hashes);
-    uint32_t len = 0;
-    check_truncate_and_assign(len, bf.buckets.size());
-    write(v, out, len);
-    auto endian = version_has_byteswapped_bloom_filters(v) ? std::endian::big : std::endian::little;
-    write_chunked_vector_of_integral(out, bf.buckets, endian);
 }
 
 template <typename Contents>
@@ -565,22 +543,21 @@ void write_counter_value(counter_cell_view ccv, W& out, sstable_version_types v,
 void maybe_add_summary_entry(summary&, const dht::token&, bytes_view key, uint64_t data_offset,
     uint64_t index_offset, index_sampling_state&);
 
-void prepare_summary(summary& s,  uint32_t min_index_interval);
+void prepare_summary(summary& s, uint64_t expected_partition_count, uint32_t min_index_interval);
 
 future<> seal_summary(summary& s,
-    const std::optional<key>& first_key,
-    const std::optional<key>& last_key,
+    std::optional<key>&& first_key,
+    std::optional<key>&& last_key,
     const index_sampling_state& state);
 
 void seal_statistics(sstable_version_types, statistics&, metadata_collector&,
     const sstring partitioner, double bloom_filter_fp_chance, schema_ptr,
-    const std::optional<key>& first_key, const std::optional<key>& last_key,
+    const dht::decorated_key& first_key, const dht::decorated_key& last_key,
     const encoding_stats& enc_stats = {}, const std::set<int>& compaction_ancestors = {});
 
 void write(sstable_version_types, file_writer&, const utils::estimated_histogram&);
 void write(sstable_version_types, file_writer&, const utils::streaming_histogram&);
 void write(sstable_version_types, file_writer&, const commitlog_interval&);
 void write(sstable_version_types, file_writer&, const compression&);
-void write(sstable_version_types v, file_writer& out, const covered_slice&);
 
 }
