@@ -17,7 +17,7 @@
 //
 // (The reader logic doesn't have much in the way of design -- the design of readers must follow the format).
 
-#pragma clang optimize off
+#pragma clang optimize on
 
 #include "trie.hh"
 #include <algorithm>

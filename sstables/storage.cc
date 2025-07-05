@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
-#pragma clang optimize off
+#pragma clang optimize on
 #include "storage.hh"
 
 #include <cerrno>
