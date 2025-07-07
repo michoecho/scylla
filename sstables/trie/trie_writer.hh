@@ -46,7 +46,7 @@ namespace trie {
 
 // Enables code which is useful for debugging during development,
 // but too expensive to be compiled into release builds (even if dynamically disabled).
-constexpr bool developer_build = true;
+constexpr bool developer_build = false;
 // Adds expensive extra checks against use-after-free on pointers obtained from the bump_allocator.
 // Must be a macro so that it can affect whether some struct fields are defined or not.
 #define TRIE_SANITIZE_BUMP_ALLOCATOR developer_build
@@ -392,6 +392,14 @@ struct trie_payload {
         _payload_size = blob.size();
         std::ranges::copy(blob, _payload_buf.data());
     }
+    trie_payload(uint8_t bits, const decltype(_payload_buf)& blob, size_t blob_size) noexcept {
+        expensive_assert(blob_size <= _payload_buf.size());
+        expensive_assert(bits < 16);
+        expensive_assert(bool(blob_size) == bool(bits));
+        _payload_bits = bits;
+        _payload_size = blob_size;
+        _payload_buf = blob;
+    }
     bool operator==(const trie_payload& other) const {
         return other._payload_bits == _payload_bits
             && std::ranges::equal(other.blob(), blob());
@@ -578,7 +586,7 @@ struct writer_node {
     //
     // Only valid for completed nodes.
     // Invalidated after _pos is set.
-    sink_offset _branch_size;
+    sink_offset _branch_size = sink_offset(0);
     // The identifier (in practice: position) of the node in the output file/stream.
     //
     // Only set after the node is flushed.
@@ -668,7 +676,7 @@ inline void writer_node::reset_children() {
 
 inline void writer_node::reserve_children(size_t n, bump_allocator& alctr) {
     if (n > _children_capacity) {
-        auto new_capacity = std::bit_ceil(n);
+        auto new_capacity = std::bit_ceil(n | uint64_t(0b11));
         auto new_array = alctr.alloc<ptr<writer_node>[]>(new_capacity);
         std::ranges::copy(get_children(), new_array.get());
         _children_capacity = new_capacity;
@@ -760,6 +768,7 @@ inline void writer_node::write(ptr<writer_node> self, trie_writer_sink auto& out
     self->_node_size = node_size(0);
     self->_has_out_of_page_children = false;
     self->_has_out_of_page_descendants = false;
+    out.flush();
 }
 
 inline sink_offset writer_node::recalc_sizes(ptr<writer_node> self, const trie_writer_sink auto& out, sink_pos global_pos) {
@@ -898,20 +907,12 @@ inline trie_writer<Output>::trie_writer(Output& out, size_t max_chain_length, si
 template <trie_writer_sink Output>
 inline void trie_writer<Output>::complete(ptr<writer_node> x) {
     expensive_log("trie_writer::complete: x={}", fmt::ptr(x.get()));
-    expensive_assert(!x->_branch_size.valid());
+    //expensive_assert(!x->_branch_size.valid());
     expensive_assert(!x->_node_size.valid());
     expensive_assert(x->_has_out_of_page_children == false);
     expensive_assert(x->_has_out_of_page_descendants == false);
     expensive_assert(!x->_pos.valid());
-    bool has_out_of_page_children = false;
-    bool has_out_of_page_descendants = false;
-    auto branch_size = sink_offset{0};
-    for (const auto& c : x->get_children()) {
-        branch_size = branch_size + c->_branch_size + sink_offset(c->_node_size);
-        has_out_of_page_children |= c->_pos.valid();
-        has_out_of_page_descendants |= c->_has_out_of_page_descendants || c->_has_out_of_page_children;
-    }
-    auto node_size = _out.serialized_size(*x, sink_pos((_out.pos() + branch_size)));
+    auto node_size = _out.serialized_size(*x, sink_pos((_out.pos() + x->_branch_size)));
     // We try to keep parents in the same page as their children as much as possible.
     //
     // If the completed subtree fits into a page, we leave it in one piece.
@@ -924,11 +925,8 @@ inline void trie_writer<Output>::complete(ptr<writer_node> x) {
     //
     // See https://github.com/apache/cassandra/blob/9dfcfaee6585a3443282f56d54e90446dc4ff012/src/java/org/apache/cassandra/io/tries/IncrementalTrieWriterPageAware.java#L32
     // for an alternative description of the process.
-    if (branch_size + node_size <= sink_offset(_out.page_size())) {
-        x->_branch_size = branch_size;
+    if (x->_branch_size + node_size <= sink_offset(_out.page_size())) {
         x->_node_size = node_size;
-        x->_has_out_of_page_children = has_out_of_page_children;
-        x->_has_out_of_page_descendants = has_out_of_page_descendants;
     } else {
         lay_out_children(x);
         x->_branch_size = sink_offset(0);
@@ -996,29 +994,9 @@ inline void trie_writer<Output>::lay_out_children(ptr<writer_node> x) {
     // I don't know what's the number in practice. Maybe it's not worth the CPU
     // spent on sorting by size? (It probably is worth it, though).
 
-    struct cmp {
-        using is_transparent = bool;
-        bool operator()(ptr<writer_node> a, ptr<writer_node> b) const {
-            return std::make_pair(a->_branch_size + a->_node_size, a->_transition[0])
-                 < std::make_pair(b->_branch_size + b->_node_size, b->_transition[0]);
-        }
-        bool operator()(int64_t a, ptr<writer_node> b) const {
-            return a < (b->_branch_size + b->_node_size).value;
-        }
-    };
-    auto unwritten_children = std::set<ptr<writer_node>, cmp>(cmp());
 
     for (const auto& c : x->get_children()) {
-        if (!c->_pos.valid()) {
-            unwritten_children.insert(c);
-        }
-    }
-
-    while (unwritten_children.size()) {
-        // Find the smallest child which doesn't fit. (All might fit, then we will get the past-the-end iterator).
-        // Its predecessor will be the biggest child which does fit.
-        auto choice_it = unwritten_children.upper_bound(_out.bytes_left_in_page());
-        if (choice_it == unwritten_children.begin()) {
+        if ((c->_branch_size + c->_node_size).value > int64_t(_out.bytes_left_in_page())) {
             // None of the still-unwritten children fits into the current page,
             // so we pad to page boundary and "try again".
             //
@@ -1027,13 +1005,9 @@ inline void trie_writer<Output>::lay_out_children(ptr<writer_node> x) {
             // so we can just the biggest child.
             _out.pad_to_page_boundary();
             expensive_assert(_out.bytes_left_in_page() == _out.page_size());
-            // Pick the biggest child branch.
-            choice_it = std::end(unwritten_children);
         }
         // The predecessor of upper_bound is the biggest child which still fits.
-        choice_it = std::prev(choice_it);
-        ptr<writer_node> candidate = *choice_it;
-        unwritten_children.erase(choice_it);
+        ptr<writer_node> candidate = c;
 
         if (!try_write(candidate)) {
             // After updating the estimates, we see that the node doesn't actually fit into the current page.
@@ -1043,7 +1017,7 @@ inline void trie_writer<Output>::lay_out_children(ptr<writer_node> x) {
             // I'm not sure what's the upper bound of the number of retries we might have to do because of this.
             // It's probably not worth caring about, but if we wanted a hard limit, then we could just pad to the next
             // page at this point and just write this candidate out.
-            unwritten_children.insert(candidate);
+            continue;
         }
     }
     // Removes all unneeded information from the node's children.
@@ -1105,6 +1079,7 @@ inline void trie_writer<Output>::compact_after_writing_children(ptr<writer_node>
 }
 
 template <trie_writer_sink Output>
+[[gnu::flatten]]
 inline void trie_writer<Output>::complete_until_depth(size_t depth) {
     expensive_log("writer_node::complete_until_depth: start,_stack={}, depth={}, _current_depth={}", _stack.size(), depth, _current_depth);
     while (_current_depth > depth) {
@@ -1150,10 +1125,21 @@ inline void trie_writer<Output>::complete_until_depth(size_t depth) {
             back->reserve_children(2, _allocator);
             back->push_child(new_node, _allocator);
 
+            back->_branch_size = back->_branch_size + new_node->_branch_size + sink_offset(new_node->_node_size);
+            back->_has_out_of_page_children |= new_node->_pos.valid();
+            back->_has_out_of_page_descendants |= new_node->_has_out_of_page_descendants || new_node->_has_out_of_page_children;
+
             _current_depth -= cut_off;
         } else {
             complete(back);
             _stack.pop_back();
+            if (_stack.size()) {
+                const auto &newbck = _stack.back();
+                const auto new_node = back;
+                newbck->_branch_size = newbck->_branch_size + new_node->_branch_size + sink_offset(new_node->_node_size);
+                newbck->_has_out_of_page_children |= new_node->_pos.valid();
+                newbck->_has_out_of_page_descendants |= new_node->_has_out_of_page_descendants || new_node->_has_out_of_page_children;
+            }
             _current_depth -= transition_size;
         }
         expensive_assert(back->_transition_meta > 0);

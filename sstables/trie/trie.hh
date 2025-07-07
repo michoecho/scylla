@@ -64,7 +64,7 @@ public:
 public:
     partition_trie_writer(bti_trie_sink&);
     // Add a new partition key to the index.
-    void add(const schema&, const dht::decorated_key&, int64_t data_file_offset, uint8_t hash_bits);
+    void add(const schema&, dht::decorated_key, int64_t data_file_offset, uint8_t hash_bits);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
     // The writer can't be used again after this. (FIXME: it would be better to reset it and allow reuse).

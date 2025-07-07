@@ -165,6 +165,8 @@ class bti_trie_sink_impl {
     sstables::file_writer& _w;
     size_t _page_size;
     constexpr static size_t max_page_size = 64 * 1024;
+    size_t _inner_pos = 0;
+    std::array<char, max_page_size + 8> _inner;
 public:
     bti_trie_sink_impl(sstables::file_writer& w, size_t page_size) : _w(w), _page_size(page_size) {
         expensive_assert(_page_size <= max_page_size);
@@ -173,11 +175,13 @@ private:
     void write_int(uint64_t x, size_t bytes) {
         uint64_t be = cpu_to_be(x);
         expensive_log("write_int: {}", fmt_hex({reinterpret_cast<const signed char*>(&be) + sizeof(be) - bytes, bytes}));
-        _w.write(reinterpret_cast<const char*>(&be) + sizeof(be) - bytes, bytes);
+        write_be(_inner.data() + _inner_pos, x);
+        _inner_pos += bytes;
     }
     void write_bytes(const_bytes x) {
         expensive_log("write_bytes: {}", fmt_hex({reinterpret_cast<const signed char*>(x.data()), x.size()}));
-        _w.write(reinterpret_cast<const char*>(x.data()), x.size());
+        memcpy(_inner.data() + _inner_pos, x.data(), x.size());
+        _inner_pos += x.size();
     }
     size_t write_sparse(const writer_node& x, node_type type, int bytes_per_pointer, sink_pos pos) {
         write_int((type << 4) | x._payload._payload_bits, 1);
@@ -527,11 +531,17 @@ public:
         return round_up(pos().value + 1, page_size()) - pos().value;
     };
     void pad_to_page_boundary() {
-        const static std::array<std::byte, max_page_size> zero_page = {};
-        _w.write(reinterpret_cast<const char*>(zero_page.data()), bytes_left_in_page());
+        auto sz = bytes_left_in_page();
+        std::memset(_inner.data() + _inner_pos, 0x00, sz);
+        _inner_pos += sz;
+        flush();
+    }
+    void flush() {
+        _w.write(_inner.data(), _inner_pos);
+        _inner_pos = 0;
     }
     sink_pos pos() const {
-        return sink_pos(_w.offset());
+        return sink_pos(_w.offset() + _inner_pos);
     }
 };
 

@@ -242,12 +242,14 @@ class lazy_comparable_bytes {
         std::span<std::byte> operator*() const {
             if (_i >= _owner._frags.size()) {
                 _owner._frags.emplace_back(bytespan_to_bv(*_owner._gen_it));
-                ++_owner._gen_it;
             }
             return std::as_writable_bytes(std::span(_owner._frags[_i]));
         }
         iterator& operator++() {
-            this->operator*(); // Ensure the current fragment has been pushed to _frags.
+            if (_i >= _owner._frags.size()) {
+                _owner._frags.emplace_back(bytespan_to_bv(*_owner._gen_it));
+            }
+            ++_owner._gen_it;
             ++_i;
             return *this;
         }
@@ -288,21 +290,33 @@ public:
 };
 
 struct lazy_comparable_bytes_from_dk {
-    dht::decorated_key _dk;
+    dht::decorated_key _key;
     utils::small_vector<bytes, 1> _frags;
-    std::generator<std::span<const std::byte>> _gen;
-    comparable_bytes_iterator _gen_it;
+    std::reference_wrapper<const schema> _s;
+    bool _trimmed = false;
+    enum class stage {
+        after_token,
+        after_pk,
+    } _stage;
     lazy_comparable_bytes_from_dk(const schema& s, dht::decorated_key dk)
-        : _dk(std::move(dk))
-        , _gen(dk_to_comparable(s, dht::ring_position_view(_dk.token(), &_dk.key(), 0)))
-        , _gen_it(_gen.begin())
+        : _key(std::move(dk))
+        , _s(s)
     {
-        advance();
+        _frags.emplace_back(bytes::initialized_later(), 9);
+        auto p = _frags[0].data();
+        p[0] = 0x40;
+        auto token = _key.token().is_maximum() ? std::numeric_limits<uint64_t>::max() : _key.token().unbias();
+        seastar::write_be<uint64_t>(reinterpret_cast<char*>(&p[1]), token);
+        _stage = stage::after_token;
     }
-    lazy_comparable_bytes_from_dk(lazy_comparable_bytes_from_dk&&) = delete;
+    lazy_comparable_bytes_from_dk(lazy_comparable_bytes_from_dk&&) noexcept = default;
+    lazy_comparable_bytes_from_dk& operator=(lazy_comparable_bytes_from_dk&&) noexcept = default;
     void advance() {
-        _frags.emplace_back(bytespan_to_bv(*_gen_it));
-        ++_gen_it;
+        auto vec = std::vector<std::byte>();
+        _s.get().partition_key_type()->memcmp_comparable_form(_key.key(), vec);
+        vec.push_back(std::byte(0x38));
+        _frags.emplace_back(bytespan_to_bv(std::span(vec)));
+        _stage = stage::after_pk;
     }
     struct iterator {
         using difference_type = std::ptrdiff_t;
@@ -311,23 +325,34 @@ struct lazy_comparable_bytes_from_dk {
         size_t _i = 0;
         iterator(lazy_comparable_bytes_from_dk& o) : _owner(o) {}
         std::span<std::byte> operator*() const {
-            if (_i >= _owner._frags.size()) {
-                _owner.advance();
-            }
             return std::as_writable_bytes(std::span(_owner._frags[_i]));
         }
         iterator& operator++() {
-            this->operator*(); // Ensure the current fragment has been pushed to _frags.
             ++_i;
+            if (_i >= _owner._frags.size()) {
+                _owner.advance();
+            }
             return *this;
         }
         void operator++(int) {
             ++*this;
         }
         bool operator==(const std::default_sentinel_t&) {
-            return _i == _owner._frags.size() && _owner._gen_it == std::default_sentinel;
+            return _i == _owner._frags.size() && (_owner._stage == stage::after_pk || _owner._trimmed);
         }
     };
+    void trim(const size_t n) {
+        size_t remaining = n;
+        for (size_t i = 0; i < _frags.size(); ++i) {
+            if (_frags[i].size() >= remaining) {
+                _frags[i].resize(remaining);
+                _frags.resize(i+1);
+                break;
+            }
+            remaining -= _frags[i].size();
+        }
+        _trimmed = true;
+    }
     iterator begin() { return iterator(*this); }
     std::default_sentinel_t end() { return std::default_sentinel; }
 };
@@ -367,7 +392,7 @@ class partition_index_writer_impl {
 public:
     partition_index_writer_impl(Output&);
     partition_index_writer_impl(partition_index_writer_impl&&) = delete;
-    void add(const schema&, const dht::decorated_key&, int64_t data_file_pos, uint8_t hash_bits);
+    void add(const schema&, dht::decorated_key, int64_t data_file_pos, uint8_t hash_bits);
     sink_pos finish();
 private:
     // The lower trie-writing layer, oblivious to the semantics of the partition index.
@@ -385,8 +410,9 @@ private:
     // from the successor, and we will be able to determine the shortest unique prefix. 
     size_t _last_key_mismatch = 0;
     // The key added most recently.
-    std::optional<lazy_comparable_bytes> _last_key;
-    std::optional<lazy_comparable_bytes> _last_key_next;
+    std::optional<lazy_comparable_bytes_from_dk> _keys[2];
+    size_t _last_key = 0;
+    size_t _last_key_next = 1;
     // The payload of _last_key: the Data.db position and the hash bits. 
     int64_t _last_data_file_pos;
     uint8_t _last_hash_bits;
@@ -408,14 +434,12 @@ std::pair<size_t, std::byte*> lcb_mismatch(T& a, T& b) {
     std::span<std::byte> a_sp = {};
     std::span<std::byte> b_sp = {};
     size_t i = 0;
-    while ((a_it != a.end() || !a_sp.empty()) && (b_it != b.end() || !b_sp.empty())) {
+    while (a_it != a.end() && b_it != b.end()) {
         if (a_sp.empty()) {
             a_sp = *a_it;
-            ++a_it;
         }
         if (b_sp.empty()) {
             b_sp = *b_it;
-            ++b_it;
         }
         size_t mismatch_idx = std::ranges::mismatch(a_sp, b_sp).in2 - b_sp.begin();
         i += mismatch_idx;
@@ -424,13 +448,19 @@ std::pair<size_t, std::byte*> lcb_mismatch(T& a, T& b) {
         }
         a_sp = a_sp.subspan(mismatch_idx);
         b_sp = b_sp.subspan(mismatch_idx);
+        if (a_sp.empty()) {
+            ++a_it;
+        }
+        if (b_sp.empty()) {
+            ++b_it;
+        }
     }
     return {i, nullptr};
 }
 
 template <trie_writer_sink Output>
 void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
-    std::array<std::byte, 9> payload_bytes;
+    std::array<std::byte, 20> payload_bytes;
     payload_bytes[0] = std::byte(_last_hash_bits);
     auto payload_bits = div_ceil(std::bit_width<uint64_t>(std::abs(_last_data_file_pos)) + 1, 8);
     uint64_t pos_be = seastar::cpu_to_be(_last_data_file_pos << 8*(8 - payload_bits));
@@ -439,7 +469,7 @@ void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
     // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
     // (Even though currently they are always present).
     size_t i = 0;
-    for (auto frag : *_last_key) {
+    for (auto frag : *_keys[_last_key]) {
         if (i + frag.size() < _last_key_mismatch) {
             i += frag.size();
             continue;
@@ -454,7 +484,7 @@ void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
         if (i + frag.size() < needed_prefix) {
             _wr.add_partial(i, frag);
         } else {
-            _wr.add(i, frag.subspan(0, needed_prefix - i), trie_payload(payload_bits | 0x8, std::span(payload_bytes).subspan(0, payload_bits + 1)));
+            _wr.add(i, frag.subspan(0, needed_prefix - i), trie_payload(payload_bits | 0x8, payload_bytes, payload_bits + 1));
             break;
         }
 
@@ -463,12 +493,12 @@ void partition_index_writer_impl<Output>::write_last_key(size_t needed_prefix) {
 }
 
 template <trie_writer_sink Output>
-void partition_index_writer_impl<Output>::add(const schema& s, const dht::decorated_key& dk, int64_t data_file_pos, uint8_t hash_bits) {
+void partition_index_writer_impl<Output>::add(const schema& s, dht::decorated_key dk, int64_t data_file_pos, uint8_t hash_bits) {
     expensive_log("partition_index_writer_impl::add: this={} key={}, data_file_pos={}", fmt::ptr(this), dk, data_file_pos);
-    _last_key_next.emplace(dk_to_comparable(s, dk));
+    _keys[_last_key_next].emplace(s, std::move(dk));
     if (_added_keys > 0) {
         // First position where the new key differs from the last key.
-        size_t mismatch = _last_key ? lcb_mismatch(*_last_key_next, *_last_key).first : 0;
+        size_t mismatch = _keys[_last_key] ? lcb_mismatch(*_keys[_last_key_next], *_keys[_last_key]).first : 0;
         // From `_last_key_mismatch` (mismatch position between `_last_key` and its predecessor)
         // and `mismatch` (mismatch position between `_last_key` and its successor),
         // compute the minimal needed prefix of `_last_key`.
@@ -506,8 +536,8 @@ partition_trie_writer& partition_trie_writer::operator=(partition_trie_writer&&)
 partition_trie_writer::partition_trie_writer(bti_trie_sink& out)
     : _impl(std::make_unique<impl>(*out._impl)){
 }
-void partition_trie_writer::add(const schema& s, const dht::decorated_key& dk, int64_t data_file_pos, uint8_t hash_bits) {
-    _impl->add(s, dk, data_file_pos, hash_bits);
+void partition_trie_writer::add(const schema& s, dht::decorated_key dk, int64_t data_file_pos, uint8_t hash_bits) {
+    _impl->add(s, std::move(dk), data_file_pos, hash_bits);
 }
 int64_t partition_trie_writer::finish() {
     return _impl->finish().value;
@@ -1432,7 +1462,7 @@ void row_index_writer_impl<Output>::add(
     }
 
     if (_added_blocks == 0) {
-        _wr.add(0, {}, trie_payload(has_tombstone_flag | payload_bits, {payload_bytes.data(), payload_bytes_it}));
+        _wr.add(0, {}, trie_payload(has_tombstone_flag | payload_bits, payload_bytes, payload_bytes_it - payload_bytes.data()));
     } else {
         auto [separator_mismatch_idx, separator_mismatch_ptr] = lcb_mismatch(first_ck, *_last_key);
         // We assume a prefix-free encoding here.
