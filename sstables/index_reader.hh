@@ -125,9 +125,9 @@ public:
     // if such information is available in the index.
     // Precondition: partition_data_ready()
     virtual std::optional<sstables::deletion_time> partition_tombstone() = 0;
-    // Returns the key for current partition.
+    // Returns the key for current partition, if available in the index.
     // Precondition: partition_data_ready()
-    virtual partition_key get_partition_key() = 0;
+    virtual std::optional<partition_key> get_partition_key() = 0;
     // Returns data file positions corresponding to the bounds.
     // End position may be unset
     virtual data_file_positions_range data_file_positions() const = 0;
@@ -985,7 +985,7 @@ public:
 
     // Returns the key for current partition.
     // Can be called only when partition_data_ready().
-    partition_key get_partition_key() override {
+    std::optional<partition_key> get_partition_key() override {
         return _alloc_section(_region, [this] {
             index_entry& e = current_partition_entry(_lower_bound);
             return e.get_key().to_partition_key(*_sstable->_schema);
