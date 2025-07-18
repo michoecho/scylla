@@ -41,6 +41,25 @@ public:
     }
 };
 
+std::vector<uint64_t> get_ck_positions(shared_sstable sst, reader_permit permit) {
+    std::vector<uint64_t> result;
+    auto abstract_r = sst->make_index_reader(permit, nullptr, use_caching::no, false);
+    auto& r = dynamic_cast<index_reader&>(*abstract_r);
+    r.advance_to(dht::partition_range::make_open_ended_both_sides()).get();
+    r.read_partition_data().get();
+    auto close_ir = deferred_close(r);
+
+    while (!r.eof()) {
+        auto partition_pos = r.data_file_positions().start;
+        sstables::clustered_index_cursor* cur = r.current_clustered_cursor();
+        while (auto ei_opt = cur->next_entry().get()) {
+            result.push_back(ei_opt.value().offset + partition_pos);
+        }
+        r.advance_to_next_partition().get();
+    }
+    return result;
+}
+
 std::vector<uint64_t> get_partition_positions(shared_sstable sst, reader_permit permit) {
     std::vector<uint64_t> result;
     {
@@ -58,8 +77,11 @@ std::vector<uint64_t> get_partition_positions(shared_sstable sst, reader_permit 
 
 struct inexact_partition_index : abstract_index_reader {
     nondeterministic_choice_stack& _ncs;
-    std::span<const uint64_t> _positions;
-    std::span<const dht::decorated_key> _keys;
+    std::vector<uint64_t> _positions;
+    std::span<const uint64_t> _pk_positions;
+    std::span<const uint64_t> _ck_positions;
+    std::span<const dht::decorated_key> _pks;
+    std::span<const clustering_key> _cks;
     schema_ptr _s;
 
     int _lower = 0;
@@ -67,158 +89,198 @@ struct inexact_partition_index : abstract_index_reader {
 
     inexact_partition_index(
         nondeterministic_choice_stack& ncs,
-        std::span<const uint64_t> positions,
-        std::span<const dht::decorated_key> keys,
+        std::span<const uint64_t> pk_positions,
+        std::span<const uint64_t> ck_positions,
+        std::span<const dht::decorated_key> pks,
+        std::span<const clustering_key> cks,
         schema_ptr s)
     : _ncs(ncs)
-    , _positions(positions)
-    , _keys(keys)
+    , _pk_positions(pk_positions)
+    , _ck_positions(ck_positions)
+    , _pks(pks)
+    , _cks(cks)
     , _s(s) {
-
+        _positions.insert(_positions.end(), ck_positions.begin(), ck_positions.end());
+        _positions.insert(_positions.end(), pk_positions.begin(), pk_positions.end());
+        std::ranges::sort(_positions);
     }
 
-    virtual future<> close() noexcept {
+    future<> close() noexcept override {
         return make_ready_future<>();
     }
-    virtual data_file_positions_range data_file_positions() const {
+    data_file_positions_range data_file_positions() const override {
         return {_positions[_lower], _positions[_upper]};
     }
-    virtual future<std::optional<uint64_t>> last_block_offset() {
+    future<std::optional<uint64_t>> last_block_offset() override {
         abort();
     }
-    virtual future<bool> advance_lower_and_check_if_present(dht::ring_position_view key) {
+    future<bool> advance_lower_and_check_if_present(dht::ring_position_view key) override {
         abort();
     }
-    virtual future<> advance_upper_past(position_in_partition_view pos) {
-        abort();
-    }
-    virtual future<> advance_to_next_partition() {
-        _lower += 1;
+    future<> advance_upper_past(position_in_partition_view pos) override {
+        auto cmp = position_in_partition::less_compare(*_s);
+        auto pk_idx = std::ranges::lower_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin();
+        _upper = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        size_t ck_idx = std::ranges::upper_bound(_cks, pos, cmp) - _cks.begin();
+        _upper = (ck_idx == _cks.size()) ? _upper + 1 : _upper + ck_idx;
         return make_ready_future<>();
     }
-    virtual indexable_element element_kind() const {
-        return indexable_element::partition;
+    future<> advance_to_next_partition() override {
+        auto pk_idx = std::ranges::lower_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin();
+        pk_idx += 1;
+        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        testlog.trace("inexact_partition_index/advance_to_next_partition: _lower={}, _upper={}, pk_idx={}", _lower, _upper, pk_idx);
+        return make_ready_future<>();
     }
-    virtual future<> advance_to(dht::ring_position_view pos) {
+    indexable_element element_kind() const override {
+        if (eof()) {
+            return indexable_element::partition;
+        }
+        if (_positions[_lower] == *std::ranges::lower_bound(_pk_positions, _positions[_lower])) {
+            return indexable_element::partition;
+        } else {
+            return indexable_element::cell;
+        }
+    }
+    future<> advance_to(dht::ring_position_view pos) override {
         auto cmp = dht::ring_position_less_comparator(*_s);
-        _lower = std::ranges::lower_bound(_keys, pos, cmp) - _keys.begin();
+        auto pk_idx = std::ranges::lower_bound(_pks, pos, cmp) - _pks.begin();
         switch (_ncs.choose()) {
             case 0:
                 break;
             default:
-                _lower = std::clamp<int>(_lower - 1, 0, _keys.size());
+                pk_idx = std::clamp<int>(pk_idx - 1, 0, _pks.size());
                 _ncs.mark_last_choice();
                 break;
         }
+        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
         return make_ready_future<>();
     }
-    virtual future<> advance_after_existing(const dht::decorated_key& dk) {
+    future<> advance_past_definitely_present_partition(const dht::decorated_key& dk) override {
         auto cmp = dht::ring_position_less_comparator(*_s);
-        _lower = std::ranges::lower_bound(_keys, dk, cmp) - _keys.begin() + 1;
+        size_t pk_idx = std::ranges::lower_bound(_pks, dk, cmp) - _pks.begin() + 1;
+        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
         return make_ready_future<>();
     }
-    virtual future<> advance_to(position_in_partition_view pos) {
-        abort();
-    }
-    virtual std::optional<sstables::deletion_time> partition_tombstone() {
-        return std::nullopt;
-    }
-    virtual std::optional<partition_key> get_partition_key() {
-        return std::nullopt;
-    }
-    virtual partition_key get_partition_key_prefix() {
-        abort();
-    }
-    virtual bool partition_data_ready() const {
-        return false;
-    }
-    virtual future<> read_partition_data() {
+    future<> advance_to(position_in_partition_view pos) override {
+        auto cmp = position_in_partition::less_compare(*_s);
+        auto pk_idx = std::ranges::lower_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin();
+        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        size_t ck_idx = std::max<int>(0, std::ranges::upper_bound(_cks, pos, cmp) - _cks.begin() - 1);
+        _lower = pk_idx * _cks.size() + ck_idx;
         return make_ready_future<>();
     }
-    virtual future<> advance_reverse(position_in_partition_view pos) {
+    std::optional<sstables::deletion_time> partition_tombstone() override {
+        return sstables::deletion_time {
+            std::numeric_limits<int32_t>::max(),
+            std::numeric_limits<int64_t>::min(),
+        };
+    }
+    std::optional<partition_key> get_partition_key() override {
+        switch (_ncs.choose()) {
+            case 0:
+                return std::nullopt;
+            default:
+                _ncs.mark_last_choice();
+                return _pks[std::ranges::upper_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin() - 1].key();
+        }
+    }
+    bool partition_data_ready() const override {
+        return true;
+    }
+    future<> read_partition_data() override {
+        return make_ready_future<>();
+    }
+    future<> advance_reverse(position_in_partition_view pos) override {
         abort();
     }
-    virtual future<> advance_to(const dht::partition_range& pr) {
+    future<> advance_to(const dht::partition_range& pr) override {
         auto cmp = dht::ring_position_less_comparator(*_s);
         if (pr.start()) {
-            auto p = dht::ring_position_view(pr.start()->value(),
-                    dht::ring_position_view::after_key(!pr.start()->is_inclusive()));
-            _lower = std::ranges::lower_bound(_keys, p, cmp) - _keys.begin();
-            switch (_ncs.choose_up_to(2)) {
-                case 0:
-                    break;
-                case 1:
-                    _lower = std::clamp<int>(_lower - 1, 0, _keys.size());
-                    break;
-            }   
+            auto rpv = dht::ring_position_view::for_range_start(pr);
+            auto pk_idx = std::ranges::lower_bound(_pks, rpv, cmp) - _pks.begin();
+            if (pk_idx != 0) {
+                switch (_ncs.choose_up_to(2)) {
+                    case 0:
+                        break;
+                    case 1:
+                        pk_idx = std::clamp<int>(pk_idx - 1, 0, _pks.size());
+                        break;
+                }
+            }
+            _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        } else {
+            _lower = 0;
         }
         if (pr.end()) {
-            auto p = dht::ring_position_view(pr.end()->value(),
-                    dht::ring_position_view::after_key(pr.end()->is_inclusive()));
-            _upper = std::ranges::lower_bound(_keys, p, cmp) - _keys.begin();
-            switch (_ncs.choose_up_to(2)) {
-                case 0:
-                    break;
-                case 1:
-                    _upper = std::clamp<int>(_upper + 1, 0, _keys.size());
-                    break;
-            }  
+            auto rpv = dht::ring_position_view::for_range_end(pr);
+            size_t pk_idx = std::ranges::upper_bound(_pks, rpv, cmp) - _pks.begin();
+            if (pk_idx != _pks.size()) {
+                switch (_ncs.choose_up_to(2)) {
+                    case 0:
+                        break;
+                    case 1:
+                        pk_idx = std::clamp<int>(pk_idx + 1, 0, _pks.size());
+                        break;
+                }
+            }
+            _upper = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
         } else {
-            _upper = _keys.size();
+            _upper = _positions.size() - 1;
         }
         testlog.trace("inexact_partition_index/advance_to: pr={}, _lower={}, _upper={}", pr, _lower, _upper);
         return make_ready_future<>();
     }
-    virtual future<> advance_reverse_to_next_partition() {
+    future<> advance_reverse_to_next_partition() override {
         abort();
     }
-
-    virtual std::optional<open_rt_marker> end_open_marker() const {
+    std::optional<open_rt_marker> end_open_marker() const override {
+        return std::nullopt;
+    }
+    std::optional<open_rt_marker> reverse_end_open_marker() const override {
         abort();
     }
-    virtual std::optional<open_rt_marker> reverse_end_open_marker() const {
-        abort();
+    future<> prefetch_lower_bound(position_in_partition_view pos) override {
+        return make_ready_future<>();
     }
-    virtual clustered_index_cursor* current_clustered_cursor() {
-        abort();
-    }
-    virtual future<> reset_clustered_cursor() {
-        abort();
-    }
-    virtual uint64_t get_data_file_position() {
-        return _positions[_lower];
-    }
-    virtual uint64_t get_promoted_index_size() {
-        abort();
-    }
-    virtual bool eof() const {
-        return _lower == int(_keys.size());
+    bool eof() const override {
+        return _lower == int(_positions.size());
     }
 };
 
 SEASTAR_TEST_CASE(test_inexact_partition_index) {
     return sstables::test_env::do_with_async([] (sstables::test_env& env) {
+        env.manager().set_promoted_index_block_size(1); // force entry for each row
+        auto row_value = std::string(1024, 'a');
         simple_schema table;
         auto permit = env.make_reader_permit();
         auto dks = table.make_pkeys(7);
-        auto cks = table.make_ckeys(1);
         utils::chunked_vector<mutation> muts;
-        std::vector<int> filled_dks = {1, 3, 5};
-        std::vector<dht::decorated_key> filled_dk_array;
-        for (const auto& i : filled_dks) {
-            filled_dk_array.push_back(dks[i]);
+        std::vector<int> filled_dk_indices = {1, 3, 5};
+        auto cks = table.make_ckeys(3);
+        std::vector<dht::decorated_key> filled_dks;
+        for (const auto& i : filled_dk_indices) {
+            filled_dks.push_back(dks[i]);
             mutation m(table.schema(), dks[i]);
-            table.add_row(m, cks[0], "value");
+            for (const auto& ck : cks) {
+                table.add_row(m, ck, row_value);
+            }
             muts.push_back(std::move(m));
         }
         auto sst = make_sstable_containing(env.make_sstable(table.schema()), muts);
         std::vector<uint64_t> partition_positions = get_partition_positions(sst, permit);
+        std::vector<uint64_t> ck_positions = get_ck_positions(sst, permit);
         partition_positions.push_back(sst->data_size());
         {
             testlog.debug("sstable initialized");
-            int i = 0;
-            for (const auto& dk : filled_dks) {
+            size_t i = 0;
+            size_t j = 0;
+            for (const auto& dk : filled_dk_indices) {
                 testlog.debug("{}: {} (dk={})", dk, partition_positions[i], dks[dk]);
+                while (j < ck_positions.size() && ck_positions[j] < partition_positions[i + 1]) {
+                    testlog.debug(" ck at {}", ck_positions[j]);
+                    ++j;
+                }
                 ++i;
             }
             testlog.debug("eof: {}", partition_positions.back());
@@ -301,13 +363,13 @@ SEASTAR_TEST_CASE(test_inexact_partition_index) {
                         mutation_reader::forwarding::yes,
                         default_read_monitor(),
                         sstables::integrity_check::no,
-                        std::make_unique<inexact_partition_index>(ncs, partition_positions, filled_dk_array, table.schema())
+                        std::make_unique<inexact_partition_index>(ncs, partition_positions, ck_positions, filled_dks, cks, table.schema())
                     ));
                 }
                 for (int i = start_dk + !start_inclusive; i < end_dk + end_inclusive; ++i) {
-                    if (auto it = std::ranges::find(filled_dks, i); it != filled_dks.end()) {
-                        testlog.debug("Check produces {} (dk={})", i, muts[it - filled_dks.begin()].decorated_key());
-                        reader->produces(muts[it - filled_dks.begin()]);
+                    if (auto it = std::ranges::find(filled_dk_indices, i); it != filled_dk_indices.end()) {
+                        testlog.debug("Check produces {} (dk={})", i, muts[it - filled_dk_indices.begin()].decorated_key());
+                        reader->produces(muts[it - filled_dk_indices.begin()]);
                     }
                 }
                 last_dk = end_dk;
