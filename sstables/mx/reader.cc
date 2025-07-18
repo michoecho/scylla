@@ -1394,6 +1394,18 @@ private:
             return make_ready_future<>();
         }
 
+        if (_paused_after_partition_start) {
+            // This is the special case where we ended reading last partition range
+            // only after parsing the partition key after the range,
+            // and then the reader was forwarded to that key.
+            // Since the parser can't be moved back, we serve the partition key
+            // and the tombstone that we saved after parsing.
+            _paused_after_partition_start = false;
+            on_next_partition(*_current_partition_key, _saved_partition_tombstone);
+            sstlog.trace("reader {}: serving partition key {} via _paused_after_partition_start", fmt::ptr(this), *_current_partition_key);
+            return make_ready_future<>();
+        }
+
         if (!_consumer.is_mutation_end()) {
             throw malformed_sstable_exception(format("consumer not at partition boundary, position: {}",
                                                      position_in_partition_view::printer(*_schema, _consumer.position())), _sst->get_filename());
@@ -1594,7 +1606,6 @@ private:
         if (begin <= _context->position()) {
             return make_ready_future<>();
         }
-        _paused_after_partition_start = false;
         _context->reset(el);
         return _context->skip_to(begin);
     }
@@ -1672,8 +1683,6 @@ public:
                         _index_in_current_partition = false;
                         if (_paused_after_partition_start) {
                             // Case 1 from the comment above.
-                            _before_partition = false;
-                            _partition_finished = false;
                             if (*end >= _context->position()) {
                                 _read_enabled = true;
                                 return _context->fast_forward_to(_context->position(), *end);
@@ -1729,15 +1738,6 @@ public:
                     return read_next_partition();
                 }
             } else {
-                if (_paused_after_partition_start) {
-                    // This is the special case where we ended reading last partition range
-                    // only after parsing the partition key after the range,
-                    // and then the reader was forwarded to that key.
-                    // Since the parser can't be moved back, we serve the partition key
-                    // and the tombstone that we saved after parsing.
-                    _paused_after_partition_start = false;
-                    on_next_partition(*_current_partition_key, _saved_partition_tombstone);
-                }
                 return do_until([this] { return is_buffer_full() || _partition_finished || _end_of_stream; }, [this] {
                     _consumer.push_ready_fragments();
                     if (is_buffer_full() || _partition_finished || _end_of_stream) {
@@ -1833,8 +1833,6 @@ public:
             // The read is over. The new key and everything after it should be ignored.
             sstlog.trace("mp_row_consumer_reader_mx {}: on_next_partition({}), branch 2", fmt::ptr(this), key);
             _end_of_stream = true;
-            _before_partition = false;
-            _partition_finished = false;
             // The read is over for now, but the reader can be later forwarded to the key we just read.
             // The parser can't move backwards, so we have to remember the key and tombstone
             // to handle that case.
