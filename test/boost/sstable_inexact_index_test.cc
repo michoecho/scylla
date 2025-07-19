@@ -5,6 +5,7 @@
 #include "test/lib/sstable_utils.hh"
 #include "utils/assert.hh"
 #include "test/lib/sstable_test_env.hh"
+#include "partition_slice_builder.hh"
 
 class nondeterministic_choice_stack {
     std::vector<std::pair<int, bool>> choices;
@@ -119,16 +120,18 @@ struct inexact_partition_index : abstract_index_reader {
     }
     future<> advance_upper_past(position_in_partition_view pos) override {
         auto cmp = position_in_partition::less_compare(*_s);
-        auto pk_idx = std::ranges::lower_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin();
-        _upper = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        auto pk_idx = pos_idx_to_pk_idx(_lower);
+        _upper = pk_idx_to_pos_idx(pk_idx);
         size_t ck_idx = std::ranges::upper_bound(_cks, pos, cmp) - _cks.begin();
         _upper = (ck_idx == _cks.size()) ? _upper + 1 : _upper + ck_idx;
+        testlog.trace("inexact_partition_index/advance_upper_past: _lower={}, _upper={}, pk_idx={}", _lower, _upper, pk_idx);
         return make_ready_future<>();
     }
     future<> advance_to_next_partition() override {
-        auto pk_idx = std::ranges::lower_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin();
+        auto pk_idx = pos_idx_to_pk_idx(_lower);
+        testlog.trace("&inexact_partition_index/advance_to_next_partition: _lower={}, _upper={}, pk_idx={}", _lower, _upper, pk_idx);
         pk_idx += 1;
-        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        _lower = pk_idx_to_pos_idx(pk_idx);
         testlog.trace("inexact_partition_index/advance_to_next_partition: _lower={}, _upper={}, pk_idx={}", _lower, _upper, pk_idx);
         return make_ready_future<>();
     }
@@ -142,32 +145,33 @@ struct inexact_partition_index : abstract_index_reader {
             return indexable_element::cell;
         }
     }
-    future<> advance_to(dht::ring_position_view pos) override {
-        auto cmp = dht::ring_position_less_comparator(*_s);
-        auto pk_idx = std::ranges::lower_bound(_pks, pos, cmp) - _pks.begin();
-        switch (_ncs.choose()) {
-            case 0:
-                break;
-            default:
-                pk_idx = std::clamp<int>(pk_idx - 1, 0, _pks.size());
-                _ncs.mark_last_choice();
-                break;
-        }
-        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
-        return make_ready_future<>();
+    uint64_t pk_idx_to_pos_idx(uint64_t pk_idx) {
+        return std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+    }
+    uint64_t pos_idx_to_pk_idx(uint64_t pos_idx) {
+        return std::ranges::upper_bound(_pk_positions, _positions[pos_idx]) - _pk_positions.begin() - 1;
     }
     future<> advance_past_definitely_present_partition(const dht::decorated_key& dk) override {
         auto cmp = dht::ring_position_less_comparator(*_s);
         size_t pk_idx = std::ranges::lower_bound(_pks, dk, cmp) - _pks.begin() + 1;
-        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        _lower = pk_idx_to_pos_idx(pk_idx);
+        testlog.trace("inexact_partition_index/advance_past_definitely_present_partition: _lower={}, _upper={}, pk_idx={}", _lower, _upper, pk_idx);
+        return make_ready_future<>();
+    }
+    future<> advance_to_definitely_present_partition(const dht::decorated_key& dk) override {
+        auto cmp = dht::ring_position_less_comparator(*_s);
+        size_t pk_idx = std::ranges::lower_bound(_pks, dk, cmp) - _pks.begin();
+        _lower = pk_idx_to_pos_idx(pk_idx);
+        testlog.trace("inexact_partition_index/advance_to_definitely_present_partition: _lower={}, _upper={}, pk_idx={}", _lower, _upper, pk_idx);
         return make_ready_future<>();
     }
     future<> advance_to(position_in_partition_view pos) override {
         auto cmp = position_in_partition::less_compare(*_s);
-        auto pk_idx = std::ranges::lower_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin();
-        _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+        auto pk_idx = pos_idx_to_pk_idx(_lower);
+        testlog.trace("@inexact_partition_index/advance_to(pipv={}): _lower={}, _upper={}, pk_idx={}", pos, _lower, _upper, pk_idx);
         size_t ck_idx = std::max<int>(0, std::ranges::upper_bound(_cks, pos, cmp) - _cks.begin() - 1);
-        _lower = pk_idx * _cks.size() + ck_idx;
+        _lower = pk_idx * (_cks.size() + 1) + ck_idx;
+        testlog.trace("inexact_partition_index/advance_to(pipv={}): _lower={}, _upper={}, pk_idx={}", pos, _lower, _upper, pk_idx);
         return make_ready_future<>();
     }
     std::optional<sstables::deletion_time> partition_tombstone() override {
@@ -182,7 +186,7 @@ struct inexact_partition_index : abstract_index_reader {
                 return std::nullopt;
             default:
                 _ncs.mark_last_choice();
-                return _pks[std::ranges::upper_bound(_pk_positions, _positions[_lower]) - _pk_positions.begin() - 1].key();
+                return _pks[pos_idx_to_pk_idx(_lower)].key();
         }
     }
     bool partition_data_ready() const override {
@@ -208,7 +212,7 @@ struct inexact_partition_index : abstract_index_reader {
                         break;
                 }
             }
-            _lower = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+            _lower = pk_idx_to_pos_idx(pk_idx);
         } else {
             _lower = 0;
         }
@@ -224,11 +228,11 @@ struct inexact_partition_index : abstract_index_reader {
                         break;
                 }
             }
-            _upper = std::ranges::lower_bound(_positions, _pk_positions[pk_idx]) - _positions.begin();
+            _upper = pk_idx_to_pos_idx(pk_idx);
         } else {
             _upper = _positions.size() - 1;
         }
-        testlog.trace("inexact_partition_index/advance_to: pr={}, _lower={}, _upper={}", pr, _lower, _upper);
+        testlog.trace("inexact_partition_index/advance_to(pr={}), _lower={}, _upper={}", pr, _lower, _upper);
         return make_ready_future<>();
     }
     future<> advance_reverse_to_next_partition() override {
@@ -254,7 +258,14 @@ SEASTAR_TEST_CASE(test_inexact_partition_index) {
         auto row_value = std::string(1024, 'a');
         simple_schema table;
         auto permit = env.make_reader_permit();
-        auto dks = table.make_pkeys(7);
+
+        std::vector<dht::decorated_key> dks;
+        for (size_t i = 0; i < 7; ++i) {
+            auto pk = partition_key::from_single_value(*table.schema(), serialized(format("pk{:010d}", i)));
+            dks.push_back(dht::decorate_key(*table.schema(), pk));
+        }
+        std::ranges::sort(dks, dht::ring_position_less_comparator(*table.schema()));
+
         utils::chunked_vector<mutation> muts;
         std::vector<int> filled_dk_indices = {1, 3, 5};
         auto cks = table.make_ckeys(3);
@@ -290,6 +301,15 @@ SEASTAR_TEST_CASE(test_inexact_partition_index) {
         dht::partition_range pr;
         do {
             testlog.debug("Starting test case {}", test_cases);
+            // auto slice = bool(ncs.choose_up_to(1))
+            //     ? table.schema()->full_slice()
+            //     : partition_slice_builder(*table.schema())
+            //         .with_range(query::clustering_range::make_singular(cks[1]))
+            //         .build();
+            auto range = query::clustering_range::make_singular(cks[1]);
+            auto slice = partition_slice_builder(*table.schema())
+                     .with_range(range)
+                     .build();
             ++test_cases;
             std::optional<mutation_reader_assertions> reader;
             auto max_ranges = 1 + ncs.choose_up_to(1);
@@ -357,7 +377,7 @@ SEASTAR_TEST_CASE(test_inexact_partition_index) {
                         table.schema(),
                         permit,
                         pr,
-                        table.schema()->full_slice(),
+                        slice,
                         nullptr,
                         streamed_mutation::forwarding::no,
                         mutation_reader::forwarding::yes,
@@ -369,7 +389,7 @@ SEASTAR_TEST_CASE(test_inexact_partition_index) {
                 for (int i = start_dk + !start_inclusive; i < end_dk + end_inclusive; ++i) {
                     if (auto it = std::ranges::find(filled_dk_indices, i); it != filled_dk_indices.end()) {
                         testlog.debug("Check produces {} (dk={})", i, muts[it - filled_dk_indices.begin()].decorated_key());
-                        reader->produces(muts[it - filled_dk_indices.begin()]);
+                        reader->produces(muts[it - filled_dk_indices.begin()].sliced({range}));
                     }
                 }
                 last_dk = end_dk;
