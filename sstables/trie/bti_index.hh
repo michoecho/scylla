@@ -17,6 +17,10 @@ namespace sstables {
     class deletion_time;
 }
 
+namespace dht {
+    class decorated_key;
+}
+
 class schema;
 
 namespace sstables::trie {
@@ -32,6 +36,29 @@ namespace sstables::trie {
 // the old and the new page size, and new writers must keep writing with the old page size
 // until a cluster feature guarding the new page size is set.
 constexpr static uint64_t BTI_PAGE_SIZE = 4096;
+
+// Transforms a stream of (partition key, offset in Data.db, hash bits) tuples
+// into a stream of trie nodes fed into bti_trie_sink.
+// Used to populate the Partitions.db file of the BTI format
+// with the trie-based index of partition keys.
+class bti_partition_index_writer {
+    class impl;
+    std::unique_ptr<impl> _impl;
+public:
+    // The trie will be written to the given file writer.
+    // Note: the file doesn't have to be empty,
+    // but it mustn't be extended after `finish()`,
+    // because `finish()` writes a footer which is used by the reader
+    // to find the root of the trie.
+    bti_partition_index_writer(sstables::file_writer&);
+    ~bti_partition_index_writer();
+    // Add a new partition key to the index.
+    void add(const schema&, dht::decorated_key, int64_t data_or_rowsdb_file_pos);
+    // Flushes all remaining contents, and returns the position of the root node in the output stream.
+    // If add() was never called, returns -1.
+    // The writer mustn't be used again after this.
+    void finish(sstable_version_types ver, disk_string_view<uint16_t> first_key, disk_string_view<uint16_t> last_key) &&;
+};
 
 // Transforms a stream of clustering index block entries
 // into a stream of trie nodes fed into bti_trie_sink.
