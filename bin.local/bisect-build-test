@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Build and test every commit in a range, oldest to newest."""
+
+import argparse
+import os
+import re
+import sys
+import subprocess
+import datetime
+from pathlib import Path
+
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+MAGENTA = "\033[35m"
+CYAN = "\033[36m"
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(s):
+    return ANSI_RE.sub("", s)
+
+
+def banner(msg, color=CYAN):
+    line = "=" * max(20, len(msg) + 4)
+    return f"{color}{BOLD}{line}\n  {msg}\n{line}{RESET}\n"
+
+
+def emit(text, full_log_fh, commit_log_fh=None):
+    """Write a script-generated message to terminal + log files.
+
+    This is only for our own status lines / banners, not for child output.
+    Children write directly through a tee wrapper — Python never touches
+    their bytes.
+    """
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    plain = strip_ansi(text)
+    full_log_fh.write(plain)
+    full_log_fh.flush()
+    if commit_log_fh is not None:
+        commit_log_fh.write(plain)
+        commit_log_fh.flush()
+
+
+def run_teed(cmd, full_log_path, commit_log_path):
+    """Run cmd with stdout+stderr teed live to terminal and two log files.
+
+    The tee'ing is done by a bash wrapper using process substitution, so
+    the child's stdout/stderr are connected directly to tee — Python is
+    not in the pipeline. This preserves buffering, interactivity, and any
+    fd-fiddling the child wants to do (terminal control sequences, ts(1)
+    timestamps, progress bars, etc.).
+    """
+    wrapper = (
+        'exec > >(tee -a -- "$1" "$2") 2>&1; '
+        'shift 2; '
+        'exec "$@"'
+    )
+    bash_cmd = [
+        "bash", "-c", wrapper, "tee-wrapper",
+        str(full_log_path), str(commit_log_path),
+        *cmd,
+    ]
+    # Inherit our stdin/stdout/stderr — no PIPE, no capture.
+    return subprocess.call(bash_cmd)
+
+
+def git(*args):
+    return subprocess.check_output(["git", *args], text=True).strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Build and test every commit in a range, oldest to newest.",
+        epilog=(
+            "examples:\n"
+            "  %(prog)s -r master..HEAD -o logs/ ./buildtest\n"
+            "  %(prog)s -r master..HEAD -o logs/ ninja dev-test\n"
+            "  %(prog)s -r master..HEAD -o logs/ -- ninja --quiet dev-test\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-r", "--rev-range",
+        required=True,
+        help="git rev-list range, e.g. master..HEAD",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        type=Path,
+        required=True,
+        help="directory for per-commit and full logs",
+    )
+    parser.add_argument(
+        "cmd",
+        nargs=argparse.REMAINDER,
+        help="command (and args) to run on each commit; use -- to pass flags",
+    )
+    args = parser.parse_args()
+
+    if not args.cmd:
+        parser.error("a command to run on each commit is required")
+
+    rev_range = args.rev_range
+    build_test_cmd = args.cmd
+    log_dir = args.output_dir
+    full_log = log_dir / "full-log.txt"
+
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-list", "--reverse", rev_range], text=True
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"{RED}git rev-list failed: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    commits = [c for c in out.splitlines() if c]
+    if not commits:
+        print(f"{YELLOW}No commits in range {rev_range}{RESET}")
+        sys.exit(0)
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    start_ref = git("rev-parse", "--abbrev-ref", "HEAD")
+    if start_ref == "HEAD":
+        start_ref = git("rev-parse", "HEAD")
+
+    results = []
+    with open(full_log, "a") as full_log_fh:
+        emit(
+            banner(
+                f"bisect-build-test starting at {datetime.datetime.now().isoformat()}",
+                MAGENTA,
+            ),
+            full_log_fh,
+        )
+        emit(
+            f"{BLUE}Range:{RESET} {rev_range}\n"
+            f"{BLUE}Commits:{RESET} {len(commits)}\n"
+            f"{BLUE}Starting ref:{RESET} {start_ref}\n\n",
+            full_log_fh,
+        )
+
+        for idx, sha in enumerate(commits, 1):
+            short = sha[:12]
+            subject = git("log", "-1", "--format=%s", sha)
+            header = banner(
+                f"[{idx}/{len(commits)}] {short}  {subject}", CYAN
+            )
+            commit_log_path = log_dir / f"{short}.txt"
+            with open(commit_log_path, "w") as commit_log_fh:
+                emit(header, full_log_fh, commit_log_fh)
+                emit(
+                    f"{BLUE}Commit:{RESET} {sha}\n"
+                    f"{BLUE}Log file:{RESET} {commit_log_path}\n"
+                    f"{BLUE}Started:{RESET} {datetime.datetime.now().isoformat()}\n\n",
+                    full_log_fh,
+                    commit_log_fh,
+                )
+            # Close our Python handle before tee opens its own — both will
+            # append in O_APPEND mode, so interleaving is safe.
+
+            emit(
+                f"{DIM}$ git checkout {sha}{RESET}\n",
+                full_log_fh,
+            )
+            with open(commit_log_path, "a") as f:
+                f.write(f"$ git checkout {sha}\n")
+            rc = run_teed(
+                ["git", "checkout", "--quiet", sha],
+                full_log, commit_log_path,
+            )
+            if rc != 0:
+                with open(commit_log_path, "a") as commit_log_fh:
+                    emit(
+                        f"{RED}{BOLD}checkout failed (rc={rc}); aborting.{RESET}\n",
+                        full_log_fh, commit_log_fh,
+                    )
+                results.append((short, subject, "CHECKOUT-FAIL"))
+                break
+
+            cmd_str = ' '.join(build_test_cmd)
+            emit(f"\n{DIM}$ {cmd_str}{RESET}\n", full_log_fh)
+            with open(commit_log_path, "a") as f:
+                f.write(f"\n$ {cmd_str}\n")
+            t0 = datetime.datetime.now()
+            rc = run_teed(build_test_cmd, full_log, commit_log_path)
+            dt = datetime.datetime.now() - t0
+
+            if rc == 0:
+                status = "PASS"
+                color = GREEN
+            else:
+                status = f"FAIL(rc={rc})"
+                color = RED
+            results.append((short, subject, status))
+
+            with open(commit_log_path, "a") as commit_log_fh:
+                emit(
+                    f"\n{color}{BOLD}=> {short}: {status}{RESET}"
+                    f"  {DIM}({dt}){RESET}\n\n",
+                    full_log_fh, commit_log_fh,
+                )
+
+            if rc != 0:
+                emit(
+                    f"{RED}{BOLD}Stopping on first failure.{RESET}\n",
+                    full_log_fh,
+                )
+                break
+
+        emit(banner("Summary", MAGENTA), full_log_fh)
+        for short, subject, status in results:
+            color = GREEN if status == "PASS" else RED
+            emit(
+                f"  {color}{status:>14}{RESET}  {short}  {subject}\n",
+                full_log_fh,
+            )
+
+        emit(
+            f"\n{DIM}Restoring original ref: {start_ref}{RESET}\n",
+            full_log_fh,
+        )
+        subprocess.run(["git", "checkout", "--quiet", start_ref])
+
+    any_fail = any(s != "PASS" for _, _, s in results)
+    sys.exit(1 if any_fail else 0)
+
+
+if __name__ == "__main__":
+    main()
