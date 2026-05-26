@@ -250,6 +250,8 @@ docker_common_args+=(
        --network host \
        --ulimit nofile=$(ulimit -Sn):$hard_limit \
        -v "$PWD:$PWD" \
+       -v "$HOME/.claude:$HOME/.claude" \
+       -v "$HOME/.claude.json:$HOME/.claude.json" \
        -v "$tmpdir:/tmp" \
        -v "$MAVEN_LOCAL_REPO:$MAVEN_LOCAL_REPO" \
        -v /etc/localtime:/etc/localtime:ro \
