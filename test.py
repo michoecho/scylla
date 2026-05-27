@@ -35,7 +35,7 @@ import humanfriendly
 import treelib
 
 from scripts import coverage
-from test import ALL_MODES, HOST_ID, TOP_SRC_DIR, path_to
+from test import ALL_MODES, HOST_ID, TOP_SRC_DIR, path_to_dir
 from test.pylib import coverage_utils
 from test.pylib.suite.base import (
     TestSuite,
@@ -405,7 +405,7 @@ async def main() -> int:
                            "the test markers if you used the '--markers' option."
                            "Alternatively you can check with --list option if there any errors."))
     if 'coverage' in options.modes:
-        coverage.generate_coverage_report(path_to("coverage", "tests"))
+        coverage.generate_coverage_report(path_to_dir("coverage", "tests"))
 
     if options.coverage:
         await process_coverage(options)

@@ -8,7 +8,7 @@ import time
 import logging
 import asyncio
 import pytest
-from test import path_to
+from test import path_to_file
 from test.pylib.host_registry import HostRegistry
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ async def run(args):
 
 @pytest.fixture(scope="module")
 def scylla_path(build_mode):
-    return path_to(build_mode, "scylla")
+    return path_to_file(build_mode, "scylla")
 
 
 @pytest.mark.parametrize("mode", ["read"])

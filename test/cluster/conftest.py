@@ -18,7 +18,7 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from multiprocessing import Event
 from pathlib import Path
 from typing import TYPE_CHECKING
-from test import TOP_SRC_DIR, MODES_TIMEOUT_FACTOR, path_to
+from test import TOP_SRC_DIR, MODES_TIMEOUT_FACTOR, path_to_file
 from test.pylib.runner import PHASE_REPORT_KEY
 from test.pylib.random_tables import RandomTables
 from test.pylib.skip_types import skip_env
@@ -62,7 +62,7 @@ print(f"Driver name {DRIVER_NAME}, version {DRIVER_VERSION}")
 
 
 async def decode_backtrace(build_mode: str, input: str):
-    executable = Path(path_to(build_mode, "scylla"))
+    executable = Path(path_to_file(build_mode, "scylla"))
     proc = await asyncio.create_subprocess_exec(
         (TOP_SRC_DIR / "seastar" / "scripts" / "seastar-addr2line").absolute(),
         "-e",

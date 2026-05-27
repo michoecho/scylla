@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from functools import cache
 from typing import TYPE_CHECKING
 
-from test import path_to
+from test import path_to_file
 from test.pylib.pool import Pool
 from test.pylib.scylla_cluster import ScyllaCluster, ScyllaServer, merge_cmdline_options, get_current_version_description
 from test.pylib.suite.base import Test, TestSuite
@@ -32,7 +32,7 @@ class PythonTestSuite(TestSuite):
 
     def __init__(self, path, cfg: dict, options: argparse.Namespace, mode: str) -> None:
         super().__init__(path, cfg, options, mode)
-        self.scylla_exe = path_to(self.mode, "scylla")
+        self.scylla_exe = path_to_file(self.mode, "scylla")
 
         cluster_cfg = self.cfg.get("cluster", {"initial_size": 1})
         cluster_size = cluster_cfg["initial_size"]

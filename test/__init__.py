@@ -10,7 +10,7 @@ import time
 import os
 from pathlib import Path
 
-__all__ = ["ALL_MODES", "BUILD_DIR", "DEBUG_MODES", "HOST_ID", "TEST_DIR", "TEST_RUNNER", "TOP_SRC_DIR", "path_to"]
+__all__ = ["ALL_MODES", "BUILD_DIR", "DEBUG_MODES", "HOST_ID", "TEST_DIR", "TEST_RUNNER", "TOP_SRC_DIR", "path_to_dir", "path_to_file"]
 
 
 TEST_RUNNER = os.environ.get("SCYLLA_TEST_RUNNER", "pytest")
@@ -36,13 +36,23 @@ if HOST_ID is None:
     os.environ["SCYLLA_TEST_HOST_ID"] = HOST_ID
 
 
-def path_to(mode: str, *components: str) -> str:
-    """Resolve path to built executable."""
+# cmake places build.ninja in build/, traditional is in ./.
+# We choose to test for traditional, not cmake, because IDEs may
+# invoke cmake to learn the configuration and generate false positives.
+def _is_cmake_layout() -> bool:
+    return not TOP_SRC_DIR.joinpath("build.ninja").exists()
 
-    # cmake places build.ninja in build/, traditional is in ./.
-    # We choose to test for traditional, not cmake, because IDEs may
-    # invoke cmake to learn the configuration and generate false positives
-    if not TOP_SRC_DIR.joinpath("build.ninja").exists():
+
+def path_to_file(mode: str, *components: str) -> str:
+    """Resolve path to a built file. The last component is the file's basename."""
+    if _is_cmake_layout():
         *dir_components, basename = components
         return str(BUILD_DIR.joinpath(*dir_components, ALL_MODES[mode], basename))
+    return str(BUILD_DIR.joinpath(mode, *components))
+
+
+def path_to_dir(mode: str, *components: str) -> str:
+    """Resolve path to a built directory (e.g. a directory containing test binaries)."""
+    if _is_cmake_layout():
+        return str(BUILD_DIR.joinpath(*components, ALL_MODES[mode]))
     return str(BUILD_DIR.joinpath(mode, *components))

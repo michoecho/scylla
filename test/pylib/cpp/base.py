@@ -19,7 +19,7 @@ import pytest
 from _pytest._code.code import ReprFileLocation
 
 from scripts import coverage as coverage_script
-from test import DEBUG_MODES, TEST_DIR, TOP_SRC_DIR, path_to
+from test import DEBUG_MODES, TEST_DIR, TOP_SRC_DIR, path_to_dir
 from test.pylib.runner import BUILD_MODE, RUN_ID, TEST_SUITE
 from test.pylib.scylla_cluster import merge_cmdline_options
 
@@ -82,7 +82,7 @@ class CppFile(pytest.File, ABC):
 
     @cached_property
     def build_basedir(self) -> pathlib.Path:
-        return pathlib.Path(path_to(self.build_mode, "test", self.stash[TEST_SUITE].name))
+        return pathlib.Path(path_to_dir(self.build_mode, "test", self.stash[TEST_SUITE].name))
 
     @cached_property
     def log_dir(self) -> pathlib.Path:

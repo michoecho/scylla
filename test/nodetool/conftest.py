@@ -15,7 +15,7 @@ from typing import NamedTuple
 import pytest
 import requests.exceptions
 
-from test import TOP_SRC_DIR, path_to
+from test import TOP_SRC_DIR, path_to_file
 from test.nodetool.rest_api_mock import set_expected_requests, expected_request, get_expected_requests, \
     get_unexpected_requests, expected_requests_manager
 from test.pylib.db.model import Test
@@ -168,7 +168,7 @@ def jmx(request, rest_api_mock_server):
 @pytest.fixture(scope="module")
 def nodetool_path(request, build_mode):
     if request.config.getoption("nodetool") == "scylla":
-        return path_to(build_mode, "scylla")
+        return path_to_file(build_mode, "scylla")
 
     path = request.config.getoption("nodetool_path")
     if path is not None:
