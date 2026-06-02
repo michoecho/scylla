@@ -1033,6 +1033,10 @@ SEASTAR_TEST_CASE(test_digest_persistence_data_compressed) {
     return test_component_digest_persistence(component_type::Data, sstable::version_types::me, compress_sstable::yes);
 }
 
+SEASTAR_TEST_CASE(test_digest_persistence_data_compressed_mu) {
+    return test_component_digest_persistence(component_type::Data, sstable::version_types::mu, compress_sstable::yes);
+}
+
 static void corrupt_sstable(sstables::shared_sstable sst, component_type component) {
     auto path = sstables::test(sst).filename(component).native();
     auto size = seastar::file_size(path).get();
