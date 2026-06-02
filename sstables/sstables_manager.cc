@@ -185,7 +185,9 @@ storage_manager::connections_updater_sync::connections_updater_sync(const db::co
 {}
 
 sstables::sstable::version_types sstables_manager::get_highest_supported_format() const noexcept {
-     if (_features.mt_sstable) {
+     if (_features.mu_sstable) {
+         return sstable_version_types::mu;
+     } else if (_features.mt_sstable) {
          return sstable_version_types::mt;
      } else if (_features.ms_sstable) {
          return sstable_version_types::ms;
@@ -196,6 +198,10 @@ sstables::sstable::version_types sstables_manager::get_highest_supported_format(
 
 sstables::sstable::version_types sstables_manager::get_preferred_sstable_version() const {
     auto preferred_format = sstables::version_from_string(_config.format());
+    auto mu_supported = bool(_features.mu_sstable);
+    if (mu_supported && preferred_format == sstable_version_types::mu) {
+        return sstable_version_types::mu;
+    }
     auto mt_supported = bool(_features.mt_sstable);
     if (mt_supported && preferred_format == sstable_version_types::mt) {
         return sstable_version_types::mt;
@@ -215,6 +221,10 @@ sstables::sstable::version_types sstables_manager::get_preferred_sstable_version
 
 sstables::sstable::version_types sstables_manager::get_safe_sstable_version_for_rewrites(sstable_version_types existing_version) const {
     auto preferred_format = sstables::version_from_string(_config.format());
+    auto mu_supported = bool(_features.mu_sstable) || existing_version >= sstable_version_types::mu;
+    if (mu_supported && preferred_format == sstable_version_types::mu) {
+        return sstable_version_types::mu;
+    }
     auto mt_supported = bool(_features.mt_sstable) || existing_version >= sstable_version_types::mt;
     if (mt_supported && preferred_format == sstable_version_types::mt) {
         return sstable_version_types::mt;
