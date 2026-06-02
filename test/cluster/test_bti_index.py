@@ -40,10 +40,10 @@ def sstable_version_of(filename: str) -> str:
     return base.split('-', 1)[0]
 
 async def check_output_format(workdirs: list[str], ks: str, cf: str, expected_version: str):
-    # `expected_version` is one of "me", "ms", "mt".
-    # ME uses Index.db/Summary.db; MS and MT use Partitions.db/Rows.db.
+    # `expected_version` is one of "me", "ms", "mt", "mu".
+    # ME uses Index.db/Summary.db; MS, MT, and MU use Partitions.db/Rows.db.
     sstable_sets = await asyncio.gather(*[get_sstable_files_for_server(wd, ks, cf) for wd in workdirs])
-    bti_expected = expected_version in ("ms", "mt")
+    bti_expected = expected_version in ("ms", "mt", "mu")
     for sstable_set in sstable_sets:
         partitions = [x for x in sstable_set if x.endswith('Partitions.db')]
         rows = [x for x in sstable_set if x.endswith('Rows.db')]
@@ -67,12 +67,14 @@ async def check_output_format(workdirs: list[str], ks: str, cf: str, expected_ve
         )
 
 async def set_suppressions(manager: ManagerClient, servers: list[ServerInfo],
-                           ms_unsuppressed: bool, mt_unsuppressed: bool):
+                           ms_unsuppressed: bool, mt_unsuppressed: bool, mu_unsuppressed: bool):
     suppressed = []
     if not ms_unsuppressed:
         suppressed.append("MS_SSTABLE_FORMAT")
     if not mt_unsuppressed:
         suppressed.append("MT_SSTABLE_FORMAT")
+    if not mu_unsuppressed:
+        suppressed.append("MU_SSTABLE_FORMAT")
     if suppressed:
         injections = [{'name': 'suppress_features', 'value': ';'.join(suppressed)}]
     else:
@@ -85,27 +87,38 @@ async def set_suppressions(manager: ManagerClient, servers: list[ServerInfo],
 # "don't set it"; in our test setup this is equivalent to the default `mt`,
 # since test/pylib/scylla_cluster.py sets sstable_format=mt.
 #
-# Rows are ordered so that `ms_unsuppressed` and `mt_unsuppressed` only ever go
-# from False to True as we move down the table: suppressions can be lifted but
-# never re-added, and the older feature (MS) is lifted before the newer (MT).
-# `chosen` cycles freely within each suppression block since the format choice
-# can be changed live.
+# Rows are ordered so that `ms_unsuppressed`, `mt_unsuppressed`, and
+# `mu_unsuppressed` only ever go from False to True as we move down the table:
+# suppressions can be lifted but never re-added, and older features are lifted
+# before newer ones (MS, then MT, then MU). `chosen` cycles freely within each
+# suppression block since the format choice can be changed live.
+#
+# When a newer feature is enabled, a request for an older BTI format is
+# silently promoted to the newest available one (e.g. with MU enabled, both
+# `ms` and `mt` are promoted to `mu`). See sstables_manager.cc.
 #
 # `chosen=None` means "don't touch the sstable_format config".
 # This only makes sense in the first iteration. After we start updating the scylla.yaml,
 # the original value of the option of `sstable_format` will be gone.
 #
-#   chosen   ms_unsuppressed   mt_unsuppressed   ->   expected output
-SSTABLE_FORMAT_MATRIX: list[tuple[Optional[str], bool, bool, str]] = [
-    ("me",   False, False, "me"),
-    ("ms",   False, False, "me"),
-    ("mt",   False, False, "me"),
-    ("me",   True,  False, "me"),
-    ("ms",   True,  False, "ms"),
-    ("mt",   True,  False, "me"),
-    ("me",   True,  True,  "me"),
-    ("ms",   True,  True,  "mt"),
-    ("mt",   True,  True,  "mt"),
+#   chosen   ms_unsuppressed   mt_unsuppressed   mu_unsuppressed   ->   expected output
+SSTABLE_FORMAT_MATRIX: list[tuple[Optional[str], bool, bool, bool, str]] = [
+    ("me",   False, False, False, "me"),
+    ("ms",   False, False, False, "me"),
+    ("mt",   False, False, False, "me"),
+    ("mu",   False, False, False, "me"),
+    ("me",   True,  False, False, "me"),
+    ("ms",   True,  False, False, "ms"),
+    ("mt",   True,  False, False, "me"),
+    ("mu",   True,  False, False, "me"),
+    ("me",   True,  True,  False, "me"),
+    ("ms",   True,  True,  False, "mt"),
+    ("mt",   True,  True,  False, "mt"),
+    ("mu",   True,  True,  False, "me"),
+    ("me",   True,  True,  True,  "me"),
+    ("ms",   True,  True,  True,  "mt"),
+    ("mt",   True,  True,  True,  "mt"),
+    ("mu",   True,  True,  True,  "mu"),
 ]
 
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
@@ -143,21 +156,22 @@ async def test_bti_index_output_format(manager: ManagerClient) -> None:
             await cql.run_async(insert, (pk, ck, random.randbytes(1024)))
     await asyncio.gather(*[manager.api.keyspace_flush(s.ip_addr, ks, cf) for s in servers])
 
-    prev_suppressions: Optional[tuple[bool, bool]] = None
-    for chosen, ms_unsuppressed, mt_unsuppressed, expected in SSTABLE_FORMAT_MATRIX:
+    prev_suppressions: Optional[tuple[bool, bool, bool]] = None
+    for chosen, ms_unsuppressed, mt_unsuppressed, mu_unsuppressed, expected in SSTABLE_FORMAT_MATRIX:
         # Suppressions only take effect at startup, so restart whenever they change.
-        if prev_suppressions != (ms_unsuppressed, mt_unsuppressed):
+        if prev_suppressions != (ms_unsuppressed, mt_unsuppressed, mu_unsuppressed):
             if prev_suppressions is not None:
                 logger.info(
                     f"Lifting suppressions to ms_unsuppressed={ms_unsuppressed}, "
-                    f"mt_unsuppressed={mt_unsuppressed}"
+                    f"mt_unsuppressed={mt_unsuppressed}, "
+                    f"mu_unsuppressed={mu_unsuppressed}"
                 )
-                await set_suppressions(manager, servers, ms_unsuppressed, mt_unsuppressed)
+                await set_suppressions(manager, servers, ms_unsuppressed, mt_unsuppressed, mu_unsuppressed)
                 manager.driver_close()
                 await manager.rolling_restart(servers)
                 await manager.driver_connect()
                 await manager.get_ready_cql(servers)
-            prev_suppressions = (ms_unsuppressed, mt_unsuppressed)
+            prev_suppressions = (ms_unsuppressed, mt_unsuppressed, mu_unsuppressed)
 
         logger.info(f"chosen={chosen!r} -> expected output format {expected!r}")
         await live_update_config(manager, servers, 'sstable_format', chosen)
@@ -169,7 +183,7 @@ async def test_bti_index_output_format(manager: ManagerClient) -> None:
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
 async def test_bti_index_read_path(manager: ManagerClient) -> None:
     """Checks that the read path uses the right index components for each sstable
-    format (Index.db for ME; Partitions.db/Rows.db for MS and MT), both with and
+    format (Index.db for ME; Partitions.db/Rows.db for MS, MT, and MU), both with and
     without the cache. The output format is also checked for sanity.
     """
     cassandra_logger = logging.getLogger('cassandra')
@@ -178,8 +192,9 @@ async def test_bti_index_read_path(manager: ManagerClient) -> None:
     ks = "ks"
     cf = "t"
 
-    # Start with MT suppressed so we can produce ms-format sstables when MS is lifted.
-    # MT gets lifted last so we exercise ms before mt.
+    # Start with MT and MU suppressed so we can produce ms-format sstables when
+    # MS is lifted. MT and MU get lifted later so we exercise ms before mt and mt
+    # before mu.
     #
     # `--smp=1` because this test uses CQL tracing. Trace events are written to
     # trace tables asynchronously w.r.t. the traced statements, and AFAIU there's
@@ -189,7 +204,7 @@ async def test_bti_index_read_path(manager: ManagerClient) -> None:
     # write their events). We aren't testing any multi-shard mechanisms here anyway.
     servers = await manager.servers_add(1, cmdline=['--smp=1'], config={
         'error_injections_at_startup': [
-            {'name': 'suppress_features', 'value': 'MT_SSTABLE_FORMAT'},
+            {'name': 'suppress_features', 'value': 'MT_SSTABLE_FORMAT;MU_SSTABLE_FORMAT'},
         ],
         'column_index_size_in_kb': 1,
     })
@@ -218,16 +233,17 @@ async def test_bti_index_read_path(manager: ManagerClient) -> None:
     chosen_ck = cks[chosen_ck_idx]
     chosen_v = vs[chosen_ck_idx]
 
-    # (chosen sstable_format, (ms_unsuppressed, mt_unsuppressed))
-    cases: list[tuple[str, tuple[bool, bool]]] = [
-        ("me", (True, False)),
-        ("ms", (True, False)),
-        ("mt", (True, True)),
+    # (chosen sstable_format, (ms_unsuppressed, mt_unsuppressed, mu_unsuppressed))
+    cases: list[tuple[str, tuple[bool, bool, bool]]] = [
+        ("me", (True, False, False)),
+        ("ms", (True, False, False)),
+        ("mt", (True, True,  False)),
+        ("mu", (True, True,  True)),
     ]
 
     async def check_read_path(cql, expected_version: str, use_cache: bool):
-        # ME → reads go through Index.db. MS and MT → reads go through Partitions.db/Rows.db.
-        should_use_bti = expected_version in ("ms", "mt")
+        # ME → reads go through Index.db. MS, MT, and MU → reads go through Partitions.db/Rows.db.
+        should_use_bti = expected_version in ("ms", "mt", "mu")
         if use_cache:
             select = cql.prepare(f"SELECT pk, ck, v FROM {ks}.{cf} WHERE pk=? and ck=?;")
         else:
@@ -267,20 +283,21 @@ async def test_bti_index_read_path(manager: ManagerClient) -> None:
             # Partitions.db + Rows.db + Data.db for BTI).
             assert io_read_ops >= 3
 
-    prev_suppressions: Optional[tuple[bool, bool]] = None
-    for chosen, (ms_unsuppressed, mt_unsuppressed) in cases:
-        if prev_suppressions != (ms_unsuppressed, mt_unsuppressed):
+    prev_suppressions: Optional[tuple[bool, bool, bool]] = None
+    for chosen, (ms_unsuppressed, mt_unsuppressed, mu_unsuppressed) in cases:
+        if prev_suppressions != (ms_unsuppressed, mt_unsuppressed, mu_unsuppressed):
             if prev_suppressions is not None:
                 logger.info(
                     f"Setting suppressions to ms_unsuppressed={ms_unsuppressed}, "
-                    f"mt_unsuppressed={mt_unsuppressed}"
+                    f"mt_unsuppressed={mt_unsuppressed}, "
+                    f"mu_unsuppressed={mu_unsuppressed}"
                 )
-                await set_suppressions(manager, servers, ms_unsuppressed, mt_unsuppressed)
+                await set_suppressions(manager, servers, ms_unsuppressed, mt_unsuppressed, mu_unsuppressed)
                 manager.driver_close()
                 await manager.rolling_restart(servers)
                 await manager.driver_connect()
                 cql, _ = await manager.get_ready_cql(servers)
-            prev_suppressions = (ms_unsuppressed, mt_unsuppressed)
+            prev_suppressions = (ms_unsuppressed, mt_unsuppressed, mu_unsuppressed)
 
         logger.info(f"chosen={chosen!r}")
         await live_update_config(manager, servers, 'sstable_format', chosen)

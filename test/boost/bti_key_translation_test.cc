@@ -30,7 +30,7 @@ static std::vector<std::byte> linearize(comparable_bytes_iterator auto&& it) {
 // which together should cover all kinds of various pairwise comparisons.
 //
 // The expected ordering depends on `sst_ver`:
-// `mt` sorts partition keys within the same token by a bytewise comparison of their "legacy encoding",
+// `mt`/`mu` sort partition keys within the same token by a bytewise comparison of their "legacy encoding",
 // `ms` sorts them by a typed column-by-column comparison.
 static std::generator<dht::ring_position_view> generate_rpvs(
         const schema& string_pair_pk_schema,
@@ -93,7 +93,7 @@ BOOST_AUTO_TEST_CASE(test_lazy_comparable_bytes_from_ring_position_preserves_ord
         .with_column("pk2", utf8_type, column_kind::partition_key)
         .build();
     using encoding = sstables::trie::lazy_comparable_bytes_from_ring_position;
-    for (auto sst_ver : {sstables::sstable_version_types::ms, sstables::sstable_version_types::mt}) {
+    for (auto sst_ver : {sstables::sstable_version_types::ms, sstables::sstable_version_types::mt, sstables::sstable_version_types::mu}) {
         testlog.info("checking sstable_version={}", sst_ver);
         std::unique_ptr<encoding> prev;
         for (const auto& rpv : generate_rpvs(*s, sst_ver)) {
@@ -137,7 +137,7 @@ BOOST_AUTO_TEST_CASE(test_lazy_comparable_bytes_from_ring_position_trim) {
         partition_key::from_deeply_exploded(*s, components);
     });
     using encoding = sstables::trie::lazy_comparable_bytes_from_ring_position;
-    for (auto sst_ver : {sstables::sstable_version_types::ms, sstables::sstable_version_types::mt}) {
+    for (auto sst_ver : {sstables::sstable_version_types::ms, sstables::sstable_version_types::mt, sstables::sstable_version_types::mu}) {
         testlog.info("checking sstable_version={}", sst_ver);
         const auto dk = dht::decorated_key(dht::token::from_int64(42), pk);
         const auto encoded = linearize(encoding(sst_ver, *s, dk).begin());
@@ -180,6 +180,9 @@ BOOST_AUTO_TEST_CASE(test_lazy_comparable_bytes_from_ring_position_trim) {
 //
 // The encoding has to stay stable across Scylla versions,
 // so it's good to have a test with fixed inputs and outputs.
+//
+// `mt` and `mu` share the same partition-key encoding, so we check
+// both formats against the same expected hex.
 BOOST_AUTO_TEST_CASE(test_lazy_comparable_bytes_from_ring_position_fixed_cases_mt) {
     struct fixed_case {
         // Name of the test case, for logging.
@@ -256,9 +259,11 @@ BOOST_AUTO_TEST_CASE(test_lazy_comparable_bytes_from_ring_position_fixed_cases_m
     };
 
     using encoding = sstables::trie::lazy_comparable_bytes_from_ring_position;
-    auto sst_ver = sstables::sstable_version_types::mt;
-
-    for (const auto& tc : cases) {
+    // `mt` and `mu` share the same partition-key encoding, so the same expected
+    // hex applies to both.
+    for (auto sst_ver : {sstables::sstable_version_types::mt, sstables::sstable_version_types::mu}) {
+      testlog.info("checking sstable_version={}", sst_ver);
+      for (const auto& tc : cases) {
         auto sb = schema_builder(1, "ks", "t");
         for (size_t i = 0; i < tc.col_types.size(); ++i) {
             sb.with_column(to_bytes(fmt::format("pk{}", i)), tc.col_types[i], column_kind::partition_key);
@@ -289,6 +294,7 @@ BOOST_AUTO_TEST_CASE(test_lazy_comparable_bytes_from_ring_position_fixed_cases_m
                 fmt::format("case '{}' position_kind={}: expected={} got={}",
                     tc.name, sub.kind, sub.expected, got_hex));
         }
+      }
     }
 }
 
