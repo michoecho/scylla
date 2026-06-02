@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+podman exec -it $CONTAINER bash -c 'env "PATH=/usr/lib64/ccache:$PATH" CCACHE_DIR="'"$HOME/.cache/ccache"'" "$@"' cr "$@"

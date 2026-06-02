@@ -59,7 +59,7 @@ struct cql_config {
         , batch_size_warn_threshold_in_kb(128)
         , batch_size_fail_threshold_in_kb(1024)
         , restrict_future_timestamp(true)
-        , enable_create_table_with_compact_storage(false)
+        , enable_create_table_with_compact_storage(true)
     {}
 };
 
