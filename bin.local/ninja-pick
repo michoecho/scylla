@@ -1,0 +1,15 @@
+#!/usr/bin/env -S bash -eu
+
+SCRIPT_PATH=$(dirname $(realpath "$0"))
+REPO_ROOT=$(dirname "$SCRIPT_PATH")
+
+if [ -f "$REPO_ROOT/build.ninja" ]; then
+    ninja_args=()
+else
+    ninja_args=(-C build)
+fi
+
+target=$("$REPO_ROOT/bin.local/cr" ninja "${ninja_args[@]}" -t targets all | sed 's/\r$//' | fzf)
+[ -n "$target" ] || exit 1
+
+exec "$REPO_ROOT/bin.local/cr" ninja "${ninja_args[@]}" "${target%:*}"
