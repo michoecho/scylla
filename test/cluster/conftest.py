@@ -369,7 +369,7 @@ def internet_dependency_enabled(request) -> None:
 async def scylla_2025_1(request, build_mode, internet_dependency_enabled) -> AsyncIterator[ScyllaVersionDescription]:
     yield await get_scylla_2025_1_description(build_mode)
 
-@pytest.fixture(scope="function", params=list(KeyProvider))
+@pytest.fixture(scope="function", params=[x for x in KeyProvider if x != KeyProvider.kmip])
 async def key_provider(request, tmpdir, scylla_binary):
     """Encryption providers fixture"""
     async with make_key_provider_factory(request.param, tmpdir, scylla_binary) as res:

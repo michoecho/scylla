@@ -2164,12 +2164,13 @@ void upgrade_operation(schema_ptr schema, reader_permit permit, const std::vecto
     const auto output_dir = vm["output-dir"].as<std::string>();
     validate_output_dir(output_dir);
 
-    const auto local = data_dictionary::make_local_options(output_dir);
-
     const auto new_format = sstables::sstable_format_types::big;
     const auto new_version = vm.contains("sstable-version")
         ? sstables::version_from_string(vm["sstable-version"].as<std::string>())
         : sst_man.get_preferred_sstable_version();
+
+    const auto preserve_generation = vm["preserve-generation"].as<bool>();
+    const auto preserve_output_dir = vm["preserve-output-dir"].as<bool>();
 
     for (const auto& sst : sstables) {
         if (sst->get_version() == new_version && !all) {
@@ -2177,8 +2178,14 @@ void upgrade_operation(schema_ptr schema, reader_permit permit, const std::vecto
             continue;
         }
 
-        const auto new_generation = sstables::generation_type(utils::UUID_gen::get_time_UUID());
-
+        auto new_generation = preserve_generation
+            ? sstables::generation_type(sst->generation())
+            : sstables::generation_type(utils::UUID_gen::get_time_UUID());
+        
+        const auto local = preserve_output_dir
+            ? data_dictionary::make_local_options(std::filesystem::path(fmt::to_string(sst->get_filename())).parent_path())
+            : data_dictionary::make_local_options(output_dir);
+        
         auto writer_cfg = sst_man.configure_writer("scylla-sstable");
         auto new_sst = sst_man.make_sstable(schema, local, new_generation, sstables::sstable_state::normal, new_version, new_format);
 
@@ -2676,6 +2683,8 @@ For more information, see: {}
             {
                 typed_option<std::string>("output-dir", ".", "directory to place the output sstable(s) to"),
                 typed_option<std::string>("sstable-version", "sstable version to use, defaults to the same version as ScyllaDB would"),
+                typed_option<bool>("preserve-generation", false, "If true, preserve the original generation number/uuid"),
+                typed_option<bool>("preserve-output-dir", false, "If true, output each sstable next to the old one"),
                 typed_option<>("all", "upgrade all sstables, even if they are already at the requested version"),
                 typed_option<>("ignore-component-digest-mismatch", "ignore component digest mismatches when loading sstables;"
                         " useful for recovering sstables with corrupted non-vital components or working around bugs in digest calculation"),
