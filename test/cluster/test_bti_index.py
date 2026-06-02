@@ -123,7 +123,7 @@ async def test_bti_index_output_format(manager: ManagerClient) -> None:
         'error_injections_at_startup': [
             {
                 'name': 'suppress_features',
-                'value': 'MS_SSTABLE_FORMAT;MT_SSTABLE_FORMAT',
+                'value': 'MS_SSTABLE_FORMAT;MT_SSTABLE_FORMAT;MU_SSTABLE_FORMAT',
             }
         ],
         'column_index_size_in_kb': 1,
