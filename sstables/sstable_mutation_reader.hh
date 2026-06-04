@@ -153,7 +153,7 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
             consumer.permit(), consumer.trace_state());
     return reversed_context<DataConsumeRowsContext> {
         .the_context = std::make_unique<DataConsumeRowsContext>(
-                s, std::move(sst), consumer, input_stream<char>(std::move(reversing_data_source.the_source)),
+                s, std::move(sst), consumer, sstable_datafile_input_stream(input_stream<char>(std::move(reversing_data_source.the_source))),
                 toread.start, toread.end - toread.start),
         .current_position_in_sstable = reversing_data_source.current_position_in_sstable
     };

@@ -12,6 +12,7 @@
 #include <seastar/core/future.hh>
 #include <seastar/core/iostream.hh>
 #include "sstables/progress_monitor.hh"
+#include "sstables/sstable_datafile_input_stream.hh"
 #include <seastar/core/byteorder.hh>
 #include <seastar/util/variant_utils.hh>
 #include <seastar/net/byteorder.hh>
@@ -502,14 +503,14 @@ public:
 
 using primitive_consumer = primitive_consumer_impl<temporary_buffer<char>>;
 
-template <typename StateProcessor>
+template <typename StateProcessor, typename InputStream = input_stream<char>>
 class continuous_data_consumer : protected primitive_consumer {
     using proceed = data_consumer::proceed;
     StateProcessor& state_processor() {
         return static_cast<StateProcessor&>(*this);
     };
 protected:
-    input_stream<char> _input;
+    InputStream _input;
     sstables::reader_position_tracker _stream_position;
     // remaining length of input to read (if <0, continue until end of file).
     uint64_t _remain;
@@ -518,7 +519,7 @@ protected:
 public:
     using read_status = data_consumer::read_status;
 
-    continuous_data_consumer(reader_permit permit, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
+    continuous_data_consumer(reader_permit permit, InputStream&& input, uint64_t start, uint64_t maxlen)
             : primitive_consumer(std::move(permit))
             , _input(std::move(input))
             , _stream_position(sstables::reader_position_tracker{start, maxlen})

@@ -75,10 +75,11 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
                         co_await sstable->get_storage().make_source(*sstable, it->first, f, 0, std::numeric_limits<size_t>::max(), fis_options));
                 }
                 auto permit = co_await db.obtain_reader_permit(table, "download_fully_contained_sstables", db::no_timeout, {});
-                co_return co_await (
+                auto wrapped = co_await (
                     sstable->get_compression()
                         ? sstable->data_stream(0, sstable->ondisk_data_size(), std::move(permit), nullptr, nullptr, sstables::sstable::raw_stream::yes)
                         : sstable->data_stream(0, sstable->data_size(), std::move(permit), nullptr, nullptr, sstables::sstable::raw_stream::no));
+                co_return input_stream<char>(std::move(wrapped).detach());
             }());
 
             std::exception_ptr eptr;

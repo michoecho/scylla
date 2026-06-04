@@ -681,8 +681,8 @@ requires requires(
     { c.consume_partition_end() } -> std::same_as<data_consumer::proceed>;
     c.on_end_of_stream();
 }
-class data_consume_rows_context_m : public data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>> {
-    using parent = data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>>;
+class data_consume_rows_context_m : public data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream> {
+    using parent = data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>;
     using read_status = typename parent::read_status;
 private:
     enum class state {
@@ -1188,10 +1188,10 @@ public:
     data_consume_rows_context_m(const schema& s,
                                 const shared_sstable& sst,
                                 Consumer& consumer,
-                                input_stream<char> && input,
+                                sstables::sstable_datafile_input_stream&& input,
                                 uint64_t start,
                                 uint64_t maxlen)
-        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>>(consumer.permit(), std::move(input), start, maxlen)
+        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>(consumer.permit(), std::move(input), start, maxlen)
         , _consumer(consumer)
         , _sst(sst)
         , _header(sst->get_serialization_header())

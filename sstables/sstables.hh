@@ -38,6 +38,7 @@
 #include "sstables/generation_type.hh"
 #include "sstables/types.hh"
 #include "sstables/checksummed_data_source.hh"
+#include "sstables/sstable_datafile_input_stream.hh"
 #include "mutation/mutation_fragment_stream_validator.hh"
 #include "readers/mutation_reader_fwd.hh"
 #include "readers/mutation_reader.hh"
@@ -822,12 +823,12 @@ public:
         yes,
         compressed_chunks
     };
-    future<input_stream<char>> data_stream(uint64_t pos, size_t len,
+    future<sstable_datafile_input_stream> data_stream(uint64_t pos, size_t len,
             reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
             raw_stream raw = raw_stream::no, integrity_check integrity = integrity_check::no,
             integrity_error_handler error_handler = throwing_integrity_error_handler);
 
-    future<input_stream<char>> data_stream(uint64_t pos, size_t len,
+    future<sstable_datafile_input_stream> data_stream(uint64_t pos, size_t len,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
         raw_stream raw = raw_stream::no, integrity_check integrity = integrity_check::no,

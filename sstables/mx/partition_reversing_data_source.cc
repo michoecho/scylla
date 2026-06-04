@@ -29,7 +29,7 @@ namespace mx {
 // using header_end_pos()
 // Parsing copied from the sstable reader, with verification removed.
 //
-class partition_header_context : public data_consumer::continuous_data_consumer<partition_header_context> {
+class partition_header_context : public data_consumer::continuous_data_consumer<partition_header_context, sstables::sstable_datafile_input_stream> {
     uint64_t _header_end_pos;
     bool _finished = false;
     processing_result_generator _gen;
@@ -96,7 +96,7 @@ private:
     }
 public:
 
-    partition_header_context(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit permit)
+    partition_header_context(sstables::sstable_datafile_input_stream&& input, uint64_t start, uint64_t maxlen, reader_permit permit)
                 : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
                 , _gen(do_process_state())
     {}
@@ -116,7 +116,7 @@ public:
 //
 // `row_body_skipping_context` does not handle the static row (if there is one in the partition),
 // only `unfiltered`s (clustering rows and tombstones).
-class row_body_skipping_context : public data_consumer::continuous_data_consumer<row_body_skipping_context> {
+class row_body_skipping_context : public data_consumer::continuous_data_consumer<row_body_skipping_context, sstables::sstable_datafile_input_stream> {
     bool _end_of_partition = false;
     bool _finished = false;
     processing_result_generator _gen;
@@ -287,7 +287,7 @@ private:
         }
     }
 public:
-    row_body_skipping_context(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit permit, column_translation ct)
+    row_body_skipping_context(sstables::sstable_datafile_input_stream&& input, uint64_t start, uint64_t maxlen, reader_permit permit, column_translation ct)
                 : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
                 , _gen(do_process_state())
                 , _column_translation(std::move(ct))
@@ -401,13 +401,13 @@ class partition_reversing_data_source_impl final : public data_source_impl {
         FINISHED
     } _state = state::RANGE_END;
 private:
-    future<input_stream<char>> data_stream(size_t start, size_t end) {
+    future<sstables::sstable_datafile_input_stream> data_stream(size_t start, size_t end) {
         return _sst->data_stream(start, end - start, _permit, _trace_state, {});
     }
     future<temporary_buffer<char>> data_read(uint64_t start, uint64_t end) {
         return _sst->data_read(start, end - start, _permit);
     }
-    future<input_stream<char>> last_row_stream(size_t row_size) {
+    future<sstables::sstable_datafile_input_stream> last_row_stream(size_t row_size) {
         if (_cached_read.size() < row_size) {
             if (_clustering_range_start + _current_read_size < _row_end) {
                 _cached_read = co_await data_read(std::min(_row_end - _current_read_size, _row_end - row_size), _row_end);
@@ -416,7 +416,7 @@ private:
             }
             _current_read_size = std::min(max_read_size, _current_read_size * 2);
         }
-        co_return seastar::util::as_input_stream(_cached_read.share(_cached_read.size() - row_size, row_size));
+        co_return sstables::sstable_datafile_input_stream(seastar::util::as_input_stream(_cached_read.share(_cached_read.size() - row_size, row_size)));
     }
     temporary_buffer<char> last_row(size_t row_size) {
         auto tmp = _cached_read.share(_cached_read.size() - row_size, row_size);
@@ -443,7 +443,7 @@ private:
         }
     }
 
-    future<> emplace_row_skipping_context(input_stream<char> row_stream, uint64_t row_start, uint64_t row_end) {
+    future<> emplace_row_skipping_context(sstables::sstable_datafile_input_stream row_stream, uint64_t row_start, uint64_t row_end) {
         if (_row_skipping_context) {
             co_await _row_skipping_context->close();
         }

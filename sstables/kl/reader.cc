@@ -932,7 +932,7 @@ public:
 
 // data_consume_rows_context remembers the context that an ongoing
 // data_consume_rows() future is in.
-class data_consume_rows_context : public data_consumer::continuous_data_consumer<data_consume_rows_context> {
+class data_consume_rows_context : public data_consumer::continuous_data_consumer<data_consume_rows_context, sstables::sstable_datafile_input_stream> {
 private:
     enum class state {
         ROW_START,
@@ -1098,7 +1098,7 @@ public:
     data_consume_rows_context(const schema&,
                               const shared_sstable sst,
                               mp_row_consumer_k_l& consumer,
-                              input_stream<char>&& input, uint64_t start, uint64_t maxlen)
+                              sstables::sstable_datafile_input_stream&& input, uint64_t start, uint64_t maxlen)
                 : continuous_data_consumer(consumer.permit(), std::move(input), start, maxlen)
                 , _consumer(consumer)
                 , _sst(std::move(sst))
