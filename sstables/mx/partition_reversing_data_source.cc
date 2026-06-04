@@ -16,7 +16,6 @@
 #include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "sstables/types.hh"
-#include "utils/to_string.hh"
 
 namespace sstables {
 
