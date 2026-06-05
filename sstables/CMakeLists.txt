@@ -15,6 +15,7 @@ target_sources(sstables
     prepended_input_stream.cc
     random_access_reader.cc
     sstable_datafile_input_stream.cc
+    sstable_datafile_position.cc
     sstable_directory.cc
     sstable_mutation_reader.cc
     sstables.cc
