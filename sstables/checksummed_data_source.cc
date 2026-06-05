@@ -198,21 +198,21 @@ public:
 };
 
 template <ChecksumUtils ChecksumType>
-inline sstable_datafile_input_stream make_checksummed_file_input_stream(
+inline input_stream<char> make_checksummed_file_input_stream(
         stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t pos, size_t len,
         file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
 {
     if (digest) {
-        return sstable_datafile_input_stream(input_stream<char>(checksummed_file_data_source<ChecksumType, true>(
+        return input_stream<char>(checksummed_file_data_source<ChecksumType, true>(
             std::move(stream_creator), file_len, checksum, pos, len, std::move(options), digest,
-            error_handler)));
+            error_handler));
     }
-    return sstable_datafile_input_stream(input_stream<char>(checksummed_file_data_source<ChecksumType, false>(
-        std::move(stream_creator), file_len, checksum, pos, len, std::move(options), digest, error_handler)));
+    return input_stream<char>(checksummed_file_data_source<ChecksumType, false>(
+        std::move(stream_creator), file_len, checksum, pos, len, std::move(options), digest, error_handler));
 }
 
-sstable_datafile_input_stream make_checksummed_file_k_l_format_input_stream(
+input_stream<char> make_checksummed_file_k_l_format_input_stream(
         stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t pos, size_t len,
         file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
@@ -221,7 +221,7 @@ sstable_datafile_input_stream make_checksummed_file_k_l_format_input_stream(
             checksum, pos, len, std::move(options), digest, error_handler);
 }
 
-sstable_datafile_input_stream make_checksummed_file_m_format_input_stream(
+input_stream<char> make_checksummed_file_m_format_input_stream(
         stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t pos, size_t len,
         file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)

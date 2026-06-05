@@ -3137,11 +3137,11 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
         uint64_t pos = range.start.to_logical_fixme();
         size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
         if (_version >= sstable_version_types::mc) {
-             co_return make_checksummed_file_m_format_input_stream(stream_creator, file_len,
-                *checksum, pos, len, std::move(options), digest, error_handler);
+             co_return sstable_datafile_input_stream(make_checksummed_file_m_format_input_stream(stream_creator, file_len,
+                *checksum, pos, len, std::move(options), digest, error_handler));
         } else {
-            co_return make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
-                *checksum, pos, len, std::move(options), digest, error_handler);
+            co_return sstable_datafile_input_stream(make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
+                *checksum, pos, len, std::move(options), digest, error_handler));
         }
     }
     uint64_t pos = range.start.to_logical_fixme();
@@ -3192,11 +3192,11 @@ future<input_stream<char>> sstable::data_stream_compressed_chunks(disk_read_rang
         uint64_t pos = range.start.to_logical_fixme();
         size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
         if (_version >= sstable_version_types::mc) {
-             co_return std::move(make_checksummed_file_m_format_input_stream(stream_creator, file_len,
-                *checksum, pos, len, std::move(options), digest, error_handler)).detach();
+             co_return make_checksummed_file_m_format_input_stream(stream_creator, file_len,
+                *checksum, pos, len, std::move(options), digest, error_handler);
         } else {
-            co_return std::move(make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
-                *checksum, pos, len, std::move(options), digest, error_handler)).detach();
+            co_return make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
+                *checksum, pos, len, std::move(options), digest, error_handler);
         }
     }
     uint64_t pos = range.start.to_logical_fixme();
