@@ -39,7 +39,6 @@
 #include "readers/multi_range.hh"
 #include "schema/schema_builder.hh"
 #include "schema/compression_initializer.hh"
-#include "sstables/index_reader.hh"
 #include "sstables/sstables_manager.hh"
 #include "sstables/sstable_directory.hh"
 #include "sstables/open_info.hh"
@@ -53,9 +52,9 @@
 #include "tools/schema_loader.hh"
 #include "tools/sstable_consumer.hh"
 #include "tools/utils.hh"
-#include "types/json_utils.hh"
 #include "locator/host_id.hh"
 #include "mutation_writer/token_group_based_splitting_writer.hh"
+#include "sstables/exceptions.hh"
 
 using namespace seastar;
 using namespace sstables;
