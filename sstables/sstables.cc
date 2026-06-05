@@ -40,7 +40,6 @@
 #include <seastar/coroutine/as_future.hh>
 
 #include "utils/error_injection.hh"
-#include "utils/to_string.hh"
 #include "data_dictionary/storage_options.hh"
 #include "dht/sharder.hh"
 #include "writer.hh"
