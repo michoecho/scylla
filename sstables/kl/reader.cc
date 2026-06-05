@@ -15,7 +15,6 @@
 #include "keys/clustering_key_filter.hh"
 #include "keys/clustering_ranges_walker.hh"
 #include "types/concrete_types.hh"
-#include "utils/to_string.hh"
 #include "utils/value_or_reference.hh"
 
 namespace sstables {
