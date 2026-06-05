@@ -518,9 +518,9 @@ public:
             }
             if (look_in_last_block) {
                 _cached_read.trim(0);
-                if (auto offset = co_await _ir.last_block_offset()) {
+                if (auto offset = co_await _ir.last_block_sstable_datafile_offset()) {
                     // there was a promoted index block in the partition, read from its beginning to find the last row
-                    _row_start = _partition_start + *offset;
+                    _row_start = _partition_start + offset->to_logical_fixme();
                 } else {
                     // no promoted index blocks in the partition, read from the beginning
                     _row_start = _clustering_range_start;
