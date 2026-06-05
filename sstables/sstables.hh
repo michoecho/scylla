@@ -225,22 +225,7 @@ public:
     sstable(const sstable&) = delete;
     sstable(sstable&&) = delete;
 
-    // disk_read_range describes a byte ranges covering part of an sstable
-    // row that we need to read from disk. Usually this is the whole byte
-    // range covering a single sstable row, but in very large rows we might
-    // want to only read a subset of the atoms which we know contains the
-    // columns we are looking for.
-    struct disk_read_range {
-        // TODO: this should become a vector of ranges
-        sstable_datafile_position start;
-        sstable_datafile_position end;
-
-        disk_read_range(sstable_datafile_position start, sstable_datafile_position end) :
-            start(start), end(end) { }
-        explicit operator bool() const {
-            return start != end;
-        }
-    };
+    using disk_read_range = sstables::disk_read_range;
 
     static component_type component_from_sstring(version_types version, const sstring& s);
     static sstring component_basename(const sstring& ks, const sstring& cf, version_types version, generation_type generation,

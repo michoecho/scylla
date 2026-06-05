@@ -701,18 +701,22 @@ inline output_stream<char> make_compressed_file_output_stream(output_stream<char
 }
 
 input_stream<char> sstables::make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
-        sstables::compression* cm, uint64_t offset, size_t len,
+        sstables::compression* cm, disk_read_range range,
         class file_input_stream_options options, reader_permit permit,
         std::optional<uint32_t> digest)
 {
+    uint64_t offset = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
     return make_compressed_file_input_stream<adler32_utils, compressed_checksum_mode::checksum_chunks_only>(
             std::move(stream_creator), cm, offset, len, std::move(options), std::move(permit), digest);
 }
 
 input_stream<char> sstables::make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
-        sstables::compression *cm, uint64_t offset, size_t len,
+        sstables::compression *cm, disk_read_range range,
         class file_input_stream_options options, reader_permit permit,
         std::optional<uint32_t> digest) {
+    uint64_t offset = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
     return make_compressed_file_input_stream<crc32_utils, compressed_checksum_mode::checksum_all>(
             std::move(stream_creator), cm, offset, len, std::move(options), std::move(permit), digest);
 }

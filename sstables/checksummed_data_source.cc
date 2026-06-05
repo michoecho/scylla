@@ -213,19 +213,23 @@ inline input_stream<char> make_checksummed_file_input_stream(
 }
 
 input_stream<char> make_checksummed_file_k_l_format_input_stream(
-        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t offset,
-        size_t len, file_input_stream_options options, std::optional<uint32_t> digest,
+        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, disk_read_range range,
+        file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
 {
+    uint64_t offset = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
     return make_checksummed_file_input_stream<adler32_utils>(std::move(stream_creator), file_len,
             checksum, offset, len, std::move(options), digest, error_handler);
 }
 
 input_stream<char> make_checksummed_file_m_format_input_stream(
-        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t offset,
-        size_t len, file_input_stream_options options, std::optional<uint32_t> digest,
+        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, disk_read_range range,
+        file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
 {
+    uint64_t offset = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
     return make_checksummed_file_input_stream<crc32_utils>(std::move(stream_creator), file_len,
             checksum, offset, len, std::move(options), digest, error_handler);
 }
