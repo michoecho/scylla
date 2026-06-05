@@ -19,7 +19,6 @@
 #include "compressor.hh"
 #include "exceptions.hh"
 #include "sstables/checksum_utils.hh"
-#include "unimplemented.hh"
 #include "segmented_compress_params.hh"
 #include "utils/assert.hh"
 #include "utils/class_registrator.hh"
