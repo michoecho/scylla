@@ -266,7 +266,7 @@ void compression::update(uint64_t compressed_file_length) {
 // the end-of-file position (one past the last byte) MUST not be used. If the
 // caller wants to read from the end of file, it should simply read nothing.
 compression::chunk_and_offset
-compression::locate(uint64_t position, const compression::segmented_offsets::accessor& accessor) {
+compression::locate(uint64_t position, const compression::segmented_offsets::accessor& accessor) const {
     auto ucl = uncompressed_chunk_length();
     auto chunk_index = position / ucl;
     decltype(ucl) chunk_offset = position % ucl;

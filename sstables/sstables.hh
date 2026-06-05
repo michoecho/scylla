@@ -383,6 +383,14 @@ public:
     // Returns on-disk size of data component.
     uint64_t ondisk_data_size() const;
 
+    // Maps a logical (uncompressed) data-file position to the physical
+    // (on-disk) range [start, end) of bytes that must be read to access it.
+    // For uncompressed sstables this is the single-byte range [pos, pos+1).
+    // For compressed sstables it is the byte range of the compressed chunk
+    // containing `pos`. The position must be in [0, data_size()).
+    struct physical_range { uint64_t start; uint64_t end; };
+    physical_range logical_to_physical_position(uint64_t pos) const;
+
     uint64_t index_size() const {
         return _index_file_size;
     }

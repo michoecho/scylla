@@ -322,7 +322,7 @@ public:
         uint64_t chunk_len; // variable size of compressed chunk
         unsigned offset; // offset into chunk after uncompressing it
     };
-    chunk_and_offset locate(uint64_t position, const compression::segmented_offsets::accessor& accessor);
+    chunk_and_offset locate(uint64_t position, const compression::segmented_offsets::accessor& accessor) const;
 
     unsigned uncompressed_chunk_length() const noexcept {
         return chunk_len;

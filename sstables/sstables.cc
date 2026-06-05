@@ -2703,6 +2703,16 @@ uint64_t sstable::ondisk_data_size() const {
     return _data_file_size;
 }
 
+sstable::physical_range sstable::logical_to_physical_position(uint64_t pos) const {
+    const auto& comp = _components->compression;
+    if (!comp) {
+        return {pos, pos + 1};
+    }
+    auto accessor = comp.offsets.get_accessor();
+    auto chunk = comp.locate(pos, accessor);
+    return {chunk.chunk_start, chunk.chunk_start + chunk.chunk_len};
+}
+
 file_size_stats sstable::get_file_size_stats() const {
     if (!_metadata_size_on_disk) {
         on_internal_error(sstlog, "On-disk size of sstable metadata was not set");
@@ -3689,16 +3699,18 @@ future<uint64_t> sstable::estimated_keys_for_range(const dht::token_range& range
     try {
         co_await ir->advance_to(dht::to_partition_range(range));
         auto data_file_range = ir->data_file_positions();
-        auto uncompressed_data_size = data_size();
-        auto start = data_file_range.start;
-        auto end = data_file_range.end.value_or(uncompressed_data_size);
+        auto logical_start = data_file_range.start;
+        auto logical_end = data_file_range.end.value_or(data_size());
+        auto total_size = ondisk_data_size();
         auto total_count = get_estimated_key_count();
         sstlog.debug("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
-                get_filename(), range, start, end, uncompressed_data_size, total_count);
-        if (start == end) {
+                get_filename(), range, logical_start, logical_end, total_size, total_count);
+        if (logical_start == logical_end) {
             result = 0;
         } else {
-            result = std::ceil(double(end - start) / uncompressed_data_size * total_count);
+            auto start = logical_to_physical_position(logical_start).start;
+            auto end = logical_to_physical_position(logical_end - 1).end;
+            result = std::ceil(double(end - start) / total_size * total_count);
         }
     } catch (...) {
         ex = std::current_exception();
