@@ -2702,6 +2702,14 @@ uint64_t sstable::ondisk_data_size() const {
     return _data_file_size;
 }
 
+sstable_datafile_position sstable::start_position() const {
+    return sstable_datafile_position::from_logical_fixme(0);
+}
+
+sstable_datafile_position sstable::end_position() const {
+    return sstable_datafile_position::from_logical_fixme(data_size());
+}
+
 sstable::physical_position_range sstable::logical_to_physical_range(sstable_datafile_positions_range range) const {
     auto locate = [this] (uint64_t pos) -> physical_position {
         if (pos >= data_size()) {

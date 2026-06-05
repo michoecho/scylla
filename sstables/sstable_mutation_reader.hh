@@ -121,15 +121,15 @@ position_in_partition_view get_slice_lower_bound(const schema& s, const query::p
 // heuristics which learn from the usefulness of previous read aheads.
 template <typename DataConsumeRowsContext>
 inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_rows(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer,
-        sstable::disk_read_range toread, uint64_t last_end, integrity_check integrity) {
+        sstable::disk_read_range toread, sstable_datafile_position last_end, integrity_check integrity) {
     // Although we were only asked to read until toread.end, we'll not limit
     // the underlying file input stream to this end, but rather to last_end.
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
-    auto input = co_await sst->data_stream(toread.start, last_end - toread.start,
+    auto input = co_await sst->data_stream(toread.start.to_logical_fixme(), last_end.to_logical_fixme() - toread.start.to_logical_fixme(),
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, sstable::raw_stream::no, integrity);
-    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end - toread.start);
+    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
 }
 
 template <typename DataConsumeRowsContext>
@@ -149,12 +149,12 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
         const schema& s, shared_sstable sst, abstract_index_reader& ir,
         typename DataConsumeRowsContext::consumer& consumer, sstable::disk_read_range toread) {
     auto reversing_data_source = sstables::mx::make_partition_reversing_data_source(
-            s, sst, ir, toread.start, toread.end - toread.start,
+            s, sst, ir, toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme(),
             consumer.permit(), consumer.trace_state());
     return reversed_context<DataConsumeRowsContext> {
         .the_context = std::make_unique<DataConsumeRowsContext>(
                 s, std::move(sst), consumer, sstable_datafile_input_stream(input_stream<char>(std::move(reversing_data_source.the_source))),
-                toread.start, toread.end - toread.start),
+                toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme()),
         .current_position_in_sstable = reversing_data_source.current_position_in_sstable
     };
 }
@@ -162,17 +162,18 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
 template <typename DataConsumeRowsContext>
 inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_single_partition(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer,
         sstable::disk_read_range toread, integrity_check integrity) {
-    auto input = co_await sst->data_stream(toread.start, toread.end - toread.start,
+    auto input = co_await sst->data_stream(toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme(),
             consumer.permit(), consumer.trace_state(), sst->_single_partition_history, sstable::raw_stream::no, integrity);
-    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end - toread.start);
+    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
 }
 
 // Like data_consume_rows() with bounds, but iterates over whole range
 template <typename DataConsumeRowsContext>
 inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_rows(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer,
         integrity_check integrity) {
-    auto data_size = sst->data_size();
-    return data_consume_rows<DataConsumeRowsContext>(s, std::move(sst), consumer, {0, data_size}, data_size, integrity);
+    auto start_position = sst->start_position();
+    auto end_position = sst->end_position();
+    return data_consume_rows<DataConsumeRowsContext>(s, std::move(sst), consumer, {start_position, end_position}, end_position, integrity);
 }
 
 template<typename T>

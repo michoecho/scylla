@@ -1342,7 +1342,7 @@ private:
             co_await get_index_reader().advance_to(_pr);
         }
 
-        auto [begin, end] = _index_reader->data_file_positions();
+        auto [begin, end] = _index_reader->sstable_datafile_positions();
         parse_assert(bool(end), _sst->get_filename());
 
         if (_single_partition_read) {
@@ -1350,7 +1350,7 @@ private:
             _context = co_await data_consume_single_partition<DataConsumeRowsContext>(*_schema, _sst, _consumer, { begin, *end }, integrity_check::no);
         } else {
             sstable::disk_read_range drr{begin, *end};
-            auto last_end = _fwd_mr ? _sst->data_size() : drr.end;
+            auto last_end = _fwd_mr ? _sst->end_position() : drr.end;
             _read_enabled = bool(drr);
             _context = co_await data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end, integrity_check::no);
         }

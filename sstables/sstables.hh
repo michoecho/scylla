@@ -232,11 +232,10 @@ public:
     // columns we are looking for.
     struct disk_read_range {
         // TODO: this should become a vector of ranges
-        uint64_t start;
-        uint64_t end;
+        sstable_datafile_position start;
+        sstable_datafile_position end;
 
-        disk_read_range() : start(0), end(0) {}
-        disk_read_range(uint64_t start, uint64_t end) :
+        disk_read_range(sstable_datafile_position start, sstable_datafile_position end) :
             start(start), end(end) { }
         explicit operator bool() const {
             return start != end;
@@ -383,6 +382,9 @@ public:
     uint64_t data_size() const;
     // Returns on-disk size of data component.
     uint64_t ondisk_data_size() const;
+    // Returns on-disk size of data component.
+    sstable_datafile_position start_position() const;
+    sstable_datafile_position end_position() const;
 
     // Describes the on-disk location of a logical (uncompressed) data-file byte:
     // the [chunk_start, chunk_end) range of compressed bytes that contain it,
@@ -1179,7 +1181,7 @@ public:
     friend class sstables_manager;
     template <typename DataConsumeRowsContext>
     friend future<std::unique_ptr<DataConsumeRowsContext>>
-    data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t, integrity_check);
+    data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, sstable_datafile_position, integrity_check);
     template <typename DataConsumeRowsContext>
     friend future<std::unique_ptr<DataConsumeRowsContext>>
     data_consume_single_partition(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, integrity_check);
