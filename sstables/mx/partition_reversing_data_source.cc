@@ -478,12 +478,13 @@ public:
             _clustering_range_start = _partition_header_context->header_end_pos();
             co_return co_await data_read(_partition_start, _clustering_range_start);
         }
-        if (_ir.data_file_positions().end && *_ir.data_file_positions().end < _row_start) {
+        auto ir_end = _ir.sstable_datafile_positions().end;
+        if (ir_end && *ir_end < sstable_datafile_position::from_logical_fixme(_row_start)) {
             // we can skip at least one row
-            _row_start = *_ir.data_file_positions().end;
-            if (_cached_read.size() + *_ir.data_file_positions().end >= _row_end) {
+            _row_start = ir_end->to_logical_fixme();
+            if (_cached_read.size() + ir_end->to_logical_fixme() >= _row_end) {
                 // we can reuse the cache for the new range
-                _cached_read.trim(_cached_read.size() - (_row_end - *_ir.data_file_positions().end));
+                _cached_read.trim(_cached_read.size() - (_row_end - ir_end->to_logical_fixme()));
             } else {
                 // we'll need to reset the cache
                 _cached_read.trim(0);

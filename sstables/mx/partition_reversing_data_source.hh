@@ -35,10 +35,10 @@ struct partition_reversing_data_source {
 // `len` is the length of the partition.
 // `ir` provides access to an index over the sstable.
 //
-// `ir.data_file_positions().end` may decrease below `current_position_in_sstable`,
-// informing us that the user wants us to skip the sequence of rows between `ir.data_file_positions().end` and `current_position_in_sstable`.
-// `ir.data_file_positions().end`, if engaged, must always point at the end of partition (pos + len) or the beginning of some row.
-// We ignore the value of `ir.data_file_positions().start`.
+// `ir.sstable_datafile_positions().end` may decrease below `current_position_in_sstable`,
+// informing us that the user wants us to skip the sequence of rows between `ir.sstable_datafile_positions().end` and `current_position_in_sstable`.
+// `ir.sstable_datafile_positions().end`, if engaged, must always point at the end of partition (pos + len) or the beginning of some row.
+// We ignore the value of `ir.sstable_datafile_positions().start`.
 //
 // We assume that `ir.current_clustered_cursor()`, if engaged, is of type `sstables::mc::bsearch_clustered_cursor*`.
 //
