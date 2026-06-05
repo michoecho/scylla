@@ -28,6 +28,7 @@
 #include <boost/intrusive/list.hpp>
 #include "sstable_compressor_factory.hh"
 #include "sstables/sstables_manager_subscription.hh"
+#include "sstables/sstables_registry.hh"
 
 namespace db {
 

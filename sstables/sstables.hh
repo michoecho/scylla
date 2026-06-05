@@ -12,7 +12,6 @@
 #include "version.hh"
 #include "shared_sstable.hh"
 #include "open_info.hh"
-#include "sstables_registry.hh"
 #include <seastar/core/file.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/future.hh>
