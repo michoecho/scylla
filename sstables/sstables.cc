@@ -3123,27 +3123,27 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
     };
     if (_components->compression && raw == raw_stream::no) {
         if (_version >= sstable_version_types::mc) {
-            co_return sstable_datafile_input_stream(make_compressed_file_m_format_input_stream(stream_creator, &_components->compression,
-               range, std::move(options), permit, digest));
+            co_return make_compressed_file_m_format_input_stream(stream_creator, &_components->compression,
+               range, std::move(options), permit, digest);
         } else {
-            co_return sstable_datafile_input_stream(make_compressed_file_k_l_format_input_stream(stream_creator, &_components->compression,
-                range, std::move(options), permit, digest));
+            co_return make_compressed_file_k_l_format_input_stream(stream_creator, &_components->compression,
+                range, std::move(options), permit, digest);
         }
     }
 
     if (_components->compression && raw == raw_stream::compressed_chunks && _version >= sstable_version_types::mc) {
-        co_return sstable_datafile_input_stream(make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest));
+        co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest);
     }
 
     if (_components->checksum && integrity == integrity_check::yes) {
         auto checksum = get_checksum();
         auto file_len = data_size();
         if (_version >= sstable_version_types::mc) {
-             co_return sstable_datafile_input_stream(make_checksummed_file_m_format_input_stream(stream_creator, file_len,
-                *checksum, range, std::move(options), digest, error_handler));
+             co_return make_checksummed_file_m_format_input_stream(stream_creator, file_len,
+                *checksum, range, std::move(options), digest, error_handler);
         } else {
-            co_return sstable_datafile_input_stream(make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
-                *checksum, range, std::move(options), digest, error_handler));
+            co_return make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
+                *checksum, range, std::move(options), digest, error_handler);
         }
     }
     uint64_t pos = range.start.to_logical_fixme();

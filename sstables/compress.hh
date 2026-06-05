@@ -45,6 +45,7 @@
 
 #include "sstables/types.hh"
 #include "sstables/sstable_datafile_position.hh"
+#include "sstables/sstable_datafile_input_stream.hh"
 
 class reader_permit;
 
@@ -365,19 +366,19 @@ using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uin
 // are open streams on it. This should happen naturally on a higher level -
 // as long as we have *sstables* work in progress, we need to keep the whole
 // sstable alive, and the compression metadata is only a part of it.
-input_stream<char> make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
+sstable_datafile_input_stream make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
                 sstables::compression* cm, disk_read_range range,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
-input_stream<char> make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
+sstable_datafile_input_stream make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
                 sstables::compression* cm, disk_read_range range,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
 // Raw compressed data stream function that return compressed chunks without decompression
 // while still calculating digests and verifying checksums. Compatible with SSTables version 3.x and later.
-input_stream<char> make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
+sstable_datafile_input_stream make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
         file_input_stream_options options, reader_permit permit, std::optional<uint32_t> digest);
 
 output_stream<char> make_compressed_file_m_format_output_stream(output_stream<char> out,

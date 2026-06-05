@@ -587,16 +587,16 @@ public:
 };
 
 template <ChecksumUtils ChecksumType, compressed_checksum_mode mode>
-inline input_stream<char> make_compressed_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm, sstables::disk_read_range range,
+inline sstables::sstable_datafile_input_stream make_compressed_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm, sstables::disk_read_range range,
         file_input_stream_options options, reader_permit permit,
         std::optional<uint32_t> digest)
 {
     if (digest) [[unlikely]] {
-        return input_stream<char>(compressed_file_data_source<ChecksumType, true, mode>(
-                std::move(stream_creator), cm, range, std::move(options), std::move(permit), digest));
+        return sstables::sstable_datafile_input_stream(input_stream<char>(compressed_file_data_source<ChecksumType, true, mode>(
+                std::move(stream_creator), cm, range, std::move(options), std::move(permit), digest)));
     }
-    return input_stream<char>(compressed_file_data_source<ChecksumType, false, mode>(
-            std::move(stream_creator), cm, range, std::move(options), std::move(permit), digest));
+    return sstables::sstable_datafile_input_stream(input_stream<char>(compressed_file_data_source<ChecksumType, false, mode>(
+            std::move(stream_creator), cm, range, std::move(options), std::move(permit), digest)));
 }
 
 // compressed_file_data_sink_impl works as a filter for a file output stream,
@@ -702,7 +702,7 @@ inline output_stream<char> make_compressed_file_output_stream(output_stream<char
     return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm));
 }
 
-input_stream<char> sstables::make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
+sstables::sstable_datafile_input_stream sstables::make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
         sstables::compression* cm, disk_read_range range,
         class file_input_stream_options options, reader_permit permit,
         std::optional<uint32_t> digest)
@@ -711,7 +711,7 @@ input_stream<char> sstables::make_compressed_file_k_l_format_input_stream(stream
             std::move(stream_creator), cm, range, std::move(options), std::move(permit), digest);
 }
 
-input_stream<char> sstables::make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
+sstables::sstable_datafile_input_stream sstables::make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
         sstables::compression *cm, disk_read_range range,
         class file_input_stream_options options, reader_permit permit,
         std::optional<uint32_t> digest) {
@@ -727,13 +727,13 @@ output_stream<char> sstables::make_compressed_file_m_format_output_stream(output
             std::move(out), cm, cp, std::move(p));
 }
 
-input_stream<char> sstables::make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
+sstables::sstable_datafile_input_stream sstables::make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
         file_input_stream_options options, reader_permit permit, std::optional<uint32_t> digest)
 {
     if (digest) [[unlikely]] {
-        return input_stream<char>(compressed_raw_file_data_source<true>(
-                std::move(stream_creator), cm, std::move(options), std::move(permit), digest));
+        return sstables::sstable_datafile_input_stream(input_stream<char>(compressed_raw_file_data_source<true>(
+                std::move(stream_creator), cm, std::move(options), std::move(permit), digest)));
     }
-    return input_stream<char>(compressed_raw_file_data_source<false>(
-            std::move(stream_creator), cm, std::move(options), std::move(permit), digest));
+    return sstables::sstable_datafile_input_stream(input_stream<char>(compressed_raw_file_data_source<false>(
+            std::move(stream_creator), cm, std::move(options), std::move(permit), digest)));
 }

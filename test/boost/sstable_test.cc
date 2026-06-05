@@ -712,12 +712,12 @@ SEASTAR_TEST_CASE(test_skipping_in_compressed_stream) {
                     opts, semaphore.make_permit(), std::nullopt);
         };
 
-        auto expect = [] (input_stream<char>& in, const temporary_buffer<char>& buf) {
+        auto expect = [] (sstables::sstable_datafile_input_stream& in, const temporary_buffer<char>& buf) {
             auto b = in.read_exactly(buf.size()).get();
             BOOST_REQUIRE(b == buf);
         };
 
-        auto expect_eof = [] (input_stream<char>& in) {
+        auto expect_eof = [] (sstables::sstable_datafile_input_stream& in) {
             auto b = in.read().get();
             BOOST_REQUIRE(b.empty());
         };
