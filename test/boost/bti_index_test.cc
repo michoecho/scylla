@@ -606,7 +606,7 @@ struct reference_index {
         }
         return {lo, hi};
     }
-    std::optional<uint64_t> last_block_offset() {
+    std::optional<sstables::sstable_datafile_offset> last_block_sstable_datafile_offset() {
         auto curpar = get_current_partition();
         if (std::holds_alternative<eof_index_entry>(_entries[curpar])) {
             return std::nullopt;
@@ -616,7 +616,8 @@ struct reference_index {
         }
         for (uint64_t idx = curpar + 1; idx < _entries.size(); ++idx) {
             if (std::holds_alternative<partition_end_entry>(_entries[idx + 1])) {
-                return _data_file_offsets[idx].to_logical_fixme() - _data_file_offsets[curpar].to_logical_fixme();
+                return sstables::sstable_datafile_offset::from_logical_fixme(
+                    _data_file_offsets[idx].to_logical_fixme() - _data_file_offsets[curpar].to_logical_fixme());
             }
         }
         abort();
@@ -741,7 +742,7 @@ void test_index(const index_entry_dataset& dataset, std::function<std::unique_pt
             SCYLLA_ASSERT(ri.end_open_marker().transform(get_tombstone) == reader->end_open_marker().transform(get_tombstone));
             SCYLLA_ASSERT(ri.reverse_end_open_marker().transform(get_tombstone) == reader->reverse_end_open_marker().transform(get_tombstone));
             if (reader->partition_data_ready()) {
-                SCYLLA_ASSERT(ri.last_block_offset() == reader->last_block_offset().get());
+                SCYLLA_ASSERT(ri.last_block_sstable_datafile_offset() == reader->last_block_sstable_datafile_offset().get());
                 if (ri.has_row_index()) {
                     SCYLLA_ASSERT(reader->partition_tombstone());
                     SCYLLA_ASSERT(reader->get_partition_key());

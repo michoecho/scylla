@@ -433,7 +433,7 @@ public:
     // Implementation of the `abstract_index_reader` interface.
     virtual future<> close() noexcept override;
     virtual sstables::sstable_datafile_positions_range sstable_datafile_positions() const override;
-    virtual future<std::optional<uint64_t>> last_block_offset() override;
+    virtual future<std::optional<sstables::sstable_datafile_offset>> last_block_sstable_datafile_offset() override;
     virtual future<bool> advance_lower_and_check_if_present(dht::ring_position_view key) override;
     virtual future<bool> advance_lower_and_check_if_present(dht::ring_position_view key, const utils::hashed_key&) override;
     virtual future<> advance_to_next_partition() override;
@@ -760,9 +760,11 @@ sstables::sstable_datafile_positions_range bti_index_reader::sstable_datafile_po
         hi.transform(sstables::sstable_datafile_position::from_logical_fixme),
     };
 }
-future<std::optional<uint64_t>> bti_index_reader::last_block_offset() {
-    trie_logger.debug("bti_index_reader::last_block_offset this={}", fmt::ptr(this));
-    return _lower.last_block_offset();
+future<std::optional<sstables::sstable_datafile_offset>> bti_index_reader::last_block_sstable_datafile_offset() {
+    trie_logger.debug("bti_index_reader::last_block_sstable_datafile_offset this={}", fmt::ptr(this));
+    return _lower.last_block_offset().then([] (std::optional<uint64_t> raw) -> std::optional<sstables::sstable_datafile_offset> {
+        return raw.transform(sstables::sstable_datafile_offset::from_logical_fixme);
+    });
 }
 future<> bti_index_reader::close() noexcept {
     trie_logger.debug("bti_index_reader::close this={}", fmt::ptr(this));

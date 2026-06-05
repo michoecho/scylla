@@ -185,12 +185,7 @@ public:
     // in the current partition or nullopt if there are no blocks in the current partition.
     //
     // Preconditions: partition_data_ready()
-    virtual future<std::optional<uint64_t>> last_block_offset() = 0;
-    future<std::optional<sstable_datafile_offset>> last_block_sstable_datafile_offset() {
-        return last_block_offset().then([] (std::optional<uint64_t> raw) -> std::optional<sstable_datafile_offset> {
-            return raw.transform(sstable_datafile_offset::from_logical_fixme);
-        });
-    }
+    virtual future<std::optional<sstable_datafile_offset>> last_block_sstable_datafile_offset() = 0;
     // Returns the kind of sstable element the cursor is pointing at.
     // No preconditions.
     virtual indexable_element element_kind() const = 0;

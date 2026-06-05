@@ -99,7 +99,7 @@ struct inexact_partition_index : abstract_index_reader {
     sstable_datafile_positions_range sstable_datafile_positions() const override {
         return {_positions[_lower], _positions[_upper]};
     }
-    future<std::optional<uint64_t>> last_block_offset() override {
+    future<std::optional<sstable_datafile_offset>> last_block_sstable_datafile_offset() override {
         abort();
     }
     future<bool> advance_lower_and_check_if_present(dht::ring_position_view rpv) override {

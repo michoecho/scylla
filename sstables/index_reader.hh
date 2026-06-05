@@ -1098,12 +1098,12 @@ public:
     // in the current partition or nullopt if there are no blocks in the current partition.
     //
     // Preconditions: sstable version >= mc, partition_data_ready().
-    future<std::optional<uint64_t>> last_block_offset() override {
+    future<std::optional<sstable_datafile_offset>> last_block_sstable_datafile_offset() override {
         parse_assert(partition_data_ready(), _sstable->index_filename());
 
         auto cur = current_clustered_cursor();
         if (!cur) {
-            return make_ready_future<std::optional<uint64_t>>(std::nullopt);
+            return make_ready_future<std::optional<sstable_datafile_offset>>(std::nullopt);
         }
 
         auto cur_bsearch = dynamic_cast<sstables::mc::bsearch_clustered_cursor*>(cur);
@@ -1115,7 +1115,9 @@ public:
                 " sstable version (expected >= mc): {}", fmt::ptr(this), static_cast<int>(_sstable->get_version())));
         }
 
-        return cur_bsearch->last_block_offset();
+        return cur_bsearch->last_block_offset().then([] (std::optional<uint64_t> raw) -> std::optional<sstable_datafile_offset> {
+            return raw.transform(sstable_datafile_offset::from_logical_fixme);
+        });
     }
 
     // Moves the cursor to the beginning of next partition.
