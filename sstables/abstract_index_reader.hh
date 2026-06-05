@@ -10,6 +10,7 @@
 
 #include "mutation/tombstone.hh"
 #include "mutation/position_in_partition.hh"
+#include "sstables/sstable_datafile_position.hh"
 #include "sstables/types.hh"
 
 namespace utils {
@@ -21,6 +22,11 @@ namespace sstables {
 struct data_file_positions_range {
     uint64_t start;
     std::optional<uint64_t> end;
+};
+
+struct sstable_datafile_positions_range {
+    sstable_datafile_position start;
+    std::optional<sstable_datafile_position> end;
 };
 
 // Stores information about open end RT marker
@@ -175,11 +181,23 @@ public:
     // Returns data file positions corresponding to the bounds.
     // End position may be unset
     virtual data_file_positions_range data_file_positions() const = 0;
+    sstable_datafile_positions_range sstable_datafile_positions() const {
+        auto raw = data_file_positions();
+        return sstable_datafile_positions_range{
+            .start = sstable_datafile_position::from_logical_fixme(raw.start),
+            .end = raw.end.transform(sstable_datafile_position::from_logical_fixme)
+        };
+    }
     // Returns the offset (from partition start) of the first row in the last promoted index block
     // in the current partition or nullopt if there are no blocks in the current partition.
     //
     // Preconditions: partition_data_ready()
     virtual future<std::optional<uint64_t>> last_block_offset() = 0;
+    future<std::optional<sstable_datafile_offset>> last_block_sstable_datafile_offset() {
+        return last_block_offset().then([] (std::optional<uint64_t> raw) -> std::optional<sstable_datafile_offset> {
+            return raw.transform(sstable_datafile_offset::from_logical_fixme);
+        });
+    }
     // Returns the kind of sstable element the cursor is pointing at.
     // No preconditions.
     virtual indexable_element element_kind() const = 0;
