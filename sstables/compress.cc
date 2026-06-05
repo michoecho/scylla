@@ -18,12 +18,14 @@
 #include "compress.hh"
 #include "compressor.hh"
 #include "exceptions.hh"
+#include "sstables/checksum_utils.hh"
 #include "unimplemented.hh"
 #include "segmented_compress_params.hh"
 #include "utils/assert.hh"
 #include "utils/class_registrator.hh"
 #include "reader_permit.hh"
 #include "data_source_types.hh"
+#include "sstables/checksum_utils.hh"
 
 namespace sstables {
 

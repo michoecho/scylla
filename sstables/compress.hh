@@ -34,7 +34,6 @@
 // level Cassandra rows, not disk blocks.
 
 #include "utils/assert.hh"
-#include <vector>
 #include <cstdint>
 #include <iterator>
 #include <deque>
@@ -44,9 +43,7 @@
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/fstream.hh>
 
-#include "types/types.hh"
 #include "sstables/types.hh"
-#include "checksum_utils.hh"
 
 class reader_permit;
 

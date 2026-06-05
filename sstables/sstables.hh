@@ -48,6 +48,7 @@
 #include "service/session.hh"
 #include "sstables/trie/bti_index.hh"
 #include "sstables/file_size_stats.hh"
+#include "sstables/checksum_utils.hh"
 
 #include <seastar/util/optimized_optional.hh>
 #include <fmt/format.h>
