@@ -3698,9 +3698,9 @@ future<uint64_t> sstable::estimated_keys_for_range(const dht::token_range& range
     std::exception_ptr ex;
     try {
         co_await ir->advance_to(dht::to_partition_range(range));
-        auto data_file_range = ir->data_file_positions();
-        auto logical_start = data_file_range.start;
-        auto logical_end = data_file_range.end.value_or(data_size());
+        auto data_file_range = ir->sstable_datafile_positions();
+        auto logical_start = data_file_range.start.to_logical_fixme();
+        auto logical_end = data_file_range.end.transform(&sstable_datafile_position::to_logical_fixme).value_or(data_size());
         auto total_size = ondisk_data_size();
         auto total_count = get_estimated_key_count();
         sstlog.debug("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
