@@ -96,8 +96,8 @@ struct inexact_partition_index : abstract_index_reader {
     future<> close() noexcept override {
         return make_ready_future<>();
     }
-    data_file_positions_range data_file_positions() const override {
-        return {_positions[_lower].to_logical_fixme(), _positions[_upper].to_logical_fixme()};
+    sstable_datafile_positions_range sstable_datafile_positions() const override {
+        return {_positions[_lower], _positions[_upper]};
     }
     future<std::optional<uint64_t>> last_block_offset() override {
         abort();

@@ -1126,13 +1126,20 @@ public:
 
     // Returns positions in the data file of the cursor.
     // End position may be unset
-    data_file_positions_range data_file_positions() const override {
+    data_file_positions_range data_file_positions() const {
         data_file_positions_range result;
         result.start = _lower_bound.data_file_position;
         if (_upper_bound) {
             result.end = _upper_bound->data_file_position;
         }
         return result;
+    }
+    sstable_datafile_positions_range sstable_datafile_positions() const override {
+        auto raw = data_file_positions();
+        return sstable_datafile_positions_range{
+            .start = sstable_datafile_position::from_logical_fixme(raw.start),
+            .end = raw.end.transform(sstable_datafile_position::from_logical_fixme),
+        };
     }
 
     // Returns the kind of sstable element the cursor is pointing at.

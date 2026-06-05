@@ -180,14 +180,7 @@ public:
     virtual std::optional<partition_key> get_partition_key() = 0;
     // Returns data file positions corresponding to the bounds.
     // End position may be unset
-    virtual data_file_positions_range data_file_positions() const = 0;
-    sstable_datafile_positions_range sstable_datafile_positions() const {
-        auto raw = data_file_positions();
-        return sstable_datafile_positions_range{
-            .start = sstable_datafile_position::from_logical_fixme(raw.start),
-            .end = raw.end.transform(sstable_datafile_position::from_logical_fixme)
-        };
-    }
+    virtual sstable_datafile_positions_range sstable_datafile_positions() const = 0;
     // Returns the offset (from partition start) of the first row in the last promoted index block
     // in the current partition or nullopt if there are no blocks in the current partition.
     //

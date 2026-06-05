@@ -432,7 +432,7 @@ public:
         tracing::trace_state_ptr);
     // Implementation of the `abstract_index_reader` interface.
     virtual future<> close() noexcept override;
-    virtual sstables::data_file_positions_range data_file_positions() const override;
+    virtual sstables::sstable_datafile_positions_range sstable_datafile_positions() const override;
     virtual future<std::optional<uint64_t>> last_block_offset() override;
     virtual future<bool> advance_lower_and_check_if_present(dht::ring_position_view key) override;
     virtual future<bool> advance_lower_and_check_if_present(dht::ring_position_view key, const utils::hashed_key&) override;
@@ -748,14 +748,17 @@ future<> index_cursor::set_after_row(lazy_comparable_bytes_from_clustering_posit
     return set_after_row_cold(key);
 }
 
-sstables::data_file_positions_range bti_index_reader::data_file_positions() const {
+sstables::sstable_datafile_positions_range bti_index_reader::sstable_datafile_positions() const {
     auto lo = _lower.partition_cursor_set() ? _lower.data_file_pos(_total_file_size) : 0;
     std::optional<uint64_t> hi;
     if (_upper.partition_cursor_set()) {
         hi = _upper.data_file_pos(_total_file_size);
     }
-    trie_logger.debug("bti_index_reader::data_file_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
-    return {lo, hi};
+    trie_logger.debug("bti_index_reader::sstable_datafile_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
+    return {
+        sstables::sstable_datafile_position::from_logical_fixme(lo),
+        hi.transform(sstables::sstable_datafile_position::from_logical_fixme),
+    };
 }
 future<std::optional<uint64_t>> bti_index_reader::last_block_offset() {
     trie_logger.debug("bti_index_reader::last_block_offset this={}", fmt::ptr(this));
