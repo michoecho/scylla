@@ -327,7 +327,7 @@ struct reference_index {
     std::vector<entry_idx> _present_dk_indices;
     // `_data_file_offsets[i]` is the `_entries[i].data_file_offset`.
     // (Extracted for convenience, because `_entries[i]` is a variant).
-    std::vector<uint64_t> _data_file_offsets;
+    std::vector<sstables::sstable_datafile_position> _data_file_offsets;
 
     // The mutable state of this index reader.
     // An index reader is expected to behave like a (lower bound, upper bound) pair,
@@ -344,7 +344,7 @@ struct reference_index {
     {
         for (const auto& e : _entries) {
             std::visit([this](const auto& entry) {
-                _data_file_offsets.push_back(entry.data_file_offset);
+                _data_file_offsets.push_back(sstables::sstable_datafile_position::from_logical_fixme(entry.data_file_offset));
             }, e);
         }
         {
@@ -374,7 +374,7 @@ struct reference_index {
         }
     }
 
-    entry_idx entry_idx_from_data_position(uint64_t data_position) const {
+    entry_idx entry_idx_from_data_position(sstables::sstable_datafile_position data_position) const {
         auto it = std::find(_data_file_offsets.begin(), _data_file_offsets.end(), data_position);
         if (it != _data_file_offsets.end()) {
             return static_cast<entry_idx>(std::distance(_data_file_offsets.begin(), it));
@@ -398,9 +398,9 @@ struct reference_index {
     }
 
     void recalibrate(sstables::sstable_datafile_positions_range r) {
-        _lower = entry_idx_from_data_position(r.start.to_logical_fixme());
+        _lower = entry_idx_from_data_position(r.start);
         if (r.end) {
-            _upper = entry_idx_from_data_position(r.end->to_logical_fixme());
+            _upper = entry_idx_from_data_position(*r.end);
         } else {
             _upper.reset();
         }
@@ -599,10 +599,10 @@ struct reference_index {
         return std::nullopt;
     }
     sstables::sstable_datafile_positions_range sstable_datafile_positions() const {
-        auto lo = sstables::sstable_datafile_position::from_logical_fixme(_data_file_offsets[_lower]);
+        auto lo = _data_file_offsets[_lower];
         std::optional<sstables::sstable_datafile_position> hi;
         if (_upper) {
-            hi = sstables::sstable_datafile_position::from_logical_fixme(_data_file_offsets[*_upper]);
+            hi = _data_file_offsets[*_upper];
         }
         return {lo, hi};
     }
@@ -616,7 +616,7 @@ struct reference_index {
         }
         for (uint64_t idx = curpar + 1; idx < _entries.size(); ++idx) {
             if (std::holds_alternative<partition_end_entry>(_entries[idx + 1])) {
-                return _data_file_offsets[idx] - _data_file_offsets[curpar];
+                return _data_file_offsets[idx].to_logical_fixme() - _data_file_offsets[curpar].to_logical_fixme();
             }
         }
         abort();
@@ -631,7 +631,7 @@ struct reference_index {
     sstables::indexable_element element_kind() const {
         return element_kind_for_entry(_lower);
     }
-    sstables::indexable_element element_kind_for_position(std::optional<uint64_t> pos) const {
+    sstables::indexable_element element_kind_for_position(std::optional<sstables::sstable_datafile_position> pos) const {
         if (!pos) {
             return sstables::indexable_element::partition;
         }
