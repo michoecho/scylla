@@ -127,7 +127,7 @@ inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_rows(const s
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
-    auto input = co_await sst->data_stream(toread.start.to_logical_fixme(), last_end.to_logical_fixme() - toread.start.to_logical_fixme(),
+    auto input = co_await sst->data_stream(sstable::disk_read_range(toread.start, last_end),
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, sstable::raw_stream::no, integrity);
     co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
 }
@@ -162,7 +162,7 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
 template <typename DataConsumeRowsContext>
 inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_single_partition(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer,
         sstable::disk_read_range toread, integrity_check integrity) {
-    auto input = co_await sst->data_stream(toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme(),
+    auto input = co_await sst->data_stream(toread,
             consumer.permit(), consumer.trace_state(), sst->_single_partition_history, sstable::raw_stream::no, integrity);
     co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
 }

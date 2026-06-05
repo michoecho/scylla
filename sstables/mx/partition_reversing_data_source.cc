@@ -402,7 +402,11 @@ class partition_reversing_data_source_impl final : public data_source_impl {
     } _state = state::RANGE_END;
 private:
     future<sstables::sstable_datafile_input_stream> data_stream(size_t start, size_t end) {
-        return _sst->data_stream(start, end - start, _permit, _trace_state, {});
+        return _sst->data_stream(
+                sstable::disk_read_range(
+                    sstable_datafile_position::from_logical_fixme(start),
+                    sstable_datafile_position::from_logical_fixme(end)),
+                _permit, _trace_state, {});
     }
     future<temporary_buffer<char>> data_read(uint64_t start, uint64_t end) {
         return _sst->data_read(start, end - start, _permit);

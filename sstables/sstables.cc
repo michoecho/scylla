@@ -3094,21 +3094,23 @@ component_type sstable::component_from_sstring(version_types v, const sstring &s
     }
 }
 
-future<sstable_datafile_input_stream> sstable::data_stream(uint64_t pos, size_t len,
+future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history, raw_stream raw,
         integrity_check integrity, integrity_error_handler error_handler) {
     file_input_stream_options options;
     options.buffer_size = sstable_buffer_size;
     options.read_ahead = 4;
     options.dynamic_adjustments = std::move(history);
-    return data_stream(pos, len, permit, std::move(trace_state), history, std::move(options), raw, integrity, std::move(error_handler));
+    return data_stream(range, permit, std::move(trace_state), history, std::move(options), raw, integrity, std::move(error_handler));
 }
 
-future<sstable_datafile_input_stream> sstable::data_stream(uint64_t pos, size_t len,
+future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
         raw_stream raw, integrity_check integrity,
         integrity_error_handler error_handler) {
+    uint64_t pos = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
 
     file f = make_tracked_file(_data_file, permit);
     if (trace_state) {
@@ -3151,7 +3153,9 @@ future<sstable_datafile_input_stream> sstable::data_stream(uint64_t pos, size_t 
 }
 
 future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, reader_permit permit) {
-    auto stream = co_await data_stream(pos, len, std::move(permit), tracing::trace_state_ptr(), {});
+    auto stream = co_await data_stream(
+            disk_read_range(sstable_datafile_position::from_logical_fixme(pos), sstable_datafile_position::from_logical_fixme(pos + len)),
+            std::move(permit), tracing::trace_state_ptr(), {});
     auto buff = co_await stream.read_exactly(len);
     co_await stream.close();
     co_return buff;
@@ -3363,10 +3367,13 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
     }
 
     sstable_datafile_input_stream data_stream = co_await (sst->get_compression()
-        ? sst->data_stream(0, sst->ondisk_data_size(), permit,
-                nullptr, nullptr, sstable::raw_stream::yes)
-        : sst->data_stream(0, sst->data_size(), permit,
-                nullptr, nullptr, sstable::raw_stream::no,
+        ? sst->data_stream(
+                sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
+                                         sstable_datafile_position::from_logical_fixme(sst->ondisk_data_size())),
+                permit, nullptr, nullptr, sstable::raw_stream::yes)
+        : sst->data_stream(
+                sstable::disk_read_range(sst->start_position(), sst->end_position()),
+                permit, nullptr, nullptr, sstable::raw_stream::no,
                 integrity_check::yes, [&ret](sstring msg) {
                     sstlog.error("{}", msg);
                     ret.status = validate_checksums_status::invalid;
@@ -4277,7 +4284,10 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
             , _checksum(std::move(checksum))
         {}
         future<input_stream<char>> input(const file_input_stream_options& options) const override {
-            auto wrapped = co_await _sst->data_stream(0, _sst->ondisk_data_size(), _permit, nullptr, nullptr, options, sstable::raw_stream::compressed_chunks, integrity_check::yes);
+            auto wrapped = co_await _sst->data_stream(
+                    sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
+                                             sstable_datafile_position::from_logical_fixme(_sst->ondisk_data_size())),
+                    _permit, nullptr, nullptr, options, sstable::raw_stream::compressed_chunks, integrity_check::yes);
             co_return input_stream<char>(std::move(wrapped).detach());
         }
     };
