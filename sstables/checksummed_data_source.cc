@@ -40,18 +40,17 @@ class checksummed_file_data_source_impl : public data_source_impl {
     uint64_t _end_pos;
 public:
     checksummed_file_data_source_impl(stream_creator_fn stream_creator, uint64_t file_len,
-                const checksum& checksum, disk_read_range range,
+                const checksum& checksum, uint64_t pos, size_t len,
                 file_input_stream_options options,
                 std::optional<uint32_t> digest,
                 integrity_error_handler error_handler)
             : _checksum(checksum)
             , _error_handler(error_handler)
             , _file_len(file_len)
-            , _pos(range.start.to_logical_fixme())
-            , _beg_pos(range.start.to_logical_fixme())
-            , _end_pos(range.end.to_logical_fixme())
+            , _pos(pos)
+            , _beg_pos(pos)
+            , _end_pos(pos + len)
     {
-        size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
         // _beg_pos and _end_pos specify positions in the stream.
         // These are not necessarily aligned on chunk boundaries.
         // To be able to verify the checksums, we need to translate
@@ -190,45 +189,45 @@ template <ChecksumUtils ChecksumType, bool check_digest>
 class checksummed_file_data_source : public data_source {
 public:
     checksummed_file_data_source(stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum,
-            disk_read_range range, file_input_stream_options options,
+            uint64_t pos, size_t len, file_input_stream_options options,
             std::optional<uint32_t> digest, integrity_error_handler error_handler)
         : data_source(std::make_unique<checksummed_file_data_source_impl<ChecksumType, check_digest>>(
-                std::move(stream_creator), file_len, checksum, range, std::move(options), digest,
+                std::move(stream_creator), file_len, checksum, pos, len, std::move(options), digest,
                 error_handler))
     {}
 };
 
 template <ChecksumUtils ChecksumType>
 inline sstable_datafile_input_stream make_checksummed_file_input_stream(
-        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, disk_read_range range,
+        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t pos, size_t len,
         file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
 {
     if (digest) {
         return sstable_datafile_input_stream(input_stream<char>(checksummed_file_data_source<ChecksumType, true>(
-            std::move(stream_creator), file_len, checksum, range, std::move(options), digest,
+            std::move(stream_creator), file_len, checksum, pos, len, std::move(options), digest,
             error_handler)));
     }
     return sstable_datafile_input_stream(input_stream<char>(checksummed_file_data_source<ChecksumType, false>(
-        std::move(stream_creator), file_len, checksum, range, std::move(options), digest, error_handler)));
+        std::move(stream_creator), file_len, checksum, pos, len, std::move(options), digest, error_handler)));
 }
 
 sstable_datafile_input_stream make_checksummed_file_k_l_format_input_stream(
-        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, disk_read_range range,
+        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t pos, size_t len,
         file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
 {
     return make_checksummed_file_input_stream<adler32_utils>(std::move(stream_creator), file_len,
-            checksum, range, std::move(options), digest, error_handler);
+            checksum, pos, len, std::move(options), digest, error_handler);
 }
 
 sstable_datafile_input_stream make_checksummed_file_m_format_input_stream(
-        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, disk_read_range range,
+        stream_creator_fn stream_creator, uint64_t file_len, const checksum& checksum, uint64_t pos, size_t len,
         file_input_stream_options options, std::optional<uint32_t> digest,
         integrity_error_handler error_handler)
 {
     return make_checksummed_file_input_stream<crc32_utils>(std::move(stream_creator), file_len,
-            checksum, range, std::move(options), digest, error_handler);
+            checksum, pos, len, std::move(options), digest, error_handler);
 }
 
 void throwing_integrity_error_handler(sstring msg) {
