@@ -2702,14 +2702,23 @@ uint64_t sstable::ondisk_data_size() const {
     return _data_file_size;
 }
 
-sstable::physical_range sstable::logical_to_physical_position(uint64_t pos) const {
-    const auto& comp = _components->compression;
-    if (!comp) {
-        return {pos, pos + 1};
-    }
-    auto accessor = comp.offsets.get_accessor();
-    auto chunk = comp.locate(pos, accessor);
-    return {chunk.chunk_start, chunk.chunk_start + chunk.chunk_len};
+sstable::physical_position_range sstable::logical_to_physical_range(sstable_datafile_positions_range range) const {
+    auto locate = [this] (uint64_t pos) -> physical_position {
+        if (pos >= data_size()) {
+            auto physical_size = ondisk_data_size();
+            return {physical_size, physical_size, 0};
+        }
+        const auto& comp = _components->compression;
+        if (!comp) {
+            return {pos, pos, 0};
+        }
+        auto accessor = comp.offsets.get_accessor();
+        auto chunk = comp.locate(pos, accessor);
+        return {chunk.chunk_start, chunk.chunk_start + chunk.chunk_len, chunk.offset};
+    };
+    auto logical_start = range.start.to_logical_fixme();
+    auto logical_end = range.end.transform(&sstable_datafile_position::to_logical_fixme).value_or(data_size());
+    return {locate(logical_start), locate(logical_end)};
 }
 
 file_size_stats sstable::get_file_size_stats() const {
@@ -3697,19 +3706,19 @@ future<uint64_t> sstable::estimated_keys_for_range(const dht::token_range& range
     std::exception_ptr ex;
     try {
         co_await ir->advance_to(dht::to_partition_range(range));
-        auto data_file_range = ir->sstable_datafile_positions();
-        auto logical_start = data_file_range.start.to_logical_fixme();
-        auto logical_end = data_file_range.end.transform(&sstable_datafile_position::to_logical_fixme).value_or(data_size());
+        auto pr = logical_to_physical_range(ir->sstable_datafile_positions());
         auto total_size = ondisk_data_size();
         auto total_count = get_estimated_key_count();
-        sstlog.debug("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
-                get_filename(), range, logical_start, logical_end, total_size, total_count);
-        if (logical_start == logical_end) {
+        sstlog.error("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
+                get_filename(), range, pr.start, pr.end, total_size, total_count);
+        if (pr.start == pr.end) {
             result = 0;
         } else {
-            auto start = logical_to_physical_position(logical_start).start;
-            auto end = logical_to_physical_position(logical_end - 1).end;
-            result = std::ceil(double(end - start) / total_size * total_count);
+            // Note: in the same-chunk branch we mix units -- uncompressed
+            // offset delta over compressed total_size -- but at sub-chunk
+            // scale the estimate is noisy anyway.
+            auto bytes = pr.end.chunk_end - pr.start.chunk_start;
+            result = std::ceil(double(bytes) / total_size * total_count);
         }
     } catch (...) {
         ex = std::current_exception();

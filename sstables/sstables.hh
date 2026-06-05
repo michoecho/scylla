@@ -29,6 +29,7 @@
 #include "sstables/progress_monitor.hh"
 #include "db/commitlog/replay_position.hh"
 #include "component_type.hh"
+#include "sstables/abstract_index_reader.hh"
 #include "column_translation.hh"
 #include "stats.hh"
 #include "utils/observable.hh"
@@ -383,13 +384,33 @@ public:
     // Returns on-disk size of data component.
     uint64_t ondisk_data_size() const;
 
-    // Maps a logical (uncompressed) data-file position to the physical
-    // (on-disk) range [start, end) of bytes that must be read to access it.
-    // For uncompressed sstables this is the single-byte range [pos, pos+1).
-    // For compressed sstables it is the byte range of the compressed chunk
-    // containing `pos`. The position must be in [0, data_size()).
-    struct physical_range { uint64_t start; uint64_t end; };
-    physical_range logical_to_physical_position(uint64_t pos) const;
+    // Describes the on-disk location of a logical (uncompressed) data-file byte:
+    // the [chunk_start, chunk_end) range of compressed bytes that contain it,
+    // and the byte's offset into the uncompressed chunk.
+    // For uncompressed sstables: chunk_start == logical pos, chunk_end == pos+1,
+    // offset_in_chunk == 0.
+    // Compares lexicographically by (chunk_start, offset_in_chunk), so two
+    // positions compare equal iff they point at the same logical byte.
+    struct physical_position {
+        uint64_t chunk_start;
+        uint64_t chunk_end;
+        uint64_t offset_in_chunk;
+
+        std::strong_ordering operator<=>(const physical_position& o) const {
+            if (auto c = chunk_start <=> o.chunk_start; c != 0) return c;
+            return offset_in_chunk <=> o.offset_in_chunk;
+        }
+        bool operator==(const physical_position&) const = default;
+    };
+    struct physical_position_range {
+        physical_position start;
+        physical_position end;
+    };
+
+    // Maps a typed logical data-file range (as returned by the index reader)
+    // to the physical positions delimiting the bytes that must be read.
+    // `range.end` defaults to data_size() if not engaged.
+    physical_position_range logical_to_physical_range(sstable_datafile_positions_range range) const;
 
     uint64_t index_size() const {
         return _index_file_size;
@@ -1335,5 +1356,11 @@ std::unique_ptr<sstable_stream_sink> create_stream_sink(schema_ptr, sstables_man
 template <> struct fmt::formatter<sstables::sstable_state> : fmt::formatter<string_view> {
     auto format(sstables::sstable_state state, fmt::format_context& ctx) const {
         return fmt::format_to(ctx.out(), "{}", state_to_dir(state));
+    }
+};
+
+template <> struct fmt::formatter<sstables::sstable::physical_position> : fmt::formatter<string_view> {
+    auto format(const sstables::sstable::physical_position& p, fmt::format_context& ctx) const {
+        return fmt::format_to(ctx.out(), "{{chunk=[{}, {}), offset={}}}", p.chunk_start, p.chunk_end, p.offset_in_chunk);
     }
 };
