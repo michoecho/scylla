@@ -61,12 +61,6 @@ public:
         return _stream.read();
     }
 
-    /// \brief Returns up to \c n bytes from the stream, or an empty buffer
-    /// on end of stream.
-    future<tmp_buf> read_up_to(size_t n) noexcept {
-        return _stream.read_up_to(n);
-    }
-
     /// \brief Closes the stream and waits for any background operations to
     /// complete.
     future<> close() noexcept {
