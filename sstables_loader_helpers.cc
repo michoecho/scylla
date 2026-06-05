@@ -75,15 +75,15 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
                         co_await sstable->get_storage().make_source(*sstable, it->first, f, 0, std::numeric_limits<size_t>::max(), fis_options));
                 }
                 auto permit = co_await db.obtain_reader_permit(table, "download_fully_contained_sstables", db::no_timeout, {});
-                auto wrapped = co_await (
-                    sstable->get_compression()
-                        ? sstable->data_stream(
-                                sstables::sstable::disk_read_range(sstables::sstable_datafile_position::from_logical_fixme(0),
-                                                                   sstables::sstable_datafile_position::from_logical_fixme(sstable->ondisk_data_size())),
-                                std::move(permit), nullptr, nullptr, sstables::sstable::raw_stream::yes)
-                        : sstable->data_stream(
-                                sstables::sstable::disk_read_range(sstable->start_position(), sstable->end_position()),
-                                std::move(permit), nullptr, nullptr, sstables::sstable::raw_stream::no));
+                if (sstable->get_compression()) {
+                    co_return co_await sstable->data_stream_raw(
+                            sstables::sstable::disk_read_range(sstables::sstable_datafile_position::from_logical_fixme(0),
+                                                               sstables::sstable_datafile_position::from_logical_fixme(sstable->ondisk_data_size())),
+                            std::move(permit), nullptr, nullptr);
+                }
+                auto wrapped = co_await sstable->data_stream(
+                        sstables::sstable::disk_read_range(sstable->start_position(), sstable->end_position()),
+                        std::move(permit), nullptr, nullptr);
                 co_return input_stream<char>(std::move(wrapped).detach());
             }());
 

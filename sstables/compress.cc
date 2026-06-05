@@ -727,13 +727,13 @@ output_stream<char> sstables::make_compressed_file_m_format_output_stream(output
             std::move(out), cm, cp, std::move(p));
 }
 
-sstables::sstable_datafile_input_stream sstables::make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
+input_stream<char> sstables::make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
         file_input_stream_options options, reader_permit permit, std::optional<uint32_t> digest)
 {
     if (digest) [[unlikely]] {
-        return sstables::sstable_datafile_input_stream(input_stream<char>(compressed_raw_file_data_source<true>(
-                std::move(stream_creator), cm, std::move(options), std::move(permit), digest)));
+        return input_stream<char>(compressed_raw_file_data_source<true>(
+                std::move(stream_creator), cm, std::move(options), std::move(permit), digest));
     }
-    return sstables::sstable_datafile_input_stream(input_stream<char>(compressed_raw_file_data_source<false>(
-            std::move(stream_creator), cm, std::move(options), std::move(permit), digest)));
+    return input_stream<char>(compressed_raw_file_data_source<false>(
+            std::move(stream_creator), cm, std::move(options), std::move(permit), digest));
 }

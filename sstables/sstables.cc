@@ -3095,19 +3095,19 @@ component_type sstable::component_from_sstring(version_types v, const sstring &s
 }
 
 future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range,
-        reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history, raw_stream raw,
+        reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         integrity_check integrity, integrity_error_handler error_handler) {
     file_input_stream_options options;
     options.buffer_size = sstable_buffer_size;
     options.read_ahead = 4;
     options.dynamic_adjustments = std::move(history);
-    return data_stream(range, permit, std::move(trace_state), history, std::move(options), raw, integrity, std::move(error_handler));
+    return data_stream(range, permit, std::move(trace_state), history, std::move(options), integrity, std::move(error_handler));
 }
 
 future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
-        raw_stream raw, integrity_check integrity,
+        integrity_check integrity,
         integrity_error_handler error_handler) {
     file f = make_tracked_file(_data_file, permit);
     if (trace_state) {
@@ -3121,7 +3121,7 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
     auto stream_creator = [this, f](uint64_t pos, uint64_t len, file_input_stream_options options) mutable -> future<input_stream<char>> {
         co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
     };
-    if (_components->compression && raw == raw_stream::no) {
+    if (_components->compression) {
         if (_version >= sstable_version_types::mc) {
             co_return make_compressed_file_m_format_input_stream(stream_creator, &_components->compression,
                range, std::move(options), permit, digest);
@@ -3129,10 +3129,6 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
             co_return make_compressed_file_k_l_format_input_stream(stream_creator, &_components->compression,
                 range, std::move(options), permit, digest);
         }
-    }
-
-    if (_components->compression && raw == raw_stream::compressed_chunks && _version >= sstable_version_types::mc) {
-        co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest);
     }
 
     if (_components->checksum && integrity == integrity_check::yes) {
@@ -3151,6 +3147,59 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
     co_return sstable_datafile_input_stream(co_await stream_creator(pos, len, std::move(options)));
 }
 
+future<input_stream<char>> sstable::data_stream_raw(disk_read_range range,
+        reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history) {
+    file_input_stream_options options;
+    options.buffer_size = sstable_buffer_size;
+    options.read_ahead = 4;
+    options.dynamic_adjustments = std::move(history);
+
+    file f = make_tracked_file(_data_file, permit);
+    if (trace_state) {
+        f = tracing::make_traced_file(std::move(f), std::move(trace_state), format("{}:", get_filename()));
+    }
+    uint64_t pos = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
+    co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
+}
+
+future<input_stream<char>> sstable::data_stream_compressed_chunks(disk_read_range range,
+        reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
+        file_input_stream_options options,
+        integrity_check integrity,
+        integrity_error_handler error_handler) {
+    file f = make_tracked_file(_data_file, permit);
+    if (trace_state) {
+        f = tracing::make_traced_file(std::move(f), std::move(trace_state), format("{}:", get_filename()));
+    }
+
+    std::optional<uint32_t> digest;
+    if (integrity == integrity_check::yes) {
+        digest = get_digest();
+    }
+    auto stream_creator = [this, f](uint64_t pos, uint64_t len, file_input_stream_options options) mutable -> future<input_stream<char>> {
+        co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
+    };
+    if (_components->compression && _version >= sstable_version_types::mc) {
+        co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest);
+    }
+
+    if (_components->checksum && integrity == integrity_check::yes) {
+        auto checksum = get_checksum();
+        auto file_len = data_size();
+        if (_version >= sstable_version_types::mc) {
+             co_return std::move(make_checksummed_file_m_format_input_stream(stream_creator, file_len,
+                *checksum, range, std::move(options), digest, error_handler)).detach();
+        } else {
+            co_return std::move(make_checksummed_file_k_l_format_input_stream(stream_creator, file_len,
+                *checksum, range, std::move(options), digest, error_handler)).detach();
+        }
+    }
+    uint64_t pos = range.start.to_logical_fixme();
+    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
+    co_return co_await stream_creator(pos, len, std::move(options));
+}
+
 future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, reader_permit permit) {
     auto stream = co_await data_stream(
             disk_read_range(sstable_datafile_position::from_logical_fixme(pos), sstable_datafile_position::from_logical_fixme(pos + len)),
@@ -3161,7 +3210,7 @@ future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, read
 }
 
 template <typename ChecksumType>
-static future<bool> do_validate_compressed(sstable_datafile_input_stream& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest) {
+static future<bool> do_validate_compressed(input_stream<char>& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest) {
     bool valid = true;
     uint64_t offset = 0;
     uint32_t actual_full_checksum = ChecksumType::init_checksum();
@@ -3365,41 +3414,46 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
         co_return ret;
     }
 
-    sstable_datafile_input_stream data_stream = co_await (sst->get_compression()
-        ? sst->data_stream(
-                sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
-                                         sstable_datafile_position::from_logical_fixme(sst->ondisk_data_size())),
-                permit, nullptr, nullptr, sstable::raw_stream::yes)
-        : sst->data_stream(
-                sstable::disk_read_range(sst->start_position(), sst->end_position()),
-                permit, nullptr, nullptr, sstable::raw_stream::no,
-                integrity_check::yes, [&ret](sstring msg) {
-                    sstlog.error("{}", msg);
-                    ret.status = validate_checksums_status::invalid;
-                })
-        );
-
     auto valid = true;
     std::exception_ptr ex;
 
-    try {
-        if (sst->get_compression()) {
+    if (sst->get_compression()) {
+        auto raw_stream = co_await sst->data_stream_raw(
+                sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
+                                         sstable_datafile_position::from_logical_fixme(sst->ondisk_data_size())),
+                permit, nullptr, nullptr);
+        try {
             if (sst->get_version() >= sstable_version_types::mc) {
-                valid = co_await do_validate_compressed<crc32_utils>(data_stream, sst->get_compression(), true, digest);
+                valid = co_await do_validate_compressed<crc32_utils>(raw_stream, sst->get_compression(), true, digest);
             } else {
-                valid = co_await do_validate_compressed<adler32_utils>(data_stream, sst->get_compression(), false, digest);
+                valid = co_await do_validate_compressed<adler32_utils>(raw_stream, sst->get_compression(), false, digest);
             }
-        } else {
-            valid = co_await do_validate_uncompressed(data_stream, checksum->checksums.size(), checksum->chunk_size);
+        } catch (malformed_sstable_exception& e) {
+            valid = false;
+            sstlog.error("{}", e.what());
+        } catch (...) {
+            ex = std::current_exception();
         }
-    } catch (malformed_sstable_exception& e) {
-        valid = false;
-        sstlog.error("{}", e.what());
-    } catch (...) {
-        ex = std::current_exception();
+        co_await raw_stream.close();
+    } else {
+        auto checked_stream = co_await sst->data_stream(
+                sstable::disk_read_range(sst->start_position(), sst->end_position()),
+                permit, nullptr, nullptr,
+                integrity_check::yes, [&ret](sstring msg) {
+                    sstlog.error("{}", msg);
+                    ret.status = validate_checksums_status::invalid;
+                });
+        try {
+            valid = co_await do_validate_uncompressed(checked_stream, checksum->checksums.size(), checksum->chunk_size);
+        } catch (malformed_sstable_exception& e) {
+            valid = false;
+            sstlog.error("{}", e.what());
+        } catch (...) {
+            ex = std::current_exception();
+        }
+        co_await checked_stream.close();
     }
 
-    co_await data_stream.close();
     maybe_rethrow_exception(std::move(ex));
 
     if (!valid) {
@@ -4283,11 +4337,10 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
             , _checksum(std::move(checksum))
         {}
         future<input_stream<char>> input(const file_input_stream_options& options) const override {
-            auto wrapped = co_await _sst->data_stream(
+            return _sst->data_stream_compressed_chunks(
                     sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
                                              sstable_datafile_position::from_logical_fixme(_sst->ondisk_data_size())),
-                    _permit, nullptr, nullptr, options, sstable::raw_stream::compressed_chunks, integrity_check::yes);
-            co_return input_stream<char>(std::move(wrapped).detach());
+                    _permit, nullptr, nullptr, options, integrity_check::yes);
         }
     };
 

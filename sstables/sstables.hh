@@ -820,13 +820,6 @@ public:
     // about the buffer size to read, and where exactly to stop reading
     // (even when a large buffer size is used).
     //
-    // When created with `raw_stream::yes`, the sstable data file will be
-    // streamed as-is, without decompressing (if compressed).
-    //
-    // When created with `raw_stream::compressed_chunks`, compressed sstable data
-    // will be streamed as raw compressed chunks with checksum verification but
-    // without decompression, and digests will be calculated.
-    //
     // When created with `integrity_check::yes`, the integrity mechanisms
     // of the underlying data streams will be enabled.
     //
@@ -834,21 +827,34 @@ public:
     // logic when a checksum or digest mismatch is detected on an
     // integrity-checked stream with no compression. The parameter is ignored
     // if integrity checking is disabled or the SSTable is compressed.
-    enum class raw_stream {
-        no,
-        yes,
-        compressed_chunks
-    };
     future<sstable_datafile_input_stream> data_stream(disk_read_range range,
             reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
-            raw_stream raw = raw_stream::no, integrity_check integrity = integrity_check::no,
+            integrity_check integrity = integrity_check::no,
             integrity_error_handler error_handler = throwing_integrity_error_handler);
 
     future<sstable_datafile_input_stream> data_stream(disk_read_range range,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
-        raw_stream raw = raw_stream::no, integrity_check integrity = integrity_check::no,
+        integrity_check integrity = integrity_check::no,
         integrity_error_handler error_handler = throwing_integrity_error_handler);
+
+    // Returns the sstable data file streamed as-is, without decompressing
+    // (if compressed) and without integrity checking.
+    future<input_stream<char>> data_stream_raw(disk_read_range range,
+            reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history);
+
+    // Returns the sstable data file as a stream of raw compressed chunks
+    // (without decompression) with checksum verification and digest
+    // calculation. Compatible with SSTables version 3.x and later.
+    //
+    // If the sstable is not compressed (or not version mc+), the stream
+    // falls back to the integrity-checked decompressed stream when a
+    // checksum is available, or a plain stream otherwise.
+    future<input_stream<char>> data_stream_compressed_chunks(disk_read_range range,
+            reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
+            file_input_stream_options options,
+            integrity_check integrity = integrity_check::no,
+            integrity_error_handler error_handler = throwing_integrity_error_handler);
 
     // Read exactly the specific byte range from the data file (after
     // uncompression, if the file is compressed). This can be used to read
