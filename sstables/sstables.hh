@@ -363,6 +363,11 @@ public:
     // Returns true iff this sstable contains data which belongs to many shards.
     bool is_shared() const;
 
+    // Returns the open file handle for the data component.
+    file get_data_file() const {
+        return _data_file;
+    }
+
     // Returns uncompressed size of data component.
     uint64_t data_size() const;
     // Returns on-disk size of data component.
