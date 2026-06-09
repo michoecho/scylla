@@ -110,22 +110,20 @@ public:
         uint64_t pos = offset;
         uint64_t end = offset + buf.size();
         while (pos < end) {
-            // Find the next cached run that starts at or after pos.
-            auto next = _runs.lower_bound(pos);
-            // If the preceding run covers pos, skip past it.
+            // The run that could cover pos is the last one starting at or before
+            // pos, i.e. the one just before the first run starting after pos.
+            auto next = _runs.upper_bound(pos);
             if (next != _runs.begin()) {
-                auto prev = std::prev(next);
-                uint64_t prev_end = prev->first + prev->second.size();
-                if (prev_end > pos) {
-                    pos = prev_end;
+                auto covering = std::prev(next);
+                uint64_t covering_end = covering->first + covering->second.size();
+                if (covering_end > pos) {
+                    pos = covering_end; // already cached; skip past it
                     continue;
                 }
             }
-            // Gap runs from pos up to the start of the next run (or end).
+            // pos is uncached. The gap runs up to the start of the next run (or end).
             uint64_t gap_end = next != _runs.end() ? std::min(end, next->first) : end;
-            if (gap_end > pos) {
-                _runs.emplace(pos, buf.share(pos - offset, gap_end - pos));
-            }
+            _runs.emplace(pos, buf.share(pos - offset, gap_end - pos));
             pos = gap_end;
         }
     }
@@ -145,16 +143,24 @@ public:
     // Drop everything before p, trimming the run that straddles p.
     void drop_before(uint64_t p) {
         auto it = _runs.lower_bound(p);
+        // Salvage the [p, prev_end) tail of a run straddling p before we erase.
+        std::optional<temporary_buffer<char>> tail;
         if (it != _runs.begin()) {
             auto prev = std::prev(it);
             uint64_t prev_end = prev->first + prev->second.size();
             if (prev_end > p) {
-                auto tail = prev->second.share();
-                tail.trim_front(p - prev->first);
-                _runs.emplace(p, std::move(tail));
+                tail = prev->second.share();
+                tail->trim_front(p - prev->first);
             }
         }
+        // Erase first; the salvaged tail is reinserted afterwards so it can't be
+        // caught by the erase (which runs up to `it`, i.e. past key p). `it`
+        // survives the erase (it's outside the erased range) and points just
+        // past where key p belongs, so it is the right hint for the reinsert.
         _runs.erase(_runs.begin(), it);
+        if (tail) {
+            _runs.emplace_hint(it, p, std::move(*tail));
+        }
     }
 };
 
@@ -221,6 +227,7 @@ public:
     future<temporary_buffer<char>> read_forwards(size_t n) override {
         SCYLLA_ASSERT(_position.has_value());
         uint64_t start = _position->to_logical_fixme();
+        n = std::min(n, _file_length - start);
         temporary_buffer<char> result(n);
         size_t filled = co_await fill_forwards(start, result.get_write(), n);
         result.trim(filled);
