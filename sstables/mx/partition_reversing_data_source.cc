@@ -48,21 +48,28 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
 
     sstable_datafile_cursor& _cursor;
     // The file position of the next byte this stream will produce.
-    uint64_t _pos;
+    sstable_datafile_position _pos;
 
     // Default size of a forward read issued to the cursor. The cursor itself
     // caches and reads ahead, so this only bounds how much we ask for at once.
     static constexpr size_t read_size = 8 * 1024;
 
+    // Advance _pos by `delta` bytes (which may be negative) through the cursor,
+    // so position arithmetic stays in terms of sstable_datafile_position.
+    void advance_pos(ssize_t delta) {
+        _cursor.seek(_pos);
+        _pos = _cursor.compute_relative_position(delta);
+    }
+
     future<tmp_buf> read_at_pos(size_t n) {
-        _cursor.seek(sstable_datafile_position::from_logical_fixme(_pos));
+        _cursor.seek(_pos);
         auto buf = co_await _cursor.read_forwards(n);
-        _pos += buf.size();
+        advance_pos(buf.size());
         co_return buf;
     }
 public:
     cursor_input_stream_impl(sstable_datafile_cursor& cursor, sstable_datafile_position start) noexcept
-        : _cursor(cursor), _pos(start.to_logical_fixme()) {}
+        : _cursor(cursor), _pos(start) {}
 
     future<tmp_buf> read_exactly(size_t n) noexcept override {
         return read_at_pos(n);
@@ -81,11 +88,11 @@ public:
                 [this] (stop_consuming<char>& stop) {
                     // The unconsumed tail must be produced again by the next
                     // read, so rewind our position over it.
-                    _pos -= stop.get_buffer().size();
+                    advance_pos(-static_cast<ssize_t>(stop.get_buffer().size()));
                     return true;
                 },
                 [this] (const skip_bytes& skip) {
-                    _pos += skip.get_value();
+                    advance_pos(skip.get_value());
                     return false;
                 });
             if (stop) {
@@ -110,7 +117,7 @@ public:
     }
 
     future<> skip(uint64_t n) noexcept override {
-        _pos += n;
+        advance_pos(n);
         co_return;
     }
 
@@ -125,8 +132,9 @@ static sstable_datafile_input_stream make_cursor_input_stream(sstable_datafile_c
 
 // Parser for the partition header and the static row, if present.
 //
-// After consuming the input stream, allows reading the file offset after the consumed segment
-// using header_end_pos()
+// After consuming the input stream, allows reading the offset after the consumed
+// segment using header_end_pos(). The offset is relative to the start of the
+// stream (the partition start); the caller rebases it onto an absolute position.
 // Parsing copied from the sstable reader, with verification removed.
 //
 class partition_header_context : public data_consumer::continuous_data_consumer<partition_header_context, sstables::sstable_datafile_input_stream> {
@@ -196,8 +204,11 @@ private:
     }
 public:
 
-    partition_header_context(sstables::sstable_datafile_input_stream&& input, uint64_t start, uint64_t maxlen, reader_permit permit)
-                : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
+    // `maxlen` bounds the segment to parse. Positions reported by this context
+    // (e.g. header_end_pos()) are relative to the start of `input`, so the
+    // caller rebases them onto the absolute file position the stream starts at.
+    partition_header_context(sstables::sstable_datafile_input_stream&& input, uint64_t maxlen, reader_permit permit)
+                : continuous_data_consumer(std::move(permit), std::move(input), 0, maxlen)
                 , _gen(do_process_state())
     {}
 };
@@ -387,8 +398,13 @@ private:
         }
     }
 public:
-    row_body_skipping_context(sstables::sstable_datafile_input_stream&& input, uint64_t start, uint64_t maxlen, reader_permit permit, column_translation ct)
-                : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
+    // `maxlen` bounds the segment to parse. Positions reported by this context
+    // (position(), and the offsets in tombstone_reversing_info) are relative to
+    // the start of `input`, i.e. to the row the stream starts at. The caller
+    // rebases position() onto an absolute file position when it needs one, and
+    // the tombstone offsets index directly into the row buffer.
+    row_body_skipping_context(sstables::sstable_datafile_input_stream&& input, uint64_t maxlen, reader_permit permit, column_translation ct)
+                : continuous_data_consumer(std::move(permit), std::move(input), 0, maxlen)
                 , _gen(do_process_state())
                 , _column_translation(std::move(ct))
     {}
@@ -475,6 +491,10 @@ class partition_reversing_data_source_impl final : public data_source_impl {
 
     std::optional<partition_header_context> _partition_header_context;
     std::optional<row_body_skipping_context> _row_skipping_context;
+    // Absolute file position the current _row_skipping_context started at. The
+    // context reports positions relative to its start, so we add this to turn
+    // them back into absolute file positions.
+    sstable_datafile_position _row_skipping_context_start;
     sstable_datafile_position _clustering_range_start;
     sstable_datafile_position _partition_start;
     sstable_datafile_position _partition_end;
@@ -513,23 +533,21 @@ private:
 
     // Reverse the range tombstone bound/boundary stored in `row`, which holds
     // the bytes of the row spanning [_row_start, _row_end). `info`'s offsets are
-    // file offsets, which map into `row` by subtracting _row_start.
+    // relative to the row's start (the row_body_skipping_context that produced
+    // them was started at _row_start), so they index into `row` directly.
     void modify_tombstone(temporary_buffer<char>& row, const row_body_skipping_context::tombstone_reversing_info& info) {
-        auto to_row_offset = [this] (uint64_t file_offset) {
-            return file_offset - _row_start.to_logical_fixme();
-        };
-        char& out = row.get_write()[to_row_offset(info.kind_offset)];
+        char& out = row.get_write()[info.kind_offset];
         // reverse the kind of the range tombstone bound/boundary
         out = (char)reverse_tombstone_kind(info.range_tombstone_kind);
         if (is_boundary_between_adjacent_intervals(info.range_tombstone_kind)) {
             // if the tombstone is a boundary, we need to swap the order of end/start deletion times
             // Need to clone part of the buffer containing first_del_time because we overwrite it with second_del_time before using first_del_time
-            auto first_del_time = row.share(to_row_offset(info.first_deletion_time_offset), info.after_first_deletion_time_offset - info.first_deletion_time_offset).clone();
+            auto first_del_time = row.share(info.first_deletion_time_offset, info.after_first_deletion_time_offset - info.first_deletion_time_offset).clone();
             // We also need to clone the part containing second_del_time as we may overwrite a prefix of that part while writing second_del_time
             // (if second_del_time is longer than first_del_time - it may be as we're dealing with varints here)
-            auto second_del_time = row.share(to_row_offset(info.after_first_deletion_time_offset), _row_end.to_logical_fixme() - info.after_first_deletion_time_offset).clone();
-            std::copy(second_del_time.begin(), second_del_time.end(), row.get_write() + to_row_offset(info.first_deletion_time_offset));
-            std::copy(first_del_time.begin(), first_del_time.end(), row.get_write() + to_row_offset(info.first_deletion_time_offset) + second_del_time.size());
+            auto second_del_time = row.share(info.after_first_deletion_time_offset, row.size() - info.after_first_deletion_time_offset).clone();
+            std::copy(second_del_time.begin(), second_del_time.end(), row.get_write() + info.first_deletion_time_offset);
+            std::copy(first_del_time.begin(), first_del_time.end(), row.get_write() + info.first_deletion_time_offset + second_del_time.size());
         }
     }
 
@@ -547,9 +565,18 @@ private:
         if (_row_skipping_context) {
             co_await _row_skipping_context->close();
         }
+        _row_skipping_context_start = row_start;
         _row_skipping_context.emplace(make_cursor_input_stream(_cursor, row_start),
-                row_start.to_logical_fixme(), row_end.to_logical_fixme() - row_start.to_logical_fixme(),
+                row_end.to_logical_fixme() - row_start.to_logical_fixme(),
                 _permit, _cached_column_translation);
+    }
+
+    // The current row_skipping_context's position(), as an absolute file
+    // position. The context counts from its own start (_row_skipping_context_start),
+    // so we rebase through the cursor to keep the arithmetic typed.
+    sstable_datafile_position row_skipping_position() {
+        _cursor.seek(_row_skipping_context_start);
+        return _cursor.compute_relative_position(_row_skipping_context->position());
     }
 public:
     partition_reversing_data_source_impl(const schema& s,
@@ -575,9 +602,11 @@ public:
     virtual future<temporary_buffer<char>> get() override {
         if (!_partition_header_context) {
             _partition_header_context.emplace(make_cursor_input_stream(_cursor, _partition_start),
-                    _partition_start.to_logical_fixme(), _partition_end.to_logical_fixme() - _partition_start.to_logical_fixme(), _permit);
+                    _partition_end.to_logical_fixme() - _partition_start.to_logical_fixme(), _permit);
             co_await _partition_header_context->consume_input();
-            _clustering_range_start = sstable_datafile_position::from_logical_fixme(_partition_header_context->header_end_pos());
+            // header_end_pos() is relative to the partition start; rebase it.
+            _cursor.seek(_partition_start);
+            _clustering_range_start = _cursor.compute_relative_position(_partition_header_context->header_end_pos());
             co_return co_await data_read(_partition_start, _clustering_range_start);
         }
         auto ir_end = _ir.sstable_datafile_positions().end;
@@ -628,7 +657,7 @@ public:
                 co_await _row_skipping_context->consume_input();
                 while (!_row_skipping_context->end_of_partition()) {
                     last_row_start = _row_start;
-                    _row_start = sstable_datafile_position::from_logical_fixme(_row_skipping_context->position());
+                    _row_start = row_skipping_position();
                     co_await _row_skipping_context->consume_input();
                 }
                 _row_end = _row_start;
