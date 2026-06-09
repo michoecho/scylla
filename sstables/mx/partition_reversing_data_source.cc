@@ -508,8 +508,7 @@ private:
     // sstable reader. The returned buffer is freshly owned, so it can be mutated
     // in place (see modify_tombstone()).
     future<temporary_buffer<char>> data_read(sstable_datafile_position start, sstable_datafile_position end) {
-        _cursor.seek(end);
-        co_return co_await _cursor.read_backwards(end.to_logical_fixme() - start.to_logical_fixme());
+        co_return co_await _cursor.read(start, end);
     }
 
     // Reverse the range tombstone bound/boundary stored in `row`, which holds

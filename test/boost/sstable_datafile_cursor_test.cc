@@ -98,13 +98,12 @@ void check_read_forwards(sstable_datafile_cursor& cur, const bytes& expected, ui
     BOOST_REQUIRE_EQUAL(bytes_view(reinterpret_cast<const int8_t*>(buf.get()), buf.size()), want);
 }
 
-// Reads `n` bytes backwards from the cursor ending at logical position `pos`
-// and checks they match the expected file contents.
-void check_read_backwards(sstable_datafile_cursor& cur, const bytes& expected, uint64_t pos, size_t n) {
-    cur.seek(sstable_datafile_position::from_logical_fixme(pos));
-    auto buf = cur.read_backwards(n).get();
-    uint64_t start = pos >= n ? pos - n : 0;
-    auto want = sub(expected, start, pos);
+// Reads the logical range [start, end) backwards from the cursor and checks the
+// bytes match the expected file contents.
+void check_read(sstable_datafile_cursor& cur, const bytes& expected, uint64_t start, uint64_t end) {
+    auto buf = cur.read(sstable_datafile_position::from_logical_fixme(start),
+                        sstable_datafile_position::from_logical_fixme(end)).get();
+    auto want = sub(expected, start, end);
     BOOST_REQUIRE_EQUAL(bytes_view(reinterpret_cast<const int8_t*>(buf.get()), buf.size()), want);
 }
 
@@ -152,15 +151,15 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_read_backwards_whole_file) {
             auto close = deferred_close(cur);
             // Read the whole file backwards in small, unaligned chunks; prepend
             // each chunk so the accumulated result is in forward order.
-            cur.seek(sstable_datafile_position::from_logical_fixme(expected.size()));
+            uint64_t end = expected.size();
             bytes got;
-            while (true) {
-                auto buf = cur.read_backwards(333).get();
-                if (buf.empty()) {
-                    break;
-                }
+            while (end > 0) {
+                uint64_t start = end >= 333 ? end - 333 : 0;
+                auto buf = cur.read(sstable_datafile_position::from_logical_fixme(start),
+                                    sstable_datafile_position::from_logical_fixme(end)).get();
                 bytes chunk(reinterpret_cast<const int8_t*>(buf.get()), buf.size());
                 got = chunk + got;
+                end = start;
             }
             BOOST_REQUIRE_EQUAL(got, expected);
         });
@@ -176,12 +175,16 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_random_reads) {
             // A fresh cursor per direction would hide cache-reuse bugs; reuse
             // one cursor across many randomly-placed reads instead.
             for (int i = 0; i < 200; ++i) {
-                uint64_t pos = tests::random::get_int<uint64_t>(0, size);
-                size_t n = tests::random::get_int<size_t>(1, 9000);
                 if (tests::random::get_bool()) {
+                    uint64_t pos = tests::random::get_int<uint64_t>(0, size);
+                    size_t n = tests::random::get_int<size_t>(1, 9000);
                     check_read_forwards(cur, expected, pos, n);
                 } else {
-                    check_read_backwards(cur, expected, pos, n);
+                    // A backwards read of the range [start, end).
+                    uint64_t end = tests::random::get_int<uint64_t>(0, size);
+                    size_t n = tests::random::get_int<size_t>(1, 9000);
+                    uint64_t start = end >= n ? end - n : 0;
+                    check_read(cur, expected, start, end);
                 }
             }
         });
@@ -197,7 +200,7 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_reads_spanning_chunk_boundaries) {
             // chunk boundary both forwards and backwards.
             for (uint64_t boundary = 4096; boundary < expected.size(); boundary += 4096) {
                 check_read_forwards(cur, expected, boundary - 100, 200);
-                check_read_backwards(cur, expected, boundary + 100, 200);
+                check_read(cur, expected, boundary - 100, boundary + 100);
             }
         });
     }).get();
@@ -214,8 +217,8 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_read_at_and_past_eof) {
             BOOST_REQUIRE(cur.read_forwards(1000).get().empty());
             // A read straddling EOF is truncated to the available bytes.
             check_read_forwards(cur, expected, size - 50, 1000);
-            // A backwards read of more than the whole file is clamped at 0.
-            check_read_backwards(cur, expected, size, size + 5000);
+            // A backwards read of the whole file ending at EOF.
+            check_read(cur, expected, 0, size);
         });
     }).get();
 }
@@ -257,7 +260,7 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_drop_caches_preserves_correctness) {
             check_read_forwards(cur, expected, mid, size - mid);
             check_read_forwards(cur, expected, 0, mid);
             cur.drop_caches_before(sstable_datafile_position::from_logical_fixme(mid));
-            check_read_backwards(cur, expected, mid, mid);
+            check_read(cur, expected, 0, mid);
             check_read_forwards(cur, expected, mid, size - mid);
         });
     }).get();

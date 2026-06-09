@@ -32,7 +32,7 @@ public:
     virtual ~impl() = default;
     virtual void seek(sstable_datafile_position pos) = 0;
     virtual future<temporary_buffer<char>> read_forwards(size_t n) = 0;
-    virtual future<temporary_buffer<char>> read_backwards(size_t n) = 0;
+    virtual future<temporary_buffer<char>> read(sstable_datafile_position start, sstable_datafile_position end) = 0;
     virtual sstable_datafile_position compute_relative_position(ssize_t offset) = 0;
     virtual void drop_caches_after(sstable_datafile_position pos) = 0;
     virtual void drop_caches_before(sstable_datafile_position pos) = 0;
@@ -171,7 +171,7 @@ public:
 // are cached by file offset (see byte_range_cache); since the data file is
 // immutable, a cached byte never goes stale.
 //
-// read_backwards reads the requested range directly from the data file.
+// read reads the requested range directly from the data file (backwards).
 // read_forwards instead streams: it opens a forward data_source at the first
 // uncached byte it needs and pulls buffers from it, which lets the storage
 // layer read ahead. The stream and its position are kept between calls so a
@@ -235,14 +235,14 @@ public:
         co_return result;
     }
 
-    future<temporary_buffer<char>> read_backwards(size_t n) override {
-        SCYLLA_ASSERT(_position.has_value());
-        uint64_t end = _position->to_logical_fixme();
-        uint64_t start = end >= n ? end - n : 0;
+    future<temporary_buffer<char>> read(sstable_datafile_position start_pos, sstable_datafile_position end_pos) override {
+        uint64_t start = start_pos.to_logical_fixme();
+        uint64_t end = end_pos.to_logical_fixme();
+        SCYLLA_ASSERT(start <= end);
         size_t len = end - start;
         temporary_buffer<char> result(len);
         co_await fill_from_file(start, result.get_write(), len);
-        _position = sstable_datafile_position::from_logical_fixme(start);
+        _position = start_pos;
         co_return result;
     }
 
@@ -460,14 +460,14 @@ public:
         co_return result;
     }
 
-    future<temporary_buffer<char>> read_backwards(size_t n) override {
-        SCYLLA_ASSERT(_position.has_value());
-        uint64_t end = _position->to_logical_fixme();
-        uint64_t start = end >= n ? end - n : 0;
+    future<temporary_buffer<char>> read(sstable_datafile_position start_pos, sstable_datafile_position end_pos) override {
+        uint64_t start = start_pos.to_logical_fixme();
+        uint64_t end = end_pos.to_logical_fixme();
+        SCYLLA_ASSERT(start <= end);
         size_t len = end - start;
         temporary_buffer<char> result(len);
         co_await fill(start, result.get_write(), len);
-        _position = sstable_datafile_position::from_logical_fixme(start);
+        _position = start_pos;
         co_return result;
     }
 
@@ -635,8 +635,8 @@ void sstable_datafile_cursor::seek(sstable_datafile_position pos) {
 future<temporary_buffer<char>> sstable_datafile_cursor::read_forwards(size_t n) {
     return _impl->read_forwards(n);
 }
-future<temporary_buffer<char>> sstable_datafile_cursor::read_backwards(size_t n) {
-    return _impl->read_backwards(n);
+future<temporary_buffer<char>> sstable_datafile_cursor::read(sstable_datafile_position start, sstable_datafile_position end) {
+    return _impl->read(start, end);
 }
 sstable_datafile_position sstable_datafile_cursor::compute_relative_position(ssize_t offset) {
     return _impl->compute_relative_position(offset);

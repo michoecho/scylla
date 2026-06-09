@@ -33,7 +33,7 @@ public:
 
     void seek(sstable_datafile_position);
     future<temporary_buffer<char>> read_forwards(size_t n);
-    future<temporary_buffer<char>> read_backwards(size_t n);
+    future<temporary_buffer<char>> read(sstable_datafile_position start, sstable_datafile_position end);
     sstable_datafile_position compute_relative_position(ssize_t offset_from_current);
     void drop_caches_after(sstable_datafile_position);
     void drop_caches_before(sstable_datafile_position);
