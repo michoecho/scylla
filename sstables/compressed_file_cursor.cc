@@ -7,12 +7,21 @@
  */
 
 #include <cstdlib>
+#include <limits>
+#include <map>
+#include <optional>
 
 #include <seastar/core/align.hh>
 #include <seastar/core/file.hh>
 #include <seastar/core/format.hh>
+#include <seastar/core/byteorder.hh>
+#include <seastar/core/on_internal_error.hh>
 
 #include "sstables/compressed_file_cursor.hh"
+#include "sstables/compress.hh"
+#include "sstables/compressor.hh"
+#include "sstables/checksum_utils.hh"
+#include "sstables/exceptions.hh"
 #include "sstables/sstables.hh"
 #include "tracing/traced_file.hh"
 
@@ -31,13 +40,6 @@ public:
 };
 
 namespace {
-
-class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
-    shared_sstable _sst;
-    reader_permit _permit;
-    tracing::trace_state_ptr _trace_state;
-    //FIXME
-};
 
 // Caches byte ranges of an immutable file, keyed by file offset.
 //
@@ -197,12 +199,19 @@ class uncompressed_file_cursor_impl final : public sstable_datafile_cursor::impl
     static constexpr uint64_t min_file_read_size = 1024;
     static constexpr uint64_t max_file_read_size = 128 * 1024;
 
+    // Length of the byte stream this cursor reads. For an uncompressed data
+    // file this is the uncompressed data size; when the cursor is used to read
+    // the raw compressed file (by the compressed cursor) it is the on-disk size.
+    uint64_t _file_length;
+
 public:
-    explicit uncompressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state)
+    explicit uncompressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+            std::optional<uint64_t> file_length = std::nullopt)
         : _sst(std::move(sst))
         , _permit(std::move(permit))
         , _trace_state(std::move(trace_state))
-        , _block_size(_sst->get_data_file().disk_read_dma_alignment()) {
+        , _block_size(_sst->get_data_file().disk_read_dma_alignment())
+        , _file_length(file_length.value_or(_sst->data_size())) {
     }
 
     void seek(sstable_datafile_position pos) override {
@@ -320,7 +329,7 @@ private:
             _forward_source.reset();
         }
         uint64_t start = seastar::align_down(pos, _block_size);
-        uint64_t file_len = _sst->data_size();
+        uint64_t file_len = _file_length;
         uint64_t len = start <= file_len ? file_len - start : 0;
         file_input_stream_options options;
         options.buffer_size = seastar::align_up<uint64_t>(4096, _block_size);
@@ -361,6 +370,237 @@ private:
             }
             _cache.insert(read_start, std::move(buf));
         }
+    }
+};
+
+// Cursor implementation for compressed sstables.
+//
+// The cursor works in logical (uncompressed) positions. Compressed data is
+// stored as a sequence of independently-compressed chunks of a fixed
+// uncompressed length (the last chunk may be shorter). The compression
+// metadata maps a logical position to the chunk that contains it and to the
+// chunk's byte range in the data file.
+//
+// All physical IO is delegated to an inner uncompressed_file_cursor_impl that
+// reads the raw compressed data file: we seek it to a chunk's compressed start
+// and read the chunk's compressed bytes. The inner cursor's own cache absorbs
+// the block-aligned over-reads, so reading the chunks of a range in order
+// reuses a single forward stream. We then verify the chunk's trailing checksum
+// and decompress it.
+//
+// Two things are cached:
+//  - Chunk metadata (logical/physical position and size) keyed by chunk index,
+//    so repeated lookups don't re-walk the segmented offsets.
+//  - The single most recently decompressed chunk. We deliberately keep only
+//    one (and not a generic map) so that small sequential reads within a chunk
+//    cost a plain bounds check rather than a map lookup.
+class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
+    shared_sstable _sst;
+    reader_permit _permit;
+    tracing::trace_state_ptr _trace_state;
+
+    const compression& _compression;
+    compression::segmented_offsets::accessor _offsets;
+    // Reads the raw compressed data file; all physical IO goes through here.
+    uncompressed_file_cursor_impl _file;
+
+    std::optional<sstable_datafile_position> _position;
+
+    // Metadata of a single compressed chunk.
+    struct chunk_meta {
+        uint64_t logical_pos;   // uncompressed offset of the chunk's first byte
+        uint64_t logical_len;   // uncompressed length of the chunk
+        uint64_t physical_pos;  // compressed offset in the data file
+        uint64_t physical_len;  // compressed length, including the 4-byte checksum
+    };
+
+    // Cache of chunk metadata, keyed by chunk index.
+    std::map<uint64_t, chunk_meta> _chunk_meta_cache;
+
+    // The single cached decompressed chunk.
+    uint64_t _cached_chunk_index = std::numeric_limits<uint64_t>::max();
+    temporary_buffer<char> _cached_chunk; // uncompressed bytes of _cached_chunk_index
+
+    uint64_t _uncompressed_chunk_length;
+    uint64_t _uncompressed_file_length;
+
+public:
+    explicit compressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state)
+        : _sst(std::move(sst))
+        , _permit(std::move(permit))
+        , _trace_state(std::move(trace_state))
+        , _compression(_sst->get_compression())
+        , _offsets(_compression.offsets.get_accessor())
+        , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
+        , _uncompressed_chunk_length(_compression.uncompressed_chunk_length())
+        , _uncompressed_file_length(_compression.uncompressed_file_length()) {
+    }
+
+    void seek(sstable_datafile_position pos) override {
+        _position = pos;
+    }
+
+    future<temporary_buffer<char>> read_forwards(size_t n) override {
+        SCYLLA_ASSERT(_position.has_value());
+        uint64_t start = _position->to_logical_fixme();
+        uint64_t end = std::min<uint64_t>(start + n, _uncompressed_file_length);
+        size_t len = end > start ? end - start : 0;
+        temporary_buffer<char> result(len);
+        size_t filled = co_await fill(start, result.get_write(), len);
+        result.trim(filled);
+        _position = sstable_datafile_position::from_logical_fixme(start + filled);
+        co_return result;
+    }
+
+    future<temporary_buffer<char>> read_backwards(size_t n) override {
+        SCYLLA_ASSERT(_position.has_value());
+        uint64_t end = _position->to_logical_fixme();
+        uint64_t start = end >= n ? end - n : 0;
+        size_t len = end - start;
+        temporary_buffer<char> result(len);
+        co_await fill(start, result.get_write(), len);
+        _position = sstable_datafile_position::from_logical_fixme(start);
+        co_return result;
+    }
+
+    sstable_datafile_position compute_relative_position(ssize_t offset) override {
+        SCYLLA_ASSERT(_position.has_value());
+        return sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
+    }
+
+    void drop_caches_after(sstable_datafile_position pos) override {
+        uint64_t p = pos.to_logical_fixme();
+        uint64_t chunk_index = p / _uncompressed_chunk_length;
+        _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(chunk_index), _chunk_meta_cache.end());
+        if (_cached_chunk_index >= chunk_index) {
+            drop_cached_chunk();
+        }
+        // Translate to the physical position and drop the underlying file cache.
+        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
+    }
+
+    void drop_caches_before(sstable_datafile_position pos) override {
+        uint64_t p = pos.to_logical_fixme();
+        uint64_t chunk_index = p / _uncompressed_chunk_length;
+        _chunk_meta_cache.erase(_chunk_meta_cache.begin(), _chunk_meta_cache.lower_bound(chunk_index));
+        if (_cached_chunk_index < chunk_index) {
+            drop_cached_chunk();
+        }
+        _file.drop_caches_before(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
+    }
+
+    future<> close() override {
+        return _file.close();
+    }
+
+private:
+    void drop_cached_chunk() {
+        _cached_chunk_index = std::numeric_limits<uint64_t>::max();
+        _cached_chunk = {};
+    }
+
+    // Physical (compressed) file offset of the chunk that contains logical
+    // position p, clamped so EOF maps to the end of the compressed file.
+    uint64_t physical_pos_of(uint64_t p) {
+        if (p >= _uncompressed_file_length) {
+            return _sst->ondisk_data_size();
+        }
+        return get_chunk_meta(p / _uncompressed_chunk_length).physical_pos;
+    }
+
+    // Look up (and cache) the metadata of a chunk by its index.
+    const chunk_meta& get_chunk_meta(uint64_t chunk_index) {
+        auto it = _chunk_meta_cache.find(chunk_index);
+        if (it != _chunk_meta_cache.end()) {
+            return it->second;
+        }
+        uint64_t logical_pos = chunk_index * _uncompressed_chunk_length;
+        auto addr = _compression.locate(logical_pos, _offsets);
+        uint64_t logical_len = std::min<uint64_t>(_uncompressed_chunk_length, _uncompressed_file_length - logical_pos);
+        chunk_meta m{logical_pos, logical_len, addr.chunk_start, addr.chunk_len};
+        return _chunk_meta_cache.emplace(chunk_index, m).first->second;
+    }
+
+    // Copy len uncompressed bytes starting at logical position offset into dst,
+    // decompressing whatever chunks are needed. Returns the number of bytes
+    // produced (less than len only at EOF).
+    future<size_t> fill(uint64_t offset, char* dst, size_t len) {
+        size_t done = 0;
+        while (done < len) {
+            uint64_t pos = offset + done;
+            if (pos >= _uncompressed_file_length) {
+                break; // EOF
+            }
+            uint64_t chunk_index = pos / _uncompressed_chunk_length;
+            co_await ensure_chunk_cached(chunk_index);
+            const auto& m = get_chunk_meta(chunk_index);
+            uint64_t in_chunk = pos - m.logical_pos;
+            size_t avail = _cached_chunk.size() - in_chunk;
+            size_t n = std::min(avail, len - done);
+            std::copy_n(_cached_chunk.get() + in_chunk, n, dst + done);
+            done += n;
+        }
+        co_return done;
+    }
+
+    // Ensure the decompressed contents of chunk_index are in _cached_chunk.
+    future<> ensure_chunk_cached(uint64_t chunk_index) {
+        if (_cached_chunk_index == chunk_index) {
+            co_return;
+        }
+        const auto& m = get_chunk_meta(chunk_index);
+        auto compressed = co_await read_compressed_chunk(m);
+        _cached_chunk = decompress_chunk(m, std::move(compressed));
+        _cached_chunk_index = chunk_index;
+    }
+
+    // Read a chunk's compressed bytes from the data file via the inner cursor.
+    future<temporary_buffer<char>> read_compressed_chunk(const chunk_meta& m) {
+        _file.seek(sstable_datafile_position::from_logical_fixme(m.physical_pos));
+        temporary_buffer<char> buf(m.physical_len);
+        size_t filled = 0;
+        while (filled < m.physical_len) {
+            auto part = co_await _file.read_forwards(m.physical_len - filled);
+            if (part.empty()) {
+                break;
+            }
+            std::copy_n(part.get(), part.size(), buf.get_write() + filled);
+            filled += part.size();
+        }
+        if (filled != m.physical_len) {
+            throw_malformed_sstable_exception(format(
+                    "compressed cursor hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}",
+                    m.physical_pos, m.physical_len, filled));
+        }
+        co_return buf;
+    }
+
+    // Verify the chunk's trailing checksum and decompress it.
+    temporary_buffer<char> decompress_chunk(const chunk_meta& m, temporary_buffer<char> compressed) {
+        if (m.physical_len < 4) {
+            throw_malformed_sstable_exception(format(
+                    "compressed chunk_len must be greater than 4, chunk_start={}", m.physical_pos));
+        }
+        // The last 4 bytes of the chunk are the checksum of the rest.
+        size_t compressed_len = m.physical_len - 4;
+        uint32_t expected = read_be<uint32_t>(compressed.get() + compressed_len);
+        uint32_t actual = checksum(compressed.get(), compressed_len);
+        if (expected != actual) {
+            throw_malformed_sstable_exception(format(
+                    "compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}",
+                    m.physical_len, m.physical_pos, expected, actual));
+        }
+        temporary_buffer<char> out(m.logical_len);
+        size_t n = _compression.get_compressor().uncompress(compressed.get(), compressed_len, out.get_write(), out.size());
+        out.trim(n);
+        return out;
+    }
+
+    uint32_t checksum(const char* input, size_t len) const {
+        if (_sst->get_version() >= sstable_version_types::mc) {
+            return crc32_utils::checksum(input, len);
+        }
+        return adler32_utils::checksum(input, len);
     }
 };
 
