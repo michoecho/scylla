@@ -640,6 +640,7 @@ scylla_tests = set([
     'test/boost/sorting_test',
     'test/boost/sstable_3_x_test',
     'test/boost/sstable_conforms_to_mutation_source_test',
+    'test/boost/sstable_datafile_cursor_test',
     'test/boost/sstable_datafile_test',
     'test/boost/sstable_generation_test',
     'test/boost/sstable_inexact_index_test',

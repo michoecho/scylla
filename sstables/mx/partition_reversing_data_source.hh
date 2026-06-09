@@ -11,6 +11,7 @@
 #include <seastar/core/iostream.hh>
 #include "reader_permit.hh"
 #include "sstables/index_reader.hh"
+#include "sstables/sstable_datafile_position.hh"
 #include "sstables/shared_sstable.hh"
 
 namespace tracing { class trace_state_ptr; }
@@ -25,7 +26,7 @@ struct partition_reversing_data_source {
     // This points to the current position of the source over the underlying sstable file;
     // either the end of partition or the beginning of some row (never in the middle of a row).
     // The reference is valid as long as the data source is alive.
-    const uint64_t& current_position_in_sstable;
+    const sstable_datafile_position& current_position_in_sstable;
 };
 
 // Returns a single partition retrieved from an sstable data file as a sequence of buffers

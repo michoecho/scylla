@@ -140,7 +140,7 @@ struct reversed_context {
     // This points to the current position of the context over the underlying sstable file;
     // either the end of partition or the beginning of some row (never in the middle of a row).
     // The reference is valid as long as the context is alive.
-    const uint64_t& current_position_in_sstable;
+    const sstable_datafile_position& current_position_in_sstable;
 };
 
 // See `sstables::mx::make_partition_reversing_data_source` for documentation.

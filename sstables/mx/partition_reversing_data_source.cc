@@ -8,11 +8,12 @@
 
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/iostream.hh>
-#include <seastar/util/memory-data-source.hh>
 #include "partition_reversing_data_source.hh"
 #include "reader_permit.hh"
+#include "sstables/compressed_file_cursor.hh"
 #include "sstables/consumer.hh"
 #include "sstables/processing_result_generator.hh"
+#include "sstables/sstable_datafile_position.hh"
 #include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "sstables/types.hh"
@@ -22,6 +23,105 @@ namespace sstables {
 extern logging::logger sstlog;
 
 namespace mx {
+
+// A `sstable_datafile_input_stream` that reads forwards from a shared
+// `sstable_datafile_cursor`, starting at a given position.
+//
+// All IO in this file goes through a single cursor owned by the data source.
+// The parsers (`continuous_data_consumer`s), however, want to own an input
+// stream and drive it via the seastar consume protocol. This adapter bridges
+// the two: it borrows the cursor (it does not own it) and reads forwards from
+// it, starting at the stream's start position.
+//
+// The cursor is shared between several of these streams (and the backward row
+// reads), so its internal position is not ours to rely on. Instead this stream
+// tracks its own logical position `_pos` - the next byte it will return - and
+// seeks the cursor to `_pos` before every read. This also makes repeated
+// `consume()` calls on the same parser resume exactly where the previous one
+// stopped, mirroring how a seastar input_stream retains its leftover buffer.
+//
+// Because the cursor is shared and outlives the stream, `close()` is a no-op
+// and `detach()` is unsupported - the cursor is closed by the data source.
+class cursor_input_stream_impl final : public sstable_datafile_input_stream::impl {
+    using tmp_buf = sstable_datafile_input_stream::tmp_buf;
+    using consumer_fn = sstable_datafile_input_stream::consumer_fn;
+
+    sstable_datafile_cursor& _cursor;
+    // The file position of the next byte this stream will produce.
+    uint64_t _pos;
+
+    // Default size of a forward read issued to the cursor. The cursor itself
+    // caches and reads ahead, so this only bounds how much we ask for at once.
+    static constexpr size_t read_size = 8 * 1024;
+
+    future<tmp_buf> read_at_pos(size_t n) {
+        _cursor.seek(sstable_datafile_position::from_logical_fixme(_pos));
+        auto buf = co_await _cursor.read_forwards(n);
+        _pos += buf.size();
+        co_return buf;
+    }
+public:
+    cursor_input_stream_impl(sstable_datafile_cursor& cursor, sstable_datafile_position start) noexcept
+        : _cursor(cursor), _pos(start.to_logical_fixme()) {}
+
+    future<tmp_buf> read_exactly(size_t n) noexcept override {
+        return read_at_pos(n);
+    }
+
+    future<> consume(consumer_fn consumer) noexcept override {
+        while (true) {
+            auto buf = co_await read_at_pos(read_size);
+            bool eof = buf.empty();
+            auto result = co_await consumer(std::move(buf));
+            bool stop = seastar::visit(result.get(),
+                [eof] (const continue_consuming&) {
+                    // Whole buffer consumed; stop only at end of file.
+                    return eof;
+                },
+                [this] (stop_consuming<char>& stop) {
+                    // The unconsumed tail must be produced again by the next
+                    // read, so rewind our position over it.
+                    _pos -= stop.get_buffer().size();
+                    return true;
+                },
+                [this] (const skip_bytes& skip) {
+                    _pos += skip.get_value();
+                    return false;
+                });
+            if (stop) {
+                co_return;
+            }
+        }
+    }
+
+    bool eof() const noexcept override {
+        // The cursor has no standalone eof flag; the consumers bound their
+        // reads by length and never query this.
+        return false;
+    }
+
+    future<tmp_buf> read() noexcept override {
+        return read_at_pos(read_size);
+    }
+
+    future<> close() noexcept override {
+        // The cursor is owned by the data source, not by this stream.
+        return make_ready_future<>();
+    }
+
+    future<> skip(uint64_t n) noexcept override {
+        _pos += n;
+        co_return;
+    }
+
+    data_source detach() && override {
+        on_internal_error(sstlog, "cursor_input_stream_impl does not support detach()");
+    }
+};
+
+static sstable_datafile_input_stream make_cursor_input_stream(sstable_datafile_cursor& cursor, sstable_datafile_position start) {
+    return sstable_datafile_input_stream(std::make_unique<cursor_input_stream_impl>(cursor, start));
+}
 
 // Parser for the partition header and the static row, if present.
 //
@@ -348,18 +448,18 @@ static temporary_buffer<char> end_of_partition() {
 // state as after reading the partition header, and continue as if the new
 // range was the original.
 //
-// Because vast majority of the data consumed in our parsers is later reused
-// in the sstable reader, we cache the read buffer. The size of the buffer
-// starts at 4KB and is doubled after each read up to 128KB. We set the
-// range of our reads so that the current row that will be returned to the
-// sstable reader is at the end of the buffer. After returning a row, we
-// trim it off the end of the buffer, so that the next row is again at the
-// end of the buffer.
+// All IO into the data file goes through a single sstable_datafile_cursor.
+// The parsers read forwards from it (through cursor_input_stream_impl), while
+// the rows handed back to the sstable reader are read backwards from it. The
+// vast majority of the data consumed by our parsers is later reused in the
+// sstable reader; the cursor's own cache absorbs that reuse, so we don't read
+// the same bytes from disk twice. When the index tells us a clustering range
+// end has decreased, we drop the cursor's cache past the new end.
 //
 // Because the range tombstones are read in reversed order, we need to swap
 // the start tombstones with the ends. We achieve that by finding the file
 // offsets of the row tombstone member variables using row_body_skipping_context,
-// and modifying them in our cached read accordingly.
+// and modifying them in the returned row buffer accordingly.
 //
 class partition_reversing_data_source_impl final : public data_source_impl {
     const schema& _schema;
@@ -367,23 +467,25 @@ class partition_reversing_data_source_impl final : public data_source_impl {
     abstract_index_reader& _ir;
     reader_permit _permit;
     tracing::trace_state_ptr _trace_state;
+
+    // The single cursor through which all IO into the sstable data file is done.
+    // The parsers below read forwards from it (via cursor_input_stream_impl),
+    // and the rows returned to the sstable reader are read backwards from it.
+    sstable_datafile_cursor _cursor;
+
     std::optional<partition_header_context> _partition_header_context;
     std::optional<row_body_skipping_context> _row_skipping_context;
-    uint64_t _clustering_range_start;
-    uint64_t _partition_start;
-    uint64_t _partition_end;
+    sstable_datafile_position _clustering_range_start;
+    sstable_datafile_position _partition_start;
+    sstable_datafile_position _partition_end;
 
     // _row_start denotes our current position in the input stream:
     // either _partition_end or the start of some row (_row_start never lands in the middle of a row).
     // We share this position with the user (they can only read it, not modify it)
     // so they can e.g. compare it with index positions.
-    uint64_t _row_start;
-    uint64_t _row_end;
+    sstable_datafile_position _row_start;
+    sstable_datafile_position _row_end;
     // Invariant: _row_start <= _row_end
-
-    temporary_buffer<char> _cached_read;
-    uint64_t _current_read_size = 4 * 1024;
-    const uint64_t max_read_size = 128 * 1024;
 
     column_translation _cached_column_translation;
 
@@ -401,57 +503,54 @@ class partition_reversing_data_source_impl final : public data_source_impl {
         FINISHED
     } _state = state::RANGE_END;
 private:
-    future<sstables::sstable_datafile_input_stream> data_stream(size_t start, size_t end) {
-        return _sst->data_stream(
-                sstable::disk_read_range(
-                    sstable_datafile_position::from_logical_fixme(start),
-                    sstable_datafile_position::from_logical_fixme(end)),
-                _permit, _trace_state, {});
-    }
-    future<temporary_buffer<char>> data_read(uint64_t start, uint64_t end) {
-        return _sst->data_read(start, end - start, _permit);
-    }
-    future<sstables::sstable_datafile_input_stream> last_row_stream(size_t row_size) {
-        if (_cached_read.size() < row_size) {
-            if (_clustering_range_start + _current_read_size < _row_end) {
-                _cached_read = co_await data_read(std::min(_row_end - _current_read_size, _row_end - row_size), _row_end);
-            } else {
-                _cached_read = co_await data_read(_clustering_range_start, _row_end);
-            }
-            _current_read_size = std::min(max_read_size, _current_read_size * 2);
-        }
-        co_return sstables::sstable_datafile_input_stream(seastar::util::as_input_stream(_cached_read.share(_cached_read.size() - row_size, row_size)));
-    }
-    temporary_buffer<char> last_row(size_t row_size) {
-        auto tmp = _cached_read.share(_cached_read.size() - row_size, row_size);
-        _cached_read.trim(_cached_read.size() - row_size);
-        return tmp;
+    // Reads [start, end) from the data file backwards through the cursor.
+    // Used both for the partition header and for the rows we hand back to the
+    // sstable reader. The returned buffer is freshly owned, so it can be mutated
+    // in place (see modify_tombstone()).
+    future<temporary_buffer<char>> data_read(sstable_datafile_position start, sstable_datafile_position end) {
+        _cursor.seek(end);
+        co_return co_await _cursor.read_backwards(end.to_logical_fixme() - start.to_logical_fixme());
     }
 
-    void modify_cached_tombstone(const row_body_skipping_context::tombstone_reversing_info& info) {
-        auto to_cache_offset = [this] (uint64_t file_offset) {
-            return _cached_read.size() - (_row_end - file_offset);
+    // Reverse the range tombstone bound/boundary stored in `row`, which holds
+    // the bytes of the row spanning [_row_start, _row_end). `info`'s offsets are
+    // file offsets, which map into `row` by subtracting _row_start.
+    void modify_tombstone(temporary_buffer<char>& row, const row_body_skipping_context::tombstone_reversing_info& info) {
+        auto to_row_offset = [this] (uint64_t file_offset) {
+            return file_offset - _row_start.to_logical_fixme();
         };
-        char& out = _cached_read.get_write()[to_cache_offset(info.kind_offset)];
+        char& out = row.get_write()[to_row_offset(info.kind_offset)];
         // reverse the kind of the range tombstone bound/boundary
         out = (char)reverse_tombstone_kind(info.range_tombstone_kind);
         if (is_boundary_between_adjacent_intervals(info.range_tombstone_kind)) {
             // if the tombstone is a boundary, we need to swap the order of end/start deletion times
             // Need to clone part of the buffer containing first_del_time because we overwrite it with second_del_time before using first_del_time
-            auto first_del_time = _cached_read.share(to_cache_offset(info.first_deletion_time_offset), info.after_first_deletion_time_offset - info.first_deletion_time_offset).clone();
+            auto first_del_time = row.share(to_row_offset(info.first_deletion_time_offset), info.after_first_deletion_time_offset - info.first_deletion_time_offset).clone();
             // We also need to clone the part containing second_del_time as we may overwrite a prefix of that part while writing second_del_time
             // (if second_del_time is longer than first_del_time - it may be as we're dealing with varints here)
-            auto second_del_time = _cached_read.share(to_cache_offset(info.after_first_deletion_time_offset), _row_end - info.after_first_deletion_time_offset).clone();
-            std::copy(second_del_time.begin(), second_del_time.end(), _cached_read.get_write() + to_cache_offset(info.first_deletion_time_offset));
-            std::copy(first_del_time.begin(), first_del_time.end(), _cached_read.get_write() + to_cache_offset(info.first_deletion_time_offset) + second_del_time.size());
+            auto second_del_time = row.share(to_row_offset(info.after_first_deletion_time_offset), _row_end.to_logical_fixme() - info.after_first_deletion_time_offset).clone();
+            std::copy(second_del_time.begin(), second_del_time.end(), row.get_write() + to_row_offset(info.first_deletion_time_offset));
+            std::copy(first_del_time.begin(), first_del_time.end(), row.get_write() + to_row_offset(info.first_deletion_time_offset) + second_del_time.size());
         }
     }
 
-    future<> emplace_row_skipping_context(sstables::sstable_datafile_input_stream row_stream, uint64_t row_start, uint64_t row_end) {
+    // Given the start position of a row and the size of the row preceding it
+    // (as reported by row_body_skipping_context::prev_len()), returns the start
+    // position of that preceding row. Computed through the cursor so that the
+    // position arithmetic stays in terms of sstable_datafile_position rather
+    // than raw integers.
+    sstable_datafile_position prev_row_start(sstable_datafile_position row_start, uint64_t prev_len) {
+        _cursor.seek(row_start);
+        return _cursor.compute_relative_position(-static_cast<ssize_t>(prev_len));
+    }
+
+    future<> emplace_row_skipping_context(sstable_datafile_position row_start, sstable_datafile_position row_end) {
         if (_row_skipping_context) {
             co_await _row_skipping_context->close();
         }
-        _row_skipping_context.emplace(std::move(row_stream), row_start, row_end - row_start, _permit, _cached_column_translation);
+        _row_skipping_context.emplace(make_cursor_input_stream(_cursor, row_start),
+                row_start.to_logical_fixme(), row_end.to_logical_fixme() - row_start.to_logical_fixme(),
+                _permit, _cached_column_translation);
     }
 public:
     partition_reversing_data_source_impl(const schema& s,
@@ -466,33 +565,29 @@ public:
         , _ir(ir)
         , _permit(std::move(permit))
         , _trace_state(std::move(trace_state))
-        , _partition_start(partition_start)
-        , _partition_end(partition_start + partition_len)
+        , _cursor(_sst, _permit, _trace_state)
+        , _partition_start(sstable_datafile_position::from_logical_fixme(partition_start))
+        , _partition_end(sstable_datafile_position::from_logical_fixme(partition_start + partition_len))
         , _row_start(_partition_end)
         , _row_end(_partition_end)
         , _cached_column_translation(_sst->get_column_translation(_schema, _sst->get_serialization_header(), _sst->features()))
     { }
 
-    partition_reversing_data_source_impl(partition_reversing_data_source_impl&&) noexcept = default;
-
     virtual future<temporary_buffer<char>> get() override {
         if (!_partition_header_context) {
-            _partition_header_context.emplace(co_await data_stream(_partition_start, _partition_end), _partition_start, _partition_end - _partition_start, _permit);
+            _partition_header_context.emplace(make_cursor_input_stream(_cursor, _partition_start),
+                    _partition_start.to_logical_fixme(), _partition_end.to_logical_fixme() - _partition_start.to_logical_fixme(), _permit);
             co_await _partition_header_context->consume_input();
-            _clustering_range_start = _partition_header_context->header_end_pos();
+            _clustering_range_start = sstable_datafile_position::from_logical_fixme(_partition_header_context->header_end_pos());
             co_return co_await data_read(_partition_start, _clustering_range_start);
         }
         auto ir_end = _ir.sstable_datafile_positions().end;
-        if (ir_end && *ir_end < sstable_datafile_position::from_logical_fixme(_row_start)) {
+        if (ir_end && *ir_end < _row_start) {
             // we can skip at least one row
-            _row_start = ir_end->to_logical_fixme();
-            if (_cached_read.size() + ir_end->to_logical_fixme() >= _row_end) {
-                // we can reuse the cache for the new range
-                _cached_read.trim(_cached_read.size() - (_row_end - ir_end->to_logical_fixme()));
-            } else {
-                // we'll need to reset the cache
-                _cached_read.trim(0);
-            }
+            _row_start = *ir_end;
+            // The cursor's cache for the rows past the new range end is no longer
+            // needed; drop it so the cache doesn't grow without bound.
+            _cursor.drop_caches_after(_row_start);
             _state = state::RANGE_END;
         }
         switch (_state) {
@@ -511,30 +606,30 @@ public:
                 }
                 look_in_last_block = true;
             } else {
-                co_await emplace_row_skipping_context(co_await data_stream(_row_start, _row_end), _row_start, _row_end);
+                co_await emplace_row_skipping_context(_row_start, _row_end);
                 co_await _row_skipping_context->consume_input();
                 if (_row_skipping_context->end_of_partition()) {
                     look_in_last_block = true;
                 } else {
                     _row_end = _row_start;
-                    _row_start -= _row_skipping_context->prev_len();
+                    _row_start = prev_row_start(_row_start, _row_skipping_context->prev_len());
                 }
             }
             if (look_in_last_block) {
-                _cached_read.trim(0);
                 if (auto offset = co_await _ir.last_block_sstable_datafile_offset()) {
                     // there was a promoted index block in the partition, read from its beginning to find the last row
-                    _row_start = _partition_start + offset->to_logical_fixme();
+                    _cursor.seek(_partition_start);
+                    _row_start = _cursor.compute_relative_position(offset->to_logical_fixme());
                 } else {
                     // no promoted index blocks in the partition, read from the beginning
                     _row_start = _clustering_range_start;
                 }
-                uint64_t last_row_start = _row_start;
-                co_await emplace_row_skipping_context(co_await data_stream(_row_start, _partition_end), _row_start, _partition_end);
+                sstable_datafile_position last_row_start = _row_start;
+                co_await emplace_row_skipping_context(_row_start, _partition_end);
                 co_await _row_skipping_context->consume_input();
                 while (!_row_skipping_context->end_of_partition()) {
                     last_row_start = _row_start;
-                    _row_start = _row_skipping_context->position();
+                    _row_start = sstable_datafile_position::from_logical_fixme(_row_skipping_context->position());
                     co_await _row_skipping_context->consume_input();
                 }
                 _row_end = _row_start;
@@ -549,7 +644,7 @@ public:
             if (_row_start < _clustering_range_start) {
                 // The first index block starts after the range being read,
                 // i.e. the range being read is empty.
-                if (_row_skipping_context->prev_len() != _clustering_range_start - _partition_start) {
+                if (prev_row_start(_clustering_range_start, _row_skipping_context->prev_len()) != _partition_start) {
                     on_internal_error(sstlog, format(
                         "partition_reversing_data_source: invariant broken: _row_start({}) < _clustering_range_start({})"
                         ", but _row_skipping_context->prev_len()({}) != _clustering_range_start - _partition_start({})",
@@ -564,15 +659,14 @@ public:
             [[fallthrough]];
         }
         case state::ROWS: {
-            co_await emplace_row_skipping_context(co_await last_row_stream(_row_end - _row_start), _row_start, _row_end);
+            co_await emplace_row_skipping_context(_row_start, _row_end);
             co_await _row_skipping_context->consume_input();
+            auto ret = co_await data_read(_row_start, _row_end);
             if (_row_skipping_context->current_tombstone_reversing_info()) {
-                // TODO: modify `ret`, not `_cached_read`
-                modify_cached_tombstone(*_row_skipping_context->current_tombstone_reversing_info());
+                modify_tombstone(ret, *_row_skipping_context->current_tombstone_reversing_info());
             }
-            auto ret = last_row(_row_end - _row_start);
             _row_end = _row_start;
-            _row_start -= _row_skipping_context->prev_len();
+            _row_start = prev_row_start(_row_start, _row_skipping_context->prev_len());
             if (_row_end == _clustering_range_start) {
                 _state = state::PARTITION_END;
             }
@@ -602,7 +696,7 @@ public:
     // Points to the current position of the source over the sstable file, which
     // is either the end of partition or the beginning of some row.
     // Can only decrease.
-    const uint64_t& current_position_in_sstable() const {
+    const sstable_datafile_position& current_position_in_sstable() const {
         return _row_start;
     }
 };
