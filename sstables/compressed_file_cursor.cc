@@ -418,6 +418,7 @@ class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
     std::map<uint64_t, chunk_meta> _chunk_meta_cache;
 
     // The single cached decompressed chunk.
+    // FIXME: this is uncool. Use std::optional instead of an in-band value. 
     uint64_t _cached_chunk_index = std::numeric_limits<uint64_t>::max();
     temporary_buffer<char> _cached_chunk; // uncompressed bytes of _cached_chunk_index
 
@@ -470,6 +471,8 @@ public:
 
     void drop_caches_after(sstable_datafile_position pos) override {
         uint64_t p = pos.to_logical_fixme();
+        // FIXME: doesn't this erase the current chunk even if pos is in the middle?
+        // We only want to drop things that are fully in the [pos; +inf) range.
         uint64_t chunk_index = p / _uncompressed_chunk_length;
         _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(chunk_index), _chunk_meta_cache.end());
         if (_cached_chunk_index >= chunk_index) {
