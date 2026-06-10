@@ -33,6 +33,9 @@ public:
     int64_t to_logical_fixme() const noexcept {
         return _value;
     }
+    int64_t to_logical_approved() const noexcept {
+        return _value;
+    }
 
     friend sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept;
 };
