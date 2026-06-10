@@ -646,8 +646,7 @@ public:
             if (look_in_last_block) {
                 if (auto offset = co_await _ir.last_block_sstable_datafile_offset()) {
                     // there was a promoted index block in the partition, read from its beginning to find the last row
-                    _cursor.seek(_partition_start);
-                    _row_start = _cursor.compute_relative_position(offset->to_logical_fixme());
+                    _row_start = _partition_start + offset.value();
                 } else {
                     // no promoted index blocks in the partition, read from the beginning
                     _row_start = _clustering_range_start;
