@@ -522,7 +522,10 @@ public:
     continuous_data_consumer(reader_permit permit, InputStream&& input, uint64_t start, uint64_t maxlen)
             : primitive_consumer(std::move(permit))
             , _input(std::move(input))
-            , _stream_position(sstables::reader_position_tracker{start, maxlen})
+            , _stream_position(sstables::reader_position_tracker{
+                    .position = sstables::sstable_datafile_position::from_logical_fixme(start),
+                    .byte_offset = static_cast<int64_t>(start),
+                    .total_read_size = maxlen})
             , _remain(maxlen) {}
 
     future<> consume_input() {
@@ -588,6 +591,17 @@ public:
         return proceed::yes;
     }
 
+    // Advances both the byte offset and the logical position by `n` bytes
+    // (which may be negative). For now positions are linear, so the logical
+    // position advances by the same delta. In the future this will need to
+    // consult the input stream to translate a byte delta into a logical
+    // position delta, which is why it lives here rather than on the tracker.
+    void apply_position_delta(int64_t n) {
+        _stream_position.byte_offset += n;
+        _stream_position.position = sstables::sstable_datafile_position::from_logical_fixme(
+                _stream_position.position.to_logical_fixme() + n);
+    }
+
     // called by input_stream::consume():
     future<consumption_result_type>
     operator()(temporary_buffer<char> data) {
@@ -596,9 +610,9 @@ public:
             // We received more data than we actually care about, so process
             // the beginning of the buffer, and return the rest to the stream
             auto segment = data.share(0, _remain);
-            _stream_position.position += _remain;
+            apply_position_delta(_remain);
             auto ret = process(segment);
-            _stream_position.position -= segment.size();
+            apply_position_delta(-static_cast<int64_t>(segment.size()));
             data.trim_front(_remain - segment.size());
             auto len = _remain - segment.size();
             _remain -= len;
@@ -613,11 +627,11 @@ public:
         } else {
             // We can process the entire buffer (if the consumer wants to).
             auto orig_data_size = data.size();
-            _stream_position.position += data.size();
+            apply_position_delta(data.size());
             auto result = process(data);
             return seastar::visit(result, [this, &data, orig_data_size] (proceed value) {
                 _remain -= orig_data_size - data.size();
-                _stream_position.position -= data.size();
+                apply_position_delta(-static_cast<int64_t>(data.size()));
                 if (value == proceed::yes) {
                     mark_blocked();
                     return make_ready_future<consumption_result_type>(continue_consuming{});
@@ -631,12 +645,12 @@ public:
                 _remain -= orig_data_size;
                 if (skip.get_value() >= _remain) {
                     skip_bytes skip_remaining(_remain);
-                    _stream_position.position += _remain;
+                    apply_position_delta(_remain);
                     _remain = 0;
                     verify_end_state();
                     return make_ready_future<consumption_result_type>(std::move(skip_remaining));
                 }
-                _stream_position.position += skip.get_value();
+                apply_position_delta(skip.get_value());
                 _remain -= skip.get_value();
                 mark_blocked();
                 return make_ready_future<consumption_result_type>(std::move(skip));
@@ -645,12 +659,14 @@ public:
     }
 
     future<> fast_forward_to(size_t begin, size_t end) {
-        sstables::parse_assert(begin >= _stream_position.position);
-        auto n = begin - _stream_position.position;
-        _stream_position.position = begin;
+        auto cur = static_cast<size_t>(_stream_position.byte_offset);
+        sstables::parse_assert(begin >= cur);
+        auto n = begin - cur;
+        _stream_position.byte_offset = static_cast<int64_t>(begin);
+        _stream_position.position = sstables::sstable_datafile_position::from_logical_fixme(begin);
 
-        sstables::parse_assert(end >= _stream_position.position);
-        _remain = end - _stream_position.position;
+        sstables::parse_assert(end >= begin);
+        _remain = end - begin;
 
         primitive_consumer::reset();
         reader_permit::awaits_guard _{_permit};
@@ -658,14 +674,14 @@ public:
     }
 
     future<> skip_to(size_t begin) {
-        return fast_forward_to(begin, _stream_position.position + _remain);
+        return fast_forward_to(begin, static_cast<size_t>(_stream_position.byte_offset) + _remain);
     }
 
     // Returns the offset of the first byte which has not been consumed yet.
     // When called from state_processor::process_state() invoked by this consumer,
     // returns the offset of the first byte after the buffer passed to process_state().
     uint64_t position() const {
-        return _stream_position.position;
+        return static_cast<uint64_t>(_stream_position.byte_offset);
     }
 
     const sstables::reader_position_tracker& reader_position() const {

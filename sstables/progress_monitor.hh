@@ -12,6 +12,7 @@
 
 #include <seastar/core/shared_ptr.hh>
 #include "shared_sstable.hh"
+#include "sstables/sstable_datafile_position.hh"
 
 namespace sstables {
 
@@ -29,7 +30,11 @@ public:
 write_monitor& default_write_monitor();
 
 struct reader_position_tracker {
-    uint64_t position = 0;
+    sstable_datafile_position position;
+    // Number of bytes consumed from the input so far. Tracked separately from
+    // `position` because, once positions become non-linear, advancing the
+    // logical position by a byte delta is no longer plain addition.
+    int64_t byte_offset = 0;
     uint64_t total_read_size = 0;
 };
 
