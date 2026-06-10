@@ -567,7 +567,7 @@ private:
         }
         _row_skipping_context_start = row_start;
         _row_skipping_context.emplace(make_cursor_input_stream(_cursor, row_start),
-                row_end.to_logical_fixme() - row_start.to_logical_fixme(),
+                -1,
                 _permit, _cached_column_translation);
     }
 
@@ -602,7 +602,7 @@ public:
     virtual future<temporary_buffer<char>> get() override {
         if (!_partition_header_context) {
             _partition_header_context.emplace(make_cursor_input_stream(_cursor, _partition_start),
-                    _partition_end.to_logical_fixme() - _partition_start.to_logical_fixme(), _permit);
+                    -1, _permit);
             co_await _partition_header_context->consume_input();
             // header_end_pos() is relative to the partition start; rebase it.
             _cursor.seek(_partition_start);
