@@ -3149,7 +3149,7 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
     co_return sstable_datafile_input_stream(co_await stream_creator(pos, len, std::move(options)));
 }
 
-future<input_stream<char>> sstable::data_stream_raw(disk_read_range range,
+future<input_stream<char>> sstable::data_stream_raw(
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history) {
     file_input_stream_options options;
     options.buffer_size = sstable_buffer_size;
@@ -3160,12 +3160,12 @@ future<input_stream<char>> sstable::data_stream_raw(disk_read_range range,
     if (trace_state) {
         f = tracing::make_traced_file(std::move(f), std::move(trace_state), format("{}:", get_filename()));
     }
-    uint64_t pos = range.start.to_logical_fixme();
-    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
+    uint64_t pos = 0;
+    size_t len = ondisk_data_size();
     co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
 }
 
-future<input_stream<char>> sstable::data_stream_compressed_chunks(disk_read_range range,
+future<input_stream<char>> sstable::data_stream_compressed_chunks(
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
         integrity_check integrity,
@@ -3186,11 +3186,12 @@ future<input_stream<char>> sstable::data_stream_compressed_chunks(disk_read_rang
         co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest);
     }
 
+    uint64_t pos = 0;
+    size_t len = ondisk_data_size();
     if (_components->checksum && integrity == integrity_check::yes) {
         auto checksum = get_checksum();
         auto file_len = data_size();
-        uint64_t pos = range.start.to_logical_fixme();
-        size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
+
         if (_version >= sstable_version_types::mc) {
              co_return make_checksummed_file_m_format_input_stream(stream_creator, file_len,
                 *checksum, pos, len, std::move(options), digest, error_handler);
@@ -3199,8 +3200,6 @@ future<input_stream<char>> sstable::data_stream_compressed_chunks(disk_read_rang
                 *checksum, pos, len, std::move(options), digest, error_handler);
         }
     }
-    uint64_t pos = range.start.to_logical_fixme();
-    size_t len = range.end.to_logical_fixme() - range.start.to_logical_fixme();
     co_return co_await stream_creator(pos, len, std::move(options));
 }
 
@@ -3423,8 +3422,6 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
 
     if (sst->get_compression()) {
         auto raw_stream = co_await sst->data_stream_raw(
-                sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
-                                         sstable_datafile_position::from_logical_fixme(sst->ondisk_data_size())),
                 permit, nullptr, nullptr);
         try {
             if (sst->get_version() >= sstable_version_types::mc) {
@@ -4342,8 +4339,6 @@ future<std::vector<std::unique_ptr<sstable_stream_source>>> create_stream_source
         {}
         future<input_stream<char>> input(const file_input_stream_options& options) const override {
             return _sst->data_stream_compressed_chunks(
-                    sstable::disk_read_range(sstable_datafile_position::from_logical_fixme(0),
-                                             sstable_datafile_position::from_logical_fixme(_sst->ondisk_data_size())),
                     _permit, nullptr, nullptr, options, integrity_check::yes);
         }
     };

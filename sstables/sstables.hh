@@ -845,7 +845,7 @@ public:
 
     // Returns the sstable data file streamed as-is, without decompressing
     // (if compressed) and without integrity checking.
-    future<input_stream<char>> data_stream_raw(disk_read_range range,
+    future<input_stream<char>> data_stream_raw(
             reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history);
 
     // Returns the sstable data file as a stream of raw compressed chunks
@@ -855,7 +855,7 @@ public:
     // If the sstable is not compressed (or not version mc+), the stream
     // falls back to the integrity-checked decompressed stream when a
     // checksum is available, or a plain stream otherwise.
-    future<input_stream<char>> data_stream_compressed_chunks(disk_read_range range,
+    future<input_stream<char>> data_stream_compressed_chunks(
             reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
             file_input_stream_options options,
             integrity_check integrity = integrity_check::no,

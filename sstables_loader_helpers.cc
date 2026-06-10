@@ -77,8 +77,6 @@ future<minimal_sst_info> download_sstable(replica::database& db, replica::table&
                 auto permit = co_await db.obtain_reader_permit(table, "download_fully_contained_sstables", db::no_timeout, {});
                 if (sstable->get_compression()) {
                     co_return co_await sstable->data_stream_raw(
-                            sstables::sstable::disk_read_range(sstables::sstable_datafile_position::from_logical_fixme(0),
-                                                               sstables::sstable_datafile_position::from_logical_fixme(sstable->ondisk_data_size())),
                             std::move(permit), nullptr, nullptr);
                 }
                 auto wrapped = co_await sstable->data_stream(
