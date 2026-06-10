@@ -471,14 +471,14 @@ struct compaction_read_monitor_generator final : public sstables::read_monitor_g
 
         virtual void on_read_completed() override {
             if (_tracker) {
-                _last_position_seen = _tracker->byte_offset;
+                _last_position_seen = _tracker->position;
                 _tracker = nullptr;
             }
         }
 
         virtual uint64_t compacted() const override {
             if (_tracker) {
-                return _tracker->byte_offset;
+                return _tracker->position;
             }
             return _last_position_seen;
         }

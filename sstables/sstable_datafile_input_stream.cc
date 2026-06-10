@@ -44,11 +44,6 @@ public:
         return _stream.skip(n);
     }
 
-    sstable_datafile_position compute_relative_position(sstable_datafile_position base, int64_t delta) override {
-        // A plain stream's file positions are linear in the byte offset.
-        return sstable_datafile_position::from_logical_fixme(base.to_logical_fixme() + delta);
-    }
-
     data_source detach() && override {
         return std::move(_stream).detach();
     }

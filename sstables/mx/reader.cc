@@ -680,7 +680,7 @@ requires requires(
     { c.consume_partition_end() } -> std::same_as<data_consumer::proceed>;
     c.on_end_of_stream();
 }
-class data_consume_rows_context_m : public data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream, sstables::sstable_datafile_position> {
+class data_consume_rows_context_m : public data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream> {
     using parent = data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>;
     using read_status = typename parent::read_status;
 private:
@@ -1188,9 +1188,9 @@ public:
                                 const shared_sstable& sst,
                                 Consumer& consumer,
                                 sstables::sstable_datafile_input_stream&& input,
-                                sstable_datafile_position start,
+                                uint64_t start,
                                 uint64_t maxlen)
-        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream, sstables::sstable_datafile_position>(consumer.permit(), std::move(input), start, maxlen)
+        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>(consumer.permit(), std::move(input), start, maxlen)
         , _consumer(consumer)
         , _sst(sst)
         , _header(sst->get_serialization_header())
@@ -1357,7 +1357,7 @@ private:
                 return make_ready_future<>();
             }
             parse_assert(_index_reader->element_kind() == indexable_element::partition, _sst->get_filename());
-            return skip_to(_index_reader->element_kind(), start).then([this] {
+            return skip_to(_index_reader->element_kind(), start.to_logical_fixme()).then([this] {
                 _sst->get_stats().on_partition_seek();
             });
         });
@@ -1495,10 +1495,10 @@ private:
                 return get_index_reader().advance_to(pos).then([this] {
                     abstract_index_reader& idx = *_index_reader;
                     auto index_position = idx.sstable_datafile_positions();
-                    if (index_position.start <= _context->reader_position().position) {
+                    if (index_position.start <= sstable_datafile_position::from_logical_fixme(_context->position())) {
                         return make_ready_future<>();
                     }
-                    return skip_to(idx.element_kind(), index_position.start).then([this, &idx] {
+                    return skip_to(idx.element_kind(), index_position.start.to_logical_fixme()).then([this, &idx] {
                         _sst->get_stats().on_partition_seek();
                         auto open_end_marker = idx.end_open_marker();
                         if (open_end_marker) {
@@ -1603,9 +1603,9 @@ private:
         _index_in_current_partition = true;
         co_return true;
     }
-    future<> skip_to(indexable_element el, sstable_datafile_position begin) {
+    future<> skip_to(indexable_element el, uint64_t begin) {
         sstlog.trace("sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
-        if (begin <= _context->reader_position().position) {
+        if (begin <= _context->position()) {
             return make_ready_future<>();
         }
         _context->reset(el);
@@ -1628,7 +1628,7 @@ public:
     future<> advance_index_until_unseen_partition() {
         while (true) {
             auto [start, end] = _index_reader->sstable_datafile_positions();
-            if (start >= _context->reader_position().position) {
+            if (start >= sstable_datafile_position::from_logical_fixme(_context->position())) {
                 sstlog.trace("mp_row_consumer_reader_mx {}: advance_index_until_unseen_partition(): advanced to {}", fmt::ptr(this), start);
                 co_return;
             } else {
@@ -1659,7 +1659,7 @@ public:
                     auto [start, end] = _index_reader->sstable_datafile_positions();
                     parse_assert(bool(end), _sst->get_filename());
                     sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to({}), index returned range [{}, {}), parser currently at {}", fmt::ptr(this), _pr.get(), start, *end, _context->position());
-                    if (start < _context->reader_position().position) {
+                    if (start < sstable_datafile_position::from_logical_fixme(_context->position())) {
                         sstlog.trace("mp_row_consumer_reader_mx {}: _saved_partition_tombstone={}", fmt::ptr(this), _saved_partition_tombstone);
                         // If we got here, the index returned a Data start which precedes
                         // the data parser's position.
@@ -1685,9 +1685,9 @@ public:
                         _index_in_current_partition = false;
                         if (_saved_partition_tombstone) {
                             // Case 1 from the comment above.
-                            if (*end >= _context->reader_position().position) {
+                            if (*end >= sstable_datafile_position::from_logical_fixme(_context->position())) {
                                 _read_enabled = true;
-                                return _context->fast_forward_to(_context->reader_position().position, *end);
+                                return _context->fast_forward_to(_context->position(), end->to_logical_fixme());
                             } else {
                                 _read_enabled = false;
                                 return make_ready_future<>();
@@ -1698,7 +1698,7 @@ public:
                                 auto [start, end] = _index_reader->sstable_datafile_positions();
                                 _read_enabled = true;
                                 _context->reset(indexable_element::partition);
-                                return _context->fast_forward_to(start, *end);
+                                return _context->fast_forward_to(start.to_logical_fixme(), end->to_logical_fixme());
                             });
                         }
                     }
@@ -1707,7 +1707,7 @@ public:
                         _index_in_current_partition = true;
                         _saved_partition_tombstone.reset();
                         _context->reset(indexable_element::partition);
-                        return _context->fast_forward_to(start, *end);
+                        return _context->fast_forward_to(start.to_logical_fixme(), end->to_logical_fixme());
                     }
                     _index_in_current_partition = false;
                     _read_enabled = false;

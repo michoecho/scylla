@@ -11,7 +11,6 @@
 #include <seastar/core/iostream.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/util/noncopyable_function.hh>
-#include "sstables/sstable_datafile_position.hh"
 #include "seastarx.hh"
 
 namespace sstables {
@@ -39,11 +38,6 @@ public:
         virtual future<tmp_buf> read() noexcept = 0;
         virtual future<> close() noexcept = 0;
         virtual future<> skip(uint64_t n) noexcept = 0;
-        /// \brief Returns the file position reached by advancing \c delta
-        /// bytes (which may be negative) from \c base. For a plain stream
-        /// this is just \c base + \c delta, but reversing/non-linear streams
-        /// translate the byte delta into a logical position themselves.
-        virtual sstable_datafile_position compute_relative_position(sstable_datafile_position base, int64_t delta) = 0;
         virtual data_source detach() && = 0;
     };
 
@@ -100,12 +94,6 @@ public:
     /// \brief Ignores the next \c n bytes from the stream.
     future<> skip(uint64_t n) noexcept {
         return _impl->skip(n);
-    }
-
-    /// \brief Returns the file position reached by advancing \c delta bytes
-    /// (which may be negative) from \c base.
-    sstable_datafile_position compute_relative_position(sstable_datafile_position base, int64_t delta) {
-        return _impl->compute_relative_position(base, delta);
     }
 
     /// \brief Detaches the underlying \c data_source from the wrapped

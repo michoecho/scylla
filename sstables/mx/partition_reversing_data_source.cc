@@ -121,11 +121,6 @@ public:
         co_return;
     }
 
-    sstable_datafile_position compute_relative_position(sstable_datafile_position base, int64_t delta) override {
-        _cursor.seek(base);
-        return _cursor.compute_relative_position(delta);
-    }
-
     data_source detach() && override {
         on_internal_error(sstlog, "cursor_input_stream_impl does not support detach()");
     }
