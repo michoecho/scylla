@@ -14,6 +14,8 @@
 
 namespace sstables {
 
+class sstable_datafile_offset;
+
 class sstable_datafile_position {
     int64_t _value;
     explicit sstable_datafile_position(int64_t v) noexcept : _value(v) {}
@@ -31,6 +33,8 @@ public:
     int64_t to_logical_fixme() const noexcept {
         return _value;
     }
+
+    friend sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept;
 };
 
 // disk_read_range describes a byte ranges covering part of an sstable
@@ -67,7 +71,13 @@ public:
     int64_t to_logical_fixme() const noexcept {
         return _value;
     }
+
+    friend sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept;
 };
+
+inline sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept {
+    return sstable_datafile_position(pos._value + off._value);
+}
 
 } // namespace sstables
 
