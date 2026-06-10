@@ -652,16 +652,18 @@ public:
                     // no promoted index blocks in the partition, read from the beginning
                     _row_start = _clustering_range_start;
                 }
-                sstable_datafile_position last_row_start = _row_start;
                 co_await emplace_row_skipping_context(_row_start, _partition_end);
+                auto current_row_start = _row_skipping_context->position();
+                auto last_row_start = current_row_start;
                 co_await _row_skipping_context->consume_input();
                 while (!_row_skipping_context->end_of_partition()) {
-                    last_row_start = _row_start;
-                    _row_start = row_skipping_position();
+                    last_row_start = current_row_start;
+                    current_row_start = _row_skipping_context->position();
                     co_await _row_skipping_context->consume_input();
                 }
-                _row_end = _row_start;
-                _row_start = last_row_start;
+                _cursor.seek(_row_skipping_context_start);
+                _row_end = _cursor.compute_relative_position(current_row_start);
+                _row_start = _cursor.compute_relative_position(last_row_start);
                 if (_row_start == _row_end) {
                     // empty partition
                     _state = state::FINISHED;
