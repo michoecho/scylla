@@ -503,12 +503,32 @@ public:
 
 using primitive_consumer = primitive_consumer_impl<temporary_buffer<char>>;
 
-template <typename StateProcessor, typename InputStream = input_stream<char>>
+// `Position` is the type in which this consumer's public API reports and
+// accepts file positions. Data-file consumers use sstables::sstable_datafile_position,
+// while consumers over auxiliary files (index, promoted index, BTI) use plain
+// byte offsets (uint64_t). Internally positions are always tracked as a logical
+// int64_t byte offset; the helpers below convert at the public boundary.
+template <typename StateProcessor, typename InputStream = input_stream<char>, typename Position = uint64_t>
 class continuous_data_consumer : protected primitive_consumer {
     using proceed = data_consumer::proceed;
     StateProcessor& state_processor() {
         return static_cast<StateProcessor&>(*this);
     };
+
+    static int64_t to_logical(Position p) noexcept {
+        if constexpr (std::same_as<Position, sstables::sstable_datafile_position>) {
+            return p.to_logical_fixme();
+        } else {
+            return static_cast<int64_t>(p);
+        }
+    }
+    static Position from_logical(int64_t v) noexcept {
+        if constexpr (std::same_as<Position, sstables::sstable_datafile_position>) {
+            return sstables::sstable_datafile_position::from_logical_fixme(v);
+        } else {
+            return static_cast<Position>(v);
+        }
+    }
 protected:
     InputStream _input;
     sstables::reader_position_tracker _stream_position;
@@ -519,12 +539,12 @@ protected:
 public:
     using read_status = data_consumer::read_status;
 
-    continuous_data_consumer(reader_permit permit, InputStream&& input, uint64_t start, uint64_t maxlen)
+    continuous_data_consumer(reader_permit permit, InputStream&& input, Position start, uint64_t maxlen)
             : primitive_consumer(std::move(permit))
             , _input(std::move(input))
             , _stream_position(sstables::reader_position_tracker{
-                    .position = sstables::sstable_datafile_position::from_logical_fixme(start),
-                    .byte_offset = static_cast<int64_t>(start),
+                    .position = sstables::sstable_datafile_position::from_logical_fixme(to_logical(start)),
+                    .byte_offset = to_logical(start),
                     .total_read_size = maxlen})
             , _remain(maxlen) {}
 
@@ -664,23 +684,24 @@ public:
         }
     }
 
-    future<> fast_forward_to(size_t begin, size_t end) {
-        auto cur = static_cast<size_t>(_stream_position.byte_offset);
-        sstables::parse_assert(begin >= cur);
-        auto n = begin - cur;
-        _stream_position.byte_offset = static_cast<int64_t>(begin);
-        _stream_position.position = sstables::sstable_datafile_position::from_logical_fixme(begin);
+    future<> fast_forward_to(Position begin, Position end) {
+        auto begin_logical = to_logical(begin);
+        auto end_logical = to_logical(end);
+        sstables::parse_assert(begin_logical >= _stream_position.byte_offset);
+        auto n = begin_logical - _stream_position.byte_offset;
+        _stream_position.byte_offset = begin_logical;
+        _stream_position.position = sstables::sstable_datafile_position::from_logical_fixme(begin_logical);
 
-        sstables::parse_assert(end >= begin);
-        _remain = end - begin;
+        sstables::parse_assert(end_logical >= begin_logical);
+        _remain = end_logical - begin_logical;
 
         primitive_consumer::reset();
         reader_permit::awaits_guard _{_permit};
         co_await _input.skip(n);
     }
 
-    future<> skip_to(size_t begin) {
-        return fast_forward_to(begin, static_cast<size_t>(_stream_position.byte_offset) + _remain);
+    future<> skip_to(Position begin) {
+        return fast_forward_to(begin, from_logical(_stream_position.byte_offset + _remain));
     }
 
     // Returns the offset of the first byte which has not been consumed yet.

@@ -92,12 +92,12 @@ struct foreign_sstable_open_info;
 
 template<typename T>
 concept ConsumeRowsContext =
-    requires(T c, indexable_element el, size_t s) {
+    requires(T c, indexable_element el, sstable_datafile_position pos) {
         { c.consume_input() } -> std::same_as<future<>>;
         { c.reset(el) } -> std::same_as<void>;
-        { c.fast_forward_to(s, s) } -> std::same_as<future<>>;
+        { c.fast_forward_to(pos, pos) } -> std::same_as<future<>>;
         { c.position() } -> std::same_as<uint64_t>;
-        { c.skip_to(s) } -> std::same_as<future<>>;
+        { c.skip_to(pos) } -> std::same_as<future<>>;
         { c.reader_position() } -> std::same_as<const sstables::reader_position_tracker&>;
         { c.eof() } -> std::same_as<bool>;
         { c.close() } -> std::same_as<future<>>;

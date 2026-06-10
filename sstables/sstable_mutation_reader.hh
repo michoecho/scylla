@@ -129,7 +129,7 @@ inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_rows(const s
     // returned context, and may make small skips.
     auto input = co_await sst->data_stream(sstable::disk_read_range(toread.start, last_end),
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, integrity);
-    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
+    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
 }
 
 template <typename DataConsumeRowsContext>
@@ -154,7 +154,7 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
     return reversed_context<DataConsumeRowsContext> {
         .the_context = std::make_unique<DataConsumeRowsContext>(
                 s, std::move(sst), consumer, sstable_datafile_input_stream(input_stream<char>(std::move(reversing_data_source.the_source))),
-                toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme()),
+                toread.start, toread.end.to_logical_fixme() - toread.start.to_logical_fixme()),
         .current_position_in_sstable = reversing_data_source.current_position_in_sstable
     };
 }
@@ -164,7 +164,7 @@ inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_single_parti
         sstable::disk_read_range toread, integrity_check integrity) {
     auto input = co_await sst->data_stream(toread,
             consumer.permit(), consumer.trace_state(), sst->_single_partition_history, integrity);
-    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
+    co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end.to_logical_fixme() - toread.start.to_logical_fixme());
 }
 
 // Like data_consume_rows() with bounds, but iterates over whole range
