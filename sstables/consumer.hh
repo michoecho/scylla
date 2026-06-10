@@ -598,8 +598,14 @@ public:
     // position delta, which is why it lives here rather than on the tracker.
     void apply_position_delta(int64_t n) {
         _stream_position.byte_offset += n;
-        _stream_position.position = sstables::sstable_datafile_position::from_logical_fixme(
-                _stream_position.position.to_logical_fixme() + n);
+        if constexpr (requires { _input.compute_relative_position(_stream_position.position, n); }) {
+            _stream_position.position = _input.compute_relative_position(_stream_position.position, n);
+        } else {
+            // The input stream can't translate a byte delta into a logical
+            // position; assume positions are linear in the byte offset.
+            _stream_position.position = sstables::sstable_datafile_position::from_logical_fixme(
+                    _stream_position.position.to_logical_fixme() + n);
+        }
     }
 
     // called by input_stream::consume():
