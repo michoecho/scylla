@@ -12,6 +12,7 @@
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/util/noncopyable_function.hh>
 #include "seastarx.hh"
+#include "sstables/sstable_datafile_position.hh"
 
 namespace sstables {
 
@@ -39,6 +40,7 @@ public:
         virtual future<> close() noexcept = 0;
         virtual future<> skip(uint64_t n) noexcept = 0;
         virtual data_source detach() && = 0;
+        virtual sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) = 0;
     };
 
 private:
@@ -94,6 +96,10 @@ public:
     /// \brief Ignores the next \c n bytes from the stream.
     future<> skip(uint64_t n) noexcept {
         return _impl->skip(n);
+    }
+
+    sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) {
+        return _impl->compute_relative_position(pos, offset);
     }
 
     /// \brief Detaches the underlying \c data_source from the wrapped

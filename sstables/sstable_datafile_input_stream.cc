@@ -43,6 +43,10 @@ public:
     future<> skip(uint64_t n) noexcept override {
         return _stream.skip(n);
     }
+    
+    sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
+        return pos + sstable_datafile_offset::from_logical_fixme(offset);
+    }
 
     data_source detach() && override {
         return std::move(_stream).detach();

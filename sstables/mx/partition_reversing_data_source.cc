@@ -120,6 +120,14 @@ public:
         advance_pos(n);
         co_return;
     }
+   
+    sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
+        auto prev = _cursor.compute_relative_position(0);
+        _cursor.seek(pos);
+        auto result = _cursor.compute_relative_position(offset);
+        _cursor.seek(prev);
+        return result;
+    }
 
     data_source detach() && override {
         on_internal_error(sstlog, "cursor_input_stream_impl does not support detach()");
