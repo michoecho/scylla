@@ -67,7 +67,7 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
 
         // The start of of this vint is used as a reference point
         // for the delta encoded in the next vint.
-        uint64_t trie_root_delta_base = this->position() - (*_processing_data).size();
+        uint64_t trie_root_delta_base = this->position().to_logical_approved() - (*_processing_data).size();
         expensive_log("row_index_header_parser: reading unsigned vint for data file offset, delta_base={}", trie_root_delta_base);
         co_yield this->read_unsigned_vint(*_processing_data);
         _result.data_file_offset = this->_u64;

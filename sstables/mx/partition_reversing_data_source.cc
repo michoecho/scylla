@@ -172,7 +172,7 @@ public:
     }
 private:
     uint64_t current_position() {
-        return position() - _processing_data->size();
+        return offset() - _processing_data->size();
     }
     processing_result_generator do_process_state() {
         // length of the partition key
@@ -329,7 +329,7 @@ public:
     }
 private:
     uint64_t current_position() {
-        return position() - _processing_data->size();
+        return offset() - _processing_data->size();
     }
     processing_result_generator do_process_state() {
         while (true) {
@@ -579,13 +579,6 @@ private:
                 _permit, _cached_column_translation);
     }
 
-    // The current row_skipping_context's position(), as an absolute file
-    // position. The context counts from its own start (_row_skipping_context_start),
-    // so we rebase through the cursor to keep the arithmetic typed.
-    sstable_datafile_position row_skipping_position() {
-        _cursor.seek(_row_skipping_context_start);
-        return _cursor.compute_relative_position(_row_skipping_context->position());
-    }
 public:
     partition_reversing_data_source_impl(const schema& s,
             shared_sstable sst,
@@ -660,12 +653,12 @@ public:
                     _row_start = _clustering_range_start;
                 }
                 co_await emplace_row_skipping_context(_row_start, _partition_end);
-                auto current_row_start = _row_skipping_context->position();
+                auto current_row_start = _row_skipping_context->offset();
                 auto last_row_start = current_row_start;
                 co_await _row_skipping_context->consume_input();
                 while (!_row_skipping_context->end_of_partition()) {
                     last_row_start = current_row_start;
-                    current_row_start = _row_skipping_context->position();
+                    current_row_start = _row_skipping_context->offset();
                     co_await _row_skipping_context->consume_input();
                 }
                 _cursor.seek(_row_skipping_context_start);

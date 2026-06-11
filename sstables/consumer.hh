@@ -685,8 +685,15 @@ public:
     // Returns the offset of the first byte which has not been consumed yet.
     // When called from state_processor::process_state() invoked by this consumer,
     // returns the offset of the first byte after the buffer passed to process_state().
-    uint64_t position() const {
-        return _stream_position.position.to_logical_fixme();
+    sstables::sstable_datafile_position position() const {
+        return _stream_position.position;
+    }
+
+    // Returns the offset of the first byte which has not been consumed yet.
+    // When called from state_processor::process_state() invoked by this consumer,
+    // returns the offset of the first byte after the buffer passed to process_state().
+    int64_t offset() const {
+        return _stream_position.offset;
     }
 
     const sstables::reader_position_tracker& reader_position() const {

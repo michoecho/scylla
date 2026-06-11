@@ -1310,7 +1310,7 @@ private:
             return get_index_reader().advance_to(*pos).then([this] {
                 index_reader& idx = *_index_reader;
                 auto index_position = idx.data_file_positions();
-                if (index_position.start <= _context->position()) {
+                if (sstables::sstable_datafile_position::from_logical_fixme(index_position.start) <= _context->position()) {
                     return make_ready_future<>();
                 }
                 return skip_to(idx.element_kind(), index_position.start).then([this] {
@@ -1367,7 +1367,7 @@ private:
     }
     future<> skip_to(indexable_element el, uint64_t begin) {
         sstlog.trace("sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
-        if (begin <= _context->position()) {
+        if (sstable_datafile_position::from_logical_fixme(begin) <= _context->position()) {
             return make_ready_future<>();
         }
         _context->reset(el);

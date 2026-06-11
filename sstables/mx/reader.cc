@@ -944,7 +944,7 @@ private:
             }
         row_body_label: {
             co_yield this->read_unsigned_vint(*_processing_data);
-            _next_row_offset = this->position() - _processing_data->size() + this->_u64;
+            _next_row_offset = this->offset() - _processing_data->size() + this->_u64;
             co_yield this->read_unsigned_vint(*_processing_data);
             // Ignore the result
             row_processing_result ret = _extended_flags.is_static()
@@ -959,7 +959,7 @@ private:
             }
             if (ret == row_processing_result::skip_row) {
                 _state = state::FLAGS;
-                auto current_pos = this->position() - _processing_data->size();
+                auto current_pos = this->offset() - _processing_data->size();
                 auto maybe_skip_bytes = this->skip(*_processing_data, _next_row_offset - current_pos);
                 if (std::holds_alternative<skip_bytes>(maybe_skip_bytes)) {
                     co_yield maybe_skip_bytes;
@@ -1495,7 +1495,7 @@ private:
                 return get_index_reader().advance_to(pos).then([this] {
                     abstract_index_reader& idx = *_index_reader;
                     auto index_position = idx.sstable_datafile_positions();
-                    if (index_position.start <= sstable_datafile_position::from_logical_fixme(_context->position())) {
+                    if (index_position.start <= _context->position()) {
                         return make_ready_future<>();
                     }
                     return skip_to(idx.element_kind(), index_position.start.to_logical_fixme()).then([this, &idx] {
@@ -1605,7 +1605,7 @@ private:
     }
     future<> skip_to(indexable_element el, uint64_t begin) {
         sstlog.trace("sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
-        if (begin <= _context->position()) {
+        if (sstable_datafile_position::from_logical_fixme(begin) <= _context->position()) {
             return make_ready_future<>();
         }
         _context->reset(el);
@@ -1628,7 +1628,7 @@ public:
     future<> advance_index_until_unseen_partition() {
         while (true) {
             auto [start, end] = _index_reader->sstable_datafile_positions();
-            if (start >= sstable_datafile_position::from_logical_fixme(_context->position())) {
+            if (start >= _context->position()) {
                 sstlog.trace("mp_row_consumer_reader_mx {}: advance_index_until_unseen_partition(): advanced to {}", fmt::ptr(this), start);
                 co_return;
             } else {
@@ -1659,7 +1659,7 @@ public:
                     auto [start, end] = _index_reader->sstable_datafile_positions();
                     parse_assert(bool(end), _sst->get_filename());
                     sstlog.trace("mp_row_consumer_reader_mx {}: fast_forward_to({}), index returned range [{}, {}), parser currently at {}", fmt::ptr(this), _pr.get(), start, *end, _context->position());
-                    if (start < sstable_datafile_position::from_logical_fixme(_context->position())) {
+                    if (start < _context->position()) {
                         sstlog.trace("mp_row_consumer_reader_mx {}: _saved_partition_tombstone={}", fmt::ptr(this), _saved_partition_tombstone);
                         // If we got here, the index returned a Data start which precedes
                         // the data parser's position.
@@ -1685,9 +1685,9 @@ public:
                         _index_in_current_partition = false;
                         if (_saved_partition_tombstone) {
                             // Case 1 from the comment above.
-                            if (*end >= sstable_datafile_position::from_logical_fixme(_context->position())) {
+                            if (*end >= _context->position()) {
                                 _read_enabled = true;
-                                return _context->fast_forward_to(_context->position(), end->to_logical_fixme());
+                                return _context->fast_forward_to(_context->position(), *end);
                             } else {
                                 _read_enabled = false;
                                 return make_ready_future<>();
@@ -2261,7 +2261,7 @@ future<uint64_t> validate(
     try {
         monitor.on_read_started(context->reader_position());
         while (!context->eof() && !abort.abort_requested()) {
-            uint64_t current_partition_pos = 0;
+            sstable_datafile_position current_partition_pos;
             clustered_index_cursor* idx_cursor = nullptr;
 
             if (idx_reader && idx_reader->eof()) {
@@ -2289,7 +2289,7 @@ future<uint64_t> validate(
                 } else {
                     sstlog.trace("validate(): index-data position check for a partition: {} == {}", data_pos, index_pos);
                 }
-                if (index_pos != sstable_datafile_position::from_logical_fixme(data_pos)) {
+                if (index_pos != data_pos) {
                     consumer.report_error(format("mismatching index/data: position mismatch: index: {}, data: {}", index_pos, data_pos));
                 }
                 current_partition_pos = data_pos;
@@ -2312,7 +2312,7 @@ future<uint64_t> validate(
                     // The mx format always has position-in-partition in the variant.
                     const auto start = std::get<position_in_partition_view>(current_pi_block->start);
                     const auto end = std::get<position_in_partition_view>(current_pi_block->end);
-                    const auto index_pos = current_partition_pos + current_pi_block->offset;
+                    const auto index_pos = current_partition_pos + sstable_datafile_offset::from_logical_fixme(current_pi_block->offset);
                     const auto data_pos = context->position();
                     sstlog.trace("validate(): index-data position check for clustering block (first={}) [{}, {}]: {} == {}, partition starts at {}", first_block, start, end, index_pos, data_pos, current_partition_pos);
                     // We cannot reliably position the parser at the start of
