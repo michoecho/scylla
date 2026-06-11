@@ -1574,7 +1574,7 @@ private:
             // Caller must retain a reference to checksum component while in use by the stream.
             _checksum = co_await _sst->read_checksum();
             // The stream checks the digest only if the read range covers all data.
-            if (begin == sstable_datafile_position::from_logical_fixme(0) && *end == sstable_datafile_position::from_logical_fixme(_sst->data_size())) {
+            if (begin == _sst->start_position() && *end == _sst->end_position()) {
                 co_await _sst->read_digest();
             }
         }

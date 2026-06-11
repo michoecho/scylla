@@ -1310,7 +1310,7 @@ private:
             return get_index_reader().advance_to(*pos).then([this] {
                 index_reader& idx = *_index_reader;
                 auto index_position = idx.data_file_positions();
-                if (sstables::sstable_datafile_position::from_logical_fixme(index_position.start) <= _context->position()) {
+                if (sstables::sstable_datafile_position::from_logical_approved(index_position.start) <= _context->position()) {
                     return make_ready_future<>();
                 }
                 return skip_to(idx.element_kind(), index_position.start).then([this] {

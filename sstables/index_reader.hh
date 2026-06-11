@@ -1141,8 +1141,8 @@ public:
     sstable_datafile_positions_range sstable_datafile_positions() const override {
         auto raw = data_file_positions();
         return sstable_datafile_positions_range{
-            .start = sstable_datafile_position::from_logical_fixme(raw.start),
-            .end = raw.end.transform(sstable_datafile_position::from_logical_fixme),
+            .start = sstable_datafile_position::from_logical_approved(raw.start),
+            .end = raw.end.transform(sstable_datafile_position::from_logical_approved),
         };
     }
 
