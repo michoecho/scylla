@@ -403,6 +403,7 @@ public:
     // to the physical positions delimiting the bytes that must be read.
     // `range.end` defaults to data_size() if not engaged.
     physical_position_range logical_to_physical_range(sstable_datafile_positions_range range) const;
+    disk_read_range logical_to_physical_range_fixme(sstable_datafile_positions_range range) const;
 
     uint64_t index_size() const {
         return _index_file_size;

@@ -2710,6 +2710,12 @@ sstable_datafile_position sstable::end_position() const {
     return sstable_datafile_position::from_logical_approved(data_size());
 }
 
+disk_read_range sstable::logical_to_physical_range_fixme(sstable_datafile_positions_range range) const {
+    auto logical_start = range.start;
+    auto logical_end = range.end.value_or(end_position());
+    return {logical_start, logical_end};
+}
+
 sstable::physical_position_range sstable::logical_to_physical_range(sstable_datafile_positions_range range) const {
     auto locate = [this] (uint64_t pos) -> physical_position {
         if (pos >= data_size()) {
@@ -3207,8 +3213,12 @@ future<input_stream<char>> sstable::data_stream_compressed_chunks(
 }
 
 future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, reader_permit permit) {
-    auto stream = co_await data_stream(
-            disk_read_range(sstable_datafile_position::from_logical_fixme(pos), sstable_datafile_position::from_logical_fixme(pos + len)),
+    auto logical_range = sstable_datafile_positions_range{
+        .start = sstable_datafile_position::from_logical_approved(pos),
+        .end = sstable_datafile_position::from_logical_approved(pos + len),
+    };
+    auto disk_range = logical_to_physical_range_fixme(logical_range);
+    auto stream = co_await data_stream(disk_range,
             std::move(permit), tracing::trace_state_ptr(), {});
     auto buff = co_await stream.read_exactly(len);
     co_await stream.close();
