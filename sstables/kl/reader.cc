@@ -1401,7 +1401,7 @@ public:
                         _read_enabled = true;
                         _index_in_current_partition = true;
                         _context->reset(indexable_element::partition);
-                        return _context->fast_forward_to(start, *end);
+                        return _context->fast_forward_to(sstable_datafile_position::from_logical_approved(start), sstable_datafile_position::from_logical_approved(*end));
                     }
                     _index_in_current_partition = false;
                     _read_enabled = false;

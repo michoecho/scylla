@@ -465,7 +465,9 @@ class index_reader final : public abstract_index_reader {
             co_return;
         }
         bound.consumer->prepare(quantity);
-        co_return co_await bound.context->fast_forward_to(begin, end);
+        co_return co_await bound.context->fast_forward_to(
+            sstable_datafile_position::from_logical_approved(begin), 
+            sstable_datafile_position::from_logical_approved(end));
     }
 
 private:

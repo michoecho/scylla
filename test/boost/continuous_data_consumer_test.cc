@@ -188,7 +188,9 @@ SEASTAR_THREAD_TEST_CASE(test_skip_at_end) {
         int next_data_size = tests::random::get_int<int>(1, 50);
         skipping_consumer consumer(semaphore.make_permit(), initial_data_size, to_skip, next_data_size);
         consumer.run();
-        consumer.fast_forward_to(initial_data_size + to_skip, initial_data_size + to_skip + next_data_size).get();
+        consumer.fast_forward_to(
+            sstables::sstable_datafile_position::from_logical_approved(initial_data_size + to_skip),
+            sstables::sstable_datafile_position::from_logical_approved(initial_data_size + to_skip + next_data_size)).get();
         consumer.run();
     }
 }

@@ -1698,7 +1698,7 @@ public:
                                 auto [start, end] = _index_reader->sstable_datafile_positions();
                                 _read_enabled = true;
                                 _context->reset(indexable_element::partition);
-                                return _context->fast_forward_to(start.to_logical_fixme(), end->to_logical_fixme());
+                                return _context->fast_forward_to(start, *end);
                             });
                         }
                     }
@@ -1707,7 +1707,7 @@ public:
                         _index_in_current_partition = true;
                         _saved_partition_tombstone.reset();
                         _context->reset(indexable_element::partition);
-                        return _context->fast_forward_to(start.to_logical_fixme(), end->to_logical_fixme());
+                        return _context->fast_forward_to(start, *end);
                     }
                     _index_in_current_partition = false;
                     _read_enabled = false;
