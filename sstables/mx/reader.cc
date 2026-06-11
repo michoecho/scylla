@@ -1190,7 +1190,7 @@ public:
                                 sstables::sstable_datafile_input_stream&& input,
                                 uint64_t start,
                                 uint64_t maxlen)
-        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>(consumer.permit(), std::move(input), start, maxlen)
+        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>(consumer.permit(), std::move(input), sstable_datafile_position::from_logical_fixme(start), maxlen)
         , _consumer(consumer)
         , _sst(sst)
         , _header(sst->get_serialization_header())

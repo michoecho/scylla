@@ -354,7 +354,7 @@ public:
             column_translation ctr,
             const abort_source& abort,
             tracing::trace_state_ptr trace_state = {})
-        : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
+        : continuous_data_consumer(std::move(permit), std::move(input), sstable_datafile_position::from_logical_approved(start), maxlen)
         , _sst(sst), _consumer(consumer), _entry_offset(start), _trust_pi(trust_pi)
         , _ctr(std::move(ctr))
         , _trace_state(std::move(trace_state))

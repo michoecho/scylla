@@ -216,7 +216,7 @@ public:
     // (e.g. header_end_pos()) are relative to the start of `input`, so the
     // caller rebases them onto the absolute file position the stream starts at.
     partition_header_context(sstables::sstable_datafile_input_stream&& input, uint64_t maxlen, reader_permit permit)
-                : continuous_data_consumer(std::move(permit), std::move(input), 0, maxlen)
+                : continuous_data_consumer(std::move(permit), std::move(input), sstable_datafile_position::from_logical_approved(0), maxlen)
                 , _gen(do_process_state())
     {}
 };
@@ -412,7 +412,7 @@ public:
     // rebases position() onto an absolute file position when it needs one, and
     // the tombstone offsets index directly into the row buffer.
     row_body_skipping_context(sstables::sstable_datafile_input_stream&& input, uint64_t maxlen, reader_permit permit, column_translation ct)
-                : continuous_data_consumer(std::move(permit), std::move(input), 0, maxlen)
+                : continuous_data_consumer(std::move(permit), std::move(input), sstable_datafile_position::from_logical_approved(0), maxlen)
                 , _gen(do_process_state())
                 , _column_translation(std::move(ct))
     {}

@@ -526,9 +526,6 @@ public:
             , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0, .total_read_size = maxlen})
             , _remain(maxlen) {}
 
-    continuous_data_consumer(reader_permit permit, InputStream&& input, uint64_t start, uint64_t maxlen)
-            : continuous_data_consumer(std::move(permit), std::forward<InputStream>(input), sstables::sstable_datafile_position::from_logical_fixme(start), maxlen) {}
-
     future<> consume_input() {
         // On first invoke we are guaranteed to go to the disk, so mark as
         // blocked unconditionally. On succeeding invokes, we determine whether

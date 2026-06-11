@@ -44,7 +44,7 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
     processing_result_generator _gen;
 
     row_index_header_parser(reader_permit rp, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
-        : continuous_data_consumer(std::move(rp), std::move(input), start, maxlen)
+        : continuous_data_consumer(std::move(rp), std::move(input), sstable_datafile_position::from_logical_approved(start), maxlen)
         , _gen(do_process_state())
     {}
     void verify_end_state() {

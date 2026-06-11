@@ -30,6 +30,9 @@ public:
     static sstable_datafile_position from_logical_fixme(int64_t v) noexcept {
         return sstable_datafile_position(v);
     }
+    static sstable_datafile_position from_logical_approved(int64_t v) noexcept {
+        return sstable_datafile_position(v);
+    }
     int64_t to_logical_fixme() const noexcept {
         return _value;
     }
