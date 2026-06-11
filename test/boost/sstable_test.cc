@@ -707,8 +707,8 @@ SEASTAR_TEST_CASE(test_skipping_in_compressed_stream) {
                 co_return input_stream<char>(make_file_data_source(std::move(f), pos, len, std::move(options)));
             };
             return make_compressed_file_m_format_input_stream(stream_creator, &c,
-                    sstables::disk_read_range(sstables::sstable_datafile_position::from_logical_fixme(0),
-                                              sstables::sstable_datafile_position::from_logical_fixme(uncompressed_size)),
+                    sstables::disk_read_range(sstables::sstable_datafile_position::from_logical_approved(0),
+                                              sstables::sstable_datafile_position::from_logical_approved(uncompressed_size)),
                     opts, semaphore.make_permit(), std::nullopt);
         };
 

@@ -756,8 +756,8 @@ sstables::sstable_datafile_positions_range bti_index_reader::sstable_datafile_po
     }
     trie_logger.debug("bti_index_reader::sstable_datafile_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
     return {
-        sstables::sstable_datafile_position::from_logical_fixme(lo),
-        hi.transform(sstables::sstable_datafile_position::from_logical_fixme),
+        sstables::sstable_datafile_position::from_logical_approved(lo),
+        hi.transform(sstables::sstable_datafile_position::from_logical_approved),
     };
 }
 future<std::optional<sstables::sstable_datafile_offset>> bti_index_reader::last_block_sstable_datafile_offset() {

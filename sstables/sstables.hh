@@ -816,6 +816,8 @@ public:
     future<std::optional<position_in_partition>>
     find_first_position_in_partition(reader_permit permit, const dht::decorated_key& key, bool reversed);
 
+    disk_read_range full_range();
+
     // Return an input_stream which reads exactly the specified byte range
     // from the data file (after uncompression, if the file is compressed).
     // Unlike data_read() below, this method does not read the entire byte

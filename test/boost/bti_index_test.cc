@@ -344,7 +344,7 @@ struct reference_index {
     {
         for (const auto& e : _entries) {
             std::visit([this](const auto& entry) {
-                _data_file_offsets.push_back(sstables::sstable_datafile_position::from_logical_fixme(entry.data_file_offset));
+                _data_file_offsets.push_back(sstables::sstable_datafile_position::from_logical_approved(entry.data_file_offset));
             }, e);
         }
         {

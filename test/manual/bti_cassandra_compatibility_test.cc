@@ -274,7 +274,7 @@ void test_index_files(
     std::optional<std::pair<sstables::sstable_datafile_position, sstables::sstable_datafile_position>> prev_range
         = std::pair{sstables::sstable_datafile_position{}, sstables::sstable_datafile_position{}};
     for (const auto& [offset, rt, mf] : fragments) {
-        auto offset_pos = sstables::sstable_datafile_position::from_logical_fixme(offset);
+        auto offset_pos = sstables::sstable_datafile_position::from_logical_approved(offset);
         // We check the granularity at the points where we cross into a new Data.db range.
         if (prev_range && offset_pos >= prev_range.value().second) {
             if (expected_index_granularity) {
@@ -344,7 +344,7 @@ void test_index_files(
             } else {
                 SCYLLA_ASSERT(range.start == offset_pos);
             }
-            SCYLLA_ASSERT(range.end.has_value() && range.end.value() == sstables::sstable_datafile_position::from_logical_fixme(offset + 1));
+            SCYLLA_ASSERT(range.end.has_value() && range.end.value() == sstables::sstable_datafile_position::from_logical_approved(offset + 1));
             prev_range.reset();
         }
         prev_frag_offset = offset;

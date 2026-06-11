@@ -2703,11 +2703,11 @@ uint64_t sstable::ondisk_data_size() const {
 }
 
 sstable_datafile_position sstable::start_position() const {
-    return sstable_datafile_position::from_logical_fixme(0);
+    return sstable_datafile_position::from_logical_approved(0);
 }
 
 sstable_datafile_position sstable::end_position() const {
-    return sstable_datafile_position::from_logical_fixme(data_size());
+    return sstable_datafile_position::from_logical_approved(data_size());
 }
 
 sstable::physical_position_range sstable::logical_to_physical_range(sstable_datafile_positions_range range) const {
@@ -3092,6 +3092,10 @@ component_type sstable::component_from_sstring(version_types v, const sstring &s
     } catch (std::out_of_range&) {
         return component_type::Unknown;
     }
+}
+
+disk_read_range sstable::full_range() {
+    return {start_position(), end_position()};
 }
 
 future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range,

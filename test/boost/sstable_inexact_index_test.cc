@@ -29,7 +29,7 @@ std::vector<sstables::sstable_datafile_position> get_ck_positions(shared_sstable
         auto partition_pos = r.sstable_datafile_positions().start;
         sstables::clustered_index_cursor* cur = r.current_clustered_cursor();
         while (auto ei_opt = cur->next_entry().get()) {
-            result.push_back(sstables::sstable_datafile_position::from_logical_fixme(ei_opt.value().offset + partition_pos.to_logical_fixme()));
+            result.push_back(sstables::sstable_datafile_position::from_logical_approved(ei_opt.value().offset + partition_pos.to_logical_fixme()));
         }
         r.advance_to_next_partition().get();
     }
@@ -314,7 +314,7 @@ SEASTAR_TEST_CASE(test_inexact_partition_index_range_query) {
         // Use the index to find key positions.
         std::vector<sstables::sstable_datafile_position> partition_positions = get_partition_positions(sst, permit);
         std::vector<sstables::sstable_datafile_position> ck_positions = get_ck_positions(sst, permit);
-        partition_positions.push_back(sstables::sstable_datafile_position::from_logical_fixme(sst->data_size()));
+        partition_positions.push_back(sstables::sstable_datafile_position::from_logical_approved(sst->data_size()));
         {
             testlog.debug("Sstable initialized with:");
             size_t i = 0;
@@ -486,7 +486,7 @@ SEASTAR_TEST_CASE(test_inexact_partition_index_singular_query) {
 
         // Use the index to find key positions.
         std::vector<sstables::sstable_datafile_position> partition_positions = get_partition_positions(sst, permit);
-        partition_positions.push_back(sstables::sstable_datafile_position::from_logical_fixme(sst->data_size()));
+        partition_positions.push_back(sstables::sstable_datafile_position::from_logical_approved(sst->data_size()));
         {
             testlog.debug("Sstable initialized with:");
             size_t i = 0;

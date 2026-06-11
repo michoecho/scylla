@@ -1634,9 +1634,7 @@ void decompress_operation(schema_ptr schema, reader_permit permit, const std::ve
         auto ostream = make_file_output_stream(std::move(ofile), options).get();
         auto close_ostream = defer([&ostream] { ostream.close().get(); });
 
-        auto istream = sst->data_stream(
-                disk_read_range(sstable_datafile_position::from_logical_fixme(0),
-                                sstable_datafile_position::from_logical_fixme(sst->data_size())),
+        auto istream = sst->data_stream(sst->full_range(),
                 permit, nullptr, nullptr).get();
         auto close_istream = defer([&istream] { istream.close().get(); });
 
