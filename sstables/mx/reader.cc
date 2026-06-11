@@ -1609,7 +1609,7 @@ private:
             return make_ready_future<>();
         }
         _context->reset(el);
-        return _context->skip_to(begin);
+        return _context->skip_to(sstable_datafile_position::from_logical_fixme(begin));
     }
     bool reversed() const {
         return _slice.is_reversed();

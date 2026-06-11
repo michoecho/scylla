@@ -668,10 +668,10 @@ public:
         co_await _input.skip(n);
     }
 
-    future<> skip_to(size_t begin) {
+    future<> skip_to(sstables::sstable_datafile_position begin) {
         return fast_forward_to(
-            sstables::sstable_datafile_position::from_logical_approved(begin),
-            sstables::sstable_datafile_position::from_logical_approved(_stream_position.position.to_logical_fixme() + _remain));
+            begin,
+            sstables::sstable_datafile_position::from_logical_fixme(_stream_position.position.to_logical_fixme() + _remain));
     }
 
     // Returns the offset of the first byte which has not been consumed yet.
