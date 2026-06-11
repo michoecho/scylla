@@ -1365,13 +1365,14 @@ private:
         }
         return initialize();
     }
-    future<> skip_to(indexable_element el, uint64_t begin) {
+    future<> skip_to(indexable_element el, uint64_t begin_raw) {
+        auto begin = sstable_datafile_position::from_logical_approved(begin_raw);
         sstlog.trace("sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
-        if (sstable_datafile_position::from_logical_fixme(begin) <= _context->position()) {
+        if (begin <= _context->position()) {
             return make_ready_future<>();
         }
         _context->reset(el);
-        return _context->skip_to(sstable_datafile_position::from_logical_fixme(begin));
+        return _context->skip_to(begin);
     }
 public:
     void on_out_of_clustering_range() override {

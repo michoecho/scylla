@@ -1357,7 +1357,7 @@ private:
                 return make_ready_future<>();
             }
             parse_assert(_index_reader->element_kind() == indexable_element::partition, _sst->get_filename());
-            return skip_to(_index_reader->element_kind(), start.to_logical_fixme()).then([this] {
+            return skip_to(_index_reader->element_kind(), start).then([this] {
                 _sst->get_stats().on_partition_seek();
             });
         });
@@ -1498,7 +1498,7 @@ private:
                     if (index_position.start <= _context->position()) {
                         return make_ready_future<>();
                     }
-                    return skip_to(idx.element_kind(), index_position.start.to_logical_fixme()).then([this, &idx] {
+                    return skip_to(idx.element_kind(), index_position.start).then([this, &idx] {
                         _sst->get_stats().on_partition_seek();
                         auto open_end_marker = idx.end_open_marker();
                         if (open_end_marker) {
@@ -1603,13 +1603,13 @@ private:
         _index_in_current_partition = true;
         co_return true;
     }
-    future<> skip_to(indexable_element el, uint64_t begin) {
+    future<> skip_to(indexable_element el, sstable_datafile_position begin) {
         sstlog.trace("sstable_reader: {}: skip_to({} -> {}, el={})", fmt::ptr(_context.get()), _context->position(), begin, static_cast<int>(el));
-        if (sstable_datafile_position::from_logical_fixme(begin) <= _context->position()) {
+        if (begin <= _context->position()) {
             return make_ready_future<>();
         }
         _context->reset(el);
-        return _context->skip_to(sstable_datafile_position::from_logical_fixme(begin));
+        return _context->skip_to(begin);
     }
     bool reversed() const {
         return _slice.is_reversed();
