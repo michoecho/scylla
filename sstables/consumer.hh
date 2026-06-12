@@ -22,8 +22,12 @@
 #include "utils/fragmented_temporary_buffer.hh"
 #include "utils/small_vector.hh"
 #include "exceptions.hh"
+#include <seastar/util/log.hh>
+#include <seastar/util/defer.hh>
 
 #include <variant>
+
+inline seastar::logger consumer_skip_probe_log("consumer_skip_probe");
 
 template<typename T, ContiguousSharedBuffer Buffer>
 inline T consume_be(Buffer& p) {
@@ -515,6 +519,7 @@ protected:
     sstables::reader_position_tracker _stream_position;
     // remaining length of input to read (if <0, continue until end of file).
     uint64_t _remain;
+    std::optional<sstables::sstable_datafile_position> _end_position;
     std::optional<reader_permit::awaits_guard> _awaits_guard;
     bool _first_invoke = true;
 public:
@@ -524,7 +529,12 @@ public:
             : primitive_consumer(std::move(permit))
             , _input(std::move(input))
             , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0})
-            , _remain(maxlen) {}
+            , _remain(maxlen)
+            , _end_position(
+                    static_cast<int64_t>(maxlen) >= 0
+                    ? std::optional<sstables::sstable_datafile_position>(start + sstables::sstable_datafile_offset::from_logical_fixme(maxlen))
+                    : std::optional<sstables::sstable_datafile_position>()
+            ) {}
 
     future<> consume_input() {
         // On first invoke we are guaranteed to go to the disk, so mark as
@@ -591,11 +601,29 @@ public:
 
     void apply_position_delta(int64_t n) {
         _stream_position.offset += n;
+        _stream_position.position = compute_relative_position(n);
+        _remain -= n;
+    }
+    
+    sstables::sstable_datafile_position compute_relative_position(int64_t n) {
         if constexpr (std::same_as<InputStream, input_stream<char>>) {
-            _stream_position.position = _stream_position.position + sstables::sstable_datafile_offset::from_logical_fixme(n);
+            return _stream_position.position + sstables::sstable_datafile_offset::from_logical_fixme(n);
         } else {
             static_assert(std::same_as<InputStream, sstables::sstable_datafile_input_stream>);
-            _stream_position.position = _input.compute_relative_position(_stream_position.position, n);
+            return _input.compute_relative_position(_stream_position.position, n);
+        }
+    }
+
+    int64_t distance_to(sstables::sstable_datafile_position pos) {
+        return subtract_positions(pos, _stream_position.position);
+    }
+
+    int64_t subtract_positions(sstables::sstable_datafile_position b, sstables::sstable_datafile_position a) {
+        if constexpr (std::same_as<InputStream, input_stream<char>>) {
+            return b.to_logical_approved() - a.to_logical_approved();
+        } else {
+            static_assert(std::same_as<InputStream, sstables::sstable_datafile_input_stream>);
+            return _input.subtract_positions(b, a);
         }
     }
 
@@ -603,17 +631,18 @@ public:
     future<consumption_result_type>
     operator()(temporary_buffer<char> data) {
         mark_unblocked();
-        if (data.size() >= _remain) {
+        auto buffer_end_position = compute_relative_position(data.size());
+        if (_end_position && buffer_end_position >= *_end_position) {
             // We received more data than we actually care about, so process
             // the beginning of the buffer, and return the rest to the stream
-            auto segment = data.share(0, _remain);
-            apply_position_delta(_remain);
+            auto remain = distance_to(*_end_position);
+            auto segment = data.share(0, remain);
+            apply_position_delta(segment.size());
             auto ret = process(segment);
+            auto processed = remain - segment.size();
             apply_position_delta(-segment.size());
-            data.trim_front(_remain - segment.size());
-            auto len = _remain - segment.size();
-            _remain -= len;
-            if (_remain == 0 && ret == proceed::yes) {
+            data.trim_front(processed);
+            if (_stream_position.position >= *_end_position && ret == proceed::yes) {
                 verify_end_state();
             }
             return make_ready_future<consumption_result_type>(stop_consuming<char>{std::move(data)});
@@ -624,54 +653,60 @@ public:
         } else {
             // We can process the entire buffer (if the consumer wants to).
             auto orig_data_size = data.size();
-            apply_position_delta(data.size());
+            apply_position_delta(orig_data_size);
             auto result = process(data);
-            return seastar::visit(result, [this, &data, orig_data_size] (proceed value) {
-                _remain -= orig_data_size - data.size();
-                apply_position_delta(-data.size());
+            apply_position_delta(-data.size());
+            return seastar::visit(result, [this, &data] (proceed value) {
                 if (value == proceed::yes) {
                     mark_blocked();
                     return make_ready_future<consumption_result_type>(continue_consuming{});
                 } else {
                     return make_ready_future<consumption_result_type>(stop_consuming<char>{std::move(data)});
                 }
-            }, [this, &data, orig_data_size](skip_bytes skip) {
+            }, [this, &data](skip_bytes skip) {
                 // we only expect skip_bytes to be used if reader needs to skip beyond the provided buffer
                 // otherwise it should just trim_front and proceed as usual
                 sstables::parse_assert(data.size() == 0);
-                _remain -= orig_data_size;
                 if (skip.get_value() >= _remain) {
+                    if (skip.get_value() == _remain) {
+                        consumer_skip_probe_log.error("SKIP_PROBE_REACHED case=EQ skip={} remain={}", skip.get_value(), _remain);
+                    } else {
+                        consumer_skip_probe_log.error("SKIP_PROBE_REACHED case=GT skip={} remain={}", skip.get_value(), _remain);
+                    }
                     skip_bytes skip_remaining(_remain);
                     apply_position_delta(_remain);
-                    _remain = 0;
                     verify_end_state();
                     return make_ready_future<consumption_result_type>(std::move(skip_remaining));
                 }
                 apply_position_delta(skip.get_value());
-                _remain -= skip.get_value();
                 mark_blocked();
                 return make_ready_future<consumption_result_type>(std::move(skip));
             });
         }
     }
 
-    future<> fast_forward_to(sstables::sstable_datafile_position begin, sstables::sstable_datafile_position end) {
+    future<> fast_forward_to_impl(sstables::sstable_datafile_position begin, std::optional<sstables::sstable_datafile_position> end) {
         sstables::parse_assert(begin >= _stream_position.position);
         auto n = begin.to_logical_fixme() - _stream_position.position.to_logical_fixme();
         _stream_position.position = begin;
 
-        sstables::parse_assert(end >= _stream_position.position);
-        _remain = end.to_logical_fixme() - _stream_position.position.to_logical_fixme();
+        sstables::parse_assert(!end || *end >= _stream_position.position);
+        _remain = end ? subtract_positions(*end, _stream_position.position) : -1;
+        _end_position = end;
 
         primitive_consumer::reset();
         reader_permit::awaits_guard _{_permit};
         co_await _input.skip(n);
     }
 
+    future<> fast_forward_to(sstables::sstable_datafile_position begin, sstables::sstable_datafile_position end) {
+        return fast_forward_to_impl(begin, end);
+    }
+
     future<> skip_to(sstables::sstable_datafile_position begin) {
-        return fast_forward_to(
+        return fast_forward_to_impl(
             begin,
-            sstables::sstable_datafile_position::from_logical_fixme(_stream_position.position.to_logical_fixme() + _remain));
+            _end_position);
     }
 
     // Returns the offset of the first byte which has not been consumed yet.

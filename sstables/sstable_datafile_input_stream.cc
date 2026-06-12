@@ -48,6 +48,10 @@ public:
         return pos + sstable_datafile_offset::from_logical_fixme(offset);
     }
 
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
+        return b.to_logical_fixme() - a.to_logical_fixme();
+    }
+
     data_source detach() && override {
         return std::move(_stream).detach();
     }

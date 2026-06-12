@@ -41,6 +41,7 @@ public:
         virtual future<> skip(uint64_t n) noexcept = 0;
         virtual data_source detach() && = 0;
         virtual sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) = 0;
+        virtual int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) = 0;
     };
 
 private:
@@ -100,6 +101,10 @@ public:
 
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) {
         return _impl->compute_relative_position(pos, offset);
+    }
+
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) {
+        return _impl->subtract_positions(b, a);
     }
 
     /// \brief Detaches the underlying \c data_source from the wrapped

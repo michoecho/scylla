@@ -129,6 +129,10 @@ public:
         return result;
     }
 
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
+        return b.to_logical_fixme() - a.to_logical_fixme();
+    }
+
     data_source detach() && override {
         on_internal_error(sstlog, "cursor_input_stream_impl does not support detach()");
     }
@@ -171,7 +175,7 @@ public:
         return ret;
     }
 private:
-    uint64_t current_position() {
+    int64_t current_position() {
         return offset() - _processing_data->size();
     }
     processing_result_generator do_process_state() {
@@ -191,21 +195,24 @@ private:
         co_yield read_8(*_processing_data);
         auto flags = unfiltered_flags_m(_u8);
         if (flags.is_end_of_partition() || flags.is_range_tombstone() || !flags.has_extended_flags()) {
+            sstlog.error("HANG 0 {} ", current_position());
             _header_end_pos = current_position() - 1;
             co_yield data_consumer::proceed::no;
         } else {
             co_yield read_8(*_processing_data);
             auto extended_flags = unfiltered_extended_flags_m(_u8);
             if (!extended_flags.is_static()) {
+                sstlog.error("HANG 1 {} ", current_position());
                 _header_end_pos = current_position() - 2;
                 co_yield data_consumer::proceed::no;
             }
         }
-
+        
         // A static row is present.
         // There are no clustering blocks. Read the row body size:
         co_yield read_unsigned_vint(*_processing_data);
         // skip the row body
+        sstlog.error("HANG 2 {} {}", current_position(), _u64);
         _header_end_pos = current_position() + _u64;
         // _header_end_pos is where the clustering rows start
         co_yield data_consumer::proceed::no;
@@ -606,8 +613,10 @@ public:
                     -1, _permit);
             co_await _partition_header_context->consume_input();
             // header_end_pos() is relative to the partition start; rebase it.
+            sstlog.error("HANG {} {}", _partition_start, _partition_header_context->header_end_pos());
             _cursor.seek(_partition_start);
             _clustering_range_start = _cursor.compute_relative_position(_partition_header_context->header_end_pos());
+            sstlog.error("HANG {} {} {}", _partition_start, _partition_header_context->header_end_pos(), _clustering_range_start);
             co_return co_await data_read(_partition_start, _clustering_range_start);
         }
         auto ir_end = _ir.sstable_datafile_positions().end;
