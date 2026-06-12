@@ -32,7 +32,6 @@ write_monitor& default_write_monitor();
 struct reader_position_tracker {
     sstable_datafile_position position;
     int64_t offset = 0;
-    uint64_t total_read_size = 0;
 };
 
 class read_monitor {

@@ -523,7 +523,7 @@ public:
     continuous_data_consumer(reader_permit permit, InputStream&& input, sstables::sstable_datafile_position start, uint64_t maxlen)
             : primitive_consumer(std::move(permit))
             , _input(std::move(input))
-            , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0, .total_read_size = maxlen})
+            , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0})
             , _remain(maxlen) {}
 
     future<> consume_input() {
