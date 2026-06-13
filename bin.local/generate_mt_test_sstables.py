@@ -42,7 +42,7 @@ def main() -> int:
     for sstable, schema in FILES:
         print(f"=== Converting {sstable} ===", flush=True)
         extra_args = ["--schema-file", schema] if schema else []
-        cmd = ["./cr", SCYLLA, *common_args, *extra_args, sstable]
+        cmd = [SCYLLA, *common_args, *extra_args, sstable]
         subprocess.run(cmd, check=True)
 
     return 0
