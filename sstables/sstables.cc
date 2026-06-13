@@ -3791,7 +3791,7 @@ future<uint64_t> sstable::estimated_keys_for_range(const dht::token_range& range
         auto pr = logical_to_physical_range(ir->sstable_datafile_positions());
         auto total_size = ondisk_data_size();
         auto total_count = get_estimated_key_count();
-        sstlog.error("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
+        sstlog.debug("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
                 get_filename(), range, pr.start, pr.end, total_size, total_count);
         if (pr.start == pr.end) {
             result = 0;
