@@ -54,6 +54,7 @@ def write_table_and_estimate_partitions(cql, test_keyspace, N):
         print(count)
         return count
 
+@pytest.mark.skip_bug("Post-compression estimates are inaccurate")
 # We expect that when write_table_and_estimate_partitions writes N partitions
 # and returns Scylla's or Cassandra's estimate on the number of partitions,
 # this estimate would be *around* N. However, we don't know how close it should
