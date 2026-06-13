@@ -40,3 +40,4 @@ rust/**/target
 rust/**/Cargo.lock
 test/resource/wasm/rust/target
 /ignored/
+kmipc
