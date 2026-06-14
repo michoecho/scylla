@@ -610,12 +610,18 @@ class compressed_file_data_sink_impl : public data_sink_impl {
     sstables::compression::segmented_offsets::writer _offsets;
     size_t _pos = 0;
     uint32_t _full_checksum;
+    // Called after each compressed chunk is written, with the chunk's
+    // post-compression position, its pre-compression position (the sum of the
+    // lengths of all prior buffers) and its post-compression size.
+    sstables::compressed_chunk_observer _observer;
 public:
-    compressed_file_data_sink_impl(output_stream<char> out, sstables::compression* cm)
+    compressed_file_data_sink_impl(output_stream<char> out, sstables::compression* cm,
+            sstables::compressed_chunk_observer observer)
             : _out(std::move(out))
             , _compression_metadata(cm)
             , _offsets(_compression_metadata->offsets.get_writer())
             , _full_checksum(ChecksumType::init_checksum())
+            , _observer(std::move(observer))
     {}
 
 private:
@@ -631,12 +637,18 @@ private:
             return make_exception_future(std::runtime_error("possible overflow during compression"));
         }
 
+        // position of this chunk in the pre-compression (uncompressed) stream,
+        // i.e. the sum of the lengths of all prior buffers.
+        auto pre_compression_pos = _compression_metadata->uncompressed_file_length();
         // total length of the uncompressed data.
-        _compression_metadata->set_uncompressed_file_length(_compression_metadata->uncompressed_file_length() + buf.size());
+        _compression_metadata->set_uncompressed_file_length(pre_compression_pos + buf.size());
 
+        // position of this chunk in the post-compression stream.
+        auto post_compression_pos = _pos;
         _offsets.push_back(_pos);
         // account compressed data + 32-bit checksum.
-        _pos += len + 4;
+        auto chunk_size = len + 4;
+        _pos += chunk_size;
         _compression_metadata->set_compressed_file_length(_pos);
 
         // compute 32-bit checksum for compressed data.
@@ -654,7 +666,11 @@ private:
 
         _compression_metadata->set_full_checksum(_full_checksum);
 
-        compressed.trim(len + 4);
+        compressed.trim(chunk_size);
+
+        if (_observer) {
+            _observer(post_compression_pos, pre_compression_pos, chunk_size);
+        }
 
         auto f = _out.write(compressed.get(), compressed.size());
         return f.then([compressed = std::move(compressed)] {});
@@ -679,9 +695,10 @@ template <typename ChecksumType, compressed_checksum_mode mode>
 requires ChecksumUtils<ChecksumType>
 class compressed_file_data_sink : public data_sink {
 public:
-    compressed_file_data_sink(output_stream<char> out, sstables::compression* cm)
+    compressed_file_data_sink(output_stream<char> out, sstables::compression* cm,
+            sstables::compressed_chunk_observer observer)
         : data_sink(std::make_unique<compressed_file_data_sink_impl<ChecksumType, mode>>(
-                std::move(out), cm)) {}
+                std::move(out), cm, std::move(observer))) {}
 };
 
 template <typename ChecksumType, compressed_checksum_mode mode>
@@ -689,7 +706,8 @@ requires ChecksumUtils<ChecksumType>
 inline output_stream<char> make_compressed_file_output_stream(output_stream<char> out,
          sstables::compression* cm,
          const compression_parameters& cp,
-         compressor_ptr p) {
+         compressor_ptr p,
+         sstables::compressed_chunk_observer observer) {
     cm->set_compressor(std::move(p));
     // buffer of output stream is set to chunk length, because flush must
     // happen every time a chunk was filled up.
@@ -699,7 +717,7 @@ inline output_stream<char> make_compressed_file_output_stream(output_stream<char
     // defaults to 1.0.
     cm->options.elements.push_back({{"crc_check_chance"}, {"1.0"}});
 
-    return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm));
+    return output_stream<char>(compressed_file_data_sink<ChecksumType, mode>(std::move(out), cm, std::move(observer)));
 }
 
 sstables::sstable_datafile_input_stream sstables::make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
@@ -722,9 +740,10 @@ sstables::sstable_datafile_input_stream sstables::make_compressed_file_m_format_
 output_stream<char> sstables::make_compressed_file_m_format_output_stream(output_stream<char> out,
         sstables::compression* cm,
         const compression_parameters& cp,
-        compressor_ptr p) {
+        compressor_ptr p,
+        sstables::compressed_chunk_observer observer) {
     return make_compressed_file_output_stream<crc32_utils, compressed_checksum_mode::checksum_all>(
-            std::move(out), cm, cp, std::move(p));
+            std::move(out), cm, cp, std::move(p), std::move(observer));
 }
 
 input_stream<char> sstables::make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,

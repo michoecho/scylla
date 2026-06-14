@@ -989,7 +989,11 @@ void writer::init_file_writers() {
                 output_stream<char>(std::move(out)),
                 &_sst._components->compression,
                 _sst._schema->get_compressor_params(),
-                std::move(compressor)), _sst.get_filename());
+                std::move(compressor),
+                [filename = _sst.get_filename()] (uint64_t post_compression_pos, uint64_t pre_compression_pos, uint64_t size) {
+                    slogger.trace("compressed chunk written: sstable={}, post_compression_pos={}, pre_compression_pos={}, size={}",
+                            filename, post_compression_pos, pre_compression_pos, size);
+                }), _sst.get_filename());
     }
 
     if (_sst.has_component(component_type::Index)) {
