@@ -525,13 +525,24 @@ void do_test(const test_config& cfg) {
             std::optional<current_partition_data> current_partition;
             std::optional<current_clustering_data> current_clustering_block;
 
+            // The post-compression position isn't tracked in this test;
+            // we only exercise the pre-compression (uncompressed) position.
+            auto pos = [] (int64_t uncompressed) {
+                return sstables::trie::bti_trie_source_position{
+                    .uncompressed = uncompressed,
+                    .chunk_start = 0,
+                    .chunk_length = 0,
+                    .offset_within_chunk = 0,
+                };
+            };
+
             auto push_clustering_block = [&] {
                 SCYLLA_ASSERT(current_clustering_block);
                 bti_row_index_writer.add(
                     *adjusted_schema,
                     clustering_info_from_pip(current_clustering_block->first_ckp),
                     clustering_info_from_pip(current_clustering_block->last_ckp),
-                    current_clustering_block->first_data_file_offset - current_partition->data_file_offset,
+                    pos(current_clustering_block->first_data_file_offset - current_partition->data_file_offset),
                     sstable_deletion_time_from_tombstone(current_clustering_block->preceding_range_tombstone));
                 current_clustering_block.reset();
             };
@@ -570,8 +581,8 @@ void do_test(const test_config& cfg) {
                     auto payload = bti_row_index_writer.finish(
                         bti_version,
                         *adjusted_schema,
-                        current_partition->data_file_offset,
-                        frag.offset,
+                        pos(current_partition->data_file_offset),
+                        pos(frag.offset),
                         pk,
                         sstable_deletion_time_from_tombstone(current_partition->partition_tombstone)
                     );

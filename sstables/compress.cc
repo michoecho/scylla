@@ -669,7 +669,7 @@ private:
         compressed.trim(chunk_size);
 
         if (_observer) {
-            _observer(post_compression_pos, pre_compression_pos, chunk_size);
+            _observer(post_compression_pos, pre_compression_pos, chunk_size, buf.size());
         }
 
         auto f = _out.write(compressed.get(), compressed.size());

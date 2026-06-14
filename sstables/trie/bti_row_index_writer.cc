@@ -26,20 +26,20 @@ private:
     // Writes _last_key to the trie.
     void flush_last_key(size_t mismatch, size_t last_key_size, const trie_payload& payload);
     static trie_payload make_payload(
-        uint64_t offset_from_partition_start,
+        bti_trie_source_position offset_from_partition_start,
         sstables::deletion_time range_tombstone_before_first_ck);
 public:
     void add(
         const schema& s,
         const sstables::clustering_info& first_ck,
         const sstables::clustering_info& last_ck,
-        uint64_t offset_from_partition_start,
+        bti_trie_source_position offset_from_partition_start,
         sstables::deletion_time range_tombstone_before_first_ck);
-    int64_t finish(
+    bti_trie_source_position finish(
         sstable_version_types,
         const schema&,
-        int64_t partition_data_start,
-        int64_t partition_data_end,
+        bti_trie_source_position partition_data_start,
+        bti_trie_source_position partition_data_end,
         const sstables::key& pk,
         const sstables::deletion_time& partition_tombstone);
     using buf = std::vector<std::byte>;
@@ -104,24 +104,27 @@ void row_index_writer_impl::flush_last_key(size_t mismatch, size_t last_key_size
     }
 }
 trie_payload row_index_writer_impl::make_payload(
-    uint64_t offset_from_partition_start,
+    bti_trie_source_position offset_from_partition_start,
     sstables::deletion_time range_tombstone_before_first_ck
 ) {
     std::array<std::byte, 20> payload_bytes;
     std::byte* payload_bytes_it = payload_bytes.data();
 
+    // The (pre-compression) offset serialized into the payload.
+    uint64_t offset = offset_from_partition_start.uncompressed;
+
     // byte width of the offset integer.
     // Cassandra expects this to be a signed integer (for no good reason)
     // so we waste one bit (note the `+ 1`) for compatibility.
-    auto pos_bytewidth = div_ceil(std::bit_width<uint64_t>(offset_from_partition_start) + 1, 8);
+    auto pos_bytewidth = div_ceil(std::bit_width<uint64_t>(offset) + 1, 8);
 
     // The 4 bits of metadata included in the first byte of the BTI node.
     auto payload_bits = pos_bytewidth;
     // Serialize the payload.
     {
-        // Write n:=`pos_bytewidth` least significant bytes of `offset_from_partition_start` to the payload buffer,
+        // Write n:=`pos_bytewidth` least significant bytes of `offset` to the payload buffer,
         // in big endian order.
-        uint64_t offset_be = seastar::cpu_to_be<uint64_t>(offset_from_partition_start << 8*(8 - pos_bytewidth));
+        uint64_t offset_be = seastar::cpu_to_be<uint64_t>(offset << 8*(8 - pos_bytewidth));
         // sic. We only need `sizeof(pos_bytewidth)` bytes, but we copy 8 bytes to have a fixed-size copy.
         std::memcpy(payload_bytes_it, &offset_be, 8);
         payload_bytes_it += pos_bytewidth;
@@ -140,14 +143,14 @@ void row_index_writer_impl::add(
     const schema& s,
     const sstables::clustering_info& first_ck_info,
     const sstables::clustering_info& last_ck_info,
-    uint64_t offset_from_partition_start,
+    bti_trie_source_position offset_from_partition_start,
     sstables::deletion_time range_tombstone_before_first_ck
 ) {
     expensive_log("row_index_writer_impl::add() this={} first_ck={},{} last_ck={},{} offset_from_partition_start={} range_tombstone_before_first_ck={}",
         fmt::ptr(this),
         first_ck_info.clustering, first_ck_info.kind,
         last_ck_info.clustering, last_ck_info.kind,
-        offset_from_partition_start,
+        offset_from_partition_start.uncompressed,
         range_tombstone_before_first_ck
     );
     auto first_ck = lazy_comparable_bytes_from_clustering_position(s, first_ck_info);
@@ -288,11 +291,11 @@ void write_row_index_header(
     write_da_partition_tombstone(fw, partition_tombstone);
 }
 
-int64_t row_index_writer_impl::finish(
+bti_trie_source_position row_index_writer_impl::finish(
     sstable_version_types sst_ver,
     const schema& s,
-    int64_t partition_data_start,
-    int64_t partition_data_end,
+    bti_trie_source_position partition_data_start,
+    bti_trie_source_position partition_data_end,
     const sstables::key& pk,
     const sstables::deletion_time& partition_tombstone
 ) {
@@ -319,8 +322,13 @@ int64_t row_index_writer_impl::finish(
         auto nudge_idx = nudge(**_last_key, mismatch_idx);
         expensive_assert(nudge_idx >= mismatch_idx);
         (**_last_key).trim(nudge_idx + 1);
-        auto final_payload = make_payload(partition_data_end - partition_data_start, sstables::deletion_time::make_live());
-        expensive_log("row_index_writer_impl::finish() final_payload: {}", partition_data_end);
+        // The final separator points to the end-of-partition byte.
+        // Its offset (relative to the partition start) is serialized into the payload;
+        // the post-compression coordinates are carried from `partition_data_end`.
+        bti_trie_source_position final_offset = partition_data_end;
+        final_offset.uncompressed = partition_data_end.uncompressed - partition_data_start.uncompressed;
+        auto final_payload = make_payload(final_offset, sstables::deletion_time::make_live());
+        expensive_log("row_index_writer_impl::finish() final_payload: {}", partition_data_end.uncompressed);
         flush_last_key(mismatch_idx, nudge_idx + 1, final_payload);
     }
 
@@ -331,7 +339,12 @@ int64_t row_index_writer_impl::finish(
     _last_key->reset();
     _tmp_key->reset();
     if (!result.valid()) {
-        return ~partition_data_start;
+        // No intra-partition index: the partition index will point directly into Data.db,
+        // at the bit-negated partition start position.
+        // The post-compression coordinates of the partition start are carried along.
+        bti_trie_source_position result_pos = partition_data_start;
+        result_pos.uncompressed = ~partition_data_start.uncompressed;
+        return result_pos;
     }
 
     // The header we write here is parsed during reads by `row_index_header_parser`.
@@ -340,8 +353,16 @@ int64_t row_index_writer_impl::finish(
 
     expensive_log("row_index_writer_impl::finish: writing header at {}", fw.offset());
     int64_t pos_header = fw.offset();
-    write_row_index_header(sst_ver, fw, pk, partition_data_start, added_blocks_for_header, root, partition_tombstone);
-    return pos_header;
+    write_row_index_header(sst_ver, fw, pk, partition_data_start.uncompressed, added_blocks_for_header, root, partition_tombstone);
+    // The partition index entry points into Rows.db, at the header we just wrote.
+    // We don't track post-compression coordinates of Rows.db here, so they are left
+    // as placeholder zeros for now.
+    return bti_trie_source_position{
+        .uncompressed = pos_header,
+        .chunk_start = 0,
+        .chunk_length = 0,
+        .offset_within_chunk = 0,
+    };
 }
 
 // Instantiation of row_index_writer_impl with `Output` == `bti_node_sink`.
@@ -369,11 +390,11 @@ bti_row_index_writer::bti_row_index_writer(sstables::file_writer& fw)
 bti_row_index_writer::bti_row_index_writer(bti_row_index_writer&&) noexcept = default;
 bti_row_index_writer& bti_row_index_writer::operator=(bti_row_index_writer&&) noexcept = default;
 
-int64_t bti_row_index_writer::finish(
+bti_trie_source_position bti_row_index_writer::finish(
     sstable_version_types version,
     const schema& s,
-    int64_t partition_data_start,
-    int64_t partition_data_end,
+    bti_trie_source_position partition_data_start,
+    bti_trie_source_position partition_data_end,
     const sstables::key& pk,
     const sstables::deletion_time& partition_tombstone) {
     return _impl->finish(version, s, partition_data_start, partition_data_end, pk, partition_tombstone);
@@ -383,7 +404,7 @@ void bti_row_index_writer::add(
     const schema& s,
     const sstables::clustering_info& first_ck,
     const sstables::clustering_info& last_ck,
-    uint64_t offset_from_partition_start,
+    bti_trie_source_position offset_from_partition_start,
     const sstables::deletion_time& range_tombstone_before_first_ck
 ) {
     return _impl->add(s, first_ck, last_ck, offset_from_partition_start, range_tombstone_before_first_ck);

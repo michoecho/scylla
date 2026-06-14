@@ -383,8 +383,9 @@ input_stream<char> make_compressed_raw_file_input_stream(sstables::stream_creato
 
 // Observer invoked after each compressed chunk is written, with the chunk's
 // post-compression position, its pre-compression position (the sum of the
-// lengths of all prior buffers) and its post-compression size.
-using compressed_chunk_observer = std::function<void(uint64_t post_compression_pos, uint64_t pre_compression_pos, uint64_t size)>;
+// lengths of all prior buffers), its post-compression size and its
+// pre-compression (uncompressed) size.
+using compressed_chunk_observer = std::function<void(uint64_t post_compression_pos, uint64_t pre_compression_pos, uint64_t size, uint64_t uncompressed_size)>;
 
 output_stream<char> make_compressed_file_m_format_output_stream(output_stream<char> out,
                 sstables::compression* cm,

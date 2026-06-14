@@ -47,7 +47,7 @@ public:
     // If the partition has a intra-partition index in Rows.db,
     // `file_pos` is the bit-negated position of the relevant entry in Rows.db.
     // Otherwise, `file_pos` is the position of the partition in Data.db.
-    void add(const schema&, dht::decorated_key, const utils::hashed_key&, int64_t pos_payload);
+    void add(const schema&, dht::decorated_key, const utils::hashed_key&, bti_trie_source_position pos_payload);
     std::optional<bti_partitions_db_footer> finish(
         const sstables::key& first_key,
         const sstables::key& last_key);
@@ -87,7 +87,11 @@ private:
     // to the output in the *next* `add()` after the one
     // which inserted `_last_key`, because only then it will be
     // determined how much `_last_key` can be trimmed.
-    int64_t _last_pos_payload;
+    //
+    // `_last_pos_payload` carries both the pre-compression position (which is the one
+    // currently serialized into the payload) and the post-compression position (which
+    // is carried for future use).
+    bti_trie_source_position _last_pos_payload;
     uint8_t _last_hash_bits;
 };
 
@@ -102,10 +106,12 @@ void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
     // Write the hash byte to the payload buffer.
     *payload_bytes_it++ = std::byte(_last_hash_bits);
 
-    // _last_pos_payload is either the position of the partition in Data.db
+    // The (pre-compression) file position serialized into the payload.
+    // It is either the position of the partition in Data.db
     // or the bit-negated position of the partition's entry in Rows.db.
     // The are distinguished via the sign bit.
-    uint64_t abs_file_pos = _last_pos_payload >= 0 ? _last_pos_payload : ~_last_pos_payload;
+    int64_t pos_payload = _last_pos_payload.uncompressed;
+    uint64_t abs_file_pos = pos_payload >= 0 ? pos_payload : ~pos_payload;
     // Note 1 extra bit needed for the sign.
     uint8_t pos_bytewidth = div_ceil(std::bit_width<uint64_t>(abs_file_pos) + 1, 8);
 
@@ -115,9 +121,9 @@ void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
     // Build the 4 bits of metadata included in the first byte of the BTI node.
     uint8_t payload_bits = (pos_bytewidth - 1) | HASH_BYTE_FLAG;
 
-    // Write n:=`pos_bytewidth` least significant bytes of `_last_pos_payload` to the payload buffer,
+    // Write n:=`pos_bytewidth` least significant bytes of `pos_payload` to the payload buffer,
     // in big endian order.
-    uint64_t pos_be = seastar::cpu_to_be<uint64_t>(_last_pos_payload << 8*(8 - pos_bytewidth));
+    uint64_t pos_be = seastar::cpu_to_be<uint64_t>(pos_payload << 8*(8 - pos_bytewidth));
     // sic. We only need `sizeof(pos_bytewidth)` bytes, but we copy 8 bytes to have a fixed-size copy.
     memcpy(payload_bytes_it, &pos_be, 8);
     payload_bytes_it += pos_bytewidth;
@@ -159,9 +165,9 @@ void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
     }
 }
 
-void bti_partition_index_writer_impl::add(const schema& s, dht::decorated_key dk, const utils::hashed_key& murmur_hash, int64_t pos_payload) {
+void bti_partition_index_writer_impl::add(const schema& s, dht::decorated_key dk, const utils::hashed_key& murmur_hash, bti_trie_source_position pos_payload) {
     uint8_t hash_bits = static_cast<uint8_t>(murmur_hash.hash()[1]);
-    expensive_log("partition_index_writer_impl::add: this={} key={}, pos_payload={}", fmt::ptr(this), dk, pos_payload);
+    expensive_log("partition_index_writer_impl::add: this={} key={}, pos_payload={}", fmt::ptr(this), dk, pos_payload.uncompressed);
     (*_tmp_key).emplace(_sst_ver, s, dk);
     if (_added_keys > 0) {
         // First position where the new key differs from the last key.
@@ -227,7 +233,7 @@ bti_partition_index_writer::~bti_partition_index_writer() noexcept = default;
 bti_partition_index_writer::bti_partition_index_writer(sstable_version_types sst_ver, sstables::file_writer& fw)
     : _impl(std::make_unique<impl>(sst_ver, fw))
 {}
-void bti_partition_index_writer::add(const schema& s, dht::decorated_key dk, const utils::hashed_key& murmur_hash, int64_t data_or_rowsdb_file_pos) {
+void bti_partition_index_writer::add(const schema& s, dht::decorated_key dk, const utils::hashed_key& murmur_hash, bti_trie_source_position data_or_rowsdb_file_pos) {
     _impl->add(s, std::move(dk), murmur_hash, data_or_rowsdb_file_pos);
 }
 std::optional<bti_partitions_db_footer> bti_partition_index_writer::finish(

@@ -57,6 +57,29 @@ struct bti_partitions_db_footer {
     uint64_t trie_root_position;
 };
 
+// A position in an output file, expressed both in pre-compression (uncompressed)
+// and post-compression (on-disk) coordinates.
+//
+// The pre-compression position is a plain byte offset into the uncompressed stream.
+//
+// The post-compression position describes the same logical point in terms of the
+// compressed file layout: the chunk it falls into (its start offset and length on
+// disk) and the offset of the point within the (uncompressed) chunk.
+//
+// The post-compression position is currently unused by the index writers, but it is
+// carried alongside the pre-compression position so that it is available at payload
+// construction time for future changes.
+struct bti_trie_source_position {
+    // Pre-compression (uncompressed-stream) byte offset.
+    int64_t uncompressed;
+    // Start offset of the enclosing chunk in the compressed (on-disk) file.
+    uint64_t chunk_start;
+    // Length of the enclosing chunk in the compressed (on-disk) file.
+    uint64_t chunk_length;
+    // Offset of the point within the (uncompressed) chunk.
+    uint64_t offset_within_chunk;
+};
+
 // Transforms a stream of (partition key, offset in Data.db, hash bits) tuples
 // into a stream of trie nodes fed into bti_trie_sink.
 // Used to populate the Partitions.db file of the BTI format
@@ -79,7 +102,7 @@ public:
     ~bti_partition_index_writer() noexcept;
     explicit operator bool() const noexcept { return bool(_impl); }
     // Add a new partition key to the index.
-    void add(const schema&, dht::decorated_key, const utils::hashed_key&, int64_t data_or_rowsdb_file_pos);
+    void add(const schema&, dht::decorated_key, const utils::hashed_key&, bti_trie_source_position data_or_rowsdb_file_pos);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
     // The writer mustn't be used again after this.
@@ -114,7 +137,7 @@ public:
         const schema& s,
         const sstables::clustering_info& first_ck,
         const sstables::clustering_info& last_ck,
-        uint64_t offset_from_partition_start,
+        bti_trie_source_position offset_from_partition_start,
         const sstables::deletion_time& range_tombstone_before_first_ck);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
@@ -130,11 +153,11 @@ public:
     // `partition_data_end` is the position of the END_OF_PARTITION flag byte in Data.db,
     // which lies 1 byte before the start of the next partition.
     // So `partition_data_end` is *NOT* the start position of the next partition.
-    int64_t finish(
+    bti_trie_source_position finish(
         sstable_version_types,
         const schema&,
-        int64_t partition_data_start,
-        int64_t partition_data_end,
+        bti_trie_source_position partition_data_start,
+        bti_trie_source_position partition_data_end,
         const sstables::key&,
         const sstables::deletion_time& partition_tombstone);
 };

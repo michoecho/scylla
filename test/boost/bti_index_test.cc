@@ -958,6 +958,17 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
         auto partition_index_writer = sstables::trie::bti_partition_index_writer(sst_ver, partitions_db_writer);
         auto row_index_writer = sstables::trie::bti_row_index_writer(rows_db_writer);
 
+        // The post-compression position isn't tracked in this test;
+        // we only exercise the pre-compression (uncompressed) position.
+        auto pos = [] (int64_t uncompressed) {
+            return sstables::trie::bti_trie_source_position{
+                .uncompressed = uncompressed,
+                .chunk_start = 0,
+                .chunk_length = 0,
+                .offset_within_chunk = 0,
+            };
+        };
+
         std::optional<partition_index_entry> last_partition_entry;
         std::optional<partition_end_entry> last_partition_end_entry;
         auto push_partition = [&] () {
@@ -968,8 +979,8 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
                 auto payload = row_index_writer.finish(
                     sst_ver,
                     *the_schema,
-                    last.data_file_offset,
-                    last_partition_end_entry.value().data_file_offset,
+                    pos(last.data_file_offset),
+                    pos(last_partition_end_entry.value().data_file_offset),
                     pk,
                     last.partition_tombstone);
                 partition_index_writer.add(*the_schema, last.dk, hash, payload);
@@ -988,7 +999,7 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
                         *the_schema,
                         e.first_ck,
                         e.last_ck,
-                        e.data_file_offset - last_partition_entry.value().data_file_offset,
+                        pos(e.data_file_offset - last_partition_entry.value().data_file_offset),
                         e.range_tombstone_before_first_ck);
                 },
                 [&](const partition_end_entry& e) {
