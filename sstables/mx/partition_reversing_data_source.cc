@@ -27,13 +27,12 @@ namespace mx {
 
 // Parser for the partition header and the static row, if present.
 //
-// After consuming the input stream, allows reading the offset after the consumed
-// segment using header_end_pos(). The offset is relative to the start of the
-// stream (the partition start); the caller rebases it onto an absolute position.
+// After consuming the input stream, allows reading the position after the consumed
+// segment using header_end_pos(), as an absolute file position.
 // Parsing copied from the sstable reader, with verification removed.
 //
 class partition_header_context : public data_consumer::continuous_data_consumer<partition_header_context, sstables::sstable_datafile_input_stream> {
-    uint64_t _header_end_pos;
+    sstable_datafile_position _header_end_pos;
     bool _finished = false;
     processing_result_generator _gen;
     temporary_buffer<char>* _processing_data;
@@ -46,7 +45,7 @@ public:
             throw std::runtime_error("partition_header_context - no more data but parsing is incomplete");
         }
     }
-    uint64_t header_end_pos() {
+    sstable_datafile_position header_end_pos() {
         return _header_end_pos;
     }
     data_consumer::processing_result process_state(temporary_buffer<char>& data) {
@@ -58,8 +57,10 @@ public:
         return ret;
     }
 private:
-    int64_t current_position() {
-        return offset() - _processing_data->size();
+    // Absolute file position of the current parse point (the first byte not yet
+    // consumed from _processing_data), shifted by `delta` logical bytes.
+    sstable_datafile_position current_position(int64_t delta = 0) {
+        return compute_relative_position(delta - static_cast<int64_t>(_processing_data->size()));
     }
     processing_result_generator do_process_state() {
         // length of the partition key
@@ -79,14 +80,14 @@ private:
         auto flags = unfiltered_flags_m(_u8);
         if (flags.is_end_of_partition() || flags.is_range_tombstone() || !flags.has_extended_flags()) {
             sstlog.error("HANG 0 {} ", current_position());
-            _header_end_pos = current_position() - 1;
+            _header_end_pos = current_position(-1);
             co_yield data_consumer::proceed::no;
         } else {
             co_yield read_8(*_processing_data);
             auto extended_flags = unfiltered_extended_flags_m(_u8);
             if (!extended_flags.is_static()) {
                 sstlog.error("HANG 1 {} ", current_position());
-                _header_end_pos = current_position() - 2;
+                _header_end_pos = current_position(-2);
                 co_yield data_consumer::proceed::no;
             }
         }
@@ -96,17 +97,19 @@ private:
         co_yield read_unsigned_vint(*_processing_data);
         // skip the row body
         sstlog.error("HANG 2 {} {}", current_position(), _u64);
-        _header_end_pos = current_position() + _u64;
+        co_yield skip(*_processing_data, _u64);
+        _header_end_pos = current_position(0);
         // _header_end_pos is where the clustering rows start
         co_yield data_consumer::proceed::no;
     }
 public:
 
-    // `maxlen` bounds the segment to parse. Positions reported by this context
-    // (e.g. header_end_pos()) are relative to the start of `input`, so the
-    // caller rebases them onto the absolute file position the stream starts at.
-    partition_header_context(sstables::sstable_datafile_input_stream&& input, uint64_t maxlen, reader_permit permit)
-                : continuous_data_consumer(std::move(permit), std::move(input), sstable_datafile_position::from_logical_approved(0), maxlen)
+    // `start` is the absolute file position the stream begins at (the partition
+    // start). Positions reported by this context (e.g. header_end_pos()) are
+    // absolute file positions. The segment to parse is unbounded; parsing stops
+    // when the header (and static row, if any) has been consumed.
+    partition_header_context(sstables::sstable_datafile_input_stream&& input, sstable_datafile_position start, reader_permit permit)
+                : continuous_data_consumer(std::move(permit), std::move(input), start, std::optional<sstable_datafile_position>())
                 , _gen(do_process_state())
     {}
 };
@@ -488,13 +491,9 @@ public:
     virtual future<temporary_buffer<char>> get() override {
         if (!_partition_header_context) {
             _partition_header_context.emplace(make_cursor_input_stream(_cursor, _partition_start),
-                    -1, _permit);
+                    _partition_start, _permit);
             co_await _partition_header_context->consume_input();
-            // header_end_pos() is relative to the partition start; rebase it.
-            sstlog.error("HANG {} {}", _partition_start, _partition_header_context->header_end_pos());
-            _cursor.seek(_partition_start);
-            _clustering_range_start = _cursor.compute_relative_position(_partition_header_context->header_end_pos());
-            sstlog.error("HANG {} {} {}", _partition_start, _partition_header_context->header_end_pos(), _clustering_range_start);
+            _clustering_range_start = _partition_header_context->header_end_pos();
             co_return co_await data_read(_partition_start, _clustering_range_start);
         }
         auto ir_end = _ir.sstable_datafile_positions().end;
