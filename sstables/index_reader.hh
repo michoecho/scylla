@@ -190,7 +190,7 @@ private:
 
 public:
     void verify_end_state() const {
-        if (this->_remain > 0) {
+        if (!continuous_data_consumer::eof()) {
             throw_malformed_sstable_exception(fmt::format("index_consume_entry_context (state={}): parsing ended but there is unconsumed data", _state), _sst.index_filename());
         }
         if (_state != state::KEY_SIZE && _state != state::START) {

@@ -518,7 +518,6 @@ protected:
     InputStream _input;
     sstables::reader_position_tracker _stream_position;
     // remaining length of input to read (if <0, continue until end of file).
-    uint64_t _remain;
     std::optional<sstables::sstable_datafile_position> _end_position;
     std::optional<reader_permit::awaits_guard> _awaits_guard;
     bool _first_invoke = true;
@@ -530,7 +529,6 @@ public:
             : primitive_consumer(std::move(permit))
             , _input(std::move(input))
             , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0})
-            , _remain(maxlen)
             , _end_position(
                     static_cast<int64_t>(maxlen) >= 0
                     ? std::optional<sstables::sstable_datafile_position>(start + sstables::sstable_datafile_offset::from_logical_fixme(maxlen))
@@ -603,7 +601,6 @@ public:
     void apply_position_delta(int64_t n) {
         _stream_position.offset += n;
         _stream_position.position = compute_relative_position(n);
-        _remain -= n;
     }
     
     sstables::sstable_datafile_position compute_relative_position(int64_t n) {
@@ -685,7 +682,6 @@ public:
         _stream_position.position = begin;
 
         sstables::parse_assert(!end || *end >= _stream_position.position);
-        _remain = end ? subtract_positions(*end, _stream_position.position) : -1;
         _end_position = end;
 
         primitive_consumer::reset();
@@ -722,7 +718,7 @@ public:
     }
 
     bool eof() const {
-        return _remain == 0;
+        return _end_position.has_value() && _stream_position.position >= _end_position.value();
     }
 
     future<> close() noexcept {
