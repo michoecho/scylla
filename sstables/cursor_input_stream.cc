@@ -36,6 +36,15 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
     // The file position of the next byte this stream will produce.
     sstable_datafile_position _pos;
 
+    // The most recent buffer read from the cursor, kept so that the common
+    // rewind-and-reread pattern (a parser over-reads, consumes part of the
+    // buffer, then rewinds the unconsumed tail with stop_consuming) is served
+    // from memory instead of seeking the cursor backwards and re-reading - which
+    // for a compressed cursor would re-decompress a whole chunk. `_last_buf`
+    // holds the bytes at [_last_buf_pos, _last_buf_pos + _last_buf.size()).
+    tmp_buf _last_buf;
+    uint64_t _last_buf_pos = 0;
+
     // Default size of a forward read issued to the cursor. The cursor itself
     // caches and reads ahead, so this only bounds how much we ask for at once.
     static constexpr size_t read_size = 8 * 1024;
@@ -47,9 +56,32 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
         _pos = _cursor.compute_relative_position(delta);
     }
 
+    // If _pos falls inside the cached buffer, return up to `n` bytes from it
+    // (sharing, not copying) without touching the cursor. Returns an empty
+    // optional when the position is not covered and a real read is needed.
+    std::optional<tmp_buf> read_from_last_buf(size_t n) {
+        if (_last_buf.empty()) {
+            return std::nullopt;
+        }
+        uint64_t pos = _pos.to_logical_fixme();
+        if (pos < _last_buf_pos || pos >= _last_buf_pos + _last_buf.size()) {
+            return std::nullopt;
+        }
+        size_t off = pos - _last_buf_pos;
+        size_t len = std::min(n, _last_buf.size() - off);
+        auto buf = _last_buf.share(off, len);
+        advance_pos(len);
+        return buf;
+    }
+
     future<tmp_buf> read_at_pos(size_t n) {
+        if (auto cached = read_from_last_buf(n)) {
+            co_return std::move(*cached);
+        }
         _cursor.seek(_pos);
         auto buf = co_await _cursor.read_forwards(n);
+        _last_buf = buf.share();
+        _last_buf_pos = _pos.to_logical_fixme();
         advance_pos(buf.size());
         co_return buf;
     }
@@ -61,7 +93,27 @@ public:
         : _owned_cursor(std::move(cursor)), _cursor(*_owned_cursor), _pos(start) {}
 
     future<tmp_buf> read_exactly(size_t n) noexcept override {
-        return read_at_pos(n);
+        // read_at_pos() may return a short buffer when it is served from the
+        // cached buffer (which can end before n bytes). Loop until we have n
+        // bytes or hit EOF, so the read_exactly() contract still holds.
+        auto first = co_await read_at_pos(n);
+        if (first.size() >= n || first.empty()) {
+            co_return first;
+        }
+        tmp_buf out(n);
+        size_t filled = 0;
+        std::copy_n(first.get(), first.size(), out.get_write());
+        filled += first.size();
+        while (filled < n) {
+            auto buf = co_await read_at_pos(n - filled);
+            if (buf.empty()) {
+                break; // EOF
+            }
+            std::copy_n(buf.get(), buf.size(), out.get_write() + filled);
+            filled += buf.size();
+        }
+        out.trim(filled);
+        co_return out;
     }
 
     future<> consume(consumer_fn consumer) noexcept override {
@@ -137,8 +189,8 @@ sstable_datafile_input_stream make_cursor_input_stream(sstable_datafile_cursor& 
 }
 
 sstable_datafile_input_stream make_owning_cursor_input_stream(shared_sstable sst, disk_read_range range,
-        reader_permit permit, tracing::trace_state_ptr trace_state) {
-    auto cursor = std::make_unique<sstable_datafile_cursor>(std::move(sst), std::move(permit), std::move(trace_state));
+        reader_permit permit, tracing::trace_state_ptr trace_state, std::optional<uint32_t> digest) {
+    auto cursor = std::make_unique<sstable_datafile_cursor>(std::move(sst), std::move(permit), std::move(trace_state), digest);
     return sstable_datafile_input_stream(std::make_unique<cursor_input_stream_impl>(std::move(cursor), range.start));
 }
 
