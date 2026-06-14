@@ -32,20 +32,20 @@ struct partition_reversing_data_source {
 // Returns a single partition retrieved from an sstable data file as a sequence of buffers
 // but with the clustering order of rows reversed.
 //
-// `pos` is where the partition starts.
-// `len` is the length of the partition.
+// `start` is where the partition starts.
+// `end` is where the partition ends.
 // `ir` provides access to an index over the sstable.
 //
 // `ir.sstable_datafile_positions().end` may decrease below `current_position_in_sstable`,
 // informing us that the user wants us to skip the sequence of rows between `ir.sstable_datafile_positions().end` and `current_position_in_sstable`.
-// `ir.sstable_datafile_positions().end`, if engaged, must always point at the end of partition (pos + len) or the beginning of some row.
+// `ir.sstable_datafile_positions().end`, if engaged, must always point at the end of partition (`end`) or the beginning of some row.
 // We ignore the value of `ir.sstable_datafile_positions().start`.
 //
 // We assume that `ir.current_clustered_cursor()`, if engaged, is of type `sstables::mc::bsearch_clustered_cursor*`.
 //
 // The source must be closed before destruction unless `get()` was never called.
 partition_reversing_data_source make_partition_reversing_data_source(
-    const schema& s, shared_sstable sst, abstract_index_reader& ir, uint64_t pos, size_t len,
+    const schema& s, shared_sstable sst, abstract_index_reader& ir, sstable_datafile_position start, sstable_datafile_position end,
     reader_permit permit, tracing::trace_state_ptr trace_state);
 
 }

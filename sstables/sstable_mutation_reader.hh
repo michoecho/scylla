@@ -149,7 +149,7 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
         const schema& s, shared_sstable sst, abstract_index_reader& ir,
         typename DataConsumeRowsContext::consumer& consumer, sstable::disk_read_range toread) {
     auto reversing_data_source = sstables::mx::make_partition_reversing_data_source(
-            s, sst, ir, toread.start.to_logical_fixme(), toread.end.to_logical_fixme() - toread.start.to_logical_fixme(),
+            s, sst, ir, toread.start, toread.end,
             consumer.permit(), consumer.trace_state());
     return reversed_context<DataConsumeRowsContext> {
         .the_context = std::make_unique<DataConsumeRowsContext>(
