@@ -1097,8 +1097,8 @@ public:
     data_consume_rows_context(const schema&,
                               const shared_sstable sst,
                               mp_row_consumer_k_l& consumer,
-                              sstables::sstable_datafile_input_stream&& input, uint64_t start, uint64_t maxlen)
-                : continuous_data_consumer(consumer.permit(), std::move(input), sstable_datafile_position::from_logical_approved(start), maxlen)
+                              sstables::sstable_datafile_input_stream&& input, sstable_datafile_position start, sstable_datafile_position end)
+                : continuous_data_consumer(consumer.permit(), std::move(input), start, std::optional<sstable_datafile_position>(end))
                 , _consumer(consumer)
                 , _sst(std::move(sst))
                 , _gen(do_process_state())
