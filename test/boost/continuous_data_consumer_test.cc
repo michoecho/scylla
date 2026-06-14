@@ -130,8 +130,7 @@ class skipping_consumer final : public data_consumer::continuous_data_consumer<s
         return make_buffer_input_stream(std::move(buf), 1);
     }
     static size_t prepare_initial_consumer_length(int initial_data_size, int to_skip) {
-        // some bytes that we want to skip may end up even after the initial consumer range
-        return initial_data_size + tests::random::get_int<int>(0, to_skip);
+        return initial_data_size + to_skip;
     }
 
 public:

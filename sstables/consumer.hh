@@ -522,6 +522,7 @@ protected:
     std::optional<sstables::sstable_datafile_position> _end_position;
     std::optional<reader_permit::awaits_guard> _awaits_guard;
     bool _first_invoke = true;
+    std::optional<uint64_t> _pending_skip;
 public:
     using read_status = data_consumer::read_status;
 
@@ -631,6 +632,10 @@ public:
     future<consumption_result_type>
     operator()(temporary_buffer<char> data) {
         mark_unblocked();
+        if (_pending_skip) {
+            apply_position_delta(_pending_skip.value());
+            _pending_skip.reset();
+        }
         auto buffer_end_position = compute_relative_position(data.size());
         if (_end_position && buffer_end_position >= *_end_position) {
             // We received more data than we actually care about, so process
@@ -667,18 +672,7 @@ public:
                 // we only expect skip_bytes to be used if reader needs to skip beyond the provided buffer
                 // otherwise it should just trim_front and proceed as usual
                 sstables::parse_assert(data.size() == 0);
-                if (skip.get_value() >= _remain) {
-                    if (skip.get_value() == _remain) {
-                        consumer_skip_probe_log.error("SKIP_PROBE_REACHED case=EQ skip={} remain={}", skip.get_value(), _remain);
-                    } else {
-                        consumer_skip_probe_log.error("SKIP_PROBE_REACHED case=GT skip={} remain={}", skip.get_value(), _remain);
-                    }
-                    skip_bytes skip_remaining(_remain);
-                    apply_position_delta(_remain);
-                    verify_end_state();
-                    return make_ready_future<consumption_result_type>(std::move(skip_remaining));
-                }
-                apply_position_delta(skip.get_value());
+                _pending_skip = skip.get_value();
                 mark_blocked();
                 return make_ready_future<consumption_result_type>(std::move(skip));
             });
