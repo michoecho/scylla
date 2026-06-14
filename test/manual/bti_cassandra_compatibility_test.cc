@@ -279,7 +279,7 @@ void test_index_files(
         if (prev_range && offset_pos >= prev_range.value().second) {
             if (expected_index_granularity) {
                 testlog.debug("Previous pos: {}, previous range: {}, allowed max size: {}", prev_frag_offset, *prev_range, offset - prev_frag_offset + *expected_index_granularity);
-                SCYLLA_ASSERT(prev_frag_offset - uint64_t(prev_range->first.to_logical_fixme()) <= *expected_index_granularity);
+                SCYLLA_ASSERT(prev_frag_offset - uint64_t(prev_range->first.to_logical_approved()) <= *expected_index_granularity);
             }
             prev_range.reset();
         }
@@ -316,9 +316,9 @@ void test_index_files(
                 SCYLLA_ASSERT(ir->element_kind() == sstables::indexable_element::partition);
                 SCYLLA_ASSERT(range.start == curr_partition_start);
             }
-            auto pointed_entry = std::ranges::lower_bound(fragments, uint64_t(range.start.to_logical_fixme()), {}, &position_and_fragment::offset);
+            auto pointed_entry = std::ranges::lower_bound(fragments, uint64_t(range.start.to_logical_approved()), {}, &position_and_fragment::offset);
             SCYLLA_ASSERT(pointed_entry != fragments.end());
-            SCYLLA_ASSERT(pointed_entry->offset == uint64_t(range.start.to_logical_fixme()));
+            SCYLLA_ASSERT(pointed_entry->offset == uint64_t(range.start.to_logical_approved()));
             SCYLLA_ASSERT(pointed_entry->preceding_range_tombstone == ir_end_open_tombstone);
             auto pointed_element_kind = pointed_entry->fragment.is_partition_start()
                 ? sstables::indexable_element::partition

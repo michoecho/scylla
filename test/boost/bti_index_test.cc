@@ -617,7 +617,7 @@ struct reference_index {
         for (uint64_t idx = curpar + 1; idx < _entries.size(); ++idx) {
             if (std::holds_alternative<partition_end_entry>(_entries[idx + 1])) {
                 return sstables::sstable_datafile_offset::from_logical_fixme(
-                    _data_file_offsets[idx].to_logical_fixme() - _data_file_offsets[curpar].to_logical_fixme());
+                    _data_file_offsets[idx].to_logical_approved() - _data_file_offsets[curpar].to_logical_approved());
             }
         }
         abort();

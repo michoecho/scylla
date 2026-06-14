@@ -29,7 +29,7 @@ std::vector<sstables::sstable_datafile_position> get_ck_positions(shared_sstable
         auto partition_pos = r.sstable_datafile_positions().start;
         sstables::clustered_index_cursor* cur = r.current_clustered_cursor();
         while (auto ei_opt = cur->next_entry().get()) {
-            result.push_back(sstables::sstable_datafile_position::from_logical_approved(ei_opt.value().offset + partition_pos.to_logical_fixme()));
+            result.push_back(sstables::sstable_datafile_position::from_logical_approved(ei_opt.value().offset + partition_pos.to_logical_approved()));
         }
         r.advance_to_next_partition().get();
     }
