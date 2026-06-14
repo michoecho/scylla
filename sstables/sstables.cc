@@ -67,6 +67,7 @@
 #include "sstables/partition_index_cache.hh"
 #include "db/large_data_handler.hh"
 #include "db/config.hh"
+#include "sstables/cursor_input_stream.hh"
 #include "sstables/random_access_reader.hh"
 #include "sstables/sstables_manager.hh"
 #include "sstables/partition_index_cache.hh"
@@ -3119,6 +3120,14 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
         file_input_stream_options options,
         integrity_check integrity,
         integrity_error_handler error_handler) {
+    if (_components->compression) {
+        // The cursor opens its own (traced) file and decompresses and verifies
+        // per-chunk checksums itself; it does not perform the whole-file digest
+        // check, so the digest is unused here (per-chunk verification still runs
+        // regardless of integrity_check).
+        co_return make_owning_cursor_input_stream(shared_from_this(), range, permit, std::move(trace_state));
+    }
+
     file f = make_tracked_file(_data_file, permit);
     if (trace_state) {
         f = tracing::make_traced_file(std::move(f), std::move(trace_state), format("{}:", get_filename()));
@@ -3131,15 +3140,6 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
     auto stream_creator = [this, f](uint64_t pos, uint64_t len, file_input_stream_options options) mutable -> future<input_stream<char>> {
         co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
     };
-    if (_components->compression) {
-        if (_version >= sstable_version_types::mc) {
-            co_return make_compressed_file_m_format_input_stream(stream_creator, &_components->compression,
-               range, std::move(options), permit, digest);
-        } else {
-            co_return make_compressed_file_k_l_format_input_stream(stream_creator, &_components->compression,
-                range, std::move(options), permit, digest);
-        }
-    }
 
     uint64_t pos = range.start.to_logical_approved();
     size_t len = range.end.to_logical_approved() - range.start.to_logical_approved();

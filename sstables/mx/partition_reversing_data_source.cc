@@ -11,6 +11,7 @@
 #include "partition_reversing_data_source.hh"
 #include "reader_permit.hh"
 #include "sstables/compressed_file_cursor.hh"
+#include "sstables/cursor_input_stream.hh"
 #include "sstables/consumer.hh"
 #include "sstables/processing_result_generator.hh"
 #include "sstables/sstable_datafile_position.hh"
@@ -23,124 +24,6 @@ namespace sstables {
 extern logging::logger sstlog;
 
 namespace mx {
-
-// A `sstable_datafile_input_stream` that reads forwards from a shared
-// `sstable_datafile_cursor`, starting at a given position.
-//
-// All IO in this file goes through a single cursor owned by the data source.
-// The parsers (`continuous_data_consumer`s), however, want to own an input
-// stream and drive it via the seastar consume protocol. This adapter bridges
-// the two: it borrows the cursor (it does not own it) and reads forwards from
-// it, starting at the stream's start position.
-//
-// The cursor is shared between several of these streams (and the backward row
-// reads), so its internal position is not ours to rely on. Instead this stream
-// tracks its own logical position `_pos` - the next byte it will return - and
-// seeks the cursor to `_pos` before every read. This also makes repeated
-// `consume()` calls on the same parser resume exactly where the previous one
-// stopped, mirroring how a seastar input_stream retains its leftover buffer.
-//
-// Because the cursor is shared and outlives the stream, `close()` is a no-op
-// and `detach()` is unsupported - the cursor is closed by the data source.
-class cursor_input_stream_impl final : public sstable_datafile_input_stream::impl {
-    using tmp_buf = sstable_datafile_input_stream::tmp_buf;
-    using consumer_fn = sstable_datafile_input_stream::consumer_fn;
-
-    sstable_datafile_cursor& _cursor;
-    // The file position of the next byte this stream will produce.
-    sstable_datafile_position _pos;
-
-    // Default size of a forward read issued to the cursor. The cursor itself
-    // caches and reads ahead, so this only bounds how much we ask for at once.
-    static constexpr size_t read_size = 8 * 1024;
-
-    // Advance _pos by `delta` bytes (which may be negative) through the cursor,
-    // so position arithmetic stays in terms of sstable_datafile_position.
-    void advance_pos(ssize_t delta) {
-        _cursor.seek(_pos);
-        _pos = _cursor.compute_relative_position(delta);
-    }
-
-    future<tmp_buf> read_at_pos(size_t n) {
-        _cursor.seek(_pos);
-        auto buf = co_await _cursor.read_forwards(n);
-        advance_pos(buf.size());
-        co_return buf;
-    }
-public:
-    cursor_input_stream_impl(sstable_datafile_cursor& cursor, sstable_datafile_position start) noexcept
-        : _cursor(cursor), _pos(start) {}
-
-    future<tmp_buf> read_exactly(size_t n) noexcept override {
-        return read_at_pos(n);
-    }
-
-    future<> consume(consumer_fn consumer) noexcept override {
-        while (true) {
-            auto buf = co_await read_at_pos(read_size);
-            bool eof = buf.empty();
-            auto result = co_await consumer(std::move(buf));
-            bool stop = seastar::visit(result.get(),
-                [eof] (const continue_consuming&) {
-                    // Whole buffer consumed; stop only at end of file.
-                    return eof;
-                },
-                [this] (stop_consuming<char>& stop) {
-                    // The unconsumed tail must be produced again by the next
-                    // read, so rewind our position over it.
-                    advance_pos(-static_cast<ssize_t>(stop.get_buffer().size()));
-                    return true;
-                },
-                [this] (const skip_bytes& skip) {
-                    advance_pos(skip.get_value());
-                    return false;
-                });
-            if (stop) {
-                co_return;
-            }
-        }
-    }
-
-    bool eof() const noexcept override {
-        // The cursor has no standalone eof flag; the consumers bound their
-        // reads by length and never query this.
-        return false;
-    }
-
-    future<tmp_buf> read() noexcept override {
-        return read_at_pos(read_size);
-    }
-
-    future<> close() noexcept override {
-        // The cursor is owned by the data source, not by this stream.
-        return make_ready_future<>();
-    }
-
-    future<> skip(uint64_t n) noexcept override {
-        advance_pos(n);
-        co_return;
-    }
-   
-    sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
-        auto prev = _cursor.compute_relative_position(0);
-        _cursor.seek(pos);
-        auto result = _cursor.compute_relative_position(offset);
-        _cursor.seek(prev);
-        return result;
-    }
-
-    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
-        return b.to_logical_fixme() - a.to_logical_fixme();
-    }
-
-    data_source detach() && override {
-        on_internal_error(sstlog, "cursor_input_stream_impl does not support detach()");
-    }
-};
-
-static sstable_datafile_input_stream make_cursor_input_stream(sstable_datafile_cursor& cursor, sstable_datafile_position start) {
-    return sstable_datafile_input_stream(std::make_unique<cursor_input_stream_impl>(cursor, start));
-}
 
 // Parser for the partition header and the static row, if present.
 //
@@ -480,7 +363,7 @@ static temporary_buffer<char> end_of_partition() {
 // range was the original.
 //
 // All IO into the data file goes through a single sstable_datafile_cursor.
-// The parsers read forwards from it (through cursor_input_stream_impl), while
+// The parsers read forwards from it (through make_cursor_input_stream), while
 // the rows handed back to the sstable reader are read backwards from it. The
 // vast majority of the data consumed by our parsers is later reused in the
 // sstable reader; the cursor's own cache absorbs that reuse, so we don't read
@@ -500,7 +383,7 @@ class partition_reversing_data_source_impl final : public data_source_impl {
     tracing::trace_state_ptr _trace_state;
 
     // The single cursor through which all IO into the sstable data file is done.
-    // The parsers below read forwards from it (via cursor_input_stream_impl),
+    // The parsers below read forwards from it (via make_cursor_input_stream),
     // and the rows returned to the sstable reader are read backwards from it.
     sstable_datafile_cursor _cursor;
 
