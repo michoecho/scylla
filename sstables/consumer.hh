@@ -535,6 +535,14 @@ public:
                     : std::optional<sstables::sstable_datafile_position>()
             ) {}
 
+    // Like above, but bounds the segment to parse by an absolute end position
+    // rather than a length. A disengaged `end` means continue until end of file.
+    continuous_data_consumer(reader_permit permit, InputStream&& input, sstables::sstable_datafile_position start, std::optional<sstables::sstable_datafile_position> end)
+            : primitive_consumer(std::move(permit))
+            , _input(std::move(input))
+            , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0})
+            , _end_position(end) {}
+
     future<> consume_input() {
         // On first invoke we are guaranteed to go to the disk, so mark as
         // blocked unconditionally. On succeeding invokes, we determine whether

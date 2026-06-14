@@ -296,13 +296,13 @@ private:
         }
     }
 public:
-    // `maxlen` bounds the segment to parse. Positions reported by this context
-    // (position(), and the offsets in tombstone_reversing_info) are relative to
-    // the start of `input`, i.e. to the row the stream starts at. The caller
-    // rebases position() onto an absolute file position when it needs one, and
-    // the tombstone offsets index directly into the row buffer.
-    row_body_skipping_context(sstables::sstable_datafile_input_stream&& input, uint64_t maxlen, reader_permit permit, column_translation ct)
-                : continuous_data_consumer(std::move(permit), std::move(input), sstable_datafile_position::from_logical_approved(0), maxlen)
+    // `start` is the absolute file position the stream begins at and `end` bounds
+    // the segment to parse. position() reported by this context is an absolute file
+    // position, while the offsets in tombstone_reversing_info are relative to the
+    // start of `input`, i.e. to the row the stream starts at, so they index
+    // directly into the row buffer.
+    row_body_skipping_context(sstables::sstable_datafile_input_stream&& input, sstable_datafile_position start, sstable_datafile_position end, reader_permit permit, column_translation ct)
+                : continuous_data_consumer(std::move(permit), std::move(input), start, std::optional<sstable_datafile_position>(end))
                 , _gen(do_process_state())
                 , _column_translation(std::move(ct))
     {}
@@ -389,10 +389,6 @@ class partition_reversing_data_source_impl final : public data_source_impl {
 
     std::optional<partition_header_context> _partition_header_context;
     std::optional<row_body_skipping_context> _row_skipping_context;
-    // Absolute file position the current _row_skipping_context started at. The
-    // context reports positions relative to its start, so we add this to turn
-    // them back into absolute file positions.
-    sstable_datafile_position _row_skipping_context_start;
     sstable_datafile_position _clustering_range_start;
     sstable_datafile_position _partition_start;
     sstable_datafile_position _partition_end;
@@ -463,9 +459,8 @@ private:
         if (_row_skipping_context) {
             co_await _row_skipping_context->close();
         }
-        _row_skipping_context_start = row_start;
         _row_skipping_context.emplace(make_cursor_input_stream(_cursor, row_start),
-                -1,
+                row_start, row_end,
                 _permit, _cached_column_translation);
     }
 
@@ -545,17 +540,16 @@ public:
                     _row_start = _clustering_range_start;
                 }
                 co_await emplace_row_skipping_context(_row_start, _partition_end);
-                auto current_row_start = _row_skipping_context->offset();
+                auto current_row_start = _row_skipping_context->position();
                 auto last_row_start = current_row_start;
                 co_await _row_skipping_context->consume_input();
                 while (!_row_skipping_context->end_of_partition()) {
                     last_row_start = current_row_start;
-                    current_row_start = _row_skipping_context->offset();
+                    current_row_start = _row_skipping_context->position();
                     co_await _row_skipping_context->consume_input();
                 }
-                _cursor.seek(_row_skipping_context_start);
-                _row_end = _cursor.compute_relative_position(current_row_start);
-                _row_start = _cursor.compute_relative_position(last_row_start);
+                _row_end = current_row_start;
+                _row_start = last_row_start;
                 if (_row_start == _row_end) {
                     // empty partition
                     _state = state::FINISHED;
