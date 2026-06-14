@@ -42,7 +42,9 @@ sstable_datafile_input_stream make_cursor_input_stream(sstable_datafile_cursor& 
 
 // Creates a stream that owns a freshly-opened cursor over `sst`'s data file and
 // reads forwards over `range`. The stream's `close()` closes the owned cursor.
+// When `digest` is set, the cursor verifies the whole-file digest while it
+// streams the file forwards from the start (see sstable_datafile_cursor).
 sstable_datafile_input_stream make_owning_cursor_input_stream(shared_sstable sst, disk_read_range range,
-        reader_permit permit, tracing::trace_state_ptr trace_state);
+        reader_permit permit, tracing::trace_state_ptr trace_state, std::optional<uint32_t> digest = std::nullopt);
 
 } // namespace sstables

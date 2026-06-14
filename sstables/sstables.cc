@@ -3120,22 +3120,22 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
         file_input_stream_options options,
         integrity_check integrity,
         integrity_error_handler error_handler) {
+    std::optional<uint32_t> digest;
+    if (integrity == integrity_check::yes) {
+        digest = get_digest();
+    }
+
     if (_components->compression) {
-        // The cursor opens its own (traced) file and decompresses and verifies
-        // per-chunk checksums itself; it does not perform the whole-file digest
-        // check, so the digest is unused here (per-chunk verification still runs
-        // regardless of integrity_check).
-        co_return make_owning_cursor_input_stream(shared_from_this(), range, permit, std::move(trace_state));
+        // The cursor opens its own (traced) file, decompresses and verifies
+        // per-chunk checksums itself, and - when reading the whole file in
+        // order from the start - verifies the whole-file digest by folding each
+        // chunk's checksum into a running digest, like the old data-source impl.
+        co_return make_owning_cursor_input_stream(shared_from_this(), range, permit, std::move(trace_state), digest);
     }
 
     file f = make_tracked_file(_data_file, permit);
     if (trace_state) {
         f = tracing::make_traced_file(std::move(f), std::move(trace_state), format("{}:", get_filename()));
-    }
-
-    std::optional<uint32_t> digest;
-    if (integrity == integrity_check::yes) {
-        digest = get_digest();
     }
     auto stream_creator = [this, f](uint64_t pos, uint64_t len, file_input_stream_options options) mutable -> future<input_stream<char>> {
         co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));

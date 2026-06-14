@@ -432,8 +432,25 @@ class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
     uint64_t _uncompressed_chunk_length;
     uint64_t _uncompressed_file_length;
 
+    // Whole-file digest check. When _expected_digest is engaged (a digest check
+    // was requested), every decompressed chunk folds its checksum into
+    // _actual_digest, exactly as the old data-source impl did: the per-chunk
+    // checksum is combined in (and, for m-format, the chunk's trailing 4-byte
+    // checksum too), so the running digest reproduces the whole-file digest
+    // stored in Digest.crc. The digest is only meaningful if every chunk is
+    // covered in order, so _calculating_digest is dropped as soon as a chunk is
+    // included that is not the immediate successor of the last included one
+    // (i.e. on any non-sequential read). _next_digest_chunk_index is the chunk
+    // index that must come next to keep the run going; it starts at 0 so the
+    // run can only begin at the first chunk.
+    std::optional<uint32_t> _expected_digest;
+    uint32_t _actual_digest;
+    bool _calculating_digest;
+    uint64_t _next_digest_chunk_index = 0;
+
 public:
-    explicit compressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state)
+    explicit compressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+            std::optional<uint32_t> digest = std::nullopt)
         : _sst(std::move(sst))
         , _permit(std::move(permit))
         , _trace_state(std::move(trace_state))
@@ -441,7 +458,11 @@ public:
         , _offsets(_compression.offsets.get_accessor())
         , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
         , _uncompressed_chunk_length(_compression.uncompressed_chunk_length())
-        , _uncompressed_file_length(_compression.uncompressed_file_length()) {
+        , _uncompressed_file_length(_compression.uncompressed_file_length())
+        , _expected_digest(digest)
+        , _actual_digest(_sst->get_version() >= sstable_version_types::mc
+                ? crc32_utils::init_checksum() : adler32_utils::init_checksum())
+        , _calculating_digest(digest.has_value()) {
     }
 
     void seek(sstable_datafile_position pos) override {
@@ -600,6 +621,7 @@ private:
                     "compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}",
                     m.physical_len, m.physical_pos, expected, actual));
         }
+        update_digest(m, compressed.get(), compressed_len, actual);
         temporary_buffer<char> out(m.logical_len);
         size_t n = _compression.get_compressor().uncompress(compressed.get(), compressed_len, out.get_write(), out.size());
         out.trim(n);
@@ -612,19 +634,78 @@ private:
         }
         return adler32_utils::checksum(input, len);
     }
+
+    // Fold a just-verified chunk into the running whole-file digest, and, once
+    // the last chunk has been folded in, check the digest against the expected
+    // one. compressed_data/compressed_len are the chunk's compressed bytes
+    // (without the trailing 4-byte checksum); chunk_checksum is that checksum.
+    void update_digest(const chunk_meta& m, const char* compressed_data, size_t compressed_len, uint32_t chunk_checksum) {
+        if (!_calculating_digest) {
+            return;
+        }
+        uint64_t chunk_index = m.logical_pos / _uncompressed_chunk_length;
+        // The digest only reproduces the whole-file checksum if every chunk is
+        // folded in exactly once, in order, starting at chunk 0.
+        // _next_digest_chunk_index is the next chunk we still need.
+        //  - chunk_index <  next: this chunk was already folded in; the read
+        //    rewound and re-decompressed it (the parser over-reads then backs
+        //    up). Ignore it - re-folding would corrupt the digest.
+        //  - chunk_index >  next: a chunk was skipped, so the run has a gap and
+        //    can never cover the whole file. Abandon the digest check.
+        //  - chunk_index == next: the chunk we were waiting for; fold it in.
+        if (chunk_index < _next_digest_chunk_index) {
+            return;
+        }
+        if (chunk_index > _next_digest_chunk_index) {
+            sstlog.debug("Compressed cursor cannot calculate digest: chunk {} read with a gap (expected {}). Disabling digest check.",
+                    chunk_index, _next_digest_chunk_index);
+            _calculating_digest = false;
+            return;
+        }
+        if (_sst->get_version() >= sstable_version_types::mc) {
+            fold_chunk_into_digest<crc32_utils, /*checksum_all=*/true>(compressed_data, compressed_len, chunk_checksum);
+        } else {
+            fold_chunk_into_digest<adler32_utils, /*checksum_all=*/false>(compressed_data, compressed_len, chunk_checksum);
+        }
+        _next_digest_chunk_index = chunk_index + 1;
+        // _offsets.size() is the number of chunks; the last chunk's index is one
+        // less. Once it has been folded in, the digest covers the whole file.
+        if (chunk_index + 1 == _compression.offsets.size()) {
+            if (_actual_digest != *_expected_digest) {
+                throw_malformed_sstable_exception(seastar::format(
+                        "Digest mismatch: expected={}, actual={}", *_expected_digest, _actual_digest));
+            }
+            _calculating_digest = false;
+        }
+    }
+
+    template <ChecksumUtils ChecksumType, bool checksum_all>
+    void fold_chunk_into_digest(const char* compressed_data, size_t compressed_len, uint32_t chunk_checksum) {
+        _actual_digest = checksum_combine_or_feed<ChecksumType>(_actual_digest, chunk_checksum, compressed_data, compressed_len);
+        if constexpr (checksum_all) {
+            uint32_t be_chunk_checksum = cpu_to_be(chunk_checksum);
+            _actual_digest = ChecksumType::checksum(_actual_digest,
+                    reinterpret_cast<const char*>(&be_chunk_checksum), sizeof(be_chunk_checksum));
+        }
+    }
 };
 
-std::unique_ptr<sstable_datafile_cursor::impl> make_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state) {
+std::unique_ptr<sstable_datafile_cursor::impl> make_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+        std::optional<uint32_t> digest) {
     if (sst->get_compression()) {
-        return std::make_unique<compressed_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state));
+        return std::make_unique<compressed_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state), digest);
     }
+    // The uncompressed cursor reads an unchecksummed data file; the whole-file
+    // digest is verified by the data_source layer, not the cursor, so the
+    // digest is unused here.
     return std::make_unique<uncompressed_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state));
 }
 
 } // anonymous namespace
 
-sstable_datafile_cursor::sstable_datafile_cursor(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state)
-    : _impl(make_impl(std::move(sst), std::move(permit), std::move(trace_state))) {
+sstable_datafile_cursor::sstable_datafile_cursor(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+        std::optional<uint32_t> digest)
+    : _impl(make_impl(std::move(sst), std::move(permit), std::move(trace_state), digest)) {
 }
 
 sstable_datafile_cursor::~sstable_datafile_cursor() = default;

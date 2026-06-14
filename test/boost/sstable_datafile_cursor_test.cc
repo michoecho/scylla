@@ -245,6 +245,66 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_compute_relative_position) {
     }).get();
 }
 
+// Reads the whole file forwards in order through `cur`, in small chunks.
+void read_whole_file_forwards(sstable_datafile_cursor& cur, uint64_t size) {
+    cur.seek(sstable_datafile_position::from_logical_fixme(0));
+    uint64_t got = 0;
+    while (got < size) {
+        auto buf = cur.read_forwards(333).get();
+        if (buf.empty()) {
+            break;
+        }
+        got += buf.size();
+    }
+}
+
+// The compressed cursor verifies the whole-file digest when it is read in order
+// from the start. A correct digest passes; a corrupted one is detected; and a
+// non-sequential read silently disables the check (so it never false-positives).
+SEASTAR_THREAD_TEST_CASE(test_cursor_whole_file_digest) {
+    test_env::do_with_async([] (test_env& env) {
+        auto s = make_test_schema(true);
+        auto sst = make_populated_sstable(env, s, 4, 64, 200);
+        auto permit = env.make_reader_permit();
+        auto expected = read_whole_data_file(sst, permit);
+        BOOST_REQUIRE_GT(expected.size(), 16 * 1024u);
+
+        auto digest = sst->read_digest().get();
+        BOOST_REQUIRE(digest.has_value());
+
+        // A correct digest, read in order from the start, verifies fine.
+        {
+            sstable_datafile_cursor cur(sst, permit, {}, digest);
+            auto close = deferred_close(cur);
+            read_whole_file_forwards(cur, expected.size());
+        }
+
+        // A corrupted digest is detected once the last chunk is folded in.
+        {
+            sstable_datafile_cursor cur(sst, permit, {}, *digest + 1);
+            auto close = deferred_close(cur);
+            BOOST_REQUIRE_EXCEPTION(read_whole_file_forwards(cur, expected.size()),
+                    malformed_sstable_exception, [] (const malformed_sstable_exception& e) {
+                        return sstring(e.what()).find("Digest mismatch") != sstring::npos;
+                    });
+        }
+
+        // A non-sequential read leaves digest-calculating mode, so even a wrong
+        // digest must not trigger a mismatch: read backwards (last chunk first).
+        {
+            sstable_datafile_cursor cur(sst, permit, {}, *digest + 1);
+            auto close = deferred_close(cur);
+            uint64_t end = expected.size();
+            while (end > 0) {
+                uint64_t start = end >= 333 ? end - 333 : 0;
+                cur.read(sstable_datafile_position::from_logical_fixme(start),
+                         sstable_datafile_position::from_logical_fixme(end)).get();
+                end = start;
+            }
+        }
+    }).get();
+}
+
 SEASTAR_THREAD_TEST_CASE(test_cursor_drop_caches_preserves_correctness) {
     test_env::do_with_async([] (test_env& env) {
         run_for_each_sstable(env, [] (shared_sstable sst, const bytes& expected, reader_permit permit) {

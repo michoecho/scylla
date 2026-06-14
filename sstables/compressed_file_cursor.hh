@@ -9,7 +9,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <seastar/core/future.hh>
 #include <seastar/core/temporary_buffer.hh>
@@ -28,7 +30,8 @@ public:
 private:
     std::unique_ptr<impl> _impl;
 public:
-    explicit sstable_datafile_cursor(shared_sstable, reader_permit, tracing::trace_state_ptr);
+    explicit sstable_datafile_cursor(shared_sstable, reader_permit, tracing::trace_state_ptr,
+            std::optional<uint32_t> digest = std::nullopt);
     ~sstable_datafile_cursor();
 
     void seek(sstable_datafile_position);
