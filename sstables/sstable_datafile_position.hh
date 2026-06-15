@@ -74,6 +74,9 @@ public:
     static sstable_datafile_offset from_logical_fixme(int64_t v) noexcept {
         return sstable_datafile_offset(v);
     }
+    static sstable_datafile_offset from_logical_approved(int64_t v) noexcept {
+        return sstable_datafile_offset(v);
+    }
     int64_t to_logical_fixme() const noexcept {
         return _value;
     }

@@ -525,16 +525,6 @@ protected:
 public:
     using read_status = data_consumer::read_status;
 
-    continuous_data_consumer(reader_permit permit, InputStream&& input, sstables::sstable_datafile_position start, uint64_t maxlen)
-            : primitive_consumer(std::move(permit))
-            , _input(std::move(input))
-            , _stream_position(sstables::reader_position_tracker{.position = start, .offset = 0})
-            , _end_position(
-                    static_cast<int64_t>(maxlen) >= 0
-                    ? std::optional<sstables::sstable_datafile_position>(start + sstables::sstable_datafile_offset::from_logical_fixme(maxlen))
-                    : std::optional<sstables::sstable_datafile_position>()
-            ) {}
-
     // Like above, but bounds the segment to parse by an absolute end position
     // rather than a length. A disengaged `end` means continue until end of file.
     continuous_data_consumer(reader_permit permit, InputStream&& input, sstables::sstable_datafile_position start, std::optional<sstables::sstable_datafile_position> end)

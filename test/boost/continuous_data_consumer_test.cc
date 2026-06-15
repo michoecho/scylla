@@ -59,7 +59,11 @@ class test_consumer final : public data_consumer::continuous_data_consumer<test_
 
 public:
     test_consumer(reader_permit permit, uint64_t tested_value)
-        : continuous_data_consumer(std::move(permit), prepare_stream(tested_value), sstables::sstable_datafile_position::from_logical_approved(0), calculate_length(tested_value))
+        : continuous_data_consumer(
+            std::move(permit),
+            prepare_stream(tested_value),
+            sstables::sstable_datafile_position::from_logical_approved(0),
+            sstables::sstable_datafile_position::from_logical_approved(calculate_length(tested_value)))
         , _tested_value(tested_value)
         , _need_cpu_guard(_permit)
     { }
@@ -135,8 +139,11 @@ class skipping_consumer final : public data_consumer::continuous_data_consumer<s
 
 public:
     skipping_consumer(reader_permit permit, int initial_data_size, int to_skip, int next_data_size)
-        : continuous_data_consumer(std::move(permit), prepare_stream(initial_data_size, to_skip, next_data_size),
-                                    sstables::sstable_datafile_position::from_logical_approved(0), prepare_initial_consumer_length(initial_data_size, to_skip))
+        : continuous_data_consumer(
+            std::move(permit),
+            prepare_stream(initial_data_size, to_skip, next_data_size),
+            sstables::sstable_datafile_position::from_logical_approved(0),
+            sstables::sstable_datafile_position::from_logical_approved(prepare_initial_consumer_length(initial_data_size, to_skip)))
         , _initial_data_size(initial_data_size)
         , _to_skip(to_skip)
         , _next_data_size(next_data_size)

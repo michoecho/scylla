@@ -2312,7 +2312,7 @@ future<uint64_t> validate(
                     // The mx format always has position-in-partition in the variant.
                     const auto start = std::get<position_in_partition_view>(current_pi_block->start);
                     const auto end = std::get<position_in_partition_view>(current_pi_block->end);
-                    const auto index_pos = current_partition_pos + sstable_datafile_offset::from_logical_fixme(current_pi_block->offset);
+                    const auto index_pos = current_partition_pos + sstable_datafile_offset::from_logical_approved(current_pi_block->offset);
                     const auto data_pos = context->position();
                     sstlog.trace("validate(): index-data position check for clustering block (first={}) [{}, {}]: {} == {}, partition starts at {}", first_block, start, end, index_pos, data_pos, current_partition_pos);
                     // We cannot reliably position the parser at the start of
