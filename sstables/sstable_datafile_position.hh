@@ -11,7 +11,7 @@
 #include <compare>
 #include <cstdint>
 #include <variant>
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include "utils/assert.hh"
 
@@ -26,13 +26,15 @@ class sstable_datafile_position {
         auto operator<=>(const logical&) const = default;
         bool operator==(const logical&) const = default;
     };
-    // A physical position is a (chunk_position, chunk_length, offset_within_chunk)
-    // triple. It is compared and added like a (chunk_position, offset_within_chunk)
-    // tuple (chunk_length does not participate in the ordering).
+    // A physical position is a (chunk_position, chunk_length, offset_within_chunk,
+    // uncompressed_position) tuple. It is compared like a (chunk_position,
+    // offset_within_chunk) tuple (chunk_length and uncompressed_position do not
+    // participate in the ordering) and added elementwise.
     struct physical {
         int64_t chunk_position;
         int64_t chunk_length;
         int64_t offset_within_chunk;
+        int64_t uncompressed_position;
     };
 
     std::variant<logical, physical> _value;
@@ -67,8 +69,8 @@ public:
     static sstable_datafile_position from_logical_approved(int64_t v) noexcept {
         return sstable_datafile_position(logical{v});
     }
-    static sstable_datafile_position from_physical(int64_t chunk_position, int64_t chunk_length, int64_t offset_within_chunk) noexcept {
-        return sstable_datafile_position(physical{chunk_position, chunk_length, offset_within_chunk});
+    static sstable_datafile_position from_physical(int64_t chunk_position, int64_t chunk_length, int64_t offset_within_chunk, int64_t uncompressed_position) noexcept {
+        return sstable_datafile_position(physical{chunk_position, chunk_length, offset_within_chunk, uncompressed_position});
     }
     int64_t to_logical_fixme() const noexcept {
         SCYLLA_ASSERT(std::holds_alternative<logical>(_value));
@@ -80,6 +82,7 @@ public:
     }
 
     friend sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept;
+    friend struct fmt::formatter<sstable_datafile_position>;
 };
 
 // disk_read_range describes a byte ranges covering part of an sstable
@@ -106,12 +109,13 @@ class sstable_datafile_offset {
         auto operator<=>(const logical&) const = default;
         bool operator==(const logical&) const = default;
     };
-    // A physical offset is a (chunk_position, chunk_length, offset_within_chunk)
-    // triple, added elementwise to a physical position.
+    // A physical offset is a (chunk_position, chunk_length, offset_within_chunk,
+    // uncompressed_position) tuple, added elementwise to a physical position.
     struct physical {
         int64_t chunk_position;
         int64_t chunk_length;
         int64_t offset_within_chunk;
+        int64_t uncompressed_position;
     };
 
     std::variant<logical, physical> _value;
@@ -146,8 +150,8 @@ public:
     static sstable_datafile_offset from_logical_approved(int64_t v) noexcept {
         return sstable_datafile_offset(logical{v});
     }
-    static sstable_datafile_offset from_physical(int64_t chunk_position, int64_t chunk_length, int64_t offset_within_chunk) noexcept {
-        return sstable_datafile_offset(physical{chunk_position, chunk_length, offset_within_chunk});
+    static sstable_datafile_offset from_physical(int64_t chunk_position, int64_t chunk_length, int64_t offset_within_chunk, int64_t uncompressed_position) noexcept {
+        return sstable_datafile_offset(physical{chunk_position, chunk_length, offset_within_chunk, uncompressed_position});
     }
     int64_t to_logical_fixme() const noexcept {
         SCYLLA_ASSERT(std::holds_alternative<logical>(_value));
@@ -155,6 +159,7 @@ public:
     }
 
     friend sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept;
+    friend struct fmt::formatter<sstable_datafile_offset>;
 };
 
 inline sstable_datafile_position operator+(sstable_datafile_position pos, sstable_datafile_offset off) noexcept {
@@ -169,21 +174,34 @@ inline sstable_datafile_position operator+(sstable_datafile_position pos, sstabl
         p->chunk_position + o->chunk_position,
         p->chunk_length + o->chunk_length,
         p->offset_within_chunk + o->offset_within_chunk,
+        p->uncompressed_position + o->uncompressed_position,
     });
 }
 
 } // namespace sstables
 
 template <>
-struct fmt::formatter<sstables::sstable_datafile_position> : fmt::formatter<int64_t> {
+struct fmt::formatter<sstables::sstable_datafile_position> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
     auto format(const sstables::sstable_datafile_position& p, fmt::format_context& ctx) const {
-        return fmt::formatter<int64_t>::format(p.to_logical_fixme(), ctx);
+        if (auto* l = std::get_if<sstables::sstable_datafile_position::logical>(&p._value)) {
+            return fmt::format_to(ctx.out(), "{}", l->value);
+        }
+        auto* ph = std::get_if<sstables::sstable_datafile_position::physical>(&p._value);
+        return fmt::format_to(ctx.out(), "{{chunk_position={}, chunk_length={}, offset_within_chunk={}, uncompressed_position={}}}",
+            ph->chunk_position, ph->chunk_length, ph->offset_within_chunk, ph->uncompressed_position);
     }
 };
 
 template <>
-struct fmt::formatter<sstables::sstable_datafile_offset> : fmt::formatter<int64_t> {
+struct fmt::formatter<sstables::sstable_datafile_offset> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
     auto format(const sstables::sstable_datafile_offset& o, fmt::format_context& ctx) const {
-        return fmt::formatter<int64_t>::format(o.to_logical_fixme(), ctx);
+        if (auto* l = std::get_if<sstables::sstable_datafile_offset::logical>(&o._value)) {
+            return fmt::format_to(ctx.out(), "{}", l->value);
+        }
+        auto* ph = std::get_if<sstables::sstable_datafile_offset::physical>(&o._value);
+        return fmt::format_to(ctx.out(), "{{chunk_position={}, chunk_length={}, offset_within_chunk={}, uncompressed_position={}}}",
+            ph->chunk_position, ph->chunk_length, ph->offset_within_chunk, ph->uncompressed_position);
     }
 };
