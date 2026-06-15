@@ -1079,7 +1079,7 @@ void writer::init_file_writers() {
     if (_sst.has_component(component_type::Partitions) && _sst.has_component(component_type::Rows)) {
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Rows).get();
         _rows_writer = std::make_unique<crc32_digest_file_writer>(std::move(out), _sst.sstable_buffer_size, component_name(_sst, component_type::Rows));
-        _bti_row_index_writer = trie::bti_row_index_writer(*_rows_writer);
+        _bti_row_index_writer = trie::bti_row_index_writer(_sst.get_version(), *_rows_writer);
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Partitions).get();
         _partitions_writer = std::make_unique<crc32_digest_file_writer>(std::move(out), _sst.sstable_buffer_size, component_name(_sst, component_type::Partitions));
         _bti_partition_index_writer = trie::bti_partition_index_writer(_sst.get_version(), *_partitions_writer);
@@ -1229,7 +1229,6 @@ void writer::flush_ready_index_ops() {
                 break;
             }
             auto partitions_db_payload = _bti_row_index_writer->finish(
-                _sst.get_version(),
                 _schema,
                 *op.resolved_start,
                 *op.resolved_end,

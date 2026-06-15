@@ -126,7 +126,7 @@ public:
     // The trie will be written to the given file writer.
     // Note: the file doesn't have to be empty,
     // and it can be extended later.
-    explicit bti_row_index_writer(sstables::file_writer&);
+    explicit bti_row_index_writer(sstable_version_types, sstables::file_writer&);
     bti_row_index_writer(bti_row_index_writer&&) noexcept;
     bti_row_index_writer& operator=(bti_row_index_writer&&) noexcept;
     explicit operator bool() const noexcept { return bool(_impl); }
@@ -154,7 +154,6 @@ public:
     // which lies 1 byte before the start of the next partition.
     // So `partition_data_end` is *NOT* the start position of the next partition.
     bti_trie_source_position finish(
-        sstable_version_types,
         const schema&,
         bti_trie_source_position partition_data_start,
         bti_trie_source_position partition_data_end,

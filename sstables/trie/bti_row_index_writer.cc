@@ -19,7 +19,7 @@ namespace sstables::trie {
 
 class row_index_writer_impl {
 public:
-    row_index_writer_impl(bti_node_sink&);
+    row_index_writer_impl(sstable_version_types, bti_node_sink&);
     ~row_index_writer_impl();
     row_index_writer_impl(row_index_writer_impl&&) = delete;
 private:
@@ -36,7 +36,6 @@ public:
         bti_trie_source_position offset_from_partition_start,
         sstables::deletion_time range_tombstone_before_first_ck);
     bti_trie_source_position finish(
-        sstable_version_types,
         const schema&,
         bti_trie_source_position partition_data_start,
         bti_trie_source_position partition_data_end,
@@ -46,6 +45,7 @@ public:
 
 private:
     trie_writer<bti_node_sink> _wr;
+    sstable_version_types _sst_ver;
     size_t _added_blocks = 0;
     // Storage for _last_key, _last_separator and _tmp_key.
     // 
@@ -70,8 +70,9 @@ private:
     std::remove_reference_t<decltype(_keys[0])>* _tmp_key = &_keys[2];
 };
 
-row_index_writer_impl::row_index_writer_impl(bti_node_sink& out)
+row_index_writer_impl::row_index_writer_impl(sstable_version_types sst_ver, bti_node_sink& out)
     : _wr(out)
+    , _sst_ver(sst_ver)
 {}
 row_index_writer_impl::~row_index_writer_impl() {
 }
@@ -292,7 +293,6 @@ void write_row_index_header(
 }
 
 bti_trie_source_position row_index_writer_impl::finish(
-    sstable_version_types sst_ver,
     const schema& s,
     bti_trie_source_position partition_data_start,
     bti_trie_source_position partition_data_end,
@@ -353,7 +353,7 @@ bti_trie_source_position row_index_writer_impl::finish(
 
     expensive_log("row_index_writer_impl::finish: writing header at {}", fw.offset());
     int64_t pos_header = fw.offset();
-    write_row_index_header(sst_ver, fw, pk, partition_data_start.uncompressed, added_blocks_for_header, root, partition_tombstone);
+    write_row_index_header(_sst_ver, fw, pk, partition_data_start.uncompressed, added_blocks_for_header, root, partition_tombstone);
     // The partition index entry points into Rows.db, at the header we just wrote.
     // We don't track post-compression coordinates of Rows.db here, so they are left
     // as placeholder zeros for now.
@@ -373,9 +373,9 @@ struct bti_row_index_writer::impl
     : bti_node_sink
     , row_index_writer_impl
 {
-    impl(sstables::file_writer& fw)
+    impl(sstable_version_types sst_ver, sstables::file_writer& fw)
         : bti_node_sink(fw, BTI_PAGE_SIZE)
-        , row_index_writer_impl(static_cast<bti_node_sink&>(*this))
+        , row_index_writer_impl(sst_ver, static_cast<bti_node_sink&>(*this))
     {}
     impl(impl&&) = delete;
 };
@@ -384,20 +384,19 @@ bti_row_index_writer::bti_row_index_writer() noexcept = default;
 
 bti_row_index_writer::~bti_row_index_writer() noexcept = default;
 
-bti_row_index_writer::bti_row_index_writer(sstables::file_writer& fw)
-    : _impl(std::make_unique<impl>(fw))
+bti_row_index_writer::bti_row_index_writer(sstable_version_types sst_ver, sstables::file_writer& fw)
+    : _impl(std::make_unique<impl>(sst_ver, fw))
 {}
 bti_row_index_writer::bti_row_index_writer(bti_row_index_writer&&) noexcept = default;
 bti_row_index_writer& bti_row_index_writer::operator=(bti_row_index_writer&&) noexcept = default;
 
 bti_trie_source_position bti_row_index_writer::finish(
-    sstable_version_types version,
     const schema& s,
     bti_trie_source_position partition_data_start,
     bti_trie_source_position partition_data_end,
     const sstables::key& pk,
     const sstables::deletion_time& partition_tombstone) {
-    return _impl->finish(version, s, partition_data_start, partition_data_end, pk, partition_tombstone);
+    return _impl->finish(s, partition_data_start, partition_data_end, pk, partition_tombstone);
 }
 
 void bti_row_index_writer::add(

@@ -956,7 +956,7 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
         auto close_rows_db = defer([&] { rows_db_writer.close(); });
 
         auto partition_index_writer = sstables::trie::bti_partition_index_writer(sst_ver, partitions_db_writer);
-        auto row_index_writer = sstables::trie::bti_row_index_writer(rows_db_writer);
+        auto row_index_writer = sstables::trie::bti_row_index_writer(sst_ver, rows_db_writer);
 
         // The post-compression position isn't tracked in this test;
         // we only exercise the pre-compression (uncompressed) position.
@@ -977,7 +977,6 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
                 auto pk = sstables::key::from_partition_key(*the_schema, last.dk.key());
                 auto hash = utils::make_hashed_key(bytes_view(pk));
                 auto payload = row_index_writer.finish(
-                    sst_ver,
                     *the_schema,
                     pos(last.data_file_offset),
                     pos(last_partition_end_entry.value().data_file_offset),

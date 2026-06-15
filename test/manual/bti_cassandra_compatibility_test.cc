@@ -506,7 +506,7 @@ void do_test(const test_config& cfg) {
 
             // Construct BTI index writers on top of the `file_writer`s.
             auto bti_partition_index_writer = sstables::trie::bti_partition_index_writer(bti_version, partitions_db_writer);
-            auto bti_row_index_writer = sstables::trie::bti_row_index_writer(rows_db_writer);
+            auto bti_row_index_writer = sstables::trie::bti_row_index_writer(bti_version, rows_db_writer);
 
             struct current_partition_data {
                 uint64_t data_file_offset;
@@ -579,7 +579,6 @@ void do_test(const test_config& cfg) {
                     auto pk = sstables::key::from_partition_key(*adjusted_schema, current_partition->dk.key());
                     auto hash = utils::make_hashed_key(bytes_view(pk));
                     auto payload = bti_row_index_writer.finish(
-                        bti_version,
                         *adjusted_schema,
                         pos(current_partition->data_file_offset),
                         pos(frag.offset),
