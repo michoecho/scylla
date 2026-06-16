@@ -28,6 +28,8 @@
 #include <variant>
 
 inline seastar::logger consumer_skip_probe_log("consumer_skip_probe");
+namespace sstables { extern logging::logger sstable_cursor_log; }
+using sstables::sstable_cursor_log;
 
 template<typename T, ContiguousSharedBuffer Buffer>
 inline T consume_be(Buffer& p) {
@@ -534,6 +536,7 @@ public:
             , _end_position(end) {}
 
     future<> consume_input() {
+        sstable_cursor_log.trace("[{}] consume_input: enter pos={}", fmt::ptr(this), _stream_position.position);
         // On first invoke we are guaranteed to go to the disk, so mark as
         // blocked unconditionally. On succeeding invokes, we determine whether
         // we need to block inside operator().
@@ -544,7 +547,8 @@ public:
             _first_invoke = false;
             mark_blocked();
         }
-        return _input.consume(state_processor());
+        co_await _input.consume(state_processor());
+        sstable_cursor_log.trace("[{}] consume_input: exit pos={}", fmt::ptr(this), _stream_position.position);
     }
 
     void verify_end_state() {
@@ -693,10 +697,12 @@ public:
     }
 
     future<> fast_forward_to(sstables::sstable_datafile_position begin, sstables::sstable_datafile_position end) {
+        sstable_cursor_log.trace("[{}] fast_forward_to: begin={} end={}", fmt::ptr(this), begin, end);
         return fast_forward_to_impl(begin, end);
     }
 
     future<> skip_to(sstables::sstable_datafile_position begin) {
+        sstable_cursor_log.trace("[{}] skip_to: begin={}", fmt::ptr(this), begin);
         return fast_forward_to_impl(
             begin,
             _end_position);
@@ -725,6 +731,7 @@ public:
     }
 
     future<> close() noexcept {
+        sstable_cursor_log.trace("[{}] close: pos={}", fmt::ptr(this), _stream_position.position);
         return _input.close();
     }
 };

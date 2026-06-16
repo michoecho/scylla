@@ -7,8 +7,11 @@
  */
 
 #include "sstable_datafile_input_stream.hh"
+#include "utils/log.hh"
 
 namespace sstables {
+
+extern logging::logger sstable_cursor_log;
 
 namespace {
 
@@ -21,10 +24,12 @@ public:
         : _stream(std::move(stream)) {}
 
     future<tmp_buf> read_exactly(size_t n) noexcept override {
+        sstable_cursor_log.trace("[stream@{}] read_exactly: n={}", fmt::ptr(this), n);
         return _stream.read_exactly(n);
     }
 
     future<> consume(consumer_fn consumer) noexcept override {
+        sstable_cursor_log.trace("[stream@{}] consume", fmt::ptr(this));
         return _stream.consume(std::move(consumer));
     }
 
@@ -33,33 +38,41 @@ public:
     }
 
     future<tmp_buf> read() noexcept override {
+        sstable_cursor_log.trace("[stream@{}] read", fmt::ptr(this));
         return _stream.read();
     }
 
     future<> close() noexcept override {
+        sstable_cursor_log.trace("[stream@{}] close", fmt::ptr(this));
         return _stream.close();
     }
 
     future<> skip(uint64_t n) noexcept override {
+        sstable_cursor_log.trace("[stream@{}] skip: n={}", fmt::ptr(this), n);
         return _stream.skip(n);
     }
 
     future<> skip_to(sstable_datafile_position target, sstable_datafile_position current) noexcept override {
+        sstable_cursor_log.trace("[stream@{}] skip_to: target={} current={}", fmt::ptr(this), target, current);
         // The underlying input_stream supports only relative skips, so we rely
         // on the caller-supplied current position to compute how far to skip.
         return _stream.skip(subtract_positions(target, current));
     }
 
-
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
-        return pos + sstable_datafile_offset::from_logical_approved(offset);
+        auto result = pos + sstable_datafile_offset::from_logical_approved(offset);
+        sstable_cursor_log.trace("[stream@{}] compute_relative_position: pos={} offset={} result={}", fmt::ptr(this), pos, offset, result);
+        return result;
     }
 
     int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
-        return b.to_logical_approved() - a.to_logical_approved();
+        auto result = b.to_logical_approved() - a.to_logical_approved();
+        sstable_cursor_log.trace("[stream@{}] subtract_positions: b={} a={} result={}", fmt::ptr(this), b, a, result);
+        return result;
     }
 
     data_source detach() && override {
+        sstable_cursor_log.trace("[stream@{}] detach", fmt::ptr(this));
         return std::move(_stream).detach();
     }
 };

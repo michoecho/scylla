@@ -3094,14 +3094,7 @@ bool uses_legacy_dk_order(sstable_version_types v) {
 }
 
 bool holds_logical_position(sstable_version_types v) {
-    // `ms` and `mt` store a single (pre-compression) logical position in the BTI
-    // index payload. `mu` stores a full physical position (chunk coordinates plus
-    // the uncompressed offset).
-
-    // FIXME
-    return true;
-
-    return v == sstable_version_types::ms || v == sstable_version_types::mt;
+    return v != sstable_version_types::mu;
 }
 
 component_type sstable::component_from_sstring(version_types v, const sstring &s) {

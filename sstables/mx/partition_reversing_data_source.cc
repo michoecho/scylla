@@ -22,6 +22,7 @@
 namespace sstables {
 
 extern logging::logger sstlog;
+extern logging::logger sstable_cursor_log;
 
 namespace mx {
 
@@ -483,15 +484,20 @@ public:
         , _row_start(_partition_end)
         , _row_end(_partition_end)
         , _cached_column_translation(_sst->get_column_translation(_schema, _sst->get_serialization_header(), _sst->features()))
-    { }
+    {
+        sstable_cursor_log.trace("[reversing@{}] construct: partition_start={} partition_end={}", fmt::ptr(this), partition_start, partition_end);
+    }
 
     virtual future<temporary_buffer<char>> get() override {
+        sstable_cursor_log.trace("[reversing@{}] get: enter state={} row_start={} row_end={}", fmt::ptr(this), (int)_state, _row_start, _row_end);
         if (!_partition_header_context) {
             _partition_header_context.emplace(make_cursor_input_stream(_cursor, _partition_start),
                     _partition_start, _permit);
             co_await _partition_header_context->consume_input();
             _clustering_range_start = _partition_header_context->header_end_pos();
-            co_return co_await data_read(_partition_start, _clustering_range_start);
+            auto header_buf = co_await data_read(_partition_start, _clustering_range_start);
+            sstable_cursor_log.trace("[reversing@{}] get: exit (partition header) clustering_range_start={} size={}", fmt::ptr(this), _clustering_range_start, header_buf.size());
+            co_return header_buf;
         }
         auto ir_end = _ir.sstable_datafile_positions().end;
         if (ir_end && *ir_end < _row_start) {
@@ -549,6 +555,7 @@ public:
                 if (_row_start == _row_end) {
                     // empty partition
                     _state = state::FINISHED;
+                    sstable_cursor_log.trace("[reversing@{}] get: exit (empty partition)", fmt::ptr(this));
                     co_return end_of_partition();
                 }
             }
@@ -564,6 +571,7 @@ public:
                 }
                 _row_start = _clustering_range_start;
                 _state = state::FINISHED;
+                sstable_cursor_log.trace("[reversing@{}] get: exit (empty range)", fmt::ptr(this));
                 co_return end_of_partition();
             }
 
@@ -582,24 +590,29 @@ public:
             if (_row_end == _clustering_range_start) {
                 _state = state::PARTITION_END;
             }
+            sstable_cursor_log.trace("[reversing@{}] get: exit (row) size={} row_start={} row_end={} state={}", fmt::ptr(this), ret.size(), _row_start, _row_end, (int)_state);
             co_return ret;
         }
         case state::PARTITION_END: {
             _state = state::FINISHED;
+            sstable_cursor_log.trace("[reversing@{}] get: exit (partition end)", fmt::ptr(this));
             co_return end_of_partition();
         }
         case state::FINISHED:
+            sstable_cursor_log.trace("[reversing@{}] get: exit (finished)", fmt::ptr(this));
             co_return temporary_buffer<char>();
         }
     }
 
     virtual future<temporary_buffer<char>> skip(uint64_t n) override {
+        sstable_cursor_log.trace("[reversing@{}] skip: n={}", fmt::ptr(this), n);
         // Skipping is implemented by checking the index.
         on_internal_error(sstlog, "partition_reversing_data_source does not support skipping");
     }
 
     // Must not be run concurrently with `get()`.
     virtual future<> close() noexcept override {
+        sstable_cursor_log.trace("[reversing@{}] close: row_start={}", fmt::ptr(this), _row_start);
         auto close_partition_header_context = _partition_header_context ? _partition_header_context->close() : make_ready_future<>();
         auto close_row_skipping_context = _row_skipping_context ? _row_skipping_context->close() : make_ready_future();
         co_await when_all(std::move(close_partition_header_context), std::move(close_row_skipping_context));

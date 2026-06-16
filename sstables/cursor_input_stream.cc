@@ -18,6 +18,7 @@
 namespace sstables {
 
 extern logging::logger sstlog;
+extern logging::logger sstable_cursor_log;
 
 namespace {
 
@@ -87,17 +88,23 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
     }
 public:
     cursor_input_stream_impl(sstable_datafile_cursor& cursor, sstable_datafile_position start) noexcept
-        : _cursor(cursor), _pos(start) {}
+        : _cursor(cursor), _pos(start) {
+        sstable_cursor_log.trace("[cursor_stream@{}] construct: borrowed cursor start={}", fmt::ptr(this), start);
+    }
 
     cursor_input_stream_impl(std::unique_ptr<sstable_datafile_cursor> cursor, sstable_datafile_position start) noexcept
-        : _owned_cursor(std::move(cursor)), _cursor(*_owned_cursor), _pos(start) {}
+        : _owned_cursor(std::move(cursor)), _cursor(*_owned_cursor), _pos(start) {
+        sstable_cursor_log.trace("[cursor_stream@{}] construct: owned cursor start={}", fmt::ptr(this), start);
+    }
 
     future<tmp_buf> read_exactly(size_t n) noexcept override {
+        sstable_cursor_log.trace("[cursor_stream@{}] read_exactly: enter pos={} n={}", fmt::ptr(this), _pos, n);
         // read_at_pos() may return a short buffer when it is served from the
         // cached buffer (which can end before n bytes). Loop until we have n
         // bytes or hit EOF, so the read_exactly() contract still holds.
         auto first = co_await read_at_pos(n);
         if (first.size() >= n || first.empty()) {
+            sstable_cursor_log.trace("[cursor_stream@{}] read_exactly: exit pos={} size={}", fmt::ptr(this), _pos, first.size());
             co_return first;
         }
         tmp_buf out(n);
@@ -113,10 +120,12 @@ public:
             filled += buf.size();
         }
         out.trim(filled);
+        sstable_cursor_log.trace("[cursor_stream@{}] read_exactly: exit pos={} size={}", fmt::ptr(this), _pos, filled);
         co_return out;
     }
 
     future<> consume(consumer_fn consumer) noexcept override {
+        sstable_cursor_log.trace("[cursor_stream@{}] consume: enter pos={}", fmt::ptr(this), _pos);
         while (true) {
             auto buf = co_await read_at_pos(read_size);
             bool eof = buf.empty();
@@ -137,6 +146,7 @@ public:
                     return false;
                 });
             if (stop) {
+                sstable_cursor_log.trace("[cursor_stream@{}] consume: exit pos={}", fmt::ptr(this), _pos);
                 co_return;
             }
         }
@@ -149,10 +159,12 @@ public:
     }
 
     future<tmp_buf> read() noexcept override {
+        sstable_cursor_log.trace("[cursor_stream@{}] read: pos={}", fmt::ptr(this), _pos);
         return read_at_pos(read_size);
     }
 
     future<> close() noexcept override {
+        sstable_cursor_log.trace("[cursor_stream@{}] close: pos={}", fmt::ptr(this), _pos);
         if (_owned_cursor) {
             return _owned_cursor->close();
         }
@@ -161,20 +173,24 @@ public:
     }
 
     future<> skip(uint64_t n) noexcept override {
+        sstable_cursor_log.trace("[cursor_stream@{}] skip: enter pos={} n={}", fmt::ptr(this), _pos, n);
         // Walk the cursor forward by n bytes. For a compressed physical cursor a
         // forward skip can cross chunks the cursor has not read yet, so this is
         // async (it reads each crossed chunk's length prefix) rather than the
         // synchronous compute_relative_position used by advance_pos.
         _pos = co_await _cursor.skip_forwards(_pos, n);
+        sstable_cursor_log.trace("[cursor_stream@{}] skip: exit pos={}", fmt::ptr(this), _pos);
     }
 
     future<> skip_to(sstable_datafile_position target, sstable_datafile_position) noexcept override {
+        sstable_cursor_log.trace("[cursor_stream@{}] skip_to: enter pos={} target={}", fmt::ptr(this), _pos, target);
         // This stream tracks its own position, so it can seek straight to the
         // target; the caller-supplied current position is not needed. We still
         // walk the cursor to the target (a zero-length forward skip) so that the
         // target chunk's metadata is loaded into the cursor's caches, which later
         // relative-position arithmetic around the new position depends on.
         _pos = co_await _cursor.skip_forwards(target, 0);
+        sstable_cursor_log.trace("[cursor_stream@{}] skip_to: exit pos={}", fmt::ptr(this), _pos);
     }
 
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
@@ -182,11 +198,14 @@ public:
         _cursor.seek(pos);
         auto result = _cursor.compute_relative_position(offset);
         _cursor.seek(prev);
+        sstable_cursor_log.trace("[cursor_stream@{}] compute_relative_position: pos={} offset={} result={}", fmt::ptr(this), pos, offset, result);
         return result;
     }
 
     int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
-        return b.to_logical_fixme() - a.to_logical_fixme();
+        auto result = b.to_logical_fixme() - a.to_logical_fixme();
+        sstable_cursor_log.trace("[cursor_stream@{}] subtract_positions: b={} a={} result={}", fmt::ptr(this), b, a, result);
+        return result;
     }
 
     data_source detach() && override {

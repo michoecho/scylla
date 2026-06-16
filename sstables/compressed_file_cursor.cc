@@ -29,6 +29,8 @@
 
 namespace sstables {
 
+logging::logger sstable_cursor_log("sstable_cursor");
+
 namespace {
 
 // Opens a forward-streaming data_source over the byte range [start, start+len)
@@ -308,21 +310,25 @@ public:
     }
 
     void seek(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[uncompressed@{}] seek: pos={}", fmt::ptr(this), pos);
         _position = pos;
     }
 
     future<temporary_buffer<char>> read_forwards(size_t n) override {
         SCYLLA_ASSERT(_position.has_value());
+        sstable_cursor_log.trace("[uncompressed@{}] read_forwards: enter pos={} n={}", fmt::ptr(this), *_position, n);
         uint64_t start = _position->to_logical_fixme();
         n = std::min(n, _file_length - start);
         temporary_buffer<char> result(n);
         size_t filled = co_await fill_forwards(start, result.get_write(), n);
         result.trim(filled);
         _position = sstable_datafile_position::from_logical_fixme(start + filled);
+        sstable_cursor_log.trace("[uncompressed@{}] read_forwards: exit pos={} filled={}", fmt::ptr(this), *_position, filled);
         co_return result;
     }
 
     future<temporary_buffer<char>> read(sstable_datafile_position start_pos, sstable_datafile_position end_pos) override {
+        sstable_cursor_log.trace("[uncompressed@{}] read: enter start={} end={}", fmt::ptr(this), start_pos, end_pos);
         uint64_t start = start_pos.to_logical_fixme();
         uint64_t end = end_pos.to_logical_fixme();
         SCYLLA_ASSERT(start <= end);
@@ -330,30 +336,37 @@ public:
         temporary_buffer<char> result(len);
         co_await fill_from_file(start, result.get_write(), len);
         _position = start_pos;
+        sstable_cursor_log.trace("[uncompressed@{}] read: exit len={}", fmt::ptr(this), len);
         co_return result;
     }
 
     sstable_datafile_position compute_relative_position(ssize_t offset) override {
         SCYLLA_ASSERT(_position.has_value());
-        return sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
+        auto result = sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
+        sstable_cursor_log.trace("[uncompressed@{}] compute_relative_position: pos={} offset={} result={}", fmt::ptr(this), *_position, offset, result);
+        return result;
     }
 
     future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n) override {
+        auto result = sstable_datafile_position::from_logical_fixme(from.to_logical_fixme() + n);
+        sstable_cursor_log.trace("[uncompressed@{}] skip_forwards: from={} n={} result={}", fmt::ptr(this), from, n, result);
         // Logical positions are plain byte offsets, so a forward skip is just
         // addition; nothing needs to be read to know the result.
-        return make_ready_future<sstable_datafile_position>(
-                sstable_datafile_position::from_logical_fixme(from.to_logical_fixme() + n));
+        return make_ready_future<sstable_datafile_position>(result);
     }
 
     void drop_caches_after(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[uncompressed@{}] drop_caches_after: pos={}", fmt::ptr(this), pos);
         _cache.drop_after(pos.to_logical_fixme());
     }
 
     void drop_caches_before(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[uncompressed@{}] drop_caches_before: pos={}", fmt::ptr(this), pos);
         _cache.drop_before(pos.to_logical_fixme());
     }
 
     future<> close() override {
+        sstable_cursor_log.trace("[uncompressed@{}] close", fmt::ptr(this));
         if (_forward_source) {
             co_await _forward_source->close();
         }
@@ -578,11 +591,13 @@ public:
     }
 
     void seek(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[compressed@{}] seek: pos={}", fmt::ptr(this), pos);
         _position = pos;
     }
 
     future<temporary_buffer<char>> read_forwards(size_t n) override {
         SCYLLA_ASSERT(_position.has_value());
+        sstable_cursor_log.trace("[compressed@{}] read_forwards: enter pos={} n={}", fmt::ptr(this), *_position, n);
         uint64_t start = _position->to_logical_fixme();
         uint64_t end = std::min<uint64_t>(start + n, _uncompressed_file_length);
         size_t len = end > start ? end - start : 0;
@@ -590,10 +605,12 @@ public:
         size_t filled = co_await fill(start, result.get_write(), len);
         result.trim(filled);
         _position = sstable_datafile_position::from_logical_fixme(start + filled);
+        sstable_cursor_log.trace("[compressed@{}] read_forwards: exit pos={} filled={}", fmt::ptr(this), *_position, filled);
         co_return result;
     }
 
     future<temporary_buffer<char>> read(sstable_datafile_position start_pos, sstable_datafile_position end_pos) override {
+        sstable_cursor_log.trace("[compressed@{}] read: enter start={} end={}", fmt::ptr(this), start_pos, end_pos);
         uint64_t start = start_pos.to_logical_fixme();
         uint64_t end = end_pos.to_logical_fixme();
         SCYLLA_ASSERT(start <= end);
@@ -601,22 +618,27 @@ public:
         temporary_buffer<char> result(len);
         co_await fill(start, result.get_write(), len);
         _position = start_pos;
+        sstable_cursor_log.trace("[compressed@{}] read: exit len={}", fmt::ptr(this), len);
         co_return result;
     }
 
     sstable_datafile_position compute_relative_position(ssize_t offset) override {
         SCYLLA_ASSERT(_position.has_value());
-        return sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
+        auto result = sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
+        sstable_cursor_log.trace("[compressed@{}] compute_relative_position: pos={} offset={} result={}", fmt::ptr(this), *_position, offset, result);
+        return result;
     }
 
     future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n) override {
+        auto result = sstable_datafile_position::from_logical_fixme(from.to_logical_fixme() + n);
+        sstable_cursor_log.trace("[compressed@{}] skip_forwards: from={} n={} result={}", fmt::ptr(this), from, n, result);
         // Logical positions are plain uncompressed byte offsets, so a forward
         // skip is just addition; the chunk lookup happens lazily on the next read.
-        return make_ready_future<sstable_datafile_position>(
-                sstable_datafile_position::from_logical_fixme(from.to_logical_fixme() + n));
+        return make_ready_future<sstable_datafile_position>(result);
     }
 
     void drop_caches_after(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[compressed@{}] drop_caches_after: pos={}", fmt::ptr(this), pos);
         uint64_t p = pos.to_logical_fixme();
         // Drop only chunks that lie entirely in [p; +inf). The chunk that
         // contains p straddles the boundary (unless p is exactly on a chunk
@@ -636,6 +658,7 @@ public:
     }
 
     void drop_caches_before(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[compressed@{}] drop_caches_before: pos={}", fmt::ptr(this), pos);
         uint64_t p = pos.to_logical_fixme();
         // The chunk containing p straddles the boundary and must be kept, so the
         // last chunk to drop is the one before it; keep chunk_index onward.
@@ -648,6 +671,7 @@ public:
     }
 
     future<> close() override {
+        sstable_cursor_log.trace("[compressed@{}] close", fmt::ptr(this));
         return _file.close();
     }
 
@@ -934,18 +958,22 @@ public:
     }
 
     void seek(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[compressed_physical@{}] seek: pos={}", fmt::ptr(this), pos);
         _position = decode_position(pos);
     }
 
     future<temporary_buffer<char>> read_forwards(size_t n) override {
         SCYLLA_ASSERT(_position.has_value());
+        sstable_cursor_log.trace("[compressed_physical@{}] read_forwards: enter n={} chunk_pos={} offset_in_chunk={}", fmt::ptr(this), n, _position->chunk.chunk_position, _position->offset_within_chunk);
         temporary_buffer<char> result(n);
         size_t filled = co_await fill_forwards(result.get_write(), n);
         result.trim(filled);
+        sstable_cursor_log.trace("[compressed_physical@{}] read_forwards: exit filled={} chunk_pos={} offset_in_chunk={}", fmt::ptr(this), filled, _position->chunk.chunk_position, _position->offset_within_chunk);
         co_return result;
     }
 
     future<temporary_buffer<char>> read(sstable_datafile_position start_pos, sstable_datafile_position end_pos) override {
+        sstable_cursor_log.trace("[compressed_physical@{}] read: enter start={} end={}", fmt::ptr(this), start_pos, end_pos);
         SCYLLA_ASSERT(start_pos <= end_pos);
         // Read from start to end by replaying the forward path from start. Unlike
         // a logical position, a physical position does not expose a byte distance,
@@ -955,15 +983,19 @@ public:
         auto result = co_await collect_forwards(end);
         // Mirror the logical cursor: a range read leaves the cursor at its start.
         _position = decode_position(start_pos);
+        sstable_cursor_log.trace("[compressed_physical@{}] read: exit result_size={}", fmt::ptr(this), result.size());
         co_return result;
     }
 
     sstable_datafile_position compute_relative_position(ssize_t offset) override {
         SCYLLA_ASSERT(_position.has_value());
-        return relative_position(*_position, offset);
+        auto result = relative_position(*_position, offset);
+        sstable_cursor_log.trace("[compressed_physical@{}] compute_relative_position: chunk_pos={} offset_in_chunk={} delta={} result={}", fmt::ptr(this), _position->chunk.chunk_position, _position->offset_within_chunk, offset, result);
+        return result;
     }
 
     future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n) override {
+        sstable_cursor_log.trace("[compressed_physical@{}] skip_forwards: enter from={} n={}", fmt::ptr(this), from, n);
         // Walk forward from `from` by n decompressed bytes, crossing whole chunks
         // using the fixed uncompressed chunk length and reading each chunk's
         // on-disk length prefix to learn where the next one begins. This both
@@ -985,16 +1017,21 @@ public:
         if (at_eof(p)) {
             // We walked to end of data; the skip must land exactly at EOF.
             SCYLLA_ASSERT(remaining == 0);
-            co_return encode_position(p);
+            auto result = encode_position(p);
+            sstable_cursor_log.trace("[compressed_physical@{}] skip_forwards: exit (eof) result={}", fmt::ptr(this), result);
+            co_return result;
         }
         // The target lies inside p's chunk; record its extent too so the position
         // we hand back carries a valid chunk_length.
         p.chunk.chunk_length = co_await chunk_length_of(p.chunk.chunk_position);
         p.offset_within_chunk = in_chunk + remaining;
-        co_return encode_position(p);
+        auto result = encode_position(p);
+        sstable_cursor_log.trace("[compressed_physical@{}] skip_forwards: exit result={}", fmt::ptr(this), result);
+        co_return result;
     }
 
     void drop_caches_after(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[compressed_physical@{}] drop_caches_after: pos={}", fmt::ptr(this), pos);
         auto p = decode_position(pos);
         // Keep the chunk that p falls into (it straddles the boundary unless p is
         // exactly on a chunk boundary); the first chunk we may drop starts after
@@ -1010,6 +1047,7 @@ public:
     }
 
     void drop_caches_before(sstable_datafile_position pos) override {
+        sstable_cursor_log.trace("[compressed_physical@{}] drop_caches_before: pos={}", fmt::ptr(this), pos);
         auto p = decode_position(pos);
         // The chunk containing p straddles the boundary and must be kept, so drop
         // only chunks that end at or before its compressed start.
@@ -1021,6 +1059,7 @@ public:
     }
 
     future<> close() override {
+        sstable_cursor_log.trace("[compressed_physical@{}] close", fmt::ptr(this));
         return _file.close();
     }
 
