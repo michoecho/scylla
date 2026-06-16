@@ -7,6 +7,7 @@
  */
 
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <optional>
 #include <vector>
@@ -27,6 +28,74 @@
 #include "utils/div_ceil.hh"
 
 namespace sstables {
+
+namespace {
+
+// Opens a forward-streaming data_source over the byte range [start, start+len)
+// of the underlying file. The cursor uses this to read ahead sequentially; the
+// closure captures whatever is needed to reach the bytes (permit, tracing,
+// storage layer), so the cursor itself never refers to an sstable.
+using forward_source_factory = std::function<future<data_source>(uint64_t start, uint64_t len)>;
+
+// Everything a cursor needs to do physical IO against a file, with no reference
+// to an sstable. This is the decoupled form of what an sstable provides: the
+// raw data file (for its block size and for direct backward reads), a permit
+// for IO accounting, a factory for forward streaming sources, and the length of
+// the byte stream being read.
+struct datafile_io {
+    file f;
+    reader_permit permit;
+    forward_source_factory make_forward_source;
+    uint64_t file_length;
+};
+
+// Build the IO pieces for reading an sstable's raw data file. `file_length` is
+// the length of the byte stream to read (the on-disk data size when reading the
+// compressed bytes, or the uncompressed data size otherwise).
+datafile_io make_sstable_datafile_io(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+        uint64_t file_length) {
+    file data_file = sst->get_data_file();
+    auto make_forward_source = [sst, permit, trace_state] (uint64_t start, uint64_t len) -> future<data_source> {
+        file_input_stream_options options;
+        options.buffer_size = seastar::align_up<uint64_t>(4096, sst->get_data_file().disk_read_dma_alignment());
+        file f = make_tracked_file(sst->get_data_file(), permit);
+        if (trace_state) {
+            f = tracing::make_traced_file(std::move(f), trace_state, seastar::format("{}:", sst->get_filename()));
+        }
+        return sst->get_storage().make_data_or_index_source(
+                *sst, component_type::Data, std::move(f), start, len, std::move(options));
+    };
+    return datafile_io{std::move(data_file), std::move(permit), std::move(make_forward_source), file_length};
+}
+
+// Everything the compressed cursors need to know about how the data is
+// compressed, with no reference to an sstable. The compression metadata
+// (chunk length, file length, compressor, chunk locations) plus the two
+// format details that the cursors otherwise derive from the sstable version:
+// whether each chunk is prefixed with its length, and whether chunk checksums
+// use crc32 (true) or adler32 (false).
+struct compression_format {
+    const compression& comp;
+    uint64_t compressed_file_length;
+    size_t chunk_prefix;  // 0 if chunks carry no length prefix
+    bool use_crc32;       // crc32 (mc+) vs adler32 chunk checksums
+
+    uint32_t init_digest() const {
+        return use_crc32 ? crc32_utils::init_checksum() : adler32_utils::init_checksum();
+    }
+};
+
+// Build the compression format pieces from an sstable.
+compression_format make_sstable_compression_format(const sstable& sst) {
+    return compression_format{
+        sst.get_compression(),
+        sst.ondisk_data_size(),
+        chunk_has_length_prefix(sst.get_version()) ? chunk_length_prefix_size : 0,
+        sst.get_version() >= sstable_version_types::mc,
+    };
+}
+
+} // anonymous namespace
 
 class sstable_datafile_cursor::impl {
 public:
@@ -186,9 +255,11 @@ public:
 // layer read ahead. The stream and its position are kept between calls so a
 // sequential scan reuses the same stream instead of reopening it.
 class uncompressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
-    shared_sstable _sst;
+    // Raw data file, used for its block size and for direct backward reads.
+    file _data_file;
     reader_permit _permit;
-    tracing::trace_state_ptr _trace_state;
+    // Opens a forward streaming source over a byte range of the file.
+    forward_source_factory _make_forward_source;
     std::optional<sstable_datafile_position> _position;
 
     // Cached file contents, keyed by file offset.
@@ -220,13 +291,20 @@ class uncompressed_file_cursor_impl final : public sstable_datafile_cursor::impl
     uint64_t _file_length;
 
 public:
+    // Construct from the decoupled IO pieces; no sstable needed.
+    explicit uncompressed_file_cursor_impl(datafile_io io)
+        : _data_file(std::move(io.f))
+        , _permit(std::move(io.permit))
+        , _make_forward_source(std::move(io.make_forward_source))
+        , _block_size(_data_file.disk_read_dma_alignment())
+        , _file_length(io.file_length) {
+    }
+
+    // Convenience constructor that extracts the IO pieces from an sstable.
     explicit uncompressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
             std::optional<uint64_t> file_length = std::nullopt)
-        : _sst(std::move(sst))
-        , _permit(std::move(permit))
-        , _trace_state(std::move(trace_state))
-        , _block_size(_sst->get_data_file().disk_read_dma_alignment())
-        , _file_length(file_length.value_or(_sst->data_size())) {
+        : uncompressed_file_cursor_impl(make_sstable_datafile_io(sst, std::move(permit), std::move(trace_state),
+                file_length.value_or(sst->data_size()))) {
     }
 
     void seek(sstable_datafile_position pos) override {
@@ -354,14 +432,7 @@ private:
         uint64_t start = seastar::align_down(pos, _block_size);
         uint64_t file_len = _file_length;
         uint64_t len = start <= file_len ? file_len - start : 0;
-        file_input_stream_options options;
-        options.buffer_size = seastar::align_up<uint64_t>(4096, _block_size);
-        file f = make_tracked_file(_sst->get_data_file(), _permit);
-        if (_trace_state) {
-            f = tracing::make_traced_file(std::move(f), _trace_state, seastar::format("{}:", _sst->get_filename()));
-        }
-        _forward_source = co_await _sst->get_storage().make_data_or_index_source(
-                *_sst, component_type::Data, std::move(f), start, len, std::move(options));
+        _forward_source = co_await _make_forward_source(start, len);
         _forward_pos = start;
     }
 
@@ -384,7 +455,7 @@ private:
             uint64_t read_end = seastar::align_up(gap_end, _block_size);
             uint64_t read_start = read_end > _file_read_size ? seastar::align_down(read_end - _file_read_size, _block_size) : 0;
 
-            file f = make_tracked_file(_sst->get_data_file(), _permit);
+            file f = make_tracked_file(_data_file, _permit);
             auto buf = co_await f.dma_read<char>(read_start, read_end - read_start);
             // Grow the read size for the next disk read in the chain.
             _file_read_size = std::min(_file_read_size * 2, max_file_read_size);
@@ -418,12 +489,10 @@ private:
 //    one (and not a generic map) so that small sequential reads within a chunk
 //    cost a plain bounds check rather than a map lookup.
 class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
-    shared_sstable _sst;
-    reader_permit _permit;
-    tracing::trace_state_ptr _trace_state;
-
     const compression& _compression;
     compression::segmented_offsets::accessor _offsets;
+    // Compressed (on-disk) length of the whole data file.
+    uint64_t _compressed_file_length;
     // Reads the raw compressed data file; all physical IO goes through here.
     uncompressed_file_cursor_impl _file;
 
@@ -455,6 +524,9 @@ class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
     // checksum still covers only the compressed data.
     size_t _chunk_prefix;
 
+    // Whether chunk checksums use crc32 (true) or adler32 (false).
+    bool _use_crc32;
+
     // Whole-file digest check. When _expected_digest is engaged (a digest check
     // was requested), every decompressed chunk folds its checksum into
     // _actual_digest, exactly as the old data-source impl did: the per-chunk
@@ -472,21 +544,29 @@ class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
     uint64_t _next_digest_chunk_index = 0;
 
 public:
-    explicit compressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+    // Construct from the decoupled pieces; no sstable needed. `io` reads the raw
+    // compressed data file, `fmt` describes how it is compressed.
+    explicit compressed_file_cursor_impl(datafile_io io, compression_format fmt,
             std::optional<uint32_t> digest = std::nullopt)
-        : _sst(std::move(sst))
-        , _permit(std::move(permit))
-        , _trace_state(std::move(trace_state))
-        , _compression(_sst->get_compression())
+        : _compression(fmt.comp)
         , _offsets(_compression.offsets.get_accessor())
-        , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
+        , _compressed_file_length(fmt.compressed_file_length)
+        , _file(std::move(io))
         , _uncompressed_chunk_length(_compression.uncompressed_chunk_length())
         , _uncompressed_file_length(_compression.uncompressed_file_length())
-        , _chunk_prefix(chunk_has_length_prefix(_sst->get_version()) ? chunk_length_prefix_size : 0)
+        , _chunk_prefix(fmt.chunk_prefix)
+        , _use_crc32(fmt.use_crc32)
         , _expected_digest(digest)
-        , _actual_digest(_sst->get_version() >= sstable_version_types::mc
-                ? crc32_utils::init_checksum() : adler32_utils::init_checksum())
+        , _actual_digest(fmt.init_digest())
         , _calculating_digest(digest.has_value()) {
+    }
+
+    // Convenience constructor that extracts the pieces from an sstable.
+    explicit compressed_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
+            std::optional<uint32_t> digest = std::nullopt)
+        : compressed_file_cursor_impl(
+                make_sstable_datafile_io(sst, std::move(permit), std::move(trace_state), sst->ondisk_data_size()),
+                make_sstable_compression_format(*sst), digest) {
     }
 
     void seek(sstable_datafile_position pos) override {
@@ -572,7 +652,7 @@ private:
     // position p, clamped so EOF maps to the end of the compressed file.
     uint64_t physical_pos_of(uint64_t p) {
         if (p >= _uncompressed_file_length) {
-            return _sst->ondisk_data_size();
+            return _compressed_file_length;
         }
         return get_chunk_meta(p / _uncompressed_chunk_length).physical_pos;
     }
@@ -669,7 +749,7 @@ private:
     }
 
     uint32_t checksum(const char* input, size_t len) const {
-        if (_sst->get_version() >= sstable_version_types::mc) {
+        if (_use_crc32) {
             return crc32_utils::checksum(input, len);
         }
         return adler32_utils::checksum(input, len);
@@ -702,7 +782,7 @@ private:
             _calculating_digest = false;
             return;
         }
-        if (_sst->get_version() >= sstable_version_types::mc) {
+        if (_use_crc32) {
             fold_chunk_into_digest<crc32_utils, /*checksum_all=*/true>(compressed_data, compressed_len, chunk_checksum);
         } else {
             fold_chunk_into_digest<adler32_utils, /*checksum_all=*/false>(compressed_data, compressed_len, chunk_checksum);
@@ -769,10 +849,6 @@ private:
 // The caching, IO delegation and digest logic mirror the logical cursor; only
 // the position bookkeeping differs.
 class compressed_physical_file_cursor_impl final : public sstable_datafile_cursor::impl {
-    shared_sstable _sst;
-    reader_permit _permit;
-    tracing::trace_state_ptr _trace_state;
-
     const compression& _compression;
     // Reads the raw compressed data file; all physical IO goes through here.
     uncompressed_file_cursor_impl _file;
@@ -813,6 +889,9 @@ class compressed_physical_file_cursor_impl final : public sstable_datafile_curso
     // identical member in compressed_file_cursor_impl.
     size_t _chunk_prefix;
 
+    // Whether chunk checksums use crc32 (true) or adler32 (false).
+    bool _use_crc32;
+
     // Whole-file digest check. See the identical machinery in
     // compressed_file_cursor_impl for the full explanation. We track the next
     // chunk by its compressed start position (chunks must be folded in order,
@@ -824,19 +903,26 @@ class compressed_physical_file_cursor_impl final : public sstable_datafile_curso
     uint64_t _next_digest_chunk_position = 0;
 
 public:
+    // Construct from the decoupled pieces; no sstable needed. `io` reads the raw
+    // compressed data file, `fmt` describes how it is compressed.
+    explicit compressed_physical_file_cursor_impl(datafile_io io, compression_format fmt,
+            std::optional<uint32_t> digest = std::nullopt)
+        : _compression(fmt.comp)
+        , _file(std::move(io))
+        , _compressed_file_length(fmt.compressed_file_length)
+        , _chunk_prefix(fmt.chunk_prefix)
+        , _use_crc32(fmt.use_crc32)
+        , _expected_digest(digest)
+        , _actual_digest(fmt.init_digest())
+        , _calculating_digest(digest.has_value()) {
+    }
+
+    // Convenience constructor that extracts the pieces from an sstable.
     explicit compressed_physical_file_cursor_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
             std::optional<uint32_t> digest = std::nullopt)
-        : _sst(std::move(sst))
-        , _permit(std::move(permit))
-        , _trace_state(std::move(trace_state))
-        , _compression(_sst->get_compression())
-        , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
-        , _compressed_file_length(_sst->ondisk_data_size())
-        , _chunk_prefix(chunk_has_length_prefix(_sst->get_version()) ? chunk_length_prefix_size : 0)
-        , _expected_digest(digest)
-        , _actual_digest(_sst->get_version() >= sstable_version_types::mc
-                ? crc32_utils::init_checksum() : adler32_utils::init_checksum())
-        , _calculating_digest(digest.has_value()) {
+        : compressed_physical_file_cursor_impl(
+                make_sstable_datafile_io(sst, std::move(permit), std::move(trace_state), sst->ondisk_data_size()),
+                make_sstable_compression_format(*sst), digest) {
     }
 
     void seek(sstable_datafile_position pos) override {
@@ -1232,7 +1318,7 @@ private:
     }
 
     uint32_t checksum(const char* input, size_t len) const {
-        if (_sst->get_version() >= sstable_version_types::mc) {
+        if (_use_crc32) {
             return crc32_utils::checksum(input, len);
         }
         return adler32_utils::checksum(input, len);
@@ -1262,7 +1348,7 @@ private:
             _calculating_digest = false;
             return;
         }
-        if (_sst->get_version() >= sstable_version_types::mc) {
+        if (_use_crc32) {
             fold_chunk_into_digest<crc32_utils, /*checksum_all=*/true>(compressed_data, compressed_len, chunk_checksum);
         } else {
             fold_chunk_into_digest<adler32_utils, /*checksum_all=*/false>(compressed_data, compressed_len, chunk_checksum);
