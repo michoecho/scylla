@@ -100,17 +100,25 @@ bti_partition_index_writer_impl::bti_partition_index_writer_impl(sstable_version
     , _sst_ver(sst_ver)
 {}
 
-void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
+// Appends a big-endian fixed-width uint64 to the payload buffer.
+static std::byte* write_fixed_u64(std::byte* it, uint64_t v) {
+    uint64_t be = seastar::cpu_to_be(v);
+    std::memcpy(it, &be, sizeof(be));
+    return it + sizeof(be);
+}
+
+// Builds the legacy (`ms`/`mt`) partition index payload: a hash byte followed by
+// the variable-width (pre-compression) file position.
+static trie_payload make_legacy_partition_payload(uint8_t hash_bits, int64_t pos_payload) {
     std::array<std::byte, 9> payload_bytes;
-    auto payload_bytes_it = payload_bytes.data();
+    auto it = payload_bytes.data();
     // Write the hash byte to the payload buffer.
-    *payload_bytes_it++ = std::byte(_last_hash_bits);
+    *it++ = std::byte(hash_bits);
 
     // The (pre-compression) file position serialized into the payload.
     // It is either the position of the partition in Data.db
     // or the bit-negated position of the partition's entry in Rows.db.
     // The are distinguished via the sign bit.
-    int64_t pos_payload = _last_pos_payload.uncompressed;
     uint64_t abs_file_pos = pos_payload >= 0 ? pos_payload : ~pos_payload;
     // Note 1 extra bit needed for the sign.
     uint8_t pos_bytewidth = div_ceil(std::bit_width<uint64_t>(abs_file_pos) + 1, 8);
@@ -125,11 +133,37 @@ void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
     // in big endian order.
     uint64_t pos_be = seastar::cpu_to_be<uint64_t>(pos_payload << 8*(8 - pos_bytewidth));
     // sic. We only need `sizeof(pos_bytewidth)` bytes, but we copy 8 bytes to have a fixed-size copy.
-    memcpy(payload_bytes_it, &pos_be, 8);
-    payload_bytes_it += pos_bytewidth;
+    memcpy(it, &pos_be, 8);
+    it += pos_bytewidth;
+    return trie_payload(payload_bits, {payload_bytes.data(), it});
+}
+
+// Builds the `mu` partition index payload: a hash byte followed by the full
+// physical position as five fixed-width uint64 fields. The fields are
+// (uncompressed position, chunk position, chunk length, offset within chunk),
+// where the uncompressed position is the (signed) Data.db position or bit-negated
+// Rows.db position, just like in the legacy format.
+//
+// The payload bits carry no information here, but by contract they must be
+// nonzero, so we set them to 1.
+static trie_payload make_physical_partition_payload(uint8_t hash_bits, const bti_trie_source_position& pos) {
+    std::array<std::byte, 1 + 5 * sizeof(uint64_t)> payload_bytes;
+    auto it = payload_bytes.data();
+    *it++ = std::byte(hash_bits);
+    it = write_fixed_u64(it, static_cast<uint64_t>(pos.uncompressed));
+    it = write_fixed_u64(it, pos.chunk_start);
+    it = write_fixed_u64(it, pos.chunk_length);
+    it = write_fixed_u64(it, pos.offset_within_chunk);
+    it = write_fixed_u64(it, static_cast<uint64_t>(hash_bits));
+    return trie_payload(1, {payload_bytes.data(), it});
+}
+
+void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
+    trie_payload payload = holds_compressed_position(_sst_ver)
+        ? make_legacy_partition_payload(_last_hash_bits, _last_pos_payload.uncompressed)
+        : make_physical_partition_payload(_last_hash_bits, _last_pos_payload);
+
     // Pass the new node chain and its payload to the lower layer.
-    // Note: we pass (payload_bits | 0x8) because the additional 0x8 bit indicates that hash bits are present.
-    // (Even though currently they are always present).
     size_t i = 0;
     for (auto frag : **_last_key) {
         // The first fragment contains the entire token,
@@ -153,10 +187,6 @@ void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
         if (i + frag.size() < needed_prefix) [[unlikely]] {
             _wr.add_partial(i, frag);
         } else {
-            auto payload = trie_payload(
-                payload_bits,
-                std::span(payload_bytes.data(), payload_bytes_it)
-            );
             _wr.add(i, frag.subspan(0, needed_prefix - i), payload);
             break;
         }

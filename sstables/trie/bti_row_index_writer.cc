@@ -25,7 +25,7 @@ public:
 private:
     // Writes _last_key to the trie.
     void flush_last_key(size_t mismatch, size_t last_key_size, const trie_payload& payload);
-    static trie_payload make_payload(
+    trie_payload make_payload(
         bti_trie_source_position offset_from_partition_start,
         sstables::deletion_time range_tombstone_before_first_ck);
 public:
@@ -104,12 +104,34 @@ void row_index_writer_impl::flush_last_key(size_t mismatch, size_t last_key_size
         i += frag.size();
     }
 }
-trie_payload row_index_writer_impl::make_payload(
+// Appends a big-endian fixed-width uint64 to the payload buffer.
+static std::byte* write_fixed_u64(std::byte* it, uint64_t v) {
+    uint64_t be = seastar::cpu_to_be(v);
+    std::memcpy(it, &be, sizeof(be));
+    return it + sizeof(be);
+}
+
+constexpr uint8_t TOMBSTONE_FLAG = 0x8;
+
+// Appends the (optional) range tombstone to the payload buffer, updating the
+// payload bits to set the tombstone flag if it is present.
+static std::byte* write_optional_tombstone(std::byte* it, uint8_t& payload_bits, sstables::deletion_time t) {
+    if (!t.live()) {
+        payload_bits |= TOMBSTONE_FLAG;
+        it = write_unaligned(it, seastar::cpu_to_be(t.marked_for_delete_at));
+        it = write_unaligned(it, seastar::cpu_to_be(t.local_deletion_time));
+    }
+    return it;
+}
+
+// Builds the legacy (`ms`/`mt`) row index payload: the variable-width
+// (pre-compression) offset, followed by an optional tombstone.
+static trie_payload make_legacy_row_payload(
     bti_trie_source_position offset_from_partition_start,
     sstables::deletion_time range_tombstone_before_first_ck
 ) {
     std::array<std::byte, 20> payload_bytes;
-    std::byte* payload_bytes_it = payload_bytes.data();
+    std::byte* it = payload_bytes.data();
 
     // The (pre-compression) offset serialized into the payload.
     uint64_t offset = offset_from_partition_start.uncompressed;
@@ -120,24 +142,52 @@ trie_payload row_index_writer_impl::make_payload(
     auto pos_bytewidth = div_ceil(std::bit_width<uint64_t>(offset) + 1, 8);
 
     // The 4 bits of metadata included in the first byte of the BTI node.
-    auto payload_bits = pos_bytewidth;
-    // Serialize the payload.
-    {
-        // Write n:=`pos_bytewidth` least significant bytes of `offset` to the payload buffer,
-        // in big endian order.
-        uint64_t offset_be = seastar::cpu_to_be<uint64_t>(offset << 8*(8 - pos_bytewidth));
-        // sic. We only need `sizeof(pos_bytewidth)` bytes, but we copy 8 bytes to have a fixed-size copy.
-        std::memcpy(payload_bytes_it, &offset_be, 8);
-        payload_bytes_it += pos_bytewidth;
+    uint8_t payload_bits = pos_bytewidth;
 
-        if (!range_tombstone_before_first_ck.live()) {
-            constexpr uint8_t TOMBSTONE_FLAG = 0x8;
-            payload_bits |= TOMBSTONE_FLAG;
-            payload_bytes_it = write_unaligned(payload_bytes_it, seastar::cpu_to_be(range_tombstone_before_first_ck.marked_for_delete_at));
-            payload_bytes_it = write_unaligned(payload_bytes_it, seastar::cpu_to_be(range_tombstone_before_first_ck.local_deletion_time));
-        }
-    }
-    return trie_payload(payload_bits, {payload_bytes.data(), payload_bytes_it});
+    // Write n:=`pos_bytewidth` least significant bytes of `offset` to the payload buffer,
+    // in big endian order.
+    uint64_t offset_be = seastar::cpu_to_be<uint64_t>(offset << 8*(8 - pos_bytewidth));
+    // sic. We only need `sizeof(pos_bytewidth)` bytes, but we copy 8 bytes to have a fixed-size copy.
+    std::memcpy(it, &offset_be, 8);
+    it += pos_bytewidth;
+
+    it = write_optional_tombstone(it, payload_bits, range_tombstone_before_first_ck);
+    return trie_payload(payload_bits, {payload_bytes.data(), it});
+}
+
+// Builds the `mu` row index payload: the full physical offset as five fixed-width
+// uint64 fields, followed by an optional tombstone. The fields are
+// (uncompressed offset, chunk position, chunk length, offset within chunk, hash byte);
+// the hash byte is meaningless here but written unconditionally for symmetry with
+// the partition index payload.
+//
+// The payload bits carry only the tombstone flag; the remaining bits would be zero,
+// but by contract the payload bits must be nonzero, so we set the lowest bit to 1.
+static trie_payload make_physical_row_payload(
+    bti_trie_source_position offset_from_partition_start,
+    sstables::deletion_time range_tombstone_before_first_ck
+) {
+    std::array<std::byte, 5 * sizeof(uint64_t) + sizeof(int64_t) + sizeof(int32_t)> payload_bytes;
+    std::byte* it = payload_bytes.data();
+
+    it = write_fixed_u64(it, static_cast<uint64_t>(offset_from_partition_start.uncompressed));
+    it = write_fixed_u64(it, offset_from_partition_start.chunk_start);
+    it = write_fixed_u64(it, offset_from_partition_start.chunk_length);
+    it = write_fixed_u64(it, offset_from_partition_start.offset_within_chunk);
+    it = write_fixed_u64(it, 0); // hash byte (meaningless for the row index)
+
+    uint8_t payload_bits = 1;
+    it = write_optional_tombstone(it, payload_bits, range_tombstone_before_first_ck);
+    return trie_payload(payload_bits, {payload_bytes.data(), it});
+}
+
+trie_payload row_index_writer_impl::make_payload(
+    bti_trie_source_position offset_from_partition_start,
+    sstables::deletion_time range_tombstone_before_first_ck
+) {
+    return holds_compressed_position(_sst_ver)
+        ? make_legacy_row_payload(offset_from_partition_start, range_tombstone_before_first_ck)
+        : make_physical_row_payload(offset_from_partition_start, range_tombstone_before_first_ck);
 }
 
 void row_index_writer_impl::add(

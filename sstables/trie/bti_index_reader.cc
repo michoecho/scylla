@@ -306,20 +306,27 @@ class index_cursor {
     reader_permit _permit;
     tracing::trace_state_ptr _trace_state;
     uint64_t _par_root;
+    // Needed to choose the payload decoding (legacy vs physical).
+    sstable_version_types _sst_ver;
 private:
     // If the current partition has a row index, reads its header.
     future<> maybe_read_metadata();
     // The colder part of set_after_row, just to hint at inlining the hotter part.
     future<> set_after_row_cold(lazy_comparable_bytes_from_clustering_position&);
 public:
-    index_cursor(uint64_t par_root, bti_node_reader par, bti_node_reader row, reader_permit, tracing::trace_state_ptr);
+    index_cursor(uint64_t par_root, bti_node_reader par, bti_node_reader row, sstable_version_types, reader_permit, tracing::trace_state_ptr);
     index_cursor& operator=(const index_cursor&) = default;
     // Returns the data file position of the cursor. Can only be called after the cursor is set.
     //
     // If the row cursor is set, returns the position of the pointed-to clustering key block.
     // Otherwise, if the partition cursor is set to a partition, returns the position of the partition.
     // Otherwise, if the partition cursor is set to EOF, returns `file_size`.
-    uint64_t data_file_pos(uint64_t file_size) const;
+    //
+    // For `ms`/`mt` the returned position is logical; for `mu` it is physical.
+    sstables::sstable_datafile_position data_file_pos(uint64_t file_size) const;
+    // The uncompressed (logical) flavor of data_file_pos(), used for plain
+    // comparisons (e.g. EOF detection) that don't care about chunk coordinates.
+    uint64_t data_file_uncompressed_pos(uint64_t file_size) const;
     // If the row index is set to a clustering key block, returns the range tombstone active at the start of the block.
     // Otherwise returns an empty tombstone.
     tombstone open_tombstone() const;
@@ -370,7 +377,9 @@ public:
     // Return the offset to the last clustering block
     // (i.e. the offset of the second-to-last payloaded node in the row index)
     // in the current partition, if a row index exists.
-    future<std::optional<uint64_t>> last_block_offset() const;
+    //
+    // For `ms`/`mt` the returned offset is logical; for `mu` it is physical.
+    future<std::optional<sstables::sstable_datafile_offset>> last_block_offset() const;
     // Return the hash byte (if present) of the partition entry.
     std::optional<std::byte> partition_hash() const;
 };
@@ -511,13 +520,14 @@ const ancestor_trail& trie_cursor::trail() const {
     return _trail;
 }
 
-index_cursor::index_cursor(uint64_t par_root, bti_node_reader par, bti_node_reader row, reader_permit permit, tracing::trace_state_ptr trace_state)
+index_cursor::index_cursor(uint64_t par_root, bti_node_reader par, bti_node_reader row, sstable_version_types sst_ver, reader_permit permit, tracing::trace_state_ptr trace_state)
     : _partition_cursor(par)
     , _row_cursor(row)
     , _in_row(row)
     , _permit(std::move(permit))
     , _trace_state(std::move(trace_state))
     , _par_root(par_root)
+    , _sst_ver(sst_ver)
 {}
 
 bool index_cursor::row_cursor_set() const {
@@ -553,6 +563,46 @@ static int64_t row_payload_to_offset(const payload_result& p) {
     return result;
 }
 
+// Reads a big-endian fixed-width uint64 at the given byte offset of the payload.
+static uint64_t read_fixed_u64(const_bytes bytes, size_t offset) {
+    return seastar::be_to_cpu(read_unaligned<uint64_t>(bytes.data() + offset));
+}
+
+// The physical position fields shared by the `mu` partition and row index payloads:
+// (signed) uncompressed position/offset, plus the chunk coordinates locating the
+// point in the compressed (on-disk) file.
+struct physical_fields {
+    int64_t uncompressed;
+    uint64_t chunk_start;
+    uint64_t chunk_length;
+    uint64_t offset_within_chunk;
+};
+
+// Decodes the four position fields starting at `offset` within the payload.
+// (Both the partition and row `mu` payloads store the same four fields; they only
+// differ in what precedes/follows them.)
+static physical_fields read_physical_fields(const_bytes bytes, size_t offset) {
+    return physical_fields{
+        .uncompressed = static_cast<int64_t>(read_fixed_u64(bytes, offset + 0 * sizeof(uint64_t))),
+        .chunk_start = read_fixed_u64(bytes, offset + 1 * sizeof(uint64_t)),
+        .chunk_length = read_fixed_u64(bytes, offset + 2 * sizeof(uint64_t)),
+        .offset_within_chunk = read_fixed_u64(bytes, offset + 3 * sizeof(uint64_t)),
+    };
+}
+
+// Decodes the `mu` partition index payload. The hash byte comes first, then the
+// four position fields, then a (here unused) hash byte field.
+static physical_fields partition_payload_to_physical(const payload_result& p) {
+    // Skip the leading hash byte.
+    return read_physical_fields(p.bytes, 1);
+}
+
+// Decodes the `mu` row index payload. The four position fields come first, then
+// the (here unused) hash byte field, then the optional tombstone.
+static physical_fields row_payload_to_physical(const payload_result& p) {
+    return read_physical_fields(p.bytes, 0);
+}
+
 static inline auto single_fragment_generator(std::span<const std::byte> only_frag) {
     struct iterator {
         std::span<const std::byte> _only_frag;
@@ -570,7 +620,7 @@ static inline auto single_fragment_generator(std::span<const std::byte> only_fra
     return iterator{only_frag};
 }
 
-future<std::optional<uint64_t>> index_cursor::last_block_offset() const {
+future<std::optional<sstables::sstable_datafile_offset>> index_cursor::last_block_offset() const {
     if (!_partition_metadata) {
         expensive_log("last_block_offset: no partition metadata");
         co_return std::nullopt;
@@ -585,40 +635,73 @@ future<std::optional<uint64_t>> index_cursor::last_block_offset() const {
     co_await cur.step_back(_permit, _trace_state);
     co_await cur.step_back(_permit, _trace_state);
 
-    auto result = row_payload_to_offset(cur.payload());
-    expensive_log("last_block_offset: {}", result);
-    co_return result;
+    if (holds_compressed_position(_sst_ver)) {
+        auto result = row_payload_to_offset(cur.payload());
+        expensive_log("last_block_offset: {}", result);
+        co_return sstables::sstable_datafile_offset::from_logical_fixme(result);
+    }
+    auto f = row_payload_to_physical(cur.payload());
+    expensive_log("last_block_offset (physical): {}", f.uncompressed);
+    co_return sstables::sstable_datafile_offset::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, f.uncompressed);
 }
 
 std::optional<std::byte> index_cursor::partition_hash() const {
     auto p = _partition_cursor.payload();
+    if (!holds_compressed_position(_sst_ver)) {
+        // `mu` always stores the hash byte at the front of the payload.
+        return p.bytes[0];
+    }
+    // In the legacy format, the 0x8 bit signals the presence of a leading hash byte.
     if (p.bits & 0x8) {
         return p.bytes[0];
     }
     return std::nullopt;
 }
 
-uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
-    expensive_log("index_cursor::data_file_pos this={} initialized={}", fmt::ptr(this), _partition_cursor.initialized());
+uint64_t index_cursor::data_file_uncompressed_pos(uint64_t file_size) const {
     expensive_assert(_partition_cursor.initialized());
+    const bool legacy = holds_compressed_position(_sst_ver);
     if (_partition_metadata) {
         if (!_row_cursor.initialized()) {
-            expensive_log("index_cursor::data_file_pos this={} from empty row cursor: {}", fmt::ptr(this), _partition_metadata->data_file_offset);
+            // The position is the start of the partition in Data.db.
             return _partition_metadata->data_file_offset;
         }
+        // The serialized offset is relative to the partition start.
         const auto p = _row_cursor.payload();
-        auto res = _partition_metadata->data_file_offset + row_payload_to_offset(p);
-        expensive_log("index_cursor::data_file_pos this={} from row cursor: {} bytes={} bits={}", fmt::ptr(this), res, fmt_hex(p.bytes), p.bits & 0x7);
-        return res;
+        auto offset = legacy ? row_payload_to_offset(p) : row_payload_to_physical(p).uncompressed;
+        return _partition_metadata->data_file_offset + offset;
     }
     if (!_partition_cursor.eof()) {
-        auto res = partition_payload_to_pos(_partition_cursor.payload());
-        expensive_assert(res < 0);
-        expensive_log("index_cursor::data_file_pos this={} from partition cursor: {}", fmt::ptr(this), ~res);
-        return ~res;
+        // No row index: the partition payload points directly into Data.db, with
+        // the uncompressed position bit-negated.
+        const auto p = _partition_cursor.payload();
+        auto pos = legacy ? partition_payload_to_pos(p) : partition_payload_to_physical(p).uncompressed;
+        expensive_assert(pos < 0);
+        return ~pos;
     }
-    expensive_log("index_cursor::data_file_pos this={} from eof: {}", fmt::ptr(this), file_size);
     return file_size;
+}
+
+sstables::sstable_datafile_position index_cursor::data_file_pos(uint64_t file_size) const {
+    expensive_log("index_cursor::data_file_pos this={} initialized={}", fmt::ptr(this), _partition_cursor.initialized());
+    auto uncompressed = data_file_uncompressed_pos(file_size);
+
+    if (holds_compressed_position(_sst_ver)) {
+        return sstables::sstable_datafile_position::from_logical_approved(uncompressed);
+    }
+
+    // For `mu`, attach the chunk coordinates that locate this point in the
+    // compressed (on-disk) file. They come from the same payload field that
+    // produced `uncompressed`. The exception is the partition-start case read from
+    // the row index header, which carries no chunk coordinates (so they stay zero),
+    // and the EOF case.
+    physical_fields f = {};
+    if (_partition_metadata && _row_cursor.initialized()) {
+        f = row_payload_to_physical(_row_cursor.payload());
+    } else if (!_partition_metadata && !_partition_cursor.eof()) {
+        f = partition_payload_to_physical(_partition_cursor.payload());
+    }
+    return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, uncompressed);
 }
 
 tombstone index_cursor::open_tombstone() const {
@@ -636,9 +719,14 @@ tombstone index_cursor::open_tombstone() const {
         const auto p = _row_cursor.payload();
         constexpr uint8_t TOMBSTONE_FLAG = 0x8;
         if (p.bits & TOMBSTONE_FLAG) {
-            uint64_t bits = p.bits & ~TOMBSTONE_FLAG;
-            auto marked = seastar::be_to_cpu(read_unaligned<int64_t>(p.bytes.data() + bits));
-            auto deletion_time = seastar::be_to_cpu(read_unaligned<int32_t>(p.bytes.data() + bits + 8));
+            // In the legacy format, the tombstone follows the variable-width offset,
+            // whose width is encoded in the lower payload bits. In `mu`, it follows
+            // the fixed-width position fields.
+            uint64_t tombstone_offset = holds_compressed_position(_sst_ver)
+                ? (p.bits & ~TOMBSTONE_FLAG)
+                : 5 * sizeof(uint64_t);
+            auto marked = seastar::be_to_cpu(read_unaligned<int64_t>(p.bytes.data() + tombstone_offset));
+            auto deletion_time = seastar::be_to_cpu(read_unaligned<int32_t>(p.bytes.data() + tombstone_offset + 8));
             auto result = tombstone(marked, gc_clock::time_point(gc_clock::duration(deletion_time)));
             expensive_log("index_cursor::open_tombstone this={} from payload: {}", fmt::ptr(this), result);
             return result;
@@ -657,7 +745,13 @@ future<> index_cursor::maybe_read_metadata() {
     if (_partition_cursor.eof()) {
         return make_ready_future<>();
     }
-    if (auto res = partition_payload_to_pos(_partition_cursor.payload()); res >= 0) {
+    // The signed partition payload pointer: >= 0 means it points at a Rows.db
+    // row index header (which we read here); < 0 means it points directly into Data.db.
+    auto p = _partition_cursor.payload();
+    int64_t res = holds_compressed_position(_sst_ver)
+        ? partition_payload_to_pos(p)
+        : partition_payload_to_physical(p).uncompressed;
+    if (res >= 0) {
         return read_row_index_header(_in_row._file.get(), res, _permit, _trace_state).then([this] (auto result) {
             _partition_metadata = result;
         });
@@ -749,22 +843,21 @@ future<> index_cursor::set_after_row(lazy_comparable_bytes_from_clustering_posit
 }
 
 sstables::sstable_datafile_positions_range bti_index_reader::sstable_datafile_positions() const {
-    auto lo = _lower.partition_cursor_set() ? _lower.data_file_pos(_total_file_size) : 0;
-    std::optional<uint64_t> hi;
+    // The position at the very start of Data.db. Logical for `ms`/`mt`, physical for `mu`.
+    auto file_start = holds_compressed_position(_sst_ver)
+        ? sstables::sstable_datafile_position::from_logical_approved(0)
+        : sstables::sstable_datafile_position::from_physical(0, 0, 0, 0);
+    auto lo = _lower.partition_cursor_set() ? _lower.data_file_pos(_total_file_size) : file_start;
+    std::optional<sstables::sstable_datafile_position> hi;
     if (_upper.partition_cursor_set()) {
         hi = _upper.data_file_pos(_total_file_size);
     }
     trie_logger.debug("bti_index_reader::sstable_datafile_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
-    return {
-        sstables::sstable_datafile_position::from_logical_approved(lo),
-        hi.transform(sstables::sstable_datafile_position::from_logical_approved),
-    };
+    return {lo, hi};
 }
 future<std::optional<sstables::sstable_datafile_offset>> bti_index_reader::last_block_sstable_datafile_offset() {
     trie_logger.debug("bti_index_reader::last_block_sstable_datafile_offset this={}", fmt::ptr(this));
-    return _lower.last_block_offset().then([] (std::optional<uint64_t> raw) -> std::optional<sstables::sstable_datafile_offset> {
-        return raw.transform(sstables::sstable_datafile_offset::from_logical_fixme);
-    });
+    return _lower.last_block_offset();
 }
 future<> bti_index_reader::close() noexcept {
     trie_logger.debug("bti_index_reader::close this={}", fmt::ptr(this));
@@ -793,8 +886,8 @@ bti_index_reader::bti_index_reader(
     // not a reference to some shared one, because `bti_node_reader`
     // holds the currently-active page, and each bound might be in a different page.
     // (And both are needed to read lower and upper Data.db bounds).
-    , _lower(root_offset, partitions_db, rows_db, _permit, _trace_state)
-    , _upper(root_offset, partitions_db, rows_db, _permit, _trace_state)
+    , _lower(root_offset, partitions_db, rows_db, sst_ver, _permit, _trace_state)
+    , _upper(root_offset, partitions_db, rows_db, sst_ver, _permit, _trace_state)
     , _total_file_size(total_file_size)
 {
     trie_logger.debug("bti_index_reader::constructor: this={} root_offset={} total_file_size={} table={}.{}",
@@ -953,7 +1046,7 @@ bool bti_index_reader::eof() const {
         // (There's an assumption that the data file is non empty).
         return false;
     }
-    return _lower.data_file_pos(_total_file_size) >= _total_file_size;
+    return _lower.data_file_uncompressed_pos(_total_file_size) >= _total_file_size;
 }
 
 future<> bti_index_reader::prefetch_lower_bound(position_in_partition_view pos) {
