@@ -7,7 +7,6 @@
  */
 
 #include <cstdlib>
-#include <limits>
 #include <map>
 #include <optional>
 
@@ -24,6 +23,7 @@
 #include "sstables/exceptions.hh"
 #include "sstables/sstables.hh"
 #include "tracing/traced_file.hh"
+#include "utils/div_ceil.hh"
 
 namespace sstables {
 
@@ -424,10 +424,12 @@ class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
     // Cache of chunk metadata, keyed by chunk index.
     std::map<uint64_t, chunk_meta> _chunk_meta_cache;
 
-    // The single cached decompressed chunk.
-    // FIXME: this is uncool. Use std::optional instead of an in-band value. 
-    uint64_t _cached_chunk_index = std::numeric_limits<uint64_t>::max();
-    temporary_buffer<char> _cached_chunk; // uncompressed bytes of _cached_chunk_index
+    // The single cached decompressed chunk, if any.
+    struct cached_chunk {
+        uint64_t index;
+        temporary_buffer<char> data; // uncompressed bytes of the chunk
+    };
+    std::optional<cached_chunk> _cached_chunk;
 
     uint64_t _uncompressed_chunk_length;
     uint64_t _uncompressed_file_length;
@@ -499,22 +501,30 @@ public:
 
     void drop_caches_after(sstable_datafile_position pos) override {
         uint64_t p = pos.to_logical_fixme();
-        // FIXME: doesn't this erase the current chunk even if pos is in the middle?
-        // We only want to drop things that are fully in the [pos; +inf) range.
-        uint64_t chunk_index = p / _uncompressed_chunk_length;
-        _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(chunk_index), _chunk_meta_cache.end());
-        if (_cached_chunk_index >= chunk_index) {
+        // Drop only chunks that lie entirely in [p; +inf). The chunk that
+        // contains p straddles the boundary (unless p is exactly on a chunk
+        // boundary), so the first chunk we may drop is the one starting at or
+        // after p, i.e. ceil(p / chunk_length).
+        uint64_t first_dropped_chunk = div_ceil(p, _uncompressed_chunk_length);
+        _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(first_dropped_chunk), _chunk_meta_cache.end());
+        if (_cached_chunk && _cached_chunk->index >= first_dropped_chunk) {
             drop_cached_chunk();
         }
         // Translate to the physical position and drop the underlying file cache.
-        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
+        // physical_pos_of maps a logical position to its chunk's compressed start,
+        // so passing the first dropped chunk's start keeps the straddling chunk's
+        // compressed bytes intact.
+        uint64_t first_dropped_logical = first_dropped_chunk * _uncompressed_chunk_length;
+        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(physical_pos_of(first_dropped_logical)));
     }
 
     void drop_caches_before(sstable_datafile_position pos) override {
         uint64_t p = pos.to_logical_fixme();
+        // The chunk containing p straddles the boundary and must be kept, so the
+        // last chunk to drop is the one before it; keep chunk_index onward.
         uint64_t chunk_index = p / _uncompressed_chunk_length;
         _chunk_meta_cache.erase(_chunk_meta_cache.begin(), _chunk_meta_cache.lower_bound(chunk_index));
-        if (_cached_chunk_index < chunk_index) {
+        if (_cached_chunk && _cached_chunk->index < chunk_index) {
             drop_cached_chunk();
         }
         _file.drop_caches_before(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
@@ -526,8 +536,7 @@ public:
 
 private:
     void drop_cached_chunk() {
-        _cached_chunk_index = std::numeric_limits<uint64_t>::max();
-        _cached_chunk = {};
+        _cached_chunk.reset();
     }
 
     // Physical (compressed) file offset of the chunk that contains logical
@@ -566,9 +575,9 @@ private:
             co_await ensure_chunk_cached(chunk_index);
             const auto& m = get_chunk_meta(chunk_index);
             uint64_t in_chunk = pos - m.logical_pos;
-            size_t avail = _cached_chunk.size() - in_chunk;
+            size_t avail = _cached_chunk->data.size() - in_chunk;
             size_t n = std::min(avail, len - done);
-            std::copy_n(_cached_chunk.get() + in_chunk, n, dst + done);
+            std::copy_n(_cached_chunk->data.get() + in_chunk, n, dst + done);
             done += n;
         }
         co_return done;
@@ -576,13 +585,12 @@ private:
 
     // Ensure the decompressed contents of chunk_index are in _cached_chunk.
     future<> ensure_chunk_cached(uint64_t chunk_index) {
-        if (_cached_chunk_index == chunk_index) {
+        if (_cached_chunk && _cached_chunk->index == chunk_index) {
             co_return;
         }
         const auto& m = get_chunk_meta(chunk_index);
         auto compressed = co_await read_compressed_chunk(m);
-        _cached_chunk = decompress_chunk(m, std::move(compressed));
-        _cached_chunk_index = chunk_index;
+        _cached_chunk = cached_chunk{chunk_index, decompress_chunk(m, std::move(compressed))};
     }
 
     // Read a chunk's compressed bytes from the data file via the inner cursor.
@@ -732,10 +740,12 @@ class compressed_physical_file_cursor_impl final : public sstable_datafile_curso
     // Cache of chunk metadata, keyed by chunk index.
     std::map<uint64_t, chunk_meta> _chunk_meta_cache;
 
-    // The single cached decompressed chunk.
-    // FIXME: this is uncool. Use std::optional instead of an in-band value.
-    uint64_t _cached_chunk_index = std::numeric_limits<uint64_t>::max();
-    temporary_buffer<char> _cached_chunk; // uncompressed bytes of _cached_chunk_index
+    // The single cached decompressed chunk, if any.
+    struct cached_chunk {
+        uint64_t index;
+        temporary_buffer<char> data; // uncompressed bytes of the chunk
+    };
+    std::optional<cached_chunk> _cached_chunk;
 
     uint64_t _uncompressed_chunk_length;
     uint64_t _uncompressed_file_length;
@@ -798,22 +808,30 @@ public:
 
     void drop_caches_after(sstable_datafile_position pos) override {
         uint64_t p = uncompressed_position_of(pos);
-        // FIXME: doesn't this erase the current chunk even if pos is in the middle?
-        // We only want to drop things that are fully in the [pos; +inf) range.
-        uint64_t chunk_index = p / _uncompressed_chunk_length;
-        _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(chunk_index), _chunk_meta_cache.end());
-        if (_cached_chunk_index >= chunk_index) {
+        // Drop only chunks that lie entirely in [p; +inf). The chunk that
+        // contains p straddles the boundary (unless p is exactly on a chunk
+        // boundary), so the first chunk we may drop is the one starting at or
+        // after p, i.e. ceil(p / chunk_length).
+        uint64_t first_dropped_chunk = div_ceil(p, _uncompressed_chunk_length);
+        _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(first_dropped_chunk), _chunk_meta_cache.end());
+        if (_cached_chunk && _cached_chunk->index >= first_dropped_chunk) {
             drop_cached_chunk();
         }
         // Translate to the physical position and drop the underlying file cache.
-        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
+        // physical_pos_of maps a logical position to its chunk's compressed start,
+        // so passing the first dropped chunk's start keeps the straddling chunk's
+        // compressed bytes intact.
+        uint64_t first_dropped_logical = first_dropped_chunk * _uncompressed_chunk_length;
+        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(physical_pos_of(first_dropped_logical)));
     }
 
     void drop_caches_before(sstable_datafile_position pos) override {
         uint64_t p = uncompressed_position_of(pos);
+        // The chunk containing p straddles the boundary and must be kept, so the
+        // last chunk to drop is the one before it; keep chunk_index onward.
         uint64_t chunk_index = p / _uncompressed_chunk_length;
         _chunk_meta_cache.erase(_chunk_meta_cache.begin(), _chunk_meta_cache.lower_bound(chunk_index));
-        if (_cached_chunk_index < chunk_index) {
+        if (_cached_chunk && _cached_chunk->index < chunk_index) {
             drop_cached_chunk();
         }
         _file.drop_caches_before(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
@@ -825,8 +843,7 @@ public:
 
 private:
     void drop_cached_chunk() {
-        _cached_chunk_index = std::numeric_limits<uint64_t>::max();
-        _cached_chunk = {};
+        _cached_chunk.reset();
     }
 
     // The uncompressed (logical) byte position carried by a physical position.
@@ -884,9 +901,9 @@ private:
             co_await ensure_chunk_cached(chunk_index);
             const auto& m = get_chunk_meta(chunk_index);
             uint64_t in_chunk = pos - m.logical_pos;
-            size_t avail = _cached_chunk.size() - in_chunk;
+            size_t avail = _cached_chunk->data.size() - in_chunk;
             size_t n = std::min(avail, len - done);
-            std::copy_n(_cached_chunk.get() + in_chunk, n, dst + done);
+            std::copy_n(_cached_chunk->data.get() + in_chunk, n, dst + done);
             done += n;
         }
         co_return done;
@@ -894,13 +911,12 @@ private:
 
     // Ensure the decompressed contents of chunk_index are in _cached_chunk.
     future<> ensure_chunk_cached(uint64_t chunk_index) {
-        if (_cached_chunk_index == chunk_index) {
+        if (_cached_chunk && _cached_chunk->index == chunk_index) {
             co_return;
         }
         const auto& m = get_chunk_meta(chunk_index);
         auto compressed = co_await read_compressed_chunk(m);
-        _cached_chunk = decompress_chunk(m, std::move(compressed));
-        _cached_chunk_index = chunk_index;
+        _cached_chunk = cached_chunk{chunk_index, decompress_chunk(m, std::move(compressed))};
     }
 
     // Read a chunk's compressed bytes from the data file via the inner cursor.
