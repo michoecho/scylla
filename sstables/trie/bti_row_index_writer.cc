@@ -185,7 +185,7 @@ trie_payload row_index_writer_impl::make_payload(
     bti_trie_source_position offset_from_partition_start,
     sstables::deletion_time range_tombstone_before_first_ck
 ) {
-    return holds_compressed_position(_sst_ver)
+    return holds_logical_position(_sst_ver)
         ? make_legacy_row_payload(offset_from_partition_start, range_tombstone_before_first_ck)
         : make_physical_row_payload(offset_from_partition_start, range_tombstone_before_first_ck);
 }

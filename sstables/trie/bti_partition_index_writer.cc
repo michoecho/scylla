@@ -159,7 +159,7 @@ static trie_payload make_physical_partition_payload(uint8_t hash_bits, const bti
 }
 
 void bti_partition_index_writer_impl::write_last_key(size_t needed_prefix) {
-    trie_payload payload = holds_compressed_position(_sst_ver)
+    trie_payload payload = holds_logical_position(_sst_ver)
         ? make_legacy_partition_payload(_last_hash_bits, _last_pos_payload.uncompressed)
         : make_physical_partition_payload(_last_hash_bits, _last_pos_payload);
 

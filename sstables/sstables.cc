@@ -3093,7 +3093,7 @@ bool uses_legacy_dk_order(sstable_version_types v) {
     return v != sstable_version_types::ms;
 }
 
-bool holds_compressed_position(sstable_version_types v) {
+bool holds_logical_position(sstable_version_types v) {
     // `ms` and `mt` store a single (pre-compression) logical position in the BTI
     // index payload. `mu` stores a full physical position (chunk coordinates plus
     // the uncompressed offset).

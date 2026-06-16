@@ -371,7 +371,7 @@ public:
 inline constexpr size_t chunk_length_prefix_size = 2 * sizeof(uint32_t);
 
 inline bool chunk_has_length_prefix(sstable_version_types v) {
-    return !holds_compressed_position(v);
+    return !holds_logical_position(v);
 }
 
 using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uint64_t, file_input_stream_options)>;

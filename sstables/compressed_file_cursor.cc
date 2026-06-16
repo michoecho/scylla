@@ -1299,7 +1299,7 @@ std::unique_ptr<sstable_datafile_cursor::impl> make_impl(shared_sstable sst, rea
         // chunk with its length and are read by the physical cursor, which
         // navigates by those prefixes. Older versions are read by the logical
         // cursor, which navigates by uncompressed position via the offsets array.
-        if (!holds_compressed_position(sst->get_version())) {
+        if (!holds_logical_position(sst->get_version())) {
             return std::make_unique<compressed_physical_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state), digest);
         }
         return std::make_unique<compressed_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state), digest);

@@ -635,7 +635,7 @@ future<std::optional<sstables::sstable_datafile_offset>> index_cursor::last_bloc
     co_await cur.step_back(_permit, _trace_state);
     co_await cur.step_back(_permit, _trace_state);
 
-    if (holds_compressed_position(_sst_ver)) {
+    if (holds_logical_position(_sst_ver)) {
         auto result = row_payload_to_offset(cur.payload());
         expensive_log("last_block_offset: {}", result);
         co_return sstables::sstable_datafile_offset::from_logical_fixme(result);
@@ -647,7 +647,7 @@ future<std::optional<sstables::sstable_datafile_offset>> index_cursor::last_bloc
 
 std::optional<std::byte> index_cursor::partition_hash() const {
     auto p = _partition_cursor.payload();
-    if (!holds_compressed_position(_sst_ver)) {
+    if (!holds_logical_position(_sst_ver)) {
         // `mu` always stores the hash byte at the front of the payload.
         return p.bytes[0];
     }
@@ -660,7 +660,7 @@ std::optional<std::byte> index_cursor::partition_hash() const {
 
 uint64_t index_cursor::data_file_uncompressed_pos(uint64_t file_size) const {
     expensive_assert(_partition_cursor.initialized());
-    const bool legacy = holds_compressed_position(_sst_ver);
+    const bool legacy = holds_logical_position(_sst_ver);
     if (_partition_metadata) {
         if (!_row_cursor.initialized()) {
             // The position is the start of the partition in Data.db.
@@ -686,7 +686,7 @@ sstables::sstable_datafile_position index_cursor::data_file_pos(uint64_t file_si
     expensive_log("index_cursor::data_file_pos this={} initialized={}", fmt::ptr(this), _partition_cursor.initialized());
     auto uncompressed = data_file_uncompressed_pos(file_size);
 
-    if (holds_compressed_position(_sst_ver)) {
+    if (holds_logical_position(_sst_ver)) {
         return sstables::sstable_datafile_position::from_logical_approved(uncompressed);
     }
 
@@ -722,7 +722,7 @@ tombstone index_cursor::open_tombstone() const {
             // In the legacy format, the tombstone follows the variable-width offset,
             // whose width is encoded in the lower payload bits. In `mu`, it follows
             // the fixed-width position fields.
-            uint64_t tombstone_offset = holds_compressed_position(_sst_ver)
+            uint64_t tombstone_offset = holds_logical_position(_sst_ver)
                 ? (p.bits & ~TOMBSTONE_FLAG)
                 : 5 * sizeof(uint64_t);
             auto marked = seastar::be_to_cpu(read_unaligned<int64_t>(p.bytes.data() + tombstone_offset));
@@ -748,7 +748,7 @@ future<> index_cursor::maybe_read_metadata() {
     // The signed partition payload pointer: >= 0 means it points at a Rows.db
     // row index header (which we read here); < 0 means it points directly into Data.db.
     auto p = _partition_cursor.payload();
-    int64_t res = holds_compressed_position(_sst_ver)
+    int64_t res = holds_logical_position(_sst_ver)
         ? partition_payload_to_pos(p)
         : partition_payload_to_physical(p).uncompressed;
     if (res >= 0) {
@@ -844,7 +844,7 @@ future<> index_cursor::set_after_row(lazy_comparable_bytes_from_clustering_posit
 
 sstables::sstable_datafile_positions_range bti_index_reader::sstable_datafile_positions() const {
     // The position at the very start of Data.db. Logical for `ms`/`mt`, physical for `mu`.
-    auto file_start = holds_compressed_position(_sst_ver)
+    auto file_start = holds_logical_position(_sst_ver)
         ? sstables::sstable_datafile_position::from_logical_approved(0)
         : sstables::sstable_datafile_position::from_physical(0, 0, 0, 0);
     auto lo = _lower.partition_cursor_set() ? _lower.data_file_pos(_total_file_size) : file_start;
