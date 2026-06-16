@@ -42,9 +42,18 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
     // buffer, then rewinds the unconsumed tail with stop_consuming) is served
     // from memory instead of seeking the cursor backwards and re-reading - which
     // for a compressed cursor would re-decompress a whole chunk. `_last_buf`
-    // holds the bytes at [_last_buf_pos, _last_buf_pos + _last_buf.size()).
+    // holds the bytes at [_last_buf_pos, _last_buf_end_pos). Both bounds are real
+    // file positions: _last_buf_pos is where the buffer starts and _last_buf_end_pos
+    // is the position just past its last byte (the cursor position right after the
+    // read that produced it). The buffer is served only when _pos lies in that
+    // half-open range, which is tested with plain position comparisons (no chunk
+    // walk). The byte offset of _pos into the buffer is then computed through the
+    // cursor; because _pos is known to be within the buffer's chunk span, every
+    // chunk the cursor must walk to find that offset was read by the same read and
+    // is still in its metadata cache.
     tmp_buf _last_buf;
-    uint64_t _last_buf_pos = 0;
+    sstable_datafile_position _last_buf_pos;
+    sstable_datafile_position _last_buf_end_pos;
 
     // Default size of a forward read issued to the cursor. The cursor itself
     // caches and reads ahead, so this only bounds how much we ask for at once.
@@ -61,14 +70,16 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
     // (sharing, not copying) without touching the cursor. Returns an empty
     // optional when the position is not covered and a real read is needed.
     std::optional<tmp_buf> read_from_last_buf(size_t n) {
-        if (_last_buf.empty()) {
+        // Serve only when _pos lies in [_last_buf_pos, _last_buf_end_pos). The
+        // bounds check uses position ordering alone, so it never walks chunks and
+        // cannot reach an uncached one - unlike the byte-offset computation below,
+        // which is only safe once _pos is known to be inside the buffer.
+        if (_last_buf.empty() || _pos < _last_buf_pos || !(_pos < _last_buf_end_pos)) {
             return std::nullopt;
         }
-        uint64_t pos = _pos.to_logical_fixme();
-        if (pos < _last_buf_pos || pos >= _last_buf_pos + _last_buf.size()) {
-            return std::nullopt;
-        }
-        size_t off = pos - _last_buf_pos;
+        // The byte offset of _pos into the buffer; the cursor turns the two
+        // positions into a distance without assuming they are logical offsets.
+        int64_t off = _cursor.subtract_positions(_pos, _last_buf_pos);
         size_t len = std::min(n, _last_buf.size() - off);
         auto buf = _last_buf.share(off, len);
         advance_pos(len);
@@ -82,8 +93,9 @@ class cursor_input_stream_impl final : public sstable_datafile_input_stream::imp
         _cursor.seek(_pos);
         auto buf = co_await _cursor.read_forwards(n);
         _last_buf = buf.share();
-        _last_buf_pos = _pos.to_logical_fixme();
+        _last_buf_pos = _pos;
         advance_pos(buf.size());
+        _last_buf_end_pos = _pos;
         co_return buf;
     }
 public:
@@ -203,7 +215,10 @@ public:
     }
 
     int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
-        auto result = b.to_logical_fixme() - a.to_logical_fixme();
+        // The cursor owns the chunk metadata needed to turn two physical
+        // positions into a byte distance, so let it do the arithmetic rather
+        // than assuming positions are plain logical offsets.
+        auto result = _cursor.subtract_positions(b, a);
         sstable_cursor_log.trace("[cursor_stream@{}] subtract_positions: b={} a={} result={}", fmt::ptr(this), b, a, result);
         return result;
     }

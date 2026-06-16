@@ -106,6 +106,10 @@ public:
     virtual future<temporary_buffer<char>> read_forwards(size_t n) = 0;
     virtual future<temporary_buffer<char>> read(sstable_datafile_position start, sstable_datafile_position end) = 0;
     virtual sstable_datafile_position compute_relative_position(ssize_t offset) = 0;
+    // The number of decompressed bytes between `a` and `b` (b - a). Synchronous;
+    // every chunk between the two positions must already be in the cursor's
+    // metadata cache, exactly as for compute_relative_position.
+    virtual int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) = 0;
     // Advance `from` forward by `n` decompressed bytes, returning the resulting
     // position. Unlike compute_relative_position (which is synchronous and only
     // consults already-cached chunk metadata), this may read from the file to
@@ -344,6 +348,12 @@ public:
         SCYLLA_ASSERT(_position.has_value());
         auto result = sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
         sstable_cursor_log.trace("[uncompressed@{}] compute_relative_position: pos={} offset={} result={}", fmt::ptr(this), *_position, offset, result);
+        return result;
+    }
+
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
+        auto result = b.to_logical_fixme() - a.to_logical_fixme();
+        sstable_cursor_log.trace("[uncompressed@{}] subtract_positions: b={} a={} result={}", fmt::ptr(this), b, a, result);
         return result;
     }
 
@@ -626,6 +636,12 @@ public:
         SCYLLA_ASSERT(_position.has_value());
         auto result = sstable_datafile_position::from_logical_fixme(_position->to_logical_fixme() + offset);
         sstable_cursor_log.trace("[compressed@{}] compute_relative_position: pos={} offset={} result={}", fmt::ptr(this), *_position, offset, result);
+        return result;
+    }
+
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
+        auto result = b.to_logical_fixme() - a.to_logical_fixme();
+        sstable_cursor_log.trace("[compressed@{}] subtract_positions: b={} a={} result={}", fmt::ptr(this), b, a, result);
         return result;
     }
 
@@ -994,6 +1010,12 @@ public:
         return result;
     }
 
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
+        auto result = positions_distance(decode_position(a), decode_position(b));
+        sstable_cursor_log.trace("[compressed_physical@{}] subtract_positions: b={} a={} result={}", fmt::ptr(this), b, a, result);
+        return result;
+    }
+
     future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n) override {
         sstable_cursor_log.trace("[compressed_physical@{}] skip_forwards: enter from={} n={}", fmt::ptr(this), from, n);
         // Walk forward from `from` by n decompressed bytes, crossing whole chunks
@@ -1170,6 +1192,29 @@ private:
         }
         p.offset_within_chunk = in_chunk;
         return encode_position(p);
+    }
+
+    // The number of decompressed bytes between `a` and `b` (b - a), with a <= b.
+    // We never count in a global logical position: starting at `a`, we add the
+    // bytes left in its chunk, step whole chunks across the cached extents until
+    // we reach b's chunk, then add b's offset within it. The fixed uncompressed
+    // chunk length (a structural constant of the format) gives each whole chunk's
+    // byte count; the cached extents (learned from the on-disk length prefixes)
+    // let us walk chunk_position forward. Synchronous: every chunk between a and b
+    // must already be in the navigation cache.
+    int64_t positions_distance(cursor_pos a, const cursor_pos& b) {
+        uint64_t chunk_len = _compression.uncompressed_chunk_length();
+        int64_t distance = 0;
+        while (a.chunk.chunk_position != b.chunk.chunk_position) {
+            // a is before b, so a is not at EOF and has a full chunk's worth of
+            // bytes remaining from its current offset.
+            SCYLLA_ASSERT(!at_eof(a));
+            distance += chunk_len - a.offset_within_chunk;
+            step_to_next_chunk_pos(a);
+            a.offset_within_chunk = 0;
+        }
+        distance += int64_t(b.offset_within_chunk) - int64_t(a.offset_within_chunk);
+        return distance;
     }
 
     // Move p to the start of the next chunk on disk. The next chunk begins right
@@ -1463,6 +1508,9 @@ future<temporary_buffer<char>> sstable_datafile_cursor::read(sstable_datafile_po
 }
 sstable_datafile_position sstable_datafile_cursor::compute_relative_position(ssize_t offset) {
     return _impl->compute_relative_position(offset);
+}
+int64_t sstable_datafile_cursor::subtract_positions(sstable_datafile_position b, sstable_datafile_position a) {
+    return _impl->subtract_positions(b, a);
 }
 future<sstable_datafile_position> sstable_datafile_cursor::skip_forwards(sstable_datafile_position from, size_t n) {
     return _impl->skip_forwards(from, n);

@@ -38,6 +38,11 @@ public:
     future<temporary_buffer<char>> read_forwards(size_t n);
     future<temporary_buffer<char>> read(sstable_datafile_position start, sstable_datafile_position end);
     sstable_datafile_position compute_relative_position(ssize_t offset_from_current);
+    // The number of decompressed bytes between `a` and `b` (i.e. b - a). Both
+    // positions must already be reachable through the cursor's metadata cache
+    // (the same precondition as compute_relative_position); this is synchronous
+    // and never reads from the file.
+    int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a);
     // Advance `from` forward by `n` bytes, returning the resulting position.
     // Unlike compute_relative_position, this may read from the file to discover
     // the chunks it crosses, so it can move past chunks the cursor has not seen
