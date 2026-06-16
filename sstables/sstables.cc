@@ -3203,7 +3203,7 @@ future<input_stream<char>> sstable::data_stream_compressed_chunks(
         co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
     };
     if (_components->compression && _version >= sstable_version_types::mc) {
-        co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest);
+        co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, _version, std::move(options), permit, digest);
     }
 
     uint64_t pos = 0;

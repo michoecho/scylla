@@ -1058,6 +1058,7 @@ void writer::init_file_writers() {
             make_compressed_file_m_format_output_stream(
                 output_stream<char>(std::move(out)),
                 &_sst._components->compression,
+                _sst.get_version(),
                 _sst._schema->get_compressor_params(),
                 std::move(compressor),
                 [this, filename = _sst.get_filename()] (uint64_t post_compression_pos, uint64_t pre_compression_pos, uint64_t size, uint64_t uncompressed_size) {

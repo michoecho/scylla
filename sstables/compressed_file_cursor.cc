@@ -435,6 +435,11 @@ class compressed_file_cursor_impl final : public sstable_datafile_cursor::impl {
     uint64_t _uncompressed_chunk_length;
     uint64_t _uncompressed_file_length;
 
+    // Per-chunk length prefix size for this version (0 if the version stores no
+    // prefix). The prefix sits before the compressed data; the trailing
+    // checksum still covers only the compressed data.
+    size_t _chunk_prefix;
+
     // Whole-file digest check. When _expected_digest is engaged (a digest check
     // was requested), every decompressed chunk folds its checksum into
     // _actual_digest, exactly as the old data-source impl did: the per-chunk
@@ -462,6 +467,7 @@ public:
         , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
         , _uncompressed_chunk_length(_compression.uncompressed_chunk_length())
         , _uncompressed_file_length(_compression.uncompressed_file_length())
+        , _chunk_prefix(chunk_has_length_prefix(_sst->get_version()) ? chunk_length_prefix_size : 0)
         , _expected_digest(digest)
         , _actual_digest(_sst->get_version() >= sstable_version_types::mc
                 ? crc32_utils::init_checksum() : adler32_utils::init_checksum())
@@ -617,22 +623,25 @@ private:
 
     // Verify the chunk's trailing checksum and decompress it.
     temporary_buffer<char> decompress_chunk(const chunk_meta& m, temporary_buffer<char> compressed) {
-        if (m.physical_len < 4) {
+        if (m.physical_len < _chunk_prefix + 4) {
             throw_malformed_sstable_exception(format(
-                    "compressed chunk_len must be greater than 4, chunk_start={}", m.physical_pos));
+                    "compressed chunk_len must be greater than {}, chunk_start={}", _chunk_prefix + 4, m.physical_pos));
         }
-        // The last 4 bytes of the chunk are the checksum of the rest.
-        size_t compressed_len = m.physical_len - 4;
-        uint32_t expected = read_be<uint32_t>(compressed.get() + compressed_len);
-        uint32_t actual = checksum(compressed.get(), compressed_len);
+        // The chunk is an optional length prefix, the compressed data, and a
+        // trailing 4-byte checksum of the compressed data. The compressed data
+        // starts after the prefix and the checksum covers only it.
+        const char* compressed_data = compressed.get() + _chunk_prefix;
+        size_t compressed_len = m.physical_len - _chunk_prefix - 4;
+        uint32_t expected = read_be<uint32_t>(compressed_data + compressed_len);
+        uint32_t actual = checksum(compressed_data, compressed_len);
         if (expected != actual) {
             throw_malformed_sstable_exception(format(
                     "compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}",
                     m.physical_len, m.physical_pos, expected, actual));
         }
-        update_digest(m, compressed.get(), compressed_len, actual);
+        update_digest(m, compressed_data, compressed_len, actual);
         temporary_buffer<char> out(m.logical_len);
-        size_t n = _compression.get_compressor().uncompress(compressed.get(), compressed_len, out.get_write(), out.size());
+        size_t n = _compression.get_compressor().uncompress(compressed_data, compressed_len, out.get_write(), out.size());
         out.trim(n);
         return out;
     }
@@ -767,6 +776,10 @@ class compressed_physical_file_cursor_impl final : public sstable_datafile_curso
     // compressed file, no bytes within it. Forward reads stop here.
     uint64_t _compressed_file_length;
 
+    // Per-chunk length prefix size for this version (0 if none). See the
+    // identical member in compressed_file_cursor_impl.
+    size_t _chunk_prefix;
+
     // Whole-file digest check. See the identical machinery in
     // compressed_file_cursor_impl for the full explanation.
     std::optional<uint32_t> _expected_digest;
@@ -784,6 +797,7 @@ public:
         , _offsets(_compression.offsets.get_accessor())
         , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
         , _compressed_file_length(_sst->ondisk_data_size())
+        , _chunk_prefix(chunk_has_length_prefix(_sst->get_version()) ? chunk_length_prefix_size : 0)
         , _expected_digest(digest)
         , _actual_digest(_sst->get_version() >= sstable_version_types::mc
                 ? crc32_utils::init_checksum() : adler32_utils::init_checksum())
@@ -1066,25 +1080,28 @@ private:
 
     // Verify the chunk's trailing checksum and decompress it.
     temporary_buffer<char> decompress_chunk(const chunk_coords& chunk, temporary_buffer<char> compressed) {
-        if (chunk.chunk_length < 4) {
+        if (chunk.chunk_length < _chunk_prefix + 4) {
             throw_malformed_sstable_exception(format(
-                    "compressed chunk_len must be greater than 4, chunk_start={}", chunk.chunk_position));
+                    "compressed chunk_len must be greater than {}, chunk_start={}", _chunk_prefix + 4, chunk.chunk_position));
         }
-        // The last 4 bytes of the chunk are the checksum of the rest.
-        size_t compressed_len = chunk.chunk_length - 4;
-        uint32_t expected = read_be<uint32_t>(compressed.get() + compressed_len);
-        uint32_t actual = checksum(compressed.get(), compressed_len);
+        // The chunk is an optional length prefix, the compressed data, and a
+        // trailing 4-byte checksum of the compressed data. The compressed data
+        // starts after the prefix and the checksum covers only it.
+        const char* compressed_data = compressed.get() + _chunk_prefix;
+        size_t compressed_len = chunk.chunk_length - _chunk_prefix - 4;
+        uint32_t expected = read_be<uint32_t>(compressed_data + compressed_len);
+        uint32_t actual = checksum(compressed_data, compressed_len);
         if (expected != actual) {
             throw_malformed_sstable_exception(format(
                     "compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}",
                     chunk.chunk_length, chunk.chunk_position, expected, actual));
         }
-        update_digest(chunk, compressed.get(), compressed_len, actual);
+        update_digest(chunk, compressed_data, compressed_len, actual);
         // We do not know the chunk's decompressed length a priori (that would be
         // a logical quantity); decompress into a full-chunk-sized buffer and trim
         // to whatever uncompress() actually produced.
         temporary_buffer<char> out(_compression.uncompressed_chunk_length());
-        size_t n = _compression.get_compressor().uncompress(compressed.get(), compressed_len, out.get_write(), out.size());
+        size_t n = _compression.get_compressor().uncompress(compressed_data, compressed_len, out.get_write(), out.size());
         out.trim(n);
         return out;
     }

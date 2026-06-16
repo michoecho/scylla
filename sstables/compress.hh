@@ -44,6 +44,7 @@
 #include <seastar/core/fstream.hh>
 
 #include "sstables/types.hh"
+#include "sstables/version.hh"
 #include "sstables/sstable_datafile_position.hh"
 #include "sstables/sstable_datafile_input_stream.hh"
 
@@ -359,6 +360,20 @@ public:
     friend class sstable;
 };
 
+// For versions that store a full physical position in the index (i.e. those
+// for which holds_compressed_position() is false, currently `mu`), each
+// compressed chunk on disk is prefixed by two little-endian 4-byte lengths:
+// the compressed-data length of this chunk and the compressed-data length of
+// the previous chunk (0 for the first chunk). This lets a reader navigate
+// between chunks without consulting the external compression offsets. The
+// lengths count only the compressor output, exactly like the bytes the
+// trailing checksum covers; they exclude this prefix and the checksum.
+inline constexpr size_t chunk_length_prefix_size = 2 * sizeof(uint32_t);
+
+inline bool chunk_has_length_prefix(sstable_version_types v) {
+    return !holds_compressed_position(v);
+}
+
 using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uint64_t, file_input_stream_options)>;
 
 // Note: compression_metadata is passed by reference; The caller is
@@ -367,19 +382,19 @@ using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uin
 // as long as we have *sstables* work in progress, we need to keep the whole
 // sstable alive, and the compression metadata is only a part of it.
 sstable_datafile_input_stream make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
-                sstables::compression* cm, disk_read_range range,
+                sstables::compression* cm, sstable_version_types version, disk_read_range range,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
 sstable_datafile_input_stream make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
-                sstables::compression* cm, disk_read_range range,
+                sstables::compression* cm, sstable_version_types version, disk_read_range range,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
 // Raw compressed data stream function that return compressed chunks without decompression
 // while still calculating digests and verifying checksums. Compatible with SSTables version 3.x and later.
 input_stream<char> make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
-        file_input_stream_options options, reader_permit permit, std::optional<uint32_t> digest);
+        sstable_version_types version, file_input_stream_options options, reader_permit permit, std::optional<uint32_t> digest);
 
 // Observer invoked after each compressed chunk is written, with the chunk's
 // post-compression position, its pre-compression position (the sum of the
@@ -389,6 +404,7 @@ using compressed_chunk_observer = std::function<void(uint64_t post_compression_p
 
 output_stream<char> make_compressed_file_m_format_output_stream(output_stream<char> out,
                 sstables::compression* cm,
+                sstable_version_types version,
                 const compression_parameters& cp,
                 compressor_ptr,
                 compressed_chunk_observer observer = {});
