@@ -1294,6 +1294,14 @@ private:
 std::unique_ptr<sstable_datafile_cursor::impl> make_impl(shared_sstable sst, reader_permit permit, tracing::trace_state_ptr trace_state,
         std::optional<uint32_t> digest) {
     if (sst->get_compression()) {
+        // Versions whose index stores a full physical position (i.e. those for
+        // which holds_compressed_position() is false, currently `mu`) prefix each
+        // chunk with its length and are read by the physical cursor, which
+        // navigates by those prefixes. Older versions are read by the logical
+        // cursor, which navigates by uncompressed position via the offsets array.
+        if (!holds_compressed_position(sst->get_version())) {
+            return std::make_unique<compressed_physical_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state), digest);
+        }
         return std::make_unique<compressed_file_cursor_impl>(std::move(sst), std::move(permit), std::move(trace_state), digest);
     }
     // The uncompressed cursor reads an unchecksummed data file; the whole-file
