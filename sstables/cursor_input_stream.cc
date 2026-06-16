@@ -161,15 +161,20 @@ public:
     }
 
     future<> skip(uint64_t n) noexcept override {
-        advance_pos(n);
-        co_return;
+        // Walk the cursor forward by n bytes. For a compressed physical cursor a
+        // forward skip can cross chunks the cursor has not read yet, so this is
+        // async (it reads each crossed chunk's length prefix) rather than the
+        // synchronous compute_relative_position used by advance_pos.
+        _pos = co_await _cursor.skip_forwards(_pos, n);
     }
 
     future<> skip_to(sstable_datafile_position target, sstable_datafile_position) noexcept override {
         // This stream tracks its own position, so it can seek straight to the
-        // target; the caller-supplied current position is not needed.
-        _pos = target;
-        co_return;
+        // target; the caller-supplied current position is not needed. We still
+        // walk the cursor to the target (a zero-length forward skip) so that the
+        // target chunk's metadata is loaded into the cursor's caches, which later
+        // relative-position arithmetic around the new position depends on.
+        _pos = co_await _cursor.skip_forwards(target, 0);
     }
 
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {

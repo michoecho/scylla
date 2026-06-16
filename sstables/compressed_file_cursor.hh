@@ -38,6 +38,11 @@ public:
     future<temporary_buffer<char>> read_forwards(size_t n);
     future<temporary_buffer<char>> read(sstable_datafile_position start, sstable_datafile_position end);
     sstable_datafile_position compute_relative_position(ssize_t offset_from_current);
+    // Advance `from` forward by `n` bytes, returning the resulting position.
+    // Unlike compute_relative_position, this may read from the file to discover
+    // the chunks it crosses, so it can move past chunks the cursor has not seen
+    // yet; it also primes the cursor's caches for those chunks.
+    future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n);
     void drop_caches_after(sstable_datafile_position);
     void drop_caches_before(sstable_datafile_position);
     future<> close();
