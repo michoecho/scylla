@@ -76,6 +76,23 @@ public:
         SCYLLA_ASSERT(std::holds_alternative<logical>(_value));
         return std::get<logical>(_value).value;
     }
+
+    // The decoded fields of a physical position. See the `physical` struct above
+    // for the meaning of each field.
+    struct physical_components {
+        int64_t chunk_position;
+        int64_t chunk_length;
+        int64_t offset_within_chunk;
+        int64_t uncompressed_position;
+    };
+    bool holds_physical() const noexcept {
+        return std::holds_alternative<physical>(_value);
+    }
+    physical_components to_physical() const noexcept {
+        SCYLLA_ASSERT(std::holds_alternative<physical>(_value));
+        const auto& p = std::get<physical>(_value);
+        return {p.chunk_position, p.chunk_length, p.offset_within_chunk, p.uncompressed_position};
+    }
     int64_t to_logical_approved() const noexcept {
         SCYLLA_ASSERT(std::holds_alternative<logical>(_value));
         return std::get<logical>(_value).value;
