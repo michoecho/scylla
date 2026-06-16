@@ -2704,10 +2704,30 @@ uint64_t sstable::ondisk_data_size() const {
 }
 
 sstable_datafile_position sstable::start_position() const {
+    if (!holds_logical_position(_version)) {
+        // `mu` is read by the physical cursor, which navigates by chunk
+        // coordinates, so the start position must carry the real coordinates of
+        // the first chunk. They come from the compression component: the first
+        // chunk begins at on-disk position 0, and its length is the extent of
+        // chunk 0. The logical/uncompressed position is 0.
+        const auto& comp = _components->compression;
+        auto accessor = comp.offsets.get_accessor();
+        auto chunk = comp.locate(0, accessor);
+        return sstable_datafile_position::from_physical(chunk.chunk_start, chunk.chunk_len, chunk.offset, 0);
+    }
     return sstable_datafile_position::from_logical_approved(0);
 }
 
 sstable_datafile_position sstable::end_position() const {
+    if (!holds_logical_position(_version)) {
+        // For `mu`, the end-of-data sentinel must be a physical position past the
+        // last chunk so it orders after every real position. The physical cursor
+        // treats chunk_position >= compressed_file_length as end of data, so we
+        // anchor the sentinel at the on-disk data size. uncompressed_position
+        // carries the logical size for callers that need it.
+        auto physical_end = ondisk_data_size();
+        return sstable_datafile_position::from_physical(physical_end, 0, 0, data_size());
+    }
     return sstable_datafile_position::from_logical_approved(data_size());
 }
 
@@ -4219,7 +4239,8 @@ std::unique_ptr<abstract_index_reader> sstable::make_index_reader(
             cached_partitions_file,
             cached_rows_file,
             _partitions_db_footer.value().trie_root_position,
-            data_size(),
+            start_position(),
+            end_position(),
             _version,
             _schema,
             std::move(permit),

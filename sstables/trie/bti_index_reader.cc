@@ -320,13 +320,16 @@ public:
     //
     // If the row cursor is set, returns the position of the pointed-to clustering key block.
     // Otherwise, if the partition cursor is set to a partition, returns the position of the partition.
-    // Otherwise, if the partition cursor is set to EOF, returns `file_size`.
+    // Otherwise, if the partition cursor is set to EOF, returns `end_position`.
     //
-    // For `ms`/`mt` the returned position is logical; for `mu` it is physical.
-    sstables::sstable_datafile_position data_file_pos(uint64_t file_size) const;
+    // `end_position` is the data file's end-of-data sentinel, supplied from above
+    // (Partitions.db doesn't store it). For `ms`/`mt` the returned position is
+    // logical; for `mu` it is physical.
+    sstables::sstable_datafile_position data_file_pos(sstables::sstable_datafile_position end_position) const;
     // The uncompressed (logical) flavor of data_file_pos(), used for plain
     // comparisons (e.g. EOF detection) that don't care about chunk coordinates.
-    uint64_t data_file_uncompressed_pos(uint64_t file_size) const;
+    // At EOF it returns the uncompressed component of `end_position`.
+    uint64_t data_file_uncompressed_pos(sstables::sstable_datafile_position end_position) const;
     // If the row index is set to a clustering key block, returns the range tombstone active at the start of the block.
     // Otherwise returns an empty tombstone.
     tombstone open_tombstone() const;
@@ -400,10 +403,14 @@ class bti_index_reader : public sstables::abstract_index_reader {
     // The index is, in essence, a pair of cursors.
     index_cursor _lower;
     index_cursor _upper;
-    // Partitions.db doesn't store the size of Data.db, so the cursor doesn't know by itself
-    // what Data.db position to return when its position is EOF. We need to pass the file size
-    // from the above.
-    uint64_t _total_file_size;
+    // Partitions.db doesn't store the bounds of Data.db, so the cursor doesn't know
+    // by itself what Data.db position to return at the very start (before it is set
+    // to a partition) or at EOF. We pass both from above. They are logical for
+    // `ms`/`mt`; for `mu` they carry the chunk coordinates (which the index reader
+    // can't compute itself - they come from the compression component) of the first
+    // chunk and of the end-of-data sentinel respectively.
+    sstables::sstable_datafile_position _start_position;
+    sstables::sstable_datafile_position _end_position;
 
     // FIXME: by contract, the index reader is immediately initialized to position 0
     // after construction.
@@ -434,7 +441,8 @@ public:
         bti_node_reader partitions_db,
         bti_node_reader rows_db,
         uint64_t root_pos,
-        uint64_t total_file_size,
+        sstables::sstable_datafile_position start_position,
+        sstables::sstable_datafile_position end_position,
         sstable_version_types sst_ver,
         schema_ptr,
         reader_permit,
@@ -663,7 +671,7 @@ std::optional<std::byte> index_cursor::partition_hash() const {
     return std::nullopt;
 }
 
-uint64_t index_cursor::data_file_uncompressed_pos(uint64_t file_size) const {
+uint64_t index_cursor::data_file_uncompressed_pos(sstables::sstable_datafile_position end_position) const {
     expensive_assert(_partition_cursor.initialized());
     const bool legacy = holds_logical_position(_sst_ver);
     if (_partition_metadata) {
@@ -684,33 +692,46 @@ uint64_t index_cursor::data_file_uncompressed_pos(uint64_t file_size) const {
         expensive_assert(pos < 0);
         return ~pos;
     }
-    return file_size;
+    // EOF: the end-of-data sentinel. Its uncompressed component is the logical
+    // data file size for both the logical and physical flavors.
+    return legacy ? end_position.to_logical_approved() : end_position.to_physical().uncompressed_position;
 }
 
-sstables::sstable_datafile_position index_cursor::data_file_pos(uint64_t file_size) const {
+sstables::sstable_datafile_position index_cursor::data_file_pos(sstables::sstable_datafile_position end_position) const {
     expensive_log("index_cursor::data_file_pos this={} initialized={}", fmt::ptr(this), _partition_cursor.initialized());
-    auto uncompressed = data_file_uncompressed_pos(file_size);
+
+    // At EOF (the partition cursor walked past the last partition) there is no
+    // payload to read coordinates from; the position is the end-of-data sentinel,
+    // which the caller supplied as `end_position`. Return it verbatim so the
+    // sentinel's chunk coordinates (for `mu`) come from a single source of truth.
+    if (!_partition_metadata && _partition_cursor.eof()) {
+        return end_position;
+    }
+
+    auto uncompressed = data_file_uncompressed_pos(end_position);
 
     if (holds_logical_position(_sst_ver)) {
         return sstables::sstable_datafile_position::from_logical_approved(uncompressed);
     }
 
     // For `mu`, attach the chunk coordinates that locate this point in the
-    // compressed (on-disk) file. They come from the same payload field that
-    // produced `uncompressed`. The exception is the partition-start case read from
-    // the row index header, which carries no chunk coordinates (so they stay zero),
-    // and the EOF case.
+    // compressed (on-disk) file. The physical cursor that reads `mu` navigates by
+    // these coordinates, so every position we hand it must carry them.
+    //
+    //  - Inside a partition (row cursor initialized): the row index payload holds
+    //    the position's full chunk coordinates.
+    //  - At a partition start (we read its row index header, but haven't advanced
+    //    the row cursor into it): the *partition* cursor still points at the
+    //    partition's leaf, whose payload holds the partition start's chunk
+    //    coordinates. The row index header itself only stores the uncompressed
+    //    offset, so we must take the chunk coordinates from the partition payload.
+    //  - No row index for this partition (partition payload points directly into
+    //    Data.db): the partition payload holds the chunk coordinates.
     physical_fields f = {};
     if (_partition_metadata && _row_cursor.initialized()) {
         f = row_payload_to_physical(_row_cursor.payload());
-    } else if (!_partition_metadata && !_partition_cursor.eof()) {
+    } else if (!_partition_cursor.eof()) {
         f = partition_payload_to_physical(_partition_cursor.payload());
-    }
-    // A zero chunk length marks a position that has no chunk coordinates (e.g. it
-    // points into an uncompressed file), so fall back to a logical position filled
-    // with the uncompressed position.
-    if (f.chunk_length == 0) {
-        return sstables::sstable_datafile_position::from_logical_approved(uncompressed);
     }
     return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, uncompressed);
 }
@@ -854,14 +875,13 @@ future<> index_cursor::set_after_row(lazy_comparable_bytes_from_clustering_posit
 }
 
 sstables::sstable_datafile_positions_range bti_index_reader::sstable_datafile_positions() const {
-    // The position at the very start of Data.db. Logical for `ms`/`mt`, physical for `mu`.
-    auto file_start = holds_logical_position(_sst_ver)
-        ? sstables::sstable_datafile_position::from_logical_approved(0)
-        : sstables::sstable_datafile_position::from_physical(0, 0, 0, 0);
-    auto lo = _lower.partition_cursor_set() ? _lower.data_file_pos(_total_file_size) : file_start;
+    // Before the lower cursor is set to a partition, the lower bound is the very
+    // start of Data.db, supplied from above (it carries the first chunk's
+    // coordinates for `mu`, which the index reader can't compute itself).
+    auto lo = _lower.partition_cursor_set() ? _lower.data_file_pos(_end_position) : _start_position;
     std::optional<sstables::sstable_datafile_position> hi;
     if (_upper.partition_cursor_set()) {
-        hi = _upper.data_file_pos(_total_file_size);
+        hi = _upper.data_file_pos(_end_position);
     }
     trie_logger.debug("bti_index_reader::sstable_datafile_positions this={} result=({}, {})", fmt::ptr(this), lo, hi);
     return {lo, hi};
@@ -880,7 +900,8 @@ bti_index_reader::bti_index_reader(
     bti_node_reader partitions_db,
     bti_node_reader rows_db,
     uint64_t root_offset,
-    uint64_t total_file_size,
+    sstables::sstable_datafile_position start_position,
+    sstables::sstable_datafile_position end_position,
     sstable_version_types sst_ver,
     schema_ptr s,
     reader_permit rp,
@@ -899,10 +920,11 @@ bti_index_reader::bti_index_reader(
     // (And both are needed to read lower and upper Data.db bounds).
     , _lower(root_offset, partitions_db, rows_db, sst_ver, _permit, _trace_state)
     , _upper(root_offset, partitions_db, rows_db, sst_ver, _permit, _trace_state)
-    , _total_file_size(total_file_size)
+    , _start_position(start_position)
+    , _end_position(end_position)
 {
-    trie_logger.debug("bti_index_reader::constructor: this={} root_offset={} total_file_size={} table={}.{}",
-        fmt::ptr(this), root_offset, total_file_size, _s->ks_name(), _s->cf_name());
+    trie_logger.debug("bti_index_reader::constructor: this={} root_offset={} start_position={} end_position={} table={}.{}",
+        fmt::ptr(this), root_offset, start_position, end_position, _s->ks_name(), _s->cf_name());
 }
 
 future<bool> bti_index_reader::advance_lower_and_check_if_present(dht::ring_position_view key) {
@@ -1057,7 +1079,14 @@ bool bti_index_reader::eof() const {
         // (There's an assumption that the data file is non empty).
         return false;
     }
-    return _lower.data_file_uncompressed_pos(_total_file_size) >= _total_file_size;
+    // Compare uncompressed positions: the cursor is at EOF once its logical data
+    // position reaches the logical end of data. (The physical chunk coordinates
+    // aren't needed for this check, and the end sentinel's uncompressed component
+    // is the logical data file size.)
+    auto end_uncompressed = holds_logical_position(_sst_ver)
+        ? _end_position.to_logical_approved()
+        : _end_position.to_physical().uncompressed_position;
+    return int64_t(_lower.data_file_uncompressed_pos(_end_position)) >= end_uncompressed;
 }
 
 future<> bti_index_reader::prefetch_lower_bound(position_in_partition_view pos) {
@@ -1099,7 +1128,8 @@ std::unique_ptr<sstables::abstract_index_reader> make_bti_index_reader(
     seastar::shared_ptr<cached_file> partitions_db,
     seastar::shared_ptr<cached_file> rows_db,
     uint64_t partitions_db_root_pos,
-    uint64_t total_data_db_file_size,
+    sstables::sstable_datafile_position start_position,
+    sstables::sstable_datafile_position end_position,
     sstable_version_types sst_ver,
     schema_ptr s,
     reader_permit permit,
@@ -1114,7 +1144,8 @@ std::unique_ptr<sstables::abstract_index_reader> make_bti_index_reader(
         bti_node_reader(*partitions_db),
         bti_node_reader(*rows_db),
         partitions_db_root_pos,
-        total_data_db_file_size,
+        start_position,
+        end_position,
         sst_ver,
         std::move(s),
         std::move(permit),
