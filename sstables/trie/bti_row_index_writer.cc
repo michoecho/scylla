@@ -320,7 +320,7 @@ void write_row_index_header(
     sstable_version_types sst_ver,
     sstables::file_writer& fw,
     const sstables::key& pk,
-    int64_t partition_data_start,
+    bti_trie_source_position partition_data_start,
     uint64_t added_blocks,
     uint64_t root_pos,
     const sstables::deletion_time& partition_tombstone
@@ -329,8 +329,17 @@ void write_row_index_header(
     write(sst_ver, fw, disk_string_view<uint16_t>(bytes_view(pk)));
 
     auto pos_datapos = fw.offset();
-    trie_logger.trace("consume_end_of_partition: pos: {} {}", fw.offset(), partition_data_start);
-    write_unsigned_vint(fw, partition_data_start);
+    trie_logger.trace("consume_end_of_partition: pos: {} {}", fw.offset(), partition_data_start.uncompressed);
+    // The uncompressed partition position. For `mu` it is followed by the chunk
+    // coordinates that locate the partition start in the compressed (on-disk) file,
+    // so the physical cursor can navigate to it directly. (For `ms`/`mt` only the
+    // uncompressed position exists.)
+    write_unsigned_vint(fw, partition_data_start.uncompressed);
+    if (!holds_logical_position(sst_ver)) {
+        write_unsigned_vint(fw, partition_data_start.chunk_start);
+        write_unsigned_vint(fw, partition_data_start.chunk_length);
+        write_unsigned_vint(fw, partition_data_start.offset_within_chunk);
+    }
 
     trie_logger.trace("consume_end_of_partition: root_offset: {} {}", fw.offset(), pos_datapos - root_pos);
     write_signed_vint(fw, int64_t(uint64_t(root_pos) - uint64_t(pos_datapos)));
@@ -403,7 +412,7 @@ bti_trie_source_position row_index_writer_impl::finish(
 
     expensive_log("row_index_writer_impl::finish: writing header at {}", fw.offset());
     int64_t pos_header = fw.offset();
-    write_row_index_header(_sst_ver, fw, pk, partition_data_start.uncompressed, added_blocks_for_header, root, partition_tombstone);
+    write_row_index_header(_sst_ver, fw, pk, partition_data_start, added_blocks_for_header, root, partition_tombstone);
     // The partition index entry points into Rows.db, at the header we just wrote.
     // We don't track post-compression coordinates of Rows.db here, so they are left
     // as placeholder zeros for now.
