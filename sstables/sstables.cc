@@ -3097,6 +3097,10 @@ bool holds_compressed_position(sstable_version_types v) {
     // `ms` and `mt` store a single (pre-compression) logical position in the BTI
     // index payload. `mu` stores a full physical position (chunk coordinates plus
     // the uncompressed offset).
+
+    // FIXME
+    return true;
+
     return v == sstable_version_types::ms || v == sstable_version_types::mt;
 }
 
