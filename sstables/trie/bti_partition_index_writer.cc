@@ -147,6 +147,10 @@ static trie_payload make_legacy_partition_payload(uint8_t hash_bits, int64_t pos
 // The payload bits carry no information here, but by contract they must be
 // nonzero, so we set them to 1.
 static trie_payload make_physical_partition_payload(uint8_t hash_bits, const bti_trie_source_position& pos) {
+    if (pos.chunk_length == 0) {
+        trie_logger.error("make_physical_partition_payload ZERO chunk_length: uncompressed={} chunk_start={} offset_within_chunk={}",
+                pos.uncompressed, pos.chunk_start, pos.offset_within_chunk);
+    }
     std::array<std::byte, 1 + 5 * sizeof(uint64_t)> payload_bytes;
     auto it = payload_bytes.data();
     *it++ = std::byte(hash_bits);

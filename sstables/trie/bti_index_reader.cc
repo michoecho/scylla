@@ -728,10 +728,17 @@ sstables::sstable_datafile_position index_cursor::data_file_pos(sstables::sstabl
     //  - No row index for this partition (partition payload points directly into
     //    Data.db): the partition payload holds the chunk coordinates.
     physical_fields f = {};
+    const char* src = "none";
     if (_partition_metadata && _row_cursor.initialized()) {
         f = row_payload_to_physical(_row_cursor.payload());
+        src = "row";
     } else if (!_partition_cursor.eof()) {
         f = partition_payload_to_physical(_partition_cursor.payload());
+        src = "partition";
+    }
+    if (f.chunk_length == 0) {
+        trie_logger.error("data_file_pos ZERO chunk_length: src={} uncompressed={} chunk_start={} offset_within_chunk={} part_eof={} row_init={}",
+                src, uncompressed, f.chunk_start, f.offset_within_chunk, _partition_cursor.eof(), _row_cursor.initialized());
     }
     return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, uncompressed);
 }
