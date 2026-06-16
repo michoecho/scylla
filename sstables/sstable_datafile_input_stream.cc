@@ -45,11 +45,11 @@ public:
     }
     
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
-        return pos + sstable_datafile_offset::from_logical_fixme(offset);
+        return pos + sstable_datafile_offset::from_logical_approved(offset);
     }
 
     int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) override {
-        return b.to_logical_fixme() - a.to_logical_fixme();
+        return b.to_logical_approved() - a.to_logical_approved();
     }
 
     data_source detach() && override {
