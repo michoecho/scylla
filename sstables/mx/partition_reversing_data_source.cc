@@ -79,24 +79,21 @@ private:
         co_yield read_8(*_processing_data);
         auto flags = unfiltered_flags_m(_u8);
         if (flags.is_end_of_partition() || flags.is_range_tombstone() || !flags.has_extended_flags()) {
-            sstlog.error("HANG 0 {} ", current_position());
             _header_end_pos = current_position(-1);
             co_yield data_consumer::proceed::no;
         } else {
             co_yield read_8(*_processing_data);
             auto extended_flags = unfiltered_extended_flags_m(_u8);
             if (!extended_flags.is_static()) {
-                sstlog.error("HANG 1 {} ", current_position());
                 _header_end_pos = current_position(-2);
                 co_yield data_consumer::proceed::no;
             }
         }
-        
+
         // A static row is present.
         // There are no clustering blocks. Read the row body size:
         co_yield read_unsigned_vint(*_processing_data);
         // skip the row body
-        sstlog.error("HANG 2 {} {}", current_position(), _u64);
         co_yield skip(*_processing_data, _u64);
         _header_end_pos = current_position(0);
         // _header_end_pos is where the clustering rows start

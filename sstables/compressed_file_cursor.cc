@@ -397,6 +397,8 @@ private:
         co_await skip_forward_to(seastar::align_down(pos, _block_size));
         // Pull (and cache) whole buffers until pos itself is covered. The bytes
         // before pos share a block with it, so they come from disk for free.
+        // (skip_forward_to may already have over-read past pos into the cache, in
+        // which case _forward_pos is already past pos and this loop is skipped.)
         while (_forward_pos <= pos) {
             auto buf = co_await _forward_source->get();
             if (buf.empty()) {
@@ -410,15 +412,21 @@ private:
     }
 
     // Advance the stream to target (>= _forward_pos) without requesting the
-    // bytes in between. skip() may over-read; cache whatever it hands back.
+    // bytes in between. skip() may over-read; cache whatever it hands back and
+    // advance _forward_pos past it. The over-read can reach end of stream (it
+    // returns the tail of the last buffer it touched), so _forward_pos must
+    // reflect where the stream actually stopped - target plus the over-read -
+    // rather than just target. Otherwise the next get() would be issued against
+    // an already-exhausted stream and wrongly report EOF, even though the
+    // over-read bytes (which may cover the position we were after) are cached.
     future<> skip_forward_to(uint64_t target) {
         if (_forward_pos >= target) {
             co_return;
         }
         uint64_t to_skip = target - _forward_pos;
         auto over_read = co_await _forward_source->skip(to_skip);
+        _forward_pos = target + over_read.size();
         _cache.insert(target, std::move(over_read));
-        _forward_pos = target;
     }
 
     // (Re)open the forward streaming source so that it covers pos. The stream
