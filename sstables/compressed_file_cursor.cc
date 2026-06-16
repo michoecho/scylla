@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <map>
 #include <optional>
+#include <vector>
 
 #include <seastar/core/align.hh>
 #include <seastar/core/file.hh>
@@ -703,20 +704,31 @@ private:
 // This is the sister of compressed_file_cursor_impl: it does exactly the same
 // chunk reading, checksum verification, decompression and digest folding, but
 // the positions it consumes and produces are `physical` rather than `logical`
-// (see sstable_datafile_position). A physical position is the four-tuple
-// (chunk_position, chunk_length, offset_within_chunk, uncompressed_position),
-// which fully locates a point in both the compressed file (chunk coordinates)
-// and the uncompressed stream (uncompressed_position). The `mu` format stores
-// positions in this form in its BTI index payloads.
+// (see sstable_datafile_position).
 //
-// Because a physical position already carries its chunk's compressed coordinates,
-// seeking to one needs no compression-metadata lookup. We still consult the
-// metadata (via get_chunk_meta, keyed by chunk index) when a forward read crosses
-// into a following chunk, since the position only describes the chunk it points
-// into.
+// Crucially, this cursor is *not* aware of uncompressed (logical) positions.
+// They are not a well-defined thing here: the cursor never computes "the byte
+// offset into the decompressed stream" of anything. A physical position locates
+// a point purely in compressed-file terms, as the triple
+//   (chunk_position, chunk_length, offset_within_chunk)
+// where chunk_position/chunk_length are the chunk's compressed byte range in the
+// data file and offset_within_chunk is the byte offset of the point within that
+// chunk *after* decompression. (The position type also carries a fourth field,
+// uncompressed_position, but it exists only for debugging and is about to be
+// removed; this cursor must neither read nor produce a meaningful value for it.)
 //
-// The caching, IO delegation and digest logic are identical to the logical
-// cursor; only the position bookkeeping differs.
+// Everything the cursor needs follows from the triple:
+//  - To materialize a point, decompress the chunk at [chunk_position,
+//    chunk_position + chunk_length) and index into it at offset_within_chunk.
+//  - To move forward past the end of a chunk, the next chunk begins on disk
+//    right after this one (its chunk_position is chunk_position + chunk_length),
+//    and its compressed length comes from the compression offsets. We follow
+//    those offsets by chunk *index* (a plain array index, not a byte position),
+//    starting from the index we recover for the seeked chunk and incrementing as
+//    we cross chunk boundaries.
+//
+// The caching, IO delegation and digest logic mirror the logical cursor; only
+// the position bookkeeping differs.
 class compressed_physical_file_cursor_impl final : public sstable_datafile_cursor::impl {
     shared_sstable _sst;
     reader_permit _permit;
@@ -727,28 +739,33 @@ class compressed_physical_file_cursor_impl final : public sstable_datafile_curso
     // Reads the raw compressed data file; all physical IO goes through here.
     uncompressed_file_cursor_impl _file;
 
-    std::optional<sstable_datafile_position> _position;
-
-    // Metadata of a single compressed chunk.
-    struct chunk_meta {
-        uint64_t logical_pos;   // uncompressed offset of the chunk's first byte
-        uint64_t logical_len;   // uncompressed length of the chunk
-        uint64_t physical_pos;  // compressed offset in the data file
-        uint64_t physical_len;  // compressed length, including the 4-byte checksum
+    // The compressed byte range of a single chunk in the data file.
+    struct chunk_coords {
+        uint64_t chunk_position; // compressed offset of the chunk's first byte
+        uint64_t chunk_length;   // compressed length, including the 4-byte checksum
     };
 
-    // Cache of chunk metadata, keyed by chunk index.
-    std::map<uint64_t, chunk_meta> _chunk_meta_cache;
+    // The current point: which chunk it falls in and how far into the chunk's
+    // decompressed bytes. _chunk_index is that chunk's index in the compression
+    // offsets; we keep it so we can fetch the next chunk's coordinates when a
+    // forward read crosses a chunk boundary.
+    struct cursor_pos {
+        uint64_t chunk_index;
+        chunk_coords chunk;
+        uint64_t offset_within_chunk;
+    };
+    std::optional<cursor_pos> _position;
 
-    // The single cached decompressed chunk, if any.
+    // The single cached decompressed chunk, if any, keyed by its chunk_position.
     struct cached_chunk {
-        uint64_t index;
+        uint64_t chunk_position;
         temporary_buffer<char> data; // uncompressed bytes of the chunk
     };
     std::optional<cached_chunk> _cached_chunk;
 
-    uint64_t _uncompressed_chunk_length;
-    uint64_t _uncompressed_file_length;
+    // The end-of-data sentinel: chunk_position == chunk_length-end of the
+    // compressed file, no bytes within it. Forward reads stop here.
+    uint64_t _compressed_file_length;
 
     // Whole-file digest check. See the identical machinery in
     // compressed_file_cursor_impl for the full explanation.
@@ -766,8 +783,7 @@ public:
         , _compression(_sst->get_compression())
         , _offsets(_compression.offsets.get_accessor())
         , _file(_sst, _permit, _trace_state, _sst->ondisk_data_size())
-        , _uncompressed_chunk_length(_compression.uncompressed_chunk_length())
-        , _uncompressed_file_length(_compression.uncompressed_file_length())
+        , _compressed_file_length(_sst->ondisk_data_size())
         , _expected_digest(digest)
         , _actual_digest(_sst->get_version() >= sstable_version_types::mc
                 ? crc32_utils::init_checksum() : adler32_utils::init_checksum())
@@ -775,66 +791,59 @@ public:
     }
 
     void seek(sstable_datafile_position pos) override {
-        _position = pos;
+        _position = decode_position(pos);
     }
 
     future<temporary_buffer<char>> read_forwards(size_t n) override {
         SCYLLA_ASSERT(_position.has_value());
-        uint64_t start = uncompressed_position_of(*_position);
-        uint64_t end = std::min<uint64_t>(start + n, _uncompressed_file_length);
-        size_t len = end > start ? end - start : 0;
-        temporary_buffer<char> result(len);
-        size_t filled = co_await fill(start, result.get_write(), len);
+        temporary_buffer<char> result(n);
+        size_t filled = co_await fill_forwards(result.get_write(), n);
         result.trim(filled);
-        _position = physical_position_of(start + filled);
         co_return result;
     }
 
     future<temporary_buffer<char>> read(sstable_datafile_position start_pos, sstable_datafile_position end_pos) override {
-        uint64_t start = uncompressed_position_of(start_pos);
-        uint64_t end = uncompressed_position_of(end_pos);
-        SCYLLA_ASSERT(start <= end);
-        size_t len = end - start;
-        temporary_buffer<char> result(len);
-        co_await fill(start, result.get_write(), len);
-        _position = start_pos;
+        SCYLLA_ASSERT(start_pos <= end_pos);
+        // Read from start to end by replaying the forward path from start. Unlike
+        // a logical position, a physical position does not expose a byte distance,
+        // so we walk chunk by chunk until we reach end rather than subtracting.
+        _position = decode_position(start_pos);
+        auto end = decode_position(end_pos);
+        auto result = co_await collect_forwards(end);
+        // Mirror the logical cursor: a range read leaves the cursor at its start.
+        _position = decode_position(start_pos);
         co_return result;
     }
 
     sstable_datafile_position compute_relative_position(ssize_t offset) override {
         SCYLLA_ASSERT(_position.has_value());
-        return physical_position_of(uncompressed_position_of(*_position) + offset);
+        return relative_position(*_position, offset);
     }
 
     void drop_caches_after(sstable_datafile_position pos) override {
-        uint64_t p = uncompressed_position_of(pos);
-        // Drop only chunks that lie entirely in [p; +inf). The chunk that
-        // contains p straddles the boundary (unless p is exactly on a chunk
-        // boundary), so the first chunk we may drop is the one starting at or
-        // after p, i.e. ceil(p / chunk_length).
-        uint64_t first_dropped_chunk = div_ceil(p, _uncompressed_chunk_length);
-        _chunk_meta_cache.erase(_chunk_meta_cache.lower_bound(first_dropped_chunk), _chunk_meta_cache.end());
-        if (_cached_chunk && _cached_chunk->index >= first_dropped_chunk) {
+        auto p = decode_position(pos);
+        // Keep the chunk that p falls into (it straddles the boundary unless p is
+        // exactly on a chunk boundary); the first chunk we may drop starts after
+        // it on disk. When offset_within_chunk is 0, p is on the boundary and the
+        // chunk itself can go; otherwise the boundary is the next chunk's start.
+        uint64_t boundary = p.offset_within_chunk == 0
+                ? p.chunk.chunk_position
+                : p.chunk.chunk_position + p.chunk.chunk_length;
+        if (_cached_chunk && _cached_chunk->chunk_position >= boundary) {
             drop_cached_chunk();
         }
-        // Translate to the physical position and drop the underlying file cache.
-        // physical_pos_of maps a logical position to its chunk's compressed start,
-        // so passing the first dropped chunk's start keeps the straddling chunk's
-        // compressed bytes intact.
-        uint64_t first_dropped_logical = first_dropped_chunk * _uncompressed_chunk_length;
-        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(physical_pos_of(first_dropped_logical)));
+        _file.drop_caches_after(sstable_datafile_position::from_logical_fixme(boundary));
     }
 
     void drop_caches_before(sstable_datafile_position pos) override {
-        uint64_t p = uncompressed_position_of(pos);
-        // The chunk containing p straddles the boundary and must be kept, so the
-        // last chunk to drop is the one before it; keep chunk_index onward.
-        uint64_t chunk_index = p / _uncompressed_chunk_length;
-        _chunk_meta_cache.erase(_chunk_meta_cache.begin(), _chunk_meta_cache.lower_bound(chunk_index));
-        if (_cached_chunk && _cached_chunk->index < chunk_index) {
+        auto p = decode_position(pos);
+        // The chunk containing p straddles the boundary and must be kept, so drop
+        // only chunks that end at or before its compressed start.
+        uint64_t boundary = p.chunk.chunk_position;
+        if (_cached_chunk && _cached_chunk->chunk_position + cached_chunk_compressed_length() <= boundary) {
             drop_cached_chunk();
         }
-        _file.drop_caches_before(sstable_datafile_position::from_logical_fixme(physical_pos_of(p)));
+        _file.drop_caches_before(sstable_datafile_position::from_logical_fixme(boundary));
     }
 
     future<> close() override {
@@ -846,117 +855,235 @@ private:
         _cached_chunk.reset();
     }
 
-    // The uncompressed (logical) byte position carried by a physical position.
-    // This is the byte cursor we count in; everything else (the chunk
-    // coordinates) is derived from it via the compression metadata.
-    static uint64_t uncompressed_position_of(sstable_datafile_position pos) {
-        return pos.to_physical().uncompressed_position;
+    // The compressed length of the currently cached chunk. Used only to decide
+    // whether the cache lies entirely before a drop boundary; the cached chunk's
+    // own coordinates are not stored, so we recover the length from the offsets.
+    uint64_t cached_chunk_compressed_length() {
+        SCYLLA_ASSERT(_cached_chunk.has_value());
+        return chunk_length_at(chunk_index_at(_cached_chunk->chunk_position), _cached_chunk->chunk_position);
     }
 
-    // Build the physical position of uncompressed byte p. At/after EOF the chunk
-    // coordinates point at the end of the compressed file, matching the
-    // end-of-data sentinel that the index produces (from_physical(end, end, 0, end)).
-    sstable_datafile_position physical_position_of(uint64_t p) {
-        if (p >= _uncompressed_file_length) {
-            uint64_t physical_end = _sst->ondisk_data_size();
-            return sstable_datafile_position::from_physical(physical_end, 0, 0, p);
-        }
-        const auto& m = get_chunk_meta(p / _uncompressed_chunk_length);
-        return sstable_datafile_position::from_physical(m.physical_pos, m.physical_len, p - m.logical_pos, p);
-    }
-
-    // Physical (compressed) file offset of the chunk that contains logical
-    // position p, clamped so EOF maps to the end of the compressed file.
-    uint64_t physical_pos_of(uint64_t p) {
-        if (p >= _uncompressed_file_length) {
-            return _sst->ondisk_data_size();
-        }
-        return get_chunk_meta(p / _uncompressed_chunk_length).physical_pos;
-    }
-
-    // Look up (and cache) the metadata of a chunk by its index.
-    const chunk_meta& get_chunk_meta(uint64_t chunk_index) {
-        auto it = _chunk_meta_cache.find(chunk_index);
-        if (it != _chunk_meta_cache.end()) {
-            return it->second;
-        }
-        uint64_t logical_pos = chunk_index * _uncompressed_chunk_length;
-        auto addr = _compression.locate(logical_pos, _offsets);
-        uint64_t logical_len = std::min<uint64_t>(_uncompressed_chunk_length, _uncompressed_file_length - logical_pos);
-        chunk_meta m{logical_pos, logical_len, addr.chunk_start, addr.chunk_len};
-        return _chunk_meta_cache.emplace(chunk_index, m).first->second;
-    }
-
-    // Copy len uncompressed bytes starting at logical position offset into dst,
-    // decompressing whatever chunks are needed. Returns the number of bytes
-    // produced (less than len only at EOF).
-    future<size_t> fill(uint64_t offset, char* dst, size_t len) {
-        size_t done = 0;
-        while (done < len) {
-            uint64_t pos = offset + done;
-            if (pos >= _uncompressed_file_length) {
-                break; // EOF
+    // Recover the chunk index of the chunk whose compressed range starts at
+    // chunk_position, by binary-searching the (ascending) compression offsets.
+    // This is the only place we map a compressed position back to an index; once
+    // we have it, forward steps just increment it.
+    uint64_t chunk_index_at(uint64_t chunk_position) {
+        uint64_t lo = 0;
+        uint64_t hi = _compression.offsets.size(); // number of chunks
+        while (lo < hi) {
+            uint64_t mid = lo + (hi - lo) / 2;
+            if (_offsets.at(mid) < chunk_position) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
-            uint64_t chunk_index = pos / _uncompressed_chunk_length;
-            co_await ensure_chunk_cached(chunk_index);
-            const auto& m = get_chunk_meta(chunk_index);
-            uint64_t in_chunk = pos - m.logical_pos;
-            size_t avail = _cached_chunk->data.size() - in_chunk;
+        }
+        SCYLLA_ASSERT(lo < _compression.offsets.size() && _offsets.at(lo) == chunk_position);
+        return lo;
+    }
+
+    // Compressed length of chunk `index`, whose compressed range starts at
+    // chunk_position. The last chunk runs to the end of the compressed file;
+    // every other chunk runs to where the next one begins.
+    uint64_t chunk_length_at(uint64_t index, uint64_t chunk_position) {
+        uint64_t next_start = index + 1 == _compression.offsets.size()
+                ? _compressed_file_length
+                : _offsets.at(index + 1);
+        return next_start - chunk_position;
+    }
+
+    // Decode an incoming physical position into the cursor's working form. The
+    // end-of-data sentinel (the chunk coordinates pointing at the end of the
+    // compressed file) has no chunk index; we mark it with chunk_index ==
+    // offsets.size() and an empty chunk so forward reads see immediate EOF.
+    cursor_pos decode_position(sstable_datafile_position pos) {
+        auto ph = pos.to_physical();
+        chunk_coords chunk{uint64_t(ph.chunk_position), uint64_t(ph.chunk_length)};
+        if (chunk.chunk_position >= _compressed_file_length) {
+            return cursor_pos{_compression.offsets.size(), chunk, uint64_t(ph.offset_within_chunk)};
+        }
+        return cursor_pos{chunk_index_at(chunk.chunk_position), chunk, uint64_t(ph.offset_within_chunk)};
+    }
+
+    // Encode the cursor's working position back into a physical position. The
+    // uncompressed_position field is debug-only and being removed, so we emit 0
+    // for it rather than computing a logical offset the cursor must not know.
+    static sstable_datafile_position encode_position(const cursor_pos& p) {
+        return sstable_datafile_position::from_physical(
+                p.chunk.chunk_position, p.chunk.chunk_length, p.offset_within_chunk, /*uncompressed_position=*/0);
+    }
+
+    bool at_eof(const cursor_pos& p) const {
+        return p.chunk.chunk_position >= _compressed_file_length;
+    }
+
+    // Advance p by `offset` decompressed bytes, walking across chunk boundaries
+    // as needed. `offset` may be negative. We never count in a global logical
+    // position: each step moves relative to the chunk we are in, and chunk
+    // boundaries are crossed using the fixed uncompressed chunk length (a
+    // structural constant of the compression format, not a per-point logical
+    // offset) together with the on-disk chunk offsets.
+    sstable_datafile_position relative_position(cursor_pos p, ssize_t offset) {
+        if (at_eof(p)) {
+            // Past the last chunk there is nothing to step relative to; the only
+            // sensible relative position from EOF is EOF itself.
+            SCYLLA_ASSERT(offset == 0);
+            return encode_position(p);
+        }
+        uint64_t chunk_len = _compression.uncompressed_chunk_length();
+        int64_t in_chunk = int64_t(p.offset_within_chunk) + offset;
+        // Step forward whole chunks while the running offset overflows the chunk.
+        while (in_chunk >= int64_t(chunk_len)) {
+            step_to_next_chunk_pos(p);
+            in_chunk -= chunk_len;
+            if (at_eof(p)) {
+                // We have walked to the end of data; remaining offset must be 0,
+                // otherwise the caller asked for a point past end of file.
+                SCYLLA_ASSERT(in_chunk == 0);
+                return encode_position(p);
+            }
+        }
+        // Step backward whole chunks while the running offset underflows.
+        while (in_chunk < 0) {
+            step_to_prev_chunk_pos(p);
+            in_chunk += chunk_len;
+        }
+        p.offset_within_chunk = in_chunk;
+        return encode_position(p);
+    }
+
+    // Move p to the start of the next chunk, updating its coordinates from the
+    // offsets. Past the last chunk this yields the end-of-data sentinel.
+    void step_to_next_chunk_pos(cursor_pos& p) {
+        uint64_t next_index = p.chunk_index + 1;
+        uint64_t next_start = p.chunk.chunk_position + p.chunk.chunk_length;
+        uint64_t next_len = next_index < _compression.offsets.size()
+                ? chunk_length_at(next_index, next_start)
+                : 0;
+        p = cursor_pos{next_index, chunk_coords{next_start, next_len}, 0};
+    }
+
+    // Move p to the start of the preceding chunk, reading its coordinates from
+    // the offsets.
+    void step_to_prev_chunk_pos(cursor_pos& p) {
+        SCYLLA_ASSERT(p.chunk_index > 0);
+        uint64_t prev_index = p.chunk_index - 1;
+        uint64_t prev_start = _offsets.at(prev_index);
+        uint64_t prev_len = chunk_length_at(prev_index, prev_start);
+        p = cursor_pos{prev_index, chunk_coords{prev_start, prev_len}, 0};
+    }
+
+    // Read forward from the current position into dst (up to len bytes),
+    // decompressing chunks and stepping across boundaries. Advances _position.
+    // Returns the number of bytes produced (less than len only at EOF).
+    future<size_t> fill_forwards(char* dst, size_t len) {
+        size_t done = 0;
+        while (done < len && !at_eof(*_position)) {
+            co_await ensure_chunk_cached(_position->chunk);
+            const auto& data = _cached_chunk->data;
+            uint64_t in_chunk = _position->offset_within_chunk;
+            if (in_chunk >= data.size()) {
+                // Exhausted this chunk; step to the next one.
+                step_to_next_chunk();
+                continue;
+            }
+            size_t avail = data.size() - in_chunk;
             size_t n = std::min(avail, len - done);
-            std::copy_n(_cached_chunk->data.get() + in_chunk, n, dst + done);
+            std::copy_n(data.get() + in_chunk, n, dst + done);
             done += n;
+            _position->offset_within_chunk += n;
         }
         co_return done;
     }
 
-    // Ensure the decompressed contents of chunk_index are in _cached_chunk.
-    future<> ensure_chunk_cached(uint64_t chunk_index) {
-        if (_cached_chunk && _cached_chunk->index == chunk_index) {
+    // Read forward from the current position up to `end`, returning the bytes.
+    // Used by read(start, end): we do not know the byte distance from a physical
+    // position, so we accumulate chunk by chunk until the position reaches end.
+    future<temporary_buffer<char>> collect_forwards(const cursor_pos& end) {
+        std::vector<temporary_buffer<char>> parts;
+        size_t total = 0;
+        while (encode_position(*_position) < encode_position(end) && !at_eof(*_position)) {
+            co_await ensure_chunk_cached(_position->chunk);
+            const auto& data = _cached_chunk->data;
+            uint64_t in_chunk = _position->offset_within_chunk;
+            if (in_chunk >= data.size()) {
+                step_to_next_chunk();
+                continue;
+            }
+            // Bytes to take from this chunk: up to its end, but not past `end` if
+            // `end` falls inside this same chunk.
+            size_t avail = data.size() - in_chunk;
+            if (_position->chunk.chunk_position == end.chunk.chunk_position) {
+                avail = std::min<size_t>(avail, end.offset_within_chunk - in_chunk);
+            }
+            parts.emplace_back(data.get() + in_chunk, avail);
+            total += avail;
+            _position->offset_within_chunk += avail;
+        }
+        temporary_buffer<char> result(total);
+        size_t off = 0;
+        for (auto& part : parts) {
+            std::copy_n(part.get(), part.size(), result.get_write() + off);
+            off += part.size();
+        }
+        co_return result;
+    }
+
+    // Move _position to the start of the next chunk on disk.
+    void step_to_next_chunk() {
+        step_to_next_chunk_pos(*_position);
+    }
+
+    // Ensure the decompressed contents of the chunk at `chunk` are in _cached_chunk.
+    future<> ensure_chunk_cached(const chunk_coords& chunk) {
+        if (_cached_chunk && _cached_chunk->chunk_position == chunk.chunk_position) {
             co_return;
         }
-        const auto& m = get_chunk_meta(chunk_index);
-        auto compressed = co_await read_compressed_chunk(m);
-        _cached_chunk = cached_chunk{chunk_index, decompress_chunk(m, std::move(compressed))};
+        auto compressed = co_await read_compressed_chunk(chunk);
+        _cached_chunk = cached_chunk{chunk.chunk_position, decompress_chunk(chunk, std::move(compressed))};
     }
 
     // Read a chunk's compressed bytes from the data file via the inner cursor.
-    future<temporary_buffer<char>> read_compressed_chunk(const chunk_meta& m) {
-        _file.seek(sstable_datafile_position::from_logical_fixme(m.physical_pos));
-        temporary_buffer<char> buf(m.physical_len);
+    future<temporary_buffer<char>> read_compressed_chunk(const chunk_coords& chunk) {
+        _file.seek(sstable_datafile_position::from_logical_fixme(chunk.chunk_position));
+        temporary_buffer<char> buf(chunk.chunk_length);
         size_t filled = 0;
-        while (filled < m.physical_len) {
-            auto part = co_await _file.read_forwards(m.physical_len - filled);
+        while (filled < chunk.chunk_length) {
+            auto part = co_await _file.read_forwards(chunk.chunk_length - filled);
             if (part.empty()) {
                 break;
             }
             std::copy_n(part.get(), part.size(), buf.get_write() + filled);
             filled += part.size();
         }
-        if (filled != m.physical_len) {
+        if (filled != chunk.chunk_length) {
             throw_malformed_sstable_exception(format(
                     "compressed cursor hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}",
-                    m.physical_pos, m.physical_len, filled));
+                    chunk.chunk_position, chunk.chunk_length, filled));
         }
         co_return buf;
     }
 
     // Verify the chunk's trailing checksum and decompress it.
-    temporary_buffer<char> decompress_chunk(const chunk_meta& m, temporary_buffer<char> compressed) {
-        if (m.physical_len < 4) {
+    temporary_buffer<char> decompress_chunk(const chunk_coords& chunk, temporary_buffer<char> compressed) {
+        if (chunk.chunk_length < 4) {
             throw_malformed_sstable_exception(format(
-                    "compressed chunk_len must be greater than 4, chunk_start={}", m.physical_pos));
+                    "compressed chunk_len must be greater than 4, chunk_start={}", chunk.chunk_position));
         }
         // The last 4 bytes of the chunk are the checksum of the rest.
-        size_t compressed_len = m.physical_len - 4;
+        size_t compressed_len = chunk.chunk_length - 4;
         uint32_t expected = read_be<uint32_t>(compressed.get() + compressed_len);
         uint32_t actual = checksum(compressed.get(), compressed_len);
         if (expected != actual) {
             throw_malformed_sstable_exception(format(
                     "compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}",
-                    m.physical_len, m.physical_pos, expected, actual));
+                    chunk.chunk_length, chunk.chunk_position, expected, actual));
         }
-        update_digest(m, compressed.get(), compressed_len, actual);
-        temporary_buffer<char> out(m.logical_len);
+        update_digest(chunk, compressed.get(), compressed_len, actual);
+        // We do not know the chunk's decompressed length a priori (that would be
+        // a logical quantity); decompress into a full-chunk-sized buffer and trim
+        // to whatever uncompress() actually produced.
+        temporary_buffer<char> out(_compression.uncompressed_chunk_length());
         size_t n = _compression.get_compressor().uncompress(compressed.get(), compressed_len, out.get_write(), out.size());
         out.trim(n);
         return out;
@@ -971,11 +1098,11 @@ private:
 
     // Fold a just-verified chunk into the running whole-file digest. See the
     // identical method in compressed_file_cursor_impl for details.
-    void update_digest(const chunk_meta& m, const char* compressed_data, size_t compressed_len, uint32_t chunk_checksum) {
+    void update_digest(const chunk_coords& chunk, const char* compressed_data, size_t compressed_len, uint32_t chunk_checksum) {
         if (!_calculating_digest) {
             return;
         }
-        uint64_t chunk_index = m.logical_pos / _uncompressed_chunk_length;
+        uint64_t chunk_index = chunk_index_at(chunk.chunk_position);
         if (chunk_index < _next_digest_chunk_index) {
             return;
         }
