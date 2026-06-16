@@ -19,7 +19,6 @@
 #include "sstables/generation_type.hh"
 #include "sstables/sstables.hh"
 #include "compaction/compaction.hh"
-#undef SEASTAR_TESTING_MAIN
 #include <seastar/testing/test_case.hh>
 #include <seastar/testing/thread_test_case.hh>
 #include <seastar/testing/test_fixture.hh>
@@ -71,8 +70,6 @@
 #include "utils/assert.hh"
 #include "utils/pretty_printers.hh"
 #include "sstables/exceptions.hh"
-
-BOOST_AUTO_TEST_SUITE(sstable_compaction_test)
 
 namespace fs = std::filesystem;
 
@@ -7694,5 +7691,3 @@ SEASTAR_TEST_CASE(test_perform_component_rewrite_multiple_sstables) {
         }
     });
 }
-
-BOOST_AUTO_TEST_SUITE_END()
