@@ -43,7 +43,14 @@ public:
     future<> skip(uint64_t n) noexcept override {
         return _stream.skip(n);
     }
-    
+
+    future<> skip_to(sstable_datafile_position target, sstable_datafile_position current) noexcept override {
+        // The underlying input_stream supports only relative skips, so we rely
+        // on the caller-supplied current position to compute how far to skip.
+        return _stream.skip(subtract_positions(target, current));
+    }
+
+
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
         return pos + sstable_datafile_offset::from_logical_approved(offset);
     }

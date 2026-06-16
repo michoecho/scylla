@@ -165,6 +165,13 @@ public:
         co_return;
     }
 
+    future<> skip_to(sstable_datafile_position target, sstable_datafile_position) noexcept override {
+        // This stream tracks its own position, so it can seek straight to the
+        // target; the caller-supplied current position is not needed.
+        _pos = target;
+        co_return;
+    }
+
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) override {
         auto prev = _cursor.compute_relative_position(0);
         _cursor.seek(pos);

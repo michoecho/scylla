@@ -676,7 +676,7 @@ public:
 
     future<> fast_forward_to_impl(sstables::sstable_datafile_position begin, std::optional<sstables::sstable_datafile_position> end) {
         sstables::parse_assert(begin >= _stream_position.position);
-        auto n = begin.to_logical_fixme() - _stream_position.position.to_logical_fixme();
+        auto current = _stream_position.position;
         _stream_position.position = begin;
 
         sstables::parse_assert(!end || *end >= _stream_position.position);
@@ -684,7 +684,12 @@ public:
 
         primitive_consumer::reset();
         reader_permit::awaits_guard _{_permit};
-        co_await _input.skip(n);
+        if constexpr (std::same_as<InputStream, input_stream<char>>) {
+            co_await _input.skip(subtract_positions(begin, current));
+        } else {
+            static_assert(std::same_as<InputStream, sstables::sstable_datafile_input_stream>);
+            co_await _input.skip_to(begin, current);
+        }
     }
 
     future<> fast_forward_to(sstables::sstable_datafile_position begin, sstables::sstable_datafile_position end) {

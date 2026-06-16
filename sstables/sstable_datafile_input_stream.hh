@@ -39,6 +39,7 @@ public:
         virtual future<tmp_buf> read() noexcept = 0;
         virtual future<> close() noexcept = 0;
         virtual future<> skip(uint64_t n) noexcept = 0;
+        virtual future<> skip_to(sstable_datafile_position target, sstable_datafile_position current) noexcept = 0;
         virtual data_source detach() && = 0;
         virtual sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) = 0;
         virtual int64_t subtract_positions(sstable_datafile_position b, sstable_datafile_position a) = 0;
@@ -97,6 +98,18 @@ public:
     /// \brief Ignores the next \c n bytes from the stream.
     future<> skip(uint64_t n) noexcept {
         return _impl->skip(n);
+    }
+
+    /// \brief Advances the stream to the absolute position \c target.
+    ///
+    /// \c current must be the position of the next byte the stream would
+    /// produce (i.e. the position the caller has reached so far). It is used
+    /// by implementations that cannot determine their own position to compute
+    /// the relative distance to skip; implementations that track their position
+    /// (e.g. cursor-backed streams) may ignore it and seek to \c target
+    /// directly.
+    future<> skip_to(sstable_datafile_position target, sstable_datafile_position current) noexcept {
+        return _impl->skip_to(target, current);
     }
 
     sstable_datafile_position compute_relative_position(sstable_datafile_position pos, ssize_t offset) {
