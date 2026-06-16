@@ -642,6 +642,11 @@ future<std::optional<sstables::sstable_datafile_offset>> index_cursor::last_bloc
     }
     auto f = row_payload_to_physical(cur.payload());
     expensive_log("last_block_offset (physical): {}", f.uncompressed);
+    // A zero chunk length marks an offset that has no chunk coordinates, so fall
+    // back to a logical offset filled with the uncompressed offset.
+    if (f.chunk_length == 0) {
+        co_return sstables::sstable_datafile_offset::from_logical_fixme(f.uncompressed);
+    }
     co_return sstables::sstable_datafile_offset::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, f.uncompressed);
 }
 
@@ -700,6 +705,12 @@ sstables::sstable_datafile_position index_cursor::data_file_pos(uint64_t file_si
         f = row_payload_to_physical(_row_cursor.payload());
     } else if (!_partition_metadata && !_partition_cursor.eof()) {
         f = partition_payload_to_physical(_partition_cursor.payload());
+    }
+    // A zero chunk length marks a position that has no chunk coordinates (e.g. it
+    // points into an uncompressed file), so fall back to a logical position filled
+    // with the uncompressed position.
+    if (f.chunk_length == 0) {
+        return sstables::sstable_datafile_position::from_logical_approved(uncompressed);
     }
     return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, uncompressed);
 }
