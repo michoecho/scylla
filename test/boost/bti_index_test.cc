@@ -1040,7 +1040,8 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
                 partitions_db_cached,
                 rows_db_cached,
                 partitions_db_root_pos,
-                std::get<eof_index_entry>(dataset.entries.back()).data_file_offset,
+                sstables::sstable_datafile_position::from_logical_approved(0),
+                sstables::sstable_datafile_position::from_logical_approved(std::get<eof_index_entry>(dataset.entries.back()).data_file_offset),
                 sst_ver,
                 the_schema,
                 semaphore.make_permit(),
@@ -1118,38 +1119,53 @@ static data_source make_fragmented(nondeterministic_choice_stack& ndcs, std::spa
 SEASTAR_THREAD_TEST_CASE(test_read_row_index_header) {
     auto pk = sstables::key(tests::random::get_bytes(4));
     uint64_t partition_data_start = tests::random::get_int<int64_t>(0, std::numeric_limits<int64_t>::max());
+    uint64_t chunk_start = tests::random::get_int<uint64_t>();
+    uint64_t chunk_length = tests::random::get_int<uint64_t>();
+    uint64_t offset_within_chunk = tests::random::get_int<uint64_t>();
     uint64_t number_of_blocks = tests::random::get_int<uint64_t>();
     uint64_t root_pos = tests::random::get_int<uint64_t>();
     auto tomb = make_random_tombstone();
-    memory_data_sink_buffers bufs;
-    {
-        sstables::file_writer fw(data_sink(std::make_unique<memory_data_sink>(bufs)));
-        auto close_fw = defer([&] { fw.close(); });
-        sstables::trie::write_row_index_header(
-            sstables::sstable_version_types::mt,
-            fw,
-            pk,
-            partition_data_start,
-            number_of_blocks,
-            root_pos,
-            tomb
-        );
-    }
     nondeterministic_choice_stack ndcs;
     size_t n_cases = 0;
     do {
+        // `mu` stores the full physical position; `mt` stores only the uncompressed offset.
+        auto sst_ver = ndcs.choose_bool()
+            ? sstables::sstable_version_types::mu
+            : sstables::sstable_version_types::mt;
+        auto expected_position = sstables::holds_logical_position(sst_ver)
+            ? sstables::sstable_datafile_position::from_logical_approved(partition_data_start)
+            : sstables::sstable_datafile_position::from_physical(chunk_start, chunk_length, offset_within_chunk, partition_data_start);
+        memory_data_sink_buffers bufs;
+        {
+            sstables::file_writer fw(data_sink(std::make_unique<memory_data_sink>(bufs)));
+            auto close_fw = defer([&] { fw.close(); });
+            sstables::trie::write_row_index_header(
+                sst_ver,
+                fw,
+                pk,
+                sstables::trie::bti_trie_source_position{
+                    .uncompressed = static_cast<int64_t>(partition_data_start),
+                    .chunk_start = chunk_start,
+                    .chunk_length = chunk_length,
+                    .offset_within_chunk = offset_within_chunk,
+                },
+                number_of_blocks,
+                root_pos,
+                tomb
+            );
+        }
         auto vec = linearize(bufs);
         vec.append_range(std::as_bytes(std::span(std::string_view("some_suffix"))));
         uint64_t stream_size = ndcs.choose_bool() ? bufs.size() : vec.size();
         constexpr size_t max_cuts = 2;
         auto in = seastar::input_stream<char>(make_fragmented(ndcs, vec, max_cuts));
         auto semaphore = tests::reader_concurrency_semaphore_wrapper();
-        auto result = sstables::trie::read_row_index_header(std::move(in), 0, stream_size, semaphore.make_permit()).get();
+        auto result = sstables::trie::read_row_index_header(sst_ver, std::move(in), 0, stream_size, semaphore.make_permit()).get();
         SCYLLA_ASSERT(bytes_view(result.partition_key) == bytes_view(pk));
-        SCYLLA_ASSERT(result.data_file_offset == partition_data_start);
+        SCYLLA_ASSERT(result.data_file_position == expected_position);
         SCYLLA_ASSERT(result.number_of_blocks == number_of_blocks);
         SCYLLA_ASSERT(result.trie_root == root_pos);
-        SCYLLA_ASSERT(result.partition_tombstone == tomb);  
+        SCYLLA_ASSERT(result.partition_tombstone == tomb);
         ++n_cases;
     } while (ndcs.rewind());
     testlog.debug("Executed test cases: {}", n_cases);

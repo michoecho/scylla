@@ -3156,6 +3156,7 @@ future<sstable_datafile_input_stream> sstable::data_stream(disk_read_range range
         // chunk's checksum into a running digest, like the old data-source impl.
         co_return make_owning_cursor_input_stream(shared_from_this(), range, permit, std::move(trace_state), digest);
     }
+    abort();
 
     file f = make_tracked_file(_data_file, permit);
     if (trace_state) {

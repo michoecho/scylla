@@ -106,6 +106,7 @@ public:
 
     cursor_input_stream_impl(std::unique_ptr<sstable_datafile_cursor> cursor, sstable_datafile_position start) noexcept
         : _owned_cursor(std::move(cursor)), _cursor(*_owned_cursor), _pos(start) {
+        SCYLLA_ASSERT(!start.holds_physical() || start.to_physical().offset_within_chunk >= 0);
         sstable_cursor_log.trace("[cursor_stream@{}] construct: owned cursor start={}", fmt::ptr(this), start);
     }
 
@@ -142,20 +143,21 @@ public:
             auto buf = co_await read_at_pos(read_size);
             bool eof = buf.empty();
             auto result = co_await consumer(std::move(buf));
-            bool stop = seastar::visit(result.get(),
+            bool stop = co_await seastar::visit(result.get(),
                 [eof] (const continue_consuming&) {
                     // Whole buffer consumed; stop only at end of file.
-                    return eof;
+                    return make_ready_future<bool>(eof);
                 },
                 [this] (stop_consuming<char>& stop) {
                     // The unconsumed tail must be produced again by the next
                     // read, so rewind our position over it.
                     advance_pos(-static_cast<ssize_t>(stop.get_buffer().size()));
-                    return true;
+                    return make_ready_future<bool>(true);
                 },
                 [this] (const skip_bytes& skip) {
-                    advance_pos(skip.get_value());
-                    return false;
+                    return this->skip(skip.get_value()).then([] {
+                        return false;
+                    });
                 });
             if (stop) {
                 sstable_cursor_log.trace("[cursor_stream@{}] consume: exit pos={}", fmt::ptr(this), _pos);

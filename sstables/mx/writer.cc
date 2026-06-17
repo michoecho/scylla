@@ -1,3 +1,4 @@
+#pragma clang optimize off
 /*
  * Copyright (C) 2018-present ScyllaDB
  */
@@ -1159,6 +1160,7 @@ void writer::flush_ready_index_ops() {
     size_t part_start_cursor = 0;
     size_t part_end_cursor = 0;
     auto translate_in_chunk = [] (const compressed_chunk_coords& c, uint64_t pos) {
+        SCYLLA_ASSERT(pos >= c.uncompressed_start);
         return trie::bti_trie_source_position{
             .uncompressed = static_cast<int64_t>(pos),
             .chunk_start = c.chunk_start,
@@ -1184,13 +1186,17 @@ void writer::flush_ready_index_ops() {
         while (part_start_cursor < _buffered_partition_ops.size()
                 && _buffered_partition_ops[part_start_cursor].partition_data_start < chunk_end) {
             auto& op = _buffered_partition_ops[part_start_cursor];
-            op.resolved_start = translate_in_chunk(c, op.partition_data_start);
+            if (!op.resolved_start.has_value()) {
+                op.resolved_start = translate_in_chunk(c, op.partition_data_start);
+            }
             ++part_start_cursor;
         }
         while (part_end_cursor < _buffered_partition_ops.size()
                 && _buffered_partition_ops[part_end_cursor].partition_data_end < chunk_end) {
             auto& op = _buffered_partition_ops[part_end_cursor];
-            op.resolved_end = translate_in_chunk(c, op.partition_data_end);
+            if (!op.resolved_end.has_value()) {
+                op.resolved_end = translate_in_chunk(c, op.partition_data_end);
+            }
             ++part_end_cursor;
         }
     }

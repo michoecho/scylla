@@ -898,6 +898,7 @@ private:
 // the position bookkeeping differs.
 class compressed_physical_file_cursor_impl final : public sstable_datafile_cursor::impl {
     const compression& _compression;
+    uint64_t _uncompressed_chunk_length; 
     // Reads the raw compressed data file; all physical IO goes through here.
     uncompressed_file_cursor_impl _file;
 
@@ -956,6 +957,7 @@ public:
     explicit compressed_physical_file_cursor_impl(datafile_io io, compression_format fmt,
             std::optional<uint32_t> digest = std::nullopt)
         : _compression(fmt.comp)
+        , _uncompressed_chunk_length(_compression.uncompressed_chunk_length())
         , _file(std::move(io))
         , _compressed_file_length(fmt.compressed_file_length)
         , _chunk_prefix(fmt.chunk_prefix)
@@ -1025,7 +1027,7 @@ public:
         // chunk crossed, so a later synchronous compute_relative_position around
         // the result has the chunk extents it needs.
         cursor_pos p = decode_position(from);
-        uint64_t chunk_len = _compression.uncompressed_chunk_length();
+        uint64_t chunk_len = _uncompressed_chunk_length;
         uint64_t remaining = n;
         uint64_t in_chunk = p.offset_within_chunk;
         while (!at_eof(p) && in_chunk + remaining >= chunk_len) {
@@ -1266,6 +1268,12 @@ private:
             done += n;
             _position->offset_within_chunk += n;
         }
+        if (_position->offset_within_chunk >= _uncompressed_chunk_length) {
+            step_to_next_chunk();
+        }
+        if (!at_eof(*_position)) {
+            co_await ensure_position_chunk_length();
+        }
         co_return done;
     }
 
@@ -1299,6 +1307,12 @@ private:
         for (auto& part : parts) {
             std::copy_n(part.get(), part.size(), result.get_write() + off);
             off += part.size();
+        }
+        if (_position->offset_within_chunk >= _uncompressed_chunk_length) {
+            step_to_next_chunk();
+        }
+        if (!at_eof(*_position)) {
+            co_await ensure_position_chunk_length();
         }
         co_return result;
     }
