@@ -127,7 +127,9 @@ class sstable_datafile_offset {
         bool operator==(const logical&) const = default;
     };
     // A physical offset is a (chunk_position, chunk_length, offset_within_chunk,
-    // uncompressed_position) tuple, added elementwise to a physical position.
+    // uncompressed_position) tuple. The chunk coordinates are absolute (they
+    // locate this offset's own chunk in the compressed file); only the
+    // uncompressed position is a delta. See operator+ below.
     struct physical {
         int64_t chunk_position;
         int64_t chunk_length;
@@ -187,10 +189,18 @@ inline sstable_datafile_position operator+(sstable_datafile_position pos, sstabl
     }
     auto* p = std::get_if<sstable_datafile_position::physical>(&pos._value);
     auto* o = std::get_if<sstable_datafile_offset::physical>(&off._value);
+    // A physical offset's chunk coordinates (chunk_position, chunk_length,
+    // offset_within_chunk) are *absolute* — they locate the offset's own chunk in
+    // the compressed file, not a delta from `pos`'s chunk. Only the uncompressed
+    // position is relative. So the sum takes the chunk coordinates verbatim from
+    // the offset and adds only the uncompressed components. (Adding the chunk
+    // coordinates elementwise would, e.g., corrupt chunk_length into the sum of
+    // two unrelated chunks' on-disk sizes.) This mirrors index_cursor::data_file_pos,
+    // which composes a partition start and a row-index offset the same way.
     return sstable_datafile_position(sstable_datafile_position::physical{
-        p->chunk_position + o->chunk_position,
-        p->chunk_length + o->chunk_length,
-        p->offset_within_chunk + o->offset_within_chunk,
+        o->chunk_position,
+        o->chunk_length,
+        o->offset_within_chunk,
         p->uncompressed_position + o->uncompressed_position,
     });
 }
