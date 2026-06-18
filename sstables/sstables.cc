@@ -3250,7 +3250,7 @@ future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, read
 }
 
 template <typename ChecksumType>
-static future<bool> do_validate_compressed(input_stream<char>& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest) {
+static future<bool> do_validate_compressed(input_stream<char>& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest, size_t chunk_prefix) {
     bool valid = true;
     uint64_t offset = 0;
     uint32_t actual_full_checksum = ChecksumType::init_checksum();
@@ -3274,16 +3274,19 @@ static future<bool> do_validate_compressed(input_stream<char>& stream, const sst
             break;
         }
 
-        auto compressed_len = chunk_len - 4;
-        auto expected_checksum = read_be<uint32_t>(buf.get() + compressed_len);
-        auto actual_checksum = ChecksumType::checksum(buf.get(), compressed_len);
+        // For versions with a per-chunk length prefix, the prefix is not
+        // covered by the chunk checksum: it spans only the compressor output.
+        const char* compressed_data = buf.get() + chunk_prefix;
+        auto compressed_len = chunk_len - chunk_prefix - 4;
+        auto expected_checksum = read_be<uint32_t>(compressed_data + compressed_len);
+        auto actual_checksum = ChecksumType::checksum(compressed_data, compressed_len);
         if (actual_checksum != expected_checksum) {
             sstlog.error("Compressed chunk checksum mismatch at offset {}, for chunk #{} of size {}: expected={}, actual={}", offset, i, chunk_len, expected_checksum, actual_checksum);
             valid = false;
         }
 
         if (expected_digest) {
-            actual_full_checksum = checksum_combine_or_feed<ChecksumType>(actual_full_checksum, actual_checksum, buf.get(), compressed_len);
+            actual_full_checksum = checksum_combine_or_feed<ChecksumType>(actual_full_checksum, actual_checksum, compressed_data, compressed_len);
             if (checksum_all) {
                 uint32_t be_actual_checksum = cpu_to_be(actual_checksum);
                 actual_full_checksum = ChecksumType::checksum(actual_full_checksum,
@@ -3461,10 +3464,12 @@ future<validate_checksums_result> validate_checksums(shared_sstable sst, reader_
         auto raw_stream = co_await sst->data_stream_raw(
                 permit, nullptr, nullptr);
         try {
+            const size_t chunk_prefix = sstables::chunk_has_length_prefix(sst->get_version())
+                    ? sstables::chunk_length_prefix_size : 0;
             if (sst->get_version() >= sstable_version_types::mc) {
-                valid = co_await do_validate_compressed<crc32_utils>(raw_stream, sst->get_compression(), true, digest);
+                valid = co_await do_validate_compressed<crc32_utils>(raw_stream, sst->get_compression(), true, digest, chunk_prefix);
             } else {
-                valid = co_await do_validate_compressed<adler32_utils>(raw_stream, sst->get_compression(), false, digest);
+                valid = co_await do_validate_compressed<adler32_utils>(raw_stream, sst->get_compression(), false, digest, chunk_prefix);
             }
         } catch (malformed_sstable_exception& e) {
             valid = false;
