@@ -1189,8 +1189,8 @@ public:
                                 Consumer& consumer,
                                 sstables::sstable_datafile_input_stream&& input,
                                 sstable_datafile_position start,
-                                sstable_datafile_position end)
-        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>(consumer.permit(), std::move(input), start, std::optional<sstable_datafile_position>(end))
+                                std::optional<sstable_datafile_position> end)
+        : data_consumer::continuous_data_consumer<data_consume_rows_context_m<Consumer>, sstables::sstable_datafile_input_stream>(consumer.permit(), std::move(input), start, end)
         , _consumer(consumer)
         , _sst(sst)
         , _header(sst->get_serialization_header())
