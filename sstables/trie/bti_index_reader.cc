@@ -699,7 +699,11 @@ sstables::sstable_datafile_position index_cursor::data_file_pos(sstables::sstabl
             // The position is the start of the partition in Data.db, which the
             // partition's row index header stores in full (uncompressed position
             // plus, for `mu`, the chunk coordinates).
-            return _partition_metadata->data_file_position;
+            if (end_position.holds_physical()) {
+                return _partition_metadata->data_file_position;
+            } else {
+                return sstables::sstable_datafile_position::from_logical_approved(_partition_metadata->data_file_position.to_physical().uncompressed_position);
+            }
         }
         // Inside the partition. The row index payload stores the block's offset
         // (relative to the partition start in the uncompressed stream) and, for

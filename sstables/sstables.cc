@@ -2738,7 +2738,12 @@ disk_read_range sstable::logical_to_physical_range_fixme(sstable_datafile_positi
 }
 
 sstable::physical_position_range sstable::logical_to_physical_range(sstable_datafile_positions_range range) const {
-    auto locate = [this] (uint64_t pos) -> physical_position {
+    auto locate = [this] (sstable_datafile_position rawpos) -> physical_position {
+        if (rawpos.holds_physical()) {
+            auto x = rawpos.to_physical();
+            return physical_position{.chunk_start = x.chunk_position, .chunk_end = x.chunk_position + x.chunk_length, .offset_in_chunk = x.offset_within_chunk};
+        }
+        uint64_t pos = rawpos.to_logical_approved();
         if (pos >= data_size()) {
             auto physical_size = ondisk_data_size();
             return {physical_size, physical_size, 0};
@@ -2751,8 +2756,8 @@ sstable::physical_position_range sstable::logical_to_physical_range(sstable_data
         auto chunk = comp.locate(pos, accessor);
         return {chunk.chunk_start, chunk.chunk_start + chunk.chunk_len, chunk.offset};
     };
-    auto logical_start = range.start.to_logical_fixme();
-    auto logical_end = range.end.transform(&sstable_datafile_position::to_logical_fixme).value_or(data_size());
+    auto logical_start = range.start;
+    auto logical_end = range.end.value_or(end_position());
     return {locate(logical_start), locate(logical_end)};
 }
 

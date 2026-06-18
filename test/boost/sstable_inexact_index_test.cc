@@ -482,7 +482,7 @@ SEASTAR_TEST_CASE(test_inexact_partition_index_singular_query) {
         }
 
         // Generate the sstable.
-        auto sst = make_sstable_containing(env.make_sstable(table.schema()), muts).get();
+        auto sst = make_sstable_containing(env.make_sstable(table.schema(), sstable_version_types::me), muts).get();
 
         // Use the index to find key positions.
         std::vector<sstables::sstable_datafile_position> partition_positions = get_partition_positions(sst, permit);
