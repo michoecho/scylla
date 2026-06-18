@@ -712,7 +712,11 @@ sstables::sstable_datafile_position index_cursor::data_file_pos(sstables::sstabl
         }
         auto f = row_payload_to_physical(p);
         auto uncompressed = _partition_metadata->data_file_position.to_physical().uncompressed_position + f.uncompressed;
-        return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, uncompressed);
+        if (end_position.holds_physical()) {
+            return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, uncompressed);
+        } else {
+            return sstables::sstable_datafile_position::from_logical_approved(uncompressed);
+        }
     }
 
     if (!_partition_cursor.eof()) {
@@ -727,7 +731,11 @@ sstables::sstable_datafile_position index_cursor::data_file_pos(sstables::sstabl
         }
         auto f = partition_payload_to_physical(p);
         expensive_assert(f.uncompressed < 0);
-        return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, ~f.uncompressed);
+        if (end_position.holds_physical()) {
+            return sstables::sstable_datafile_position::from_physical(f.chunk_start, f.chunk_length, f.offset_within_chunk, ~f.uncompressed);
+        } else {
+            return sstables::sstable_datafile_position::from_logical_approved(~f.uncompressed);
+        }
     }
 
     // EOF: the partition cursor walked past the last partition. The position is the
