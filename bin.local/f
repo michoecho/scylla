@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import subprocess
+import sys
+
+
+def cmd_cr(args):
+    container = os.environ["CONTAINER"]
+    home = os.environ["HOME"]
+    inner = (
+        'env "PATH=/usr/lib64/ccache:$PATH" '
+        f'CCACHE_DIR="{home}/.cache/ccache" "$@"'
+    )
+    cmd = ["podman", "exec", "-it", container, "bash", "-c", inner, "cr", *args.args]
+    return subprocess.call(cmd)
+
+
+def ninja_targets():
+    out = subprocess.check_output(["ninja", "-t", "targets", "all"], text=True)
+    return {line.split(":", 1)[0] for line in out.splitlines() if ":" in line}
+
+
+def build_test_executable(path):
+    # test/boost executables are built via the _g (unstripped) target, then
+    # copied to the stripped path.
+    gen = path + "_g"
+    return subprocess.call(
+        ["bash", "-c", 'ninja "$1" && cp "$1" "$2"', "b", gen, path]
+    )
+
+
+def resolve_path(arg, build_mode):
+    """Turn `b`'s argument into a ninja target path (DWIM for bare names)."""
+    if "/" in arg:
+        return arg
+
+    name = arg
+    target = f"build/{build_mode}/test/boost/{name}"
+    if target in ninja_targets():
+        return target
+
+    source = f"test/boost/{name}.cc"
+    if not os.path.exists(source):
+        sys.exit(
+            f"f: no ninja target '{target}' and no source file '{source}'"
+        )
+
+    with open(source) as fh:
+        if "BOOST_AUTO_TEST_SUITE" not in fh.read():
+            sys.exit(
+                f"f: '{source}' has no BOOST_AUTO_TEST_SUITE; "
+                "don't know how to build it"
+            )
+
+    return f"build/{build_mode}/test/boost/combined_tests"
+
+
+def cmd_b(args):
+    path = resolve_path(args.path, args.build_mode)
+    if path.startswith("test/boost") or "/test/boost/" in path:
+        return build_test_executable(path)
+    return subprocess.call(["ninja", path])
+
+
+def reexec_in_container(argv):
+    """Re-run this script inside the container via `f cr`, with --no-cr added
+    to break the recursion. The container shares the host's paths, so the
+    script's own absolute path resolves identically inside it."""
+    self = os.path.abspath(sys.argv[0])
+    inner = [self, "--no-cr", *argv]
+    return cmd_cr(argparse.Namespace(args=inner))
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="f")
+    parser.add_argument("--build-mode", default="dev")
+    parser.add_argument(
+        "--no-cr",
+        action="store_true",
+        help="run directly instead of re-executing inside the container",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_cr = sub.add_parser("cr", help="run a command in the container")
+    p_cr.add_argument("args", nargs=argparse.REMAINDER)
+    p_cr.set_defaults(func=cmd_cr)
+
+    p_b = sub.add_parser("b", help="build a target")
+    p_b.add_argument("path")
+    p_b.set_defaults(func=cmd_b)
+
+    args = parser.parse_args()
+
+    # Unless suppressed, everything except `cr` itself runs inside the
+    # container. `cr` is the transport and always runs on the host.
+    if args.command != "cr" and not args.no_cr:
+        sys.exit(reexec_in_container(sys.argv[1:]))
+
+    sys.exit(args.func(args))
+
+
+if __name__ == "__main__":
+    main()
