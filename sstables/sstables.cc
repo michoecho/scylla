@@ -2704,7 +2704,7 @@ uint64_t sstable::ondisk_data_size() const {
 }
 
 sstable_datafile_position sstable::start_position() const {
-    if (!holds_logical_position(_version)) {
+    if (!holds_logical_position(_version) && has_component(component_type::CompressionInfo)) {
         // `mu` is read by the physical cursor, which navigates by chunk
         // coordinates, so the start position must carry the real coordinates of
         // the first chunk. They come from the compression component: the first
@@ -2719,7 +2719,7 @@ sstable_datafile_position sstable::start_position() const {
 }
 
 sstable_datafile_position sstable::end_position() const {
-    if (!holds_logical_position(_version)) {
+    if (!holds_logical_position(_version) && has_component(component_type::CompressionInfo)) {
         // For `mu`, the end-of-data sentinel must be a physical position past the
         // last chunk so it orders after every real position. The physical cursor
         // treats chunk_position >= compressed_file_length as end of data, so we
