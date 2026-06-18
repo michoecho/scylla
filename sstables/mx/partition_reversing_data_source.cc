@@ -448,12 +448,13 @@ private:
 
     // Given the start position of a row and the size of the row preceding it
     // (as reported by row_body_skipping_context::prev_len()), returns the start
-    // position of that preceding row. Computed through the cursor so that the
-    // position arithmetic stays in terms of sstable_datafile_position rather
-    // than raw integers.
-    sstable_datafile_position prev_row_start(sstable_datafile_position row_start, uint64_t prev_len) {
-        _cursor.seek(row_start);
-        return _cursor.compute_relative_position(-static_cast<ssize_t>(prev_len));
+    // position of that preceding row. Goes through the cursor's read_backwards
+    // rather than compute_relative_position: the preceding row may live in chunks
+    // the cursor has not read yet (compute_relative_position is synchronous and
+    // would assert on uncached chunk metadata), so we let the cursor read the
+    // chunk extents it needs to step back.
+    future<sstable_datafile_position> prev_row_start(sstable_datafile_position row_start, uint64_t prev_len) {
+        co_return co_await _cursor.read_backwards(row_start, prev_len);
     }
 
     future<> emplace_row_skipping_context(sstable_datafile_position row_start, sstable_datafile_position row_end) {
@@ -530,7 +531,7 @@ public:
                     look_in_last_block = true;
                 } else {
                     _row_end = _row_start;
-                    _row_start = prev_row_start(_row_start, _row_skipping_context->prev_len());
+                    _row_start = co_await prev_row_start(_row_start, _row_skipping_context->prev_len());
                 }
             }
             if (look_in_last_block) {
@@ -563,7 +564,7 @@ public:
             if (_row_start < _clustering_range_start) {
                 // The first index block starts after the range being read,
                 // i.e. the range being read is empty.
-                if (prev_row_start(_clustering_range_start, _row_skipping_context->prev_len()) != _partition_start) {
+                if (co_await prev_row_start(_clustering_range_start, _row_skipping_context->prev_len()) != _partition_start) {
                     on_internal_error(sstlog, format(
                         "partition_reversing_data_source: invariant broken: _row_start({}) < _clustering_range_start({})"
                         ", but _row_skipping_context->prev_len()({}) != _clustering_range_start - _partition_start({})",
@@ -586,7 +587,7 @@ public:
                 modify_tombstone(ret, *_row_skipping_context->current_tombstone_reversing_info());
             }
             _row_end = _row_start;
-            _row_start = prev_row_start(_row_start, _row_skipping_context->prev_len());
+            _row_start = co_await prev_row_start(_row_start, _row_skipping_context->prev_len());
             if (_row_end == _clustering_range_start) {
                 _state = state::PARTITION_END;
             }

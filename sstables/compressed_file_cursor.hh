@@ -48,6 +48,13 @@ public:
     // the chunks it crosses, so it can move past chunks the cursor has not seen
     // yet; it also primes the cursor's caches for those chunks.
     future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n);
+    // Move `from` backward by `n` bytes, returning the resulting position. The
+    // backward counterpart of skip_forwards: unlike compute_relative_position
+    // (synchronous, needs the chunks it steps onto already cached), this may read
+    // from the file to discover the chunks it crosses, so it can move past chunks
+    // the cursor has not seen yet; it also primes the cursor's caches for those
+    // chunks, so a later compute_relative_position around the result succeeds.
+    future<sstable_datafile_position> read_backwards(sstable_datafile_position from, size_t n);
     void drop_caches_after(sstable_datafile_position);
     void drop_caches_before(sstable_datafile_position);
     future<> close();

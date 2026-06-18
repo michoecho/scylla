@@ -118,6 +118,15 @@ public:
     // it touches, so a later synchronous compute_relative_position around the
     // returned position succeeds.
     virtual future<sstable_datafile_position> skip_forwards(sstable_datafile_position from, size_t n) = 0;
+    // Move `from` backward by `n` decompressed bytes, returning the resulting
+    // position. The backward counterpart of skip_forwards: unlike
+    // compute_relative_position (which is synchronous and only consults
+    // already-cached chunk metadata), this may read from the file to discover the
+    // chunks it walks across, so it can move past chunks the cursor has not seen
+    // yet. It also primes the cursor's metadata cache for the chunks it touches,
+    // so a later synchronous compute_relative_position around the returned
+    // position succeeds.
+    virtual future<sstable_datafile_position> read_backwards(sstable_datafile_position from, size_t n) = 0;
     virtual void drop_caches_after(sstable_datafile_position pos) = 0;
     virtual void drop_caches_before(sstable_datafile_position pos) = 0;
     virtual future<> close() = 0;
@@ -362,6 +371,14 @@ public:
         sstable_cursor_log.trace("[uncompressed@{}] skip_forwards: from={} n={} result={}", fmt::ptr(this), from, n, result);
         // Logical positions are plain byte offsets, so a forward skip is just
         // addition; nothing needs to be read to know the result.
+        return make_ready_future<sstable_datafile_position>(result);
+    }
+
+    future<sstable_datafile_position> read_backwards(sstable_datafile_position from, size_t n) override {
+        auto result = sstable_datafile_position::from_logical_fixme(from.to_logical_fixme() - n);
+        sstable_cursor_log.trace("[uncompressed@{}] read_backwards: from={} n={} result={}", fmt::ptr(this), from, n, result);
+        // Logical positions are plain byte offsets, so a backward step is just
+        // subtraction; nothing needs to be read to know the result.
         return make_ready_future<sstable_datafile_position>(result);
     }
 
@@ -650,6 +667,14 @@ public:
         sstable_cursor_log.trace("[compressed@{}] skip_forwards: from={} n={} result={}", fmt::ptr(this), from, n, result);
         // Logical positions are plain uncompressed byte offsets, so a forward
         // skip is just addition; the chunk lookup happens lazily on the next read.
+        return make_ready_future<sstable_datafile_position>(result);
+    }
+
+    future<sstable_datafile_position> read_backwards(sstable_datafile_position from, size_t n) override {
+        auto result = sstable_datafile_position::from_logical_fixme(from.to_logical_fixme() - n);
+        sstable_cursor_log.trace("[compressed@{}] read_backwards: from={} n={} result={}", fmt::ptr(this), from, n, result);
+        // Logical positions are plain uncompressed byte offsets, so a backward
+        // step is just subtraction; the chunk lookup happens lazily on the next read.
         return make_ready_future<sstable_datafile_position>(result);
     }
 
@@ -1054,6 +1079,41 @@ public:
         co_return result;
     }
 
+    future<sstable_datafile_position> read_backwards(sstable_datafile_position from, size_t n) override {
+        sstable_cursor_log.trace("[compressed_physical@{}] read_backwards: enter from={} n={}", fmt::ptr(this), from, n);
+        // Walk backward from `from` by n decompressed bytes, crossing whole chunks
+        // using the fixed uncompressed chunk length and reading each chunk's
+        // on-disk length prefix to learn where the previous one begins (the prefix
+        // carries the previous chunk's compressed length). This both computes the
+        // target position and primes the metadata cache for every chunk crossed,
+        // so a later synchronous compute_relative_position around the result has
+        // the chunk extents it needs.
+        cursor_pos p = decode_position(from);
+        // Stepping back from EOF would first have to cross the last chunk, which
+        // may be shorter than _uncompressed_chunk_length; we would need to
+        // decompress it to know by how much. No caller reads backward from EOF
+        // (the reversing source always starts from a real row), so reject it
+        // rather than carry a possibly-wrong byte count for an unused path.
+        SCYLLA_ASSERT(!at_eof(p));
+        uint64_t chunk_len = _uncompressed_chunk_length;
+        uint64_t remaining = n;
+        uint64_t in_chunk = p.offset_within_chunk;
+        while (remaining > in_chunk) {
+            remaining -= in_chunk;
+            // Step to the previous chunk; learn its extent from `p`'s on-disk
+            // length prefix so we know where it begins and how long it is.
+            co_await step_to_prev_chunk_with_io(p);
+            in_chunk = chunk_len;
+        }
+        p.offset_within_chunk = in_chunk - remaining;
+        // p's chunk extent is already known: either it was carried by `from` (no
+        // step taken) or step_to_prev_chunk_with_io recorded it when we stepped
+        // into this chunk.
+        auto result = encode_position(p);
+        sstable_cursor_log.trace("[compressed_physical@{}] read_backwards: exit result={}", fmt::ptr(this), result);
+        co_return result;
+    }
+
     void drop_caches_after(sstable_datafile_position pos) override {
         sstable_cursor_log.trace("[compressed_physical@{}] drop_caches_after: pos={}", fmt::ptr(this), pos);
         auto p = decode_position(pos);
@@ -1244,6 +1304,33 @@ private:
         uint64_t prev_start = it->first;
         uint64_t prev_len = it->second;
         SCYLLA_ASSERT(prev_start + prev_len == p.chunk.chunk_position);
+        p = cursor_pos{chunk_coords{prev_start, prev_len}, 0};
+    }
+
+    // Move p to the start of the preceding chunk, reading from the file as
+    // needed. The backward counterpart of step_to_next_chunk: unlike
+    // step_to_prev_chunk_pos (synchronous, requires the previous chunk's extent
+    // already cached), this learns the previous chunk's extent from p's own
+    // on-disk length prefix (whose second u32 is the previous chunk's compressed
+    // length) and primes the navigation cache for it. p must not be at the very
+    // first chunk (there is no predecessor).
+    future<> step_to_prev_chunk_with_io(cursor_pos& p) {
+        // Only ever called while walking backward from a real (non-EOF) chunk;
+        // the end-of-data sentinel has no length prefix to read.
+        SCYLLA_ASSERT(!at_eof(p));
+        SCYLLA_ASSERT(p.chunk.chunk_position > 0);
+        // Read p's length prefix; its second u32 is the previous chunk's
+        // compressed-data length, from which the previous chunk's full extent and
+        // start follow.
+        auto prefix = co_await read_exactly_from_file(p.chunk.chunk_position, _chunk_prefix);
+        uint32_t this_compressed_len = read_le<uint32_t>(prefix.get());
+        uint32_t prev_compressed_len = read_le<uint32_t>(prefix.get() + sizeof(uint32_t));
+        // Remember p's own extent while we have it.
+        remember_chunk_length(p.chunk.chunk_position, _chunk_prefix + this_compressed_len + 4);
+        uint64_t prev_len = _chunk_prefix + prev_compressed_len + 4;
+        SCYLLA_ASSERT(prev_len <= p.chunk.chunk_position);
+        uint64_t prev_start = p.chunk.chunk_position - prev_len;
+        remember_chunk_length(prev_start, prev_len);
         p = cursor_pos{chunk_coords{prev_start, prev_len}, 0};
     }
 
@@ -1528,6 +1615,9 @@ int64_t sstable_datafile_cursor::subtract_positions(sstable_datafile_position b,
 }
 future<sstable_datafile_position> sstable_datafile_cursor::skip_forwards(sstable_datafile_position from, size_t n) {
     return _impl->skip_forwards(from, n);
+}
+future<sstable_datafile_position> sstable_datafile_cursor::read_backwards(sstable_datafile_position from, size_t n) {
+    return _impl->read_backwards(from, n);
 }
 void sstable_datafile_cursor::drop_caches_after(sstable_datafile_position pos) {
     _impl->drop_caches_after(pos);

@@ -245,6 +245,32 @@ SEASTAR_THREAD_TEST_CASE(test_cursor_compute_relative_position) {
     }).get();
 }
 
+SEASTAR_THREAD_TEST_CASE(test_cursor_read_backwards) {
+    test_env::do_with_async([] (test_env& env) {
+        run_for_each_sstable(env, [] (shared_sstable sst, const bytes& expected, reader_permit permit) {
+            sstable_datafile_cursor cur(sst, permit, {});
+            auto close = deferred_close(cur);
+            uint64_t size = expected.size();
+            // read_backwards steps back by n bytes from `from`, without the
+            // caller having primed the cursor's caches first (the whole point: it
+            // may read chunk metadata it has not seen yet). Step back across
+            // several chunks from near the end of a fresh cursor.
+            auto from = sstable_datafile_position::from_logical_fixme(size);
+            uint64_t back = 0;
+            while (back < size) {
+                size_t step = std::min<uint64_t>(3000, size - back);
+                auto pos = cur.read_backwards(from, step).get();
+                back += step;
+                BOOST_REQUIRE(pos == sstable_datafile_position::from_logical_fixme(size - back));
+                // The position read_backwards returns must be usable to read the
+                // bytes there, matching the file contents.
+                check_read_forwards(cur, expected, size - back, step);
+                from = pos;
+            }
+        });
+    }).get();
+}
+
 // Reads the whole file forwards in order through `cur`, in small chunks.
 void read_whole_file_forwards(sstable_datafile_cursor& cur, uint64_t size) {
     cur.seek(sstable_datafile_position::from_logical_fixme(0));
