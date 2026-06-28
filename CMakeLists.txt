@@ -35,10 +35,16 @@ find_package(CLI11 REQUIRED)
 
 add_executable(cpp_template
     src/main.cc
+    src/exception_hacks.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
     CLI11::CLI11
+    # stdc++exp: GNU libstdc++ backend for std::stacktrace, used by the
+    # exception hack to record a trace at throw time. ${CMAKE_DL_LIBS}: dlsym,
+    # used to chain to the real __cxa_allocate_exception/__cxa_free_exception.
+    stdc++exp
+    ${CMAKE_DL_LIBS}
 )
 
 target_compile_options(cpp_template PRIVATE
@@ -46,6 +52,9 @@ target_compile_options(cpp_template PRIVATE
     -Wextra
     -Wno-gnu-statement-expression
 )
+
+# For stable stacktraces.
+target_link_options(cpp_template PRIVATE -no-pie)
 
 enable_testing()
 if (DEFINED DOCTEST_CMAKE_HELPER)
