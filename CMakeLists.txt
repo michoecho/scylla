@@ -7,7 +7,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(ENABLE_TEST_COVERAGE)
+    # Directory-wide so every target below (including vendored ones) is
+    # instrumented. tools/merge-coverage maps .profraw build-ids back to
+    # binaries, and -no-pie lets llvm-cov resolve addresses without a
+    # load-bias guess.
+    add_compile_options(-O0 -g -fprofile-instr-generate=/dev/null -fcoverage-mapping)
+    add_link_options(-fprofile-instr-generate=/dev/null -fcoverage-mapping -Wl,--build-id -no-pie)
+endif()
+
 add_subdirectory(vendor/doctest)
+
+# Coverage trick: Clang's -fcoverage-mapping drops regions for headers reached
+# via a system include path (-isystem), so SYSTEM-include deps (doctest, most
+# vendored libs) never show up in coverage reports. Clearing the dep's
+# INTERFACE_SYSTEM_INCLUDE_DIRECTORIES turns its -isystem into a plain -I, so
+# its headers appear in the covmap. (Note: the SYSTEM target property and an
+# extra -I do NOT override an explicit SYSTEM keyword; you must clear this
+# property. NO_SYSTEM_FROM_IMPORTED only applies to IMPORTED targets.)
+#
+# if(ENABLE_TEST_COVERAGE)
+#     set_target_properties(doctest PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "")
+# endif()
 
 find_package(CLI11 REQUIRED)
 
