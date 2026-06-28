@@ -35,6 +35,9 @@
               boost
               zstd
               lz4
+
+              cargo
+              rustc
             ];
 
             hardeningDisable = [ "all" ];
