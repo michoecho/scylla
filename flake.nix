@@ -25,6 +25,7 @@
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
             packages = with pkgs; [
+              cli11
               cmake
               ninja
               llvmPkgs.clang-tools
