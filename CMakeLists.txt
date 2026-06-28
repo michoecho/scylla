@@ -19,6 +19,11 @@ endif()
 
 add_subdirectory(vendor/doctest)
 
+# nanobench is a single header. Its top-level CMake builds the standalone test
+# binaries, so wire up just the header as an INTERFACE target instead.
+add_library(nanobench INTERFACE)
+target_include_directories(nanobench INTERFACE vendor/nanobench/src/include)
+
 # Coverage trick: Clang's -fcoverage-mapping drops regions for headers reached
 # via a system include path (-isystem), so SYSTEM-include deps (doctest, most
 # vendored libs) never show up in coverage reports. Clearing the dep's
@@ -36,10 +41,12 @@ find_package(CLI11 REQUIRED)
 add_executable(cpp_template
     src/main.cc
     src/exception_hacks.cc
+    src/bench.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
     CLI11::CLI11
+    nanobench
     # stdc++exp: GNU libstdc++ backend for std::stacktrace, used by the
     # exception hack to record a trace at throw time. ${CMAKE_DL_LIBS}: dlsym,
     # used to chain to the real __cxa_allocate_exception/__cxa_free_exception.

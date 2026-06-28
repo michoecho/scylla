@@ -1,3 +1,6 @@
 [submodule "vendor/doctest"]
 	path = vendor/doctest
 	url = https://github.com/doctest/doctest
+[submodule "vendor/nanobench"]
+	path = vendor/nanobench
+	url = https://github.com/martinus/nanobench
