@@ -20,15 +20,6 @@
             }
         },
         {
-            "name": "Coverage",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "ENABLE_TEST_COVERAGE": "YES",
-                "CMAKE_CXX_FLAGS_DEBUG": "-g"
-            },
-            "inherits": ["Base", "clang"]
-        },
-        {
             "name": "Debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
@@ -54,10 +45,6 @@
     ],
     "buildPresets": [
         {
-            "name": "Coverage",
-            "configurePreset": "Coverage"
-        },
-        {
             "name": "Debug",
             "configurePreset": "Debug"
         },
@@ -71,12 +58,6 @@
         }
     ],
     "testPresets": [
-        {
-            "name": "CoverageTest",
-            "description": "",
-            "displayName": "",
-            "configurePreset": "Coverage"
-        },
         {
             "name": "DebugTest",
             "description": "",
