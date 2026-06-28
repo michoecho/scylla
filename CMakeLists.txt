@@ -9,10 +9,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(ENABLE_TEST_COVERAGE)
     # Directory-wide so every target below (including vendored ones) is
-    # instrumented. tools/merge-coverage maps .profraw build-ids back to
-    # binaries, and -no-pie lets llvm-cov resolve addresses without a
-    # load-bias guess.
-    add_compile_options(-O0 -g -fprofile-instr-generate=/dev/null -fcoverage-mapping)
+    # instrumented. Optimization/debug level is left to the build type, so
+    # coverage layers additively on top of any preset. tools/merge-coverage
+    # maps .profraw build-ids back to binaries, and -no-pie lets llvm-cov
+    # resolve addresses without a load-bias guess.
+    add_compile_options(-fprofile-instr-generate=/dev/null -fcoverage-mapping)
     add_link_options(-fprofile-instr-generate=/dev/null -fcoverage-mapping -Wl,--build-id -no-pie)
 endif()
 
