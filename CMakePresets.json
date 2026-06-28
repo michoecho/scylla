@@ -52,7 +52,31 @@
             "inherits": ["Base", "clang"]
         }
     ],
+    "buildPresets": [
+        {
+            "name": "Coverage",
+            "configurePreset": "Coverage"
+        },
+        {
+            "name": "Debug",
+            "configurePreset": "Debug"
+        },
+        {
+            "name": "Sanitize",
+            "configurePreset": "Sanitize"
+        },
+        {
+            "name": "Release",
+            "configurePreset": "Release"
+        }
+    ],
     "testPresets": [
+        {
+            "name": "CoverageTest",
+            "description": "",
+            "displayName": "",
+            "configurePreset": "Coverage"
+        },
         {
             "name": "DebugTest",
             "description": "",
