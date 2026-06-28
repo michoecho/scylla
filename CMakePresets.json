@@ -1,0 +1,71 @@
+{
+    "version": 8,
+    "configurePresets": [
+        {
+            "name": "Base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "YES"
+            }
+        },
+        {
+            "name": "clang",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_COMPILER": "clang"
+            }
+        },
+        {
+            "name": "Coverage",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "ENABLE_TEST_COVERAGE": "YES",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g"
+            },
+            "inherits": ["Base", "clang"]
+        },
+        {
+            "name": "Debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g"
+            },
+            "inherits": ["Base", "clang"]
+        },
+        {
+            "name": "Sanitize",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fsanitize=undefined -fsanitize=address"
+            },
+            "inherits": ["Base", "clang"]
+        },
+        {
+            "name": "Release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            },
+            "inherits": ["Base", "clang"]
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "DebugTest",
+            "description": "",
+            "displayName": "",
+            "configurePreset": "Debug"
+        },
+        {
+            "name": "SanitizeTest",
+            "description": "",
+            "displayName": "",
+            "configurePreset": "Sanitize",
+            "environment": {"ASAN_OPTIONS": "detect_leaks=0"},
+            "output": {"verbosity": "extra"}
+        }
+    ]
+}
