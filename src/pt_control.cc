@@ -27,10 +27,9 @@
 // cached fd is stale", drop it, and reopen on the next call -- "reconnecting"
 // to a fresh perf without tearing down the program.
 //
-// The ack quirk: the kernel writes the acknowledgement as "ack\n\0" -- four
-// bytes including a stray NUL -- rather than "ack\n". We therefore can't match
-// on an exact byte count; we just read whatever is available and look for the
-// "ack" prefix, tolerating the trailing NUL (and any framing perf may add).
+// The ack quirk: the kernel writes the acknowledgement as "ack\n\0" -- five
+// bytes including a stray trailing NUL -- rather than "ack\n". We read all five
+// bytes and verify them exactly.
 
 namespace pt {
 namespace {
@@ -96,6 +95,26 @@ bool write_all(int fd, const char* buf, size_t len) {
     return true;
 }
 
+// Read exactly `len` bytes into `buf`, retrying short reads and EINTR. Returns
+// the number of bytes read: `len` on success, or fewer if the peer closed
+// (EOF) or a hard error occurred before the buffer was filled. The caller
+// distinguishes the two by comparing the return value against `len`.
+size_t read_full(int fd, char* buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = ::read(fd, buf + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            break; // hard error: report a short read
+        }
+        if (n == 0)
+            break; // EOF
+        off += static_cast<size_t>(n);
+    }
+    return off;
+}
+
 // Send a command + '\n' on the ctl fifo, reopening once if the cached fd is
 // stale (EOF/EPIPE from a restarted perf). Returns false if we couldn't get the
 // bytes out even on a fresh connection.
@@ -114,29 +133,22 @@ bool send_command(const char* cmd) {
     return false;
 }
 
-// Wait for perf's acknowledgement on the ack fifo. The ack is "ack\n\0" (note
-// the kernel's stray trailing NUL), so we read what's available and accept any
-// frame containing "ack". A read of 0 is EOF -> reconnect and try once more.
+// Wait for perf's acknowledgement on the ack fifo. perf replies with exactly
+// "ack\n\0" -- 5 bytes including the kernel's trailing NUL -- which we read in
+// full and verify exactly. A short read means the peer closed (EOF) -> drop the
+// cached fd, reconnect, and try once more.
 bool wait_ack() {
+    static const char kAck[5] = {'a', 'c', 'k', '\n', '\0'};
+
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (ensure_open(g_ack_fd, g_ack_path, O_RDONLY) < 0)
             return false;
 
-        char buf[16];
-        ssize_t n;
-        do {
-            n = ::read(g_ack_fd, buf, sizeof(buf));
-        } while (n < 0 && errno == EINTR);
+        char buf[5];
+        if (read_full(g_ack_fd, buf, sizeof(buf)) == sizeof(buf))
+            return std::memcmp(buf, kAck, sizeof(buf)) == 0;
 
-        if (n >= 3)
-            // Accept the ack regardless of the trailing NUL / exact length.
-            return std::strncmp(buf, "ack", 3) == 0;
-        if (n > 0)
-            // A short, non-empty frame is unexpected but not a disconnect;
-            // don't reconnect, just report it as not-acked.
-            return false;
-
-        // n == 0 (EOF) or error: perf's write end closed. Reconnect and retry.
+        // Short read: EOF/error, perf's write end closed. Reconnect and retry.
         drop(g_ack_fd);
     }
     return false;
