@@ -4,3 +4,6 @@
 [submodule "vendor/nanobench"]
 	path = vendor/nanobench
 	url = https://github.com/martinus/nanobench
+[submodule "vendor/perf2perfetto"]
+	path = vendor/perf2perfetto
+	url = https://github.com/michoecho/perf2perfetto

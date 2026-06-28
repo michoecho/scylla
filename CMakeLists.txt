@@ -42,6 +42,8 @@ add_executable(cpp_template
     src/main.cc
     src/exception_hacks.cc
     src/bench.cc
+    src/pt_control.cc
+    src/pt_control_test.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest

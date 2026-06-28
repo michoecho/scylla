@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Orchestrate an Intel PT trace of a program, scoped by the program itself.
+
+This is the host side of the control protocol in src/pt_control.{h,cc}. The
+flow:
+
+  1. Make a private temp dir with two named pipes (control + ack).
+  2. Launch `perf record` with Intel PT enabled but *events disabled*
+     (--delay=-1) and wired to those pipes via --control fifo:CTL,ACK.
+  3. Launch the program with the pipe paths in its environment, so its
+     pt::enable()/pt::disable() calls drive perf's control fifo: only the code
+     between them lands in the trace.
+  4. Wait for the program, tell perf to stop, and (optionally) decode the
+     result with `perf script` so you can eyeball the traced function.
+
+Because perf, not us, reads the control fifo, the orchestrator just has to
+create the pipes, pass the paths, and stay out of the way. perf opens both ends
+of each fifo itself.
+
+Decoding to Perfetto:
+
+  Besides `--script` (plain text decode), --ftf decodes the trace to a Fuchsia
+  trace (.ftf) via the vendored perf2perfetto dlfilter, and --perfetto serves
+  that file to https://ui.perfetto.dev so you can view it in a browser.
+
+Example:
+
+  tools/pt-trace -- ./out/build/Debug/cpp_template test --test-case=pt_control*
+
+  tools/pt-trace --script -- ./out/build/Debug/cpp_template test \\
+      --test-case='intel pt scoped trace'
+
+  tools/pt-trace --perfetto -- ./out/build/Debug/cpp_template test \\
+      --test-case='intel pt scoped trace'
+"""
+
+import argparse
+import http.server
+import os
+import shutil
+import signal
+import socketserver
+import subprocess
+import sys
+import tempfile
+import webbrowser
+
+# Must match the env var names read by src/pt_control.cc.
+CTL_ENV = "PERF_CTL_FIFO"
+ACK_ENV = "PERF_ACK_FIFO"
+
+# Vendored perf2perfetto dlfilter, relative to the repo root (this script lives
+# in tools/). Built with `cargo build --release` inside the submodule.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DLFILTER = os.path.join(
+    REPO_ROOT, "vendor", "perf2perfetto", "target", "release",
+    "libperf2perfetto.so",
+)
+
+# Port the Perfetto UI fetches the trace from; mirrors perfetto's own
+# open_trace_in_ui helper.
+PERFETTO_PORT = 9001
+PERFETTO_ORIGIN = "https://ui.perfetto.dev"
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="pt-trace",
+        description="Run a program under Intel PT, controlled via a fifo.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "-o", "--output", default="perf.data",
+        help="perf.data output path (default: perf.data).",
+    )
+    parser.add_argument(
+        "-e", "--event", default="intel_pt//u",
+        help="perf event spec to record (default: intel_pt//u, user-space only).",
+    )
+    parser.add_argument(
+        "--script", action="store_true",
+        help="After recording, run `perf script` on the output and print it.",
+    )
+    parser.add_argument(
+        "--itrace", default="be",
+        help="perf script --itrace spec for --script (default: be, "
+             "branches+errors). Use e.g. 'i0ns' for full instruction decode.",
+    )
+    parser.add_argument(
+        "--ftf", nargs="?", const="perf.ftf", default=None, metavar="FILE",
+        help="After recording, decode the trace to a Fuchsia trace (.ftf) via "
+             "the perf2perfetto dlfilter (default file: perf.ftf).",
+    )
+    parser.add_argument(
+        "--ftf-mode", default="c", choices=["t", "c", "i"],
+        help="Time axis for the .ftf: t=timestamp, c=cpu cycles, "
+             "i=instructions (default: c).",
+    )
+    parser.add_argument(
+        "--dlfilter", default=DLFILTER,
+        help=f"Path to libperf2perfetto.so (default: {DLFILTER}).",
+    )
+    parser.add_argument(
+        "--perfetto", action="store_true",
+        help="Implies --ftf; serve the .ftf to ui.perfetto.dev and open it in "
+             "a browser.",
+    )
+    parser.add_argument(
+        "--perf", default="perf",
+        help="perf binary to use (default: perf on PATH).",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Print the perf command line and keep perf's own output.",
+    )
+    parser.add_argument(
+        "command", nargs=argparse.REMAINDER,
+        help="-- followed by the program and its arguments.",
+    )
+    args = parser.parse_args(argv)
+
+    # --perfetto needs a .ftf to show; default one in if the user didn't.
+    if args.perfetto and args.ftf is None:
+        args.ftf = "perf.ftf"
+
+    # argparse.REMAINDER keeps the leading "--"; drop it.
+    cmd = args.command
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        parser.error("missing program to trace; pass it after `--`.")
+    args.command = cmd
+    return args
+
+
+def decode_ftf(args):
+    """Decode args.output to args.ftf via the perf2perfetto dlfilter.
+
+    Returns True on success. perf's dlfilter wants branches (b); we also ask
+    for errors (e) and full instructions (i0ns) so the cycle/instruction
+    counters in the trace are as accurate as the dlfilter can make them.
+    """
+    if not os.path.exists(args.dlfilter):
+        print(
+            f"pt-trace: dlfilter not found at {args.dlfilter}\n"
+            f"pt-trace: build it with "
+            f"`cargo build --release --manifest-path "
+            f"vendor/perf2perfetto/Cargo.toml`",
+            file=sys.stderr,
+        )
+        return False
+
+    script_cmd = [
+        args.perf, "script", "-i", args.output,
+        "--itrace=bei0ns",
+        "--dlfilter", args.dlfilter,
+        # perf2perfetto reads two --dlargs: output filename, then mode char.
+        "--dlarg", args.ftf,
+        "--dlarg", args.ftf_mode,
+    ]
+    if args.verbose:
+        print("pt-trace:", " ".join(script_cmd), file=sys.stderr)
+    rc = subprocess.run(script_cmd).returncode
+    if rc != 0:
+        print(f"pt-trace: perf script (ftf decode) exited with {rc}",
+              file=sys.stderr)
+        return False
+    if not os.path.exists(args.ftf):
+        print(f"pt-trace: dlfilter produced no {args.ftf}", file=sys.stderr)
+        return False
+    print(f"pt-trace: wrote {args.ftf}", file=sys.stderr)
+    return True
+
+
+def open_in_perfetto(ftf_path):
+    """Serve ftf_path on localhost and point ui.perfetto.dev at it.
+
+    Mirrors perfetto's open_trace_in_ui: the UI fetches the trace over HTTP
+    from 127.0.0.1, so we run a one-shot server with the CORS header the UI
+    needs and hand it the file's name in the `?url=` fragment.
+    """
+    directory = os.path.dirname(os.path.abspath(ftf_path)) or "."
+    fname = os.path.basename(ftf_path)
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=directory, **kw)
+
+        def end_headers(self):
+            self.send_header("Access-Control-Allow-Origin", PERFETTO_ORIGIN)
+            self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
+        def do_GET(self):
+            if self.path != "/" + fname:
+                self.send_error(404, "File not found")
+                return
+            super().do_GET()
+            # The UI fetches the file exactly once; tear down afterwards.
+            self.server.served = True
+
+        def log_message(self, *a):
+            pass  # keep the console clean unless something goes wrong
+
+    class Server(socketserver.TCPServer):
+        allow_reuse_address = True
+        served = False
+
+    try:
+        httpd = Server(("127.0.0.1", PERFETTO_PORT), Handler)
+    except OSError as e:
+        print(f"pt-trace: cannot serve on port {PERFETTO_PORT}: {e}",
+              file=sys.stderr)
+        return False
+
+    url = (f"{PERFETTO_ORIGIN}/#!/?url=http://127.0.0.1:{PERFETTO_PORT}/"
+           f"{fname}&referrer=pt-trace")
+    print(f"pt-trace: open {url}", file=sys.stderr)
+    print("pt-trace: serving trace to Perfetto; Ctrl-C to stop.",
+          file=sys.stderr)
+    webbrowser.open(url)
+
+    try:
+        while not httpd.served:
+            httpd.handle_request()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return True
+
+
+def main(argv):
+    args = parse_args(argv)
+
+    if shutil.which(args.perf) is None and not os.path.exists(args.perf):
+        print(f"pt-trace: cannot find perf binary {args.perf!r}", file=sys.stderr)
+        return 127
+
+    tmp = tempfile.mkdtemp(prefix="pt-trace.")
+    ctl_fifo = os.path.join(tmp, "ctl.fifo")
+    ack_fifo = os.path.join(tmp, "ack.fifo")
+    os.mkfifo(ctl_fifo)
+    os.mkfifo(ack_fifo)
+
+    perf_cmd = [
+        args.perf, "record",
+        "-e", args.event,
+        "-o", args.output,
+        # Start with events disabled; the program enables them via the fifo.
+        "--delay=-1",
+        # perf opens both ends of each fifo itself.
+        f"--control=fifo:{ctl_fifo},{ack_fifo}",
+        "--",
+    ] + args.command
+
+    if args.verbose:
+        print("pt-trace:", " ".join(perf_cmd), file=sys.stderr)
+
+    # perf both records and launches the target, so a single Popen runs the
+    # whole session. The program inherits the fifo paths and drives the trace.
+    env = dict(os.environ)
+    env[CTL_ENV] = ctl_fifo
+    env[ACK_ENV] = ack_fifo
+
+    perf_stdio = None if args.verbose else subprocess.DEVNULL
+
+    rc = 0
+    perf = None
+    try:
+        perf = subprocess.Popen(
+            perf_cmd, env=env,
+            stdout=perf_stdio, stderr=perf_stdio,
+        )
+        rc = perf.wait()
+    except KeyboardInterrupt:
+        # Forward Ctrl-C to perf so it flushes perf.data cleanly.
+        if perf is not None:
+            perf.send_signal(signal.SIGINT)
+            rc = perf.wait()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if rc != 0:
+        print(f"pt-trace: perf record exited with {rc}", file=sys.stderr)
+        # perf returns the child's exit status; surface it but keep going to
+        # decoding if the data file exists, since a failing test still traces.
+
+    if not os.path.exists(args.output):
+        if args.script or args.ftf:
+            print(f"pt-trace: no {args.output} to decode", file=sys.stderr)
+        return rc or 1
+
+    if args.script:
+        # Default --itrace=be: synthesize branch + error records. Without an
+        # --itrace spec, `perf script` shows only the sparse branch view; the
+        # explicit spec makes the traced control flow obvious. Pass i0ns for
+        # full per-instruction decode.
+        script_cmd = [args.perf, "script", "-i", args.output,
+                      f"--itrace={args.itrace}"]
+        if args.verbose:
+            print("pt-trace:", " ".join(script_cmd), file=sys.stderr)
+        subprocess.run(script_cmd)
+
+    if args.ftf:
+        if not decode_ftf(args):
+            return rc or 1
+        if args.perfetto:
+            open_in_perfetto(args.ftf)
+
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

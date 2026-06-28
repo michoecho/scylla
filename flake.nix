@@ -40,6 +40,10 @@
               rustc
             ];
 
+            # perf2perfetto's build.rs runs bindgen, which needs libclang at
+            # build time. Point it at the same LLVM the shell already provides.
+            LIBCLANG_PATH = "${llvmPkgs.libclang.lib}/lib";
+
             hardeningDisable = [ "all" ];
           };
         });
