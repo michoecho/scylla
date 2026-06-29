@@ -41,6 +41,16 @@
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             },
             "inherits": ["Base", "clang"]
+        },
+        {
+            "name": "Fuzz",
+            "description": "AFL++ instrumented build of cpp_template for `fuzz <target>`.",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_CXX_COMPILER": "afl-clang-fast++",
+                "BUILD_FUZZERS": "ON"
+            },
+            "inherits": ["Base"]
         }
     ],
     "buildPresets": [
@@ -55,6 +65,10 @@
         {
             "name": "Release",
             "configurePreset": "Release"
+        },
+        {
+            "name": "Fuzz",
+            "configurePreset": "Fuzz"
         }
     ],
     "testPresets": [

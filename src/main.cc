@@ -8,6 +8,7 @@
 #include "doctest/doctest.h"
 
 #include "bench.h"
+#include "fuzz_driver.h"
 
 TEST_CASE("sanity") {
     CHECK(1 + 1 == 2);
@@ -49,10 +50,22 @@ int main(int argc, char* argv[]) {
     // Same passthrough as `test`; we just scope doctest to the bench suite below.
     bench->prefix_command();
 
+    // `fuzz <target>` is the AFL entry point, compiled into this same binary.
+    // afl-fuzz execs `cpp_template fuzz <target>` and drives the named target
+    // (see src/fuzz_driver.cc). In a non-AFL build it replays one stdin
+    // testcase, so it doubles as a crash reproducer. Only useful when the
+    // binary is built with afl-clang-fast++ (the Fuzz preset).
+    std::string fuzz_target;
+    CLI::App* fuzz = app.add_subcommand("fuzz", "Run an AFL++ fuzz target");
+    fuzz->add_option("target", fuzz_target, "Name of the fuzz target")->required();
+
     CLI11_PARSE(app, argc, argv);
 
     if (*test)
         return run_doctest(argv[0], {}, test->remaining());
+
+    if (*fuzz)
+        return fuzz::run(fuzz_target);
 
     if (*bench)
         // Benchmarks are skip()'d by default; --no-skip re-enables them and

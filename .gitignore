@@ -3,3 +3,7 @@
 /.envrc
 /out
 /compile_commands.json
+
+# AFL++ fuzzer output (queue, crashes, stats). The seed corpus under
+# fuzz/*/in is kept; everything the fuzzer generates lives in fuzz/*/out.
+/fuzz/*/out

@@ -44,6 +44,16 @@ add_executable(cpp_template
     src/bench.cc
     src/pt_control.cc
     src/pt_control_test.cc
+    # The `fuzz <target>` subcommand: AFL's entry point, compiled into this one
+    # binary alongside test/bench (see src/fuzz_driver.cc).
+    src/fuzz_driver.cc
+    # Worked example fuzz target. The varint decoder isn't used by the program;
+    # it's here so the fuzz subcommand has something to drive. The bug it can
+    # trip is behind DELIBERATE_BUGS_FOR_FUZZING (off unless BUILD_FUZZERS), so
+    # the normal test suite stays green.
+    src/fuzz_example/varint.cc
+    src/fuzz_example/fuzz_varint.cc
+    src/fuzz_example/varint_test.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
@@ -61,6 +71,10 @@ target_compile_options(cpp_template PRIVATE
     -Wextra
     -Wno-gnu-statement-expression
 )
+
+# So src/fuzz_example/*.cc can include "varint.h" by name. (main.cc and
+# fuzz_driver.cc reach their headers via src/ being each file's own directory.)
+target_include_directories(cpp_template PRIVATE src/fuzz_example)
 
 # For stable stacktraces.
 target_link_options(cpp_template PRIVATE -no-pie)
@@ -81,3 +95,23 @@ doctest_discover_tests(cpp_template
     EXTRA_ARGS --exit
     PROPERTIES ENVIRONMENT_MODIFICATION LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw
 )
+
+# Fuzzing build. Off by default. The `Fuzz` preset turns this on AND sets the
+# compiler to afl-clang-fast++, so the whole cpp_template binary gets AFL's
+# coverage instrumentation. You then fuzz a target with:
+#
+#     afl-fuzz -i corpus -o out -- ./cpp_template fuzz varint
+#
+# Because the fuzz entry point lives in the one binary (the `fuzz` subcommand),
+# there is no separate target — the cost is just that this preset rebuilds the
+# whole program with instrumentation + ASAN. See skills/afl-fuzz.
+option(BUILD_FUZZERS "Instrument cpp_template for AFL++ fuzzing (needs afl-clang-fast++)" OFF)
+if(BUILD_FUZZERS)
+    # DELIBERATE_BUGS_FOR_FUZZING compiles in the example decoder's intentional
+    # out-of-bounds read for the fuzzer to find. ASAN turns that read into a
+    # hard crash AFL can observe instead of a silent read of adjacent memory;
+    # afl-clang-fast++ adds the coverage instrumentation on top.
+    target_compile_definitions(cpp_template PRIVATE DELIBERATE_BUGS_FOR_FUZZING)
+    target_compile_options(cpp_template PRIVATE -fsanitize=address)
+    target_link_options(cpp_template PRIVATE -fsanitize=address)
+endif()
