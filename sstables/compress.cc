@@ -25,6 +25,7 @@
 #include "utils/class_registrator.hh"
 #include "reader_permit.hh"
 #include "data_source_types.hh"
+#include "utils/div_ceil.hh"
 
 namespace sstables {
 
@@ -71,6 +72,50 @@ struct bit_displacement {
 
 inline bit_displacement displacement_for(uint64_t prefix_bits, uint8_t size_bits, mask_type t) {
     return {prefix_bits, make_mask(size_bits, prefix_bits, t)};
+}
+
+size_t chunk_length_field_bits(uint32_t uncompressed_chunk_length) {
+    // A valid compressed chunk is at most compressed_chunk_length_limit bytes, so
+    // this many bits can represent any valid length.
+    return log2ceil(compressed_chunk_length_limit(uncompressed_chunk_length));
+}
+
+size_t chunk_length_field_size(uint32_t uncompressed_chunk_length) {
+    // One length, rounded up to whole bytes.
+    return div_ceil(chunk_length_field_bits(uncompressed_chunk_length), 8);
+}
+
+// Read/write an n-byte (n <= 8) little-endian integer. Unlike seastar's
+// read_le/write_le these touch exactly n bytes, so they are safe when the
+// backing buffer is only chunk_length_field_size bytes long.
+static uint64_t read_le_bytes(const char* p, size_t n) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < n; ++i) {
+        v |= uint64_t(static_cast<uint8_t>(p[i])) << (8 * i);
+    }
+    return v;
+}
+
+static void write_le_bytes(char* p, size_t n, uint64_t v) {
+    for (size_t i = 0; i < n; ++i) {
+        p[i] = static_cast<char>(static_cast<uint8_t>(v >> (8 * i)));
+    }
+}
+
+void write_chunk_length_field(char* dst, uint32_t uncompressed_chunk_length,
+        uint32_t compressed_len) {
+    write_le_bytes(dst, chunk_length_field_size(uncompressed_chunk_length), compressed_len);
+}
+
+uint32_t read_chunk_length_field(const char* src, uint32_t uncompressed_chunk_length) {
+    const uint64_t compressed_len = read_le_bytes(src, chunk_length_field_size(uncompressed_chunk_length));
+    const uint64_t bound = compressed_chunk_length_limit(uncompressed_chunk_length);
+    if (compressed_len > bound) {
+        throw_malformed_sstable_exception(format(
+                "compressed chunk length field out of range: {}, max={}",
+                compressed_len, bound));
+    }
+    return compressed_len;
 }
 
 std::pair<bucket_info, segment_info> params_for_chunk_size(uint32_t chunk_size) {

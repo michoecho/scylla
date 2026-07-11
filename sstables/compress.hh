@@ -365,6 +365,63 @@ public:
     friend class sstable;
 };
 
+// The maximum on-disk length, in bytes, of a compressed chunk whose uncompressed
+// length is `uncompressed_chunk_length`.
+//
+// Rationale: there are some data structures which store compressed chunk lengths
+// (in particular: the header of compressed chunk in Data.db
+// and the payload of an sstable index entry, for sstables which use physical positions).
+// Space is valuable there, so we want to pack this length into as few bits as possible.
+//
+// Imposing a limit on the post-compression size for a given sstable
+// allows us to use a more efficient encoding.
+inline uint64_t compressed_chunk_length_limit(uint64_t uncompressed_chunk_length) {
+    // This assumption should be met (with a large margin) by any sane compressor and chunk size.
+    return uncompressed_chunk_length + uncompressed_chunk_length / 2;
+}
+
+// Each compressed chunk in a physically-navigable ("mu") Data.db is framed by a
+// header and a footer of equal width, each holding this chunk's compressed-data
+// length. On-disk chunk layout:
+//
+//     [ header ][ compressed data ][ 4-byte checksum ][ footer ]
+//
+// The header lets a forward reader find where the chunk ends. The footer -- the
+// last bytes of the chunk -- lets a backward reader that is positioned at the
+// start of the *following* chunk read the length of this chunk and step back to
+// its start, using only bytes stored next to the chunk (no external compression
+// offsets). This makes the file navigable in both directions from any chunk
+// boundary, unlike a header-only scheme which can only be walked backwards from a
+// chunk start.
+//
+// The 4-byte checksum covers the header and the compressed data, but not the
+// footer. A reader must not trust a length read from a footer (or header) until
+// it has read the whole chunk and verified the checksum: a corrupt footer makes a
+// backward reader mislocate the chunk start, so the header it then reads fails
+// the checksum. read_chunk_length_field additionally rejects lengths that are
+// obviously too large up front, so a reader bails out before sizing a read from a
+// bogus length.
+
+// Number of bits used to store one compressed-chunk length. A valid compressed
+// length is at most compressed_chunk_length_limit, so this many bits suffice to
+// represent it.
+size_t chunk_length_field_bits(uint32_t uncompressed_chunk_length);
+
+// Byte size of a single chunk-length field. Both the header and the footer of a
+// chunk are one such field, so a chunk carries 2 * chunk_length_field_size bytes
+// of framing.
+size_t chunk_length_field_size(uint32_t uncompressed_chunk_length);
+
+// Pack and write a chunk-length field (chunk_length_field_size bytes) at dst.
+void write_chunk_length_field(char* dst, uint32_t uncompressed_chunk_length,
+        uint32_t compressed_len);
+
+// Read and unpack a chunk-length field from src (which must hold at least
+// chunk_length_field_size bytes). Throws malformed_sstable_exception if the
+// length exceeds compressed_chunk_length_limit, which signals corruption and lets
+// a reader bail out before sizing a read from a bogus length.
+uint32_t read_chunk_length_field(const char* src, uint32_t uncompressed_chunk_length);
+
 using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uint64_t, file_input_stream_options)>;
 
 // Note: compression_metadata is passed by reference; The caller is
