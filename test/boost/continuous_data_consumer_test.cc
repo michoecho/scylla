@@ -59,7 +59,11 @@ class test_consumer final : public data_consumer::continuous_data_consumer<test_
 
 public:
     test_consumer(reader_permit permit, uint64_t tested_value)
-        : continuous_data_consumer(std::move(permit), prepare_stream(tested_value), 0, calculate_length(tested_value))
+        : continuous_data_consumer(
+            std::move(permit),
+            prepare_stream(tested_value),
+            sstables::sstable_position::from_logical(0),
+            sstables::sstable_position::from_logical(calculate_length(tested_value)))
         , _tested_value(tested_value)
         , _need_cpu_guard(_permit)
     { }
@@ -130,14 +134,16 @@ class skipping_consumer final : public data_consumer::continuous_data_consumer<s
         return make_buffer_input_stream(std::move(buf), 1);
     }
     static size_t prepare_initial_consumer_length(int initial_data_size, int to_skip) {
-        // some bytes that we want to skip may end up even after the initial consumer range
-        return initial_data_size + tests::random::get_int<int>(0, to_skip);
+        return initial_data_size + to_skip;
     }
 
 public:
     skipping_consumer(reader_permit permit, int initial_data_size, int to_skip, int next_data_size)
-        : continuous_data_consumer(std::move(permit), prepare_stream(initial_data_size, to_skip, next_data_size),
-                                    0, prepare_initial_consumer_length(initial_data_size, to_skip))
+        : continuous_data_consumer(
+            std::move(permit),
+            prepare_stream(initial_data_size, to_skip, next_data_size),
+            sstables::sstable_position::from_logical(0),
+            sstables::sstable_position::from_logical(prepare_initial_consumer_length(initial_data_size, to_skip)))
         , _initial_data_size(initial_data_size)
         , _to_skip(to_skip)
         , _next_data_size(next_data_size)
@@ -188,7 +194,9 @@ SEASTAR_THREAD_TEST_CASE(test_skip_at_end) {
         int next_data_size = tests::random::get_int<int>(1, 50);
         skipping_consumer consumer(semaphore.make_permit(), initial_data_size, to_skip, next_data_size);
         consumer.run();
-        consumer.fast_forward_to(initial_data_size + to_skip, initial_data_size + to_skip + next_data_size).get();
+        consumer.fast_forward_to(
+            sstables::sstable_position::from_logical(initial_data_size + to_skip),
+            sstables::sstable_position::from_logical(initial_data_size + to_skip + next_data_size)).get();
         consumer.run();
     }
 }
