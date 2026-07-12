@@ -41,10 +41,17 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
     bool _finished = false;
     temporary_buffer<char> _pk;
     temporary_buffer<char>* _processing_data = nullptr;
+    // Whether the data file position in the header is physical (full chunk
+    // coordinates) or logical. Chosen by the caller, not derived from the version.
+    bool _physical;
+    // Used to decode the physical header's packed chunk length and offset.
+    uint32_t _uncompressed_chunk_length;
     processing_result_generator _gen;
 
-    row_index_header_parser(reader_permit rp, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
+    row_index_header_parser(bool physical, uint32_t uncompressed_chunk_length, reader_permit rp, input_stream<char>&& input, uint64_t start, uint64_t maxlen)
         : continuous_data_consumer(std::move(rp), std::move(input), sstable_position::from_logical(start), sstable_position::from_logical(start + maxlen))
+        , _physical(physical)
+        , _uncompressed_chunk_length(uncompressed_chunk_length)
         , _gen(do_process_state())
     {}
     void verify_end_state() {
@@ -68,10 +75,15 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
         // The start of of this vint is used as a reference point
         // for the delta encoded in the next vint.
         uint64_t trie_root_delta_base = this->position().to_logical() - (*_processing_data).size();
+        // The physical payload parse (packed chunk coordinates) lands with the
+        // reader's physical branch in D4; until then every caller passes physical=false
+        // and this stays byte-identical.
+        SCYLLA_ASSERT(!_physical);
+        (void)_uncompressed_chunk_length;
         expensive_log("row_index_header_parser: reading unsigned vint for data file offset, delta_base={}", trie_root_delta_base);
         co_yield this->read_unsigned_vint(*_processing_data);
-        _result.data_file_offset = this->_u64;
-        expensive_log("row_index_header_parser: read data file offset={}", _result.data_file_offset);
+        _result.data_file_position = sstable_position::from_logical(this->_u64);
+        expensive_log("row_index_header_parser: read data file offset={}", _result.data_file_position);
 
         // This vint is the offset from the root of the intra-partition index
         // to the start of the previous vint.
@@ -133,11 +145,13 @@ struct row_index_header_parser : public data_consumer::continuous_data_consumer<
     }
 };
 
-future<row_index_header> read_row_index_header(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit rp) {
+future<row_index_header> read_row_index_header(bool physical, uint32_t uncompressed_chunk_length, input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit rp) {
     // TODO: Should there be a fast path for the case where the entire
     // parse fits into the current page?
     // We're involving so much code in parsing something that's usually just several bytes long...
     auto ctx = row_index_header_parser(
+        physical,
+        uncompressed_chunk_length,
         std::move(rp),
         std::move(input),
         start,
@@ -146,7 +160,7 @@ future<row_index_header> read_row_index_header(input_stream<char>&& input, uint6
     try {
         co_await ctx.consume_input();
         co_await ctx.close();
-        expensive_log("read_row_index_header result={}", ctx._result.data_file_offset);
+        expensive_log("read_row_index_header result={}", ctx._result.data_file_position);
         co_return std::move(ctx._result);
     } catch (...) {
         ex = std::current_exception();
@@ -155,7 +169,7 @@ future<row_index_header> read_row_index_header(input_stream<char>&& input, uint6
     std::rethrow_exception(ex);
 }
 
-static future<row_index_header> read_row_index_header(cached_file& file, uint64_t pos, reader_permit rp, tracing::trace_state_ptr trace_state) {
+static future<row_index_header> read_row_index_header(bool physical, uint32_t uncompressed_chunk_length, cached_file& file, uint64_t pos, reader_permit rp, tracing::trace_state_ptr trace_state) {
     struct cached_file_data_source_impl : data_source_impl {
         cached_file& _file;
         cached_file::stream _stream;
@@ -178,6 +192,8 @@ static future<row_index_header> read_row_index_header(cached_file& file, uint64_
         std::make_unique<cached_file_data_source_impl>(file, pos, rp, std::move(trace_state))
     ));
     return read_row_index_header(
+        physical,
+        uncompressed_chunk_length,
         std::move(is),
         pos,
         file.size() - pos,
@@ -603,11 +619,13 @@ uint64_t index_cursor::data_file_pos(uint64_t file_size) const {
     expensive_assert(_partition_cursor.initialized());
     if (_partition_metadata) {
         if (!_row_cursor.initialized()) {
-            expensive_log("index_cursor::data_file_pos this={} from empty row cursor: {}", fmt::ptr(this), _partition_metadata->data_file_offset);
-            return _partition_metadata->data_file_offset;
+            expensive_log("index_cursor::data_file_pos this={} from empty row cursor: {}", fmt::ptr(this), _partition_metadata->data_file_position);
+            // D4 makes this cursor position-kind aware; today the header always
+            // carries a logical position, so read it as a plain byte offset.
+            return _partition_metadata->data_file_position.to_logical();
         }
         const auto p = _row_cursor.payload();
-        auto res = _partition_metadata->data_file_offset + row_payload_to_offset(p);
+        auto res = _partition_metadata->data_file_position.to_logical() + row_payload_to_offset(p);
         expensive_log("index_cursor::data_file_pos this={} from row cursor: {} bytes={} bits={}", fmt::ptr(this), res, fmt_hex(p.bytes), p.bits & 0x7);
         return res;
     }
@@ -658,7 +676,9 @@ future<> index_cursor::maybe_read_metadata() {
         return make_ready_future<>();
     }
     if (auto res = partition_payload_to_pos(_partition_cursor.payload()); res >= 0) {
-        return read_row_index_header(_in_row._file.get(), res, _permit, _trace_state).then([this] (auto result) {
+        // D4 threads the real physical flag / uncompressed_chunk_length here; the
+        // logical path passes false/0 so behavior is unchanged.
+        return read_row_index_header(/*physical=*/false, /*uncompressed_chunk_length=*/0, _in_row._file.get(), res, _permit, _trace_state).then([this] (auto result) {
             _partition_metadata = result;
         });
     }

@@ -103,14 +103,19 @@ struct row_index_header {
     sstables::key partition_key = bytes();
     // The global position of the root node of this partition's row index within Rows.db.
     uint64_t trie_root;
-    // The global position of the partition inside Data.db.
-    uint64_t data_file_offset;
+    // The position of the partition inside Data.db, in the sstable's position kind:
+    // a logical (uncompressed) position, or a physical one carrying the full chunk
+    // coordinates that locate the partition start in the compressed (on-disk) file
+    // so the physical cursor can navigate to it directly.
+    sstables::sstable_position data_file_position;
     // The partition tombstone of this partition.
     sstables::deletion_time partition_tombstone;
     uint64_t number_of_blocks = 0;
 };
 
 future<row_index_header> read_row_index_header(
+    bool physical,
+    uint32_t uncompressed_chunk_length,
     input_stream<char>&& input,
     uint64_t start,
     uint64_t maxlen,
@@ -121,7 +126,8 @@ void write_row_index_header(
     sstable_version_types sst_ver,
     sstables::file_writer& fw,
     const sstables::key& pk,
-    int64_t partition_data_start,
+    sstable_position partition_data_start,
+    uint32_t uncompressed_chunk_length,
     uint64_t added_blocks,
     uint64_t root_pos,
     const sstables::deletion_time& partition_tombstone

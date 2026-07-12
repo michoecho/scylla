@@ -14,6 +14,7 @@
 #include "bti_node_sink.hh"
 #include "sstables/mx/types.hh"
 #include "sstables/writer.hh"
+#include "utils/assert.hh"
 
 namespace sstables::trie {
 
@@ -266,7 +267,8 @@ void write_row_index_header(
     sstable_version_types sst_ver,
     sstables::file_writer& fw,
     const sstables::key& pk,
-    int64_t partition_data_start,
+    sstable_position partition_data_start,
+    uint32_t uncompressed_chunk_length,
     uint64_t added_blocks,
     uint64_t root_pos,
     const sstables::deletion_time& partition_tombstone
@@ -276,7 +278,9 @@ void write_row_index_header(
 
     auto pos_datapos = fw.offset();
     trie_logger.trace("consume_end_of_partition: pos: {} {}", fw.offset(), partition_data_start);
-    write_unsigned_vint(fw, partition_data_start);
+    SCYLLA_ASSERT(!partition_data_start.is_physical());
+    (void)uncompressed_chunk_length;
+    write_unsigned_vint(fw, partition_data_start.to_logical());
 
     trie_logger.trace("consume_end_of_partition: root_offset: {} {}", fw.offset(), pos_datapos - root_pos);
     write_signed_vint(fw, int64_t(uint64_t(root_pos) - uint64_t(pos_datapos)));
@@ -340,7 +344,7 @@ int64_t row_index_writer_impl::finish(
 
     expensive_log("row_index_writer_impl::finish: writing header at {}", fw.offset());
     int64_t pos_header = fw.offset();
-    write_row_index_header(sst_ver, fw, pk, partition_data_start, added_blocks_for_header, root, partition_tombstone);
+    write_row_index_header(sst_ver, fw, pk, sstable_position::from_logical(partition_data_start), /*uncompressed_chunk_length=*/0, added_blocks_for_header, root, partition_tombstone);
     return pos_header;
 }
 
