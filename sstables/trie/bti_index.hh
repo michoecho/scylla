@@ -12,7 +12,6 @@
 #include <variant>
 #include <seastar/core/shared_ptr.hh>
 #include "sstables/abstract_index_reader.hh"
-#include "sstables/sstable_position.hh"
 
 namespace sstables {
     class file_writer;
@@ -172,13 +171,18 @@ public:
 // Creates a BTI index reader over the Partitions.db file and the matching Rows.db file.
 // `partitions_db_root_pos` should have been read from the Partitions.db footer beforehand.
 // (As we don't want to repeat that for every query).
+// `uncompressed_chunk_length` is the sstable's uncompressed chunk length; it
+// determines the widths of the packed compressed chunk length and offset fields
+// in physical payloads and is ignored (may be 0) for sstables with logical positions.
 std::unique_ptr<sstables::abstract_index_reader> make_bti_index_reader(
     seastar::shared_ptr<cached_file> partitions_db,
     seastar::shared_ptr<cached_file> rows_db,
     uint64_t partitions_db_root_pos,
-    uint64_t total_data_db_file_size,
+    sstables::sstable_position start_position,
+    sstables::sstable_position end_position,
     sstable_version_types,
     schema_ptr,
+    uint32_t uncompressed_chunk_length,
     reader_permit,
     tracing::trace_state_ptr);
 

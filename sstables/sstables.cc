@@ -2775,6 +2775,21 @@ disk_read_range sstable::disk_read_range_from_logical_range(uint64_t begin, uint
     return {sstable_position_from_logical_position(begin), sstable_position_from_logical_position(end)};
 }
 
+double sstable::approximate_file_fraction(sstable_positions_range range) const {
+    auto start = range.start;
+    auto end = range.end.value_or(end_position());
+    if (!start.is_physical()) {
+        return static_cast<double>(end.to_logical() - start.to_logical()) / data_size();
+    }
+    if (start == end) {
+        return 0;
+    }
+    auto physical_lower_bound = start.as_physical().chunk_position;
+    auto physical_upper_bound = end.as_physical().chunk_position + end.as_physical().chunk_length_hint;
+    auto fraction = static_cast<double>(physical_upper_bound - physical_lower_bound) / ondisk_data_size();
+    return std::clamp<double>(fraction, 0.0, 1.0);
+}
+
 file_size_stats sstable::get_file_size_stats() const {
     if (!_metadata_size_on_disk) {
         on_internal_error(sstlog, "On-disk size of sstable metadata was not set");
@@ -3890,18 +3905,11 @@ future<uint64_t> sstable::estimated_keys_for_range(const dht::token_range& range
     std::exception_ptr ex;
     try {
         co_await ir->advance_to(dht::to_partition_range(range));
-        auto data_file_range = ir->data_file_positions();
-        auto uncompressed_data_size = data_size();
-        auto start = data_file_range.start;
-        auto end = data_file_range.end.value_or(uncompressed_data_size);
+        auto file_fraction = approximate_file_fraction(ir->sstable_positions());
         auto total_count = get_estimated_key_count();
-        sstlog.debug("estimated_keys_for_range(sst={}, range={}): data_start: {}, data_end: {}, data_size: {}, estimated_key_count: {}",
-                get_filename(), range, start, end, uncompressed_data_size, total_count);
-        if (start == end) {
-            result = 0;
-        } else {
-            result = std::ceil(double(end - start) / uncompressed_data_size * total_count);
-        }
+        sstlog.debug("estimated_keys_for_range(sst={}, range={}): file_fraction: {}, estimated_key_count: {}",
+                get_filename(), range, file_fraction, total_count);
+        result = std::ceil(file_fraction * total_count);
     } catch (...) {
         ex = std::current_exception();
     }
@@ -4317,9 +4325,11 @@ std::unique_ptr<abstract_index_reader> sstable::make_index_reader(
             cached_partitions_file,
             cached_rows_file,
             _partitions_db_footer.value().trie_root_position,
-            data_size(),
+            start_position(),
+            end_position(),
             _version,
             _schema,
+            get_compression().uncompressed_chunk_length(),
             std::move(permit),
             std::move(trace_state)
         );

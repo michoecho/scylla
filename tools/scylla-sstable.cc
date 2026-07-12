@@ -39,7 +39,6 @@
 #include "readers/multi_range.hh"
 #include "schema/schema_builder.hh"
 #include "schema/compression_initializer.hh"
-#include "sstables/index_reader.hh"
 #include "sstables/sstables_manager.hh"
 #include "sstables/consumer.hh"
 #include "sstables/sstable_directory.hh"
@@ -54,9 +53,9 @@
 #include "tools/schema_loader.hh"
 #include "tools/sstable_consumer.hh"
 #include "tools/utils.hh"
-#include "types/json_utils.hh"
 #include "locator/host_id.hh"
 #include "mutation_writer/token_group_based_splitting_writer.hh"
+#include "sstables/exceptions.hh"
 
 using namespace seastar;
 using namespace sstables;
@@ -923,7 +922,7 @@ void dump_index_operation(schema_ptr schema, reader_permit permit, const std::ve
 
         while (!idx_reader->eof()) {
             idx_reader->read_partition_data().get();
-            auto pos = idx_reader->data_file_positions().start;
+            auto pos = idx_reader->sstable_positions().start;
             auto pkey = idx_reader->get_partition_key();
 
             writer.StartObject();
@@ -932,7 +931,22 @@ void dump_index_operation(schema_ptr schema, reader_permit permit, const std::ve
                 writer.DataKey(*schema, *pkey);
             }
             writer.Key("pos");
-            writer.Uint64(pos);
+            if (pos.is_physical()) {
+                // Physical positions (used by compressed sstables) are a
+                // (chunk_position, chunk_length, offset_within_chunk) tuple rather
+                // than a single logical offset, so emit them as an object.
+                auto ph = pos.as_physical();
+                writer.StartObject();
+                writer.Key("chunk_position");
+                writer.Int64(ph.chunk_position);
+                writer.Key("chunk_length");
+                writer.Int64(ph.chunk_length_hint);
+                writer.Key("offset_within_chunk");
+                writer.Int64(ph.offset_within_chunk);
+                writer.EndObject();
+            } else {
+                writer.Uint64(pos.to_logical());
+            }
             writer.EndObject();
 
             idx_reader->advance_to_next_partition().get();
