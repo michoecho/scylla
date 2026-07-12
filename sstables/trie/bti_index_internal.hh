@@ -8,12 +8,86 @@
 
 #pragma once
 
+#include <bit>
+#include <utility>
 #include "bti_index.hh"
+#include "sstables/compress.hh"
+#include "utils/div_ceil.hh"
 
 // This file contains some declarations which aren't needed by users of BTI readers/writers,
 // but are exposed here for testing, or because they are shared between readers and writers.
 
 namespace sstables::trie {
+
+// The compressed data file is read in aligned blocks of this size. To keep the
+// on-disk index compact, a chunk's length is stored not as a byte count but as the
+// number of these blocks the chunk spans. The two helpers below are the only place
+// that block-size math lives: they convert between the byte length carried in a
+// physical position's `chunk_length_hint` and the on-disk block count. This detail
+// is hidden from users of the index, who deal only in byte lengths.
+inline constexpr int64_t sstable_compressed_block_size = 512;
+
+// Byte length -> on-disk block count, for the writer. A chunk may begin at an
+// arbitrary offset within a block, so the count accounts for the leading
+// misalignment and rounds up.
+inline int64_t bti_chunk_length_to_block_count(int64_t chunk_position, int64_t chunk_length) {
+    const int64_t misalignment = chunk_position % sstable_compressed_block_size;
+    return div_ceil(misalignment + chunk_length, sstable_compressed_block_size);
+}
+
+// On-disk block count -> an upper bound on the chunk's byte length, for the reader.
+// This is lossy: the recovered length is >= the original, because it rounds the
+// chunk out to whole blocks.
+inline int64_t bti_chunk_length_from_block_count(int64_t chunk_position, int64_t block_count) {
+    const int64_t misalignment = chunk_position % sstable_compressed_block_size;
+    return block_count * sstable_compressed_block_size - misalignment;
+}
+
+// The upper bound on the on-disk block count a chunk spans (the value actually
+// stored in the index; see bti_chunk_length_to_block_count). A chunk's on-disk
+// extent is at most compressed_chunk_length_limit() bytes; since it may start at an
+// arbitrary offset within a block, it spans at most one extra block.
+inline uint64_t bti_max_chunk_length_blocks(uint32_t uncompressed_chunk_length) {
+    return div_ceil(compressed_chunk_length_limit(uncompressed_chunk_length), uint64_t(sstable_compressed_block_size)) + 1;
+}
+
+inline unsigned bti_offset_within_chunk_bit_width(uint32_t uncompressed_chunk_length) {
+    return std::bit_width(uncompressed_chunk_length);
+}
+
+// Number of bits used to store a chunk's on-disk block count. The block count is
+// a 1-based value in [1, bti_max_chunk_length_blocks], stored zero-based (so
+// callers offset by one on either side), and held exactly in this many bits.
+inline unsigned bti_chunk_length_bit_width(uint32_t uncompressed_chunk_length) {
+    return std::bit_width(bti_max_chunk_length_blocks(uncompressed_chunk_length) - 1);
+}
+
+inline unsigned bti_packed_length_and_offset_bit_width(uint32_t uncompressed_chunk_length) {
+    return bti_chunk_length_bit_width(uncompressed_chunk_length)
+        + bti_offset_within_chunk_bit_width(uncompressed_chunk_length);
+}
+
+inline size_t bti_packed_length_and_offset_bytewidth(uint32_t uncompressed_chunk_length) {
+    return div_ceil(bti_packed_length_and_offset_bit_width(uncompressed_chunk_length), 8u);
+}
+
+// `chunk_length` here is the chunk_length_hint block count, not a byte length.
+inline uint64_t bti_pack_length_and_offset(uint64_t chunk_length, uint64_t offset_within_chunk, uint32_t uncompressed_chunk_length) {
+    const auto offset_bits = bti_offset_within_chunk_bit_width(uncompressed_chunk_length);
+    const auto encoded_length = chunk_length - 1;
+    return (encoded_length << offset_bits) | offset_within_chunk;
+}
+
+inline std::pair<uint64_t, uint64_t> bti_unpack_length_and_offset(uint64_t packed, uint32_t uncompressed_chunk_length) {
+    const auto length_bits = bti_chunk_length_bit_width(uncompressed_chunk_length);
+    const auto offset_bits = bti_offset_within_chunk_bit_width(uncompressed_chunk_length);
+    const auto offset_mask = (uint64_t{1} << offset_bits) - 1;
+    const auto encoded_length = (packed >> offset_bits) & ((uint64_t{1} << length_bits) - 1);
+    return {
+        encoded_length + 1,
+        packed & offset_mask,
+    };
+}
 
 // FIXME: we calculate the murmur hash when inserting or reading keys
 // from bloom filters.
