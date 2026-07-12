@@ -34,6 +34,46 @@
 #include "utils/memory_data_sink.hh"
 #include <fmt/std.h>
 
+// Focused coverage for the BTI physical-payload packing primitives (D1). These
+// are pure functions with no I/O, so a plain BOOST_AUTO_TEST_CASE suffices.
+BOOST_AUTO_TEST_CASE(test_bti_chunk_length_block_count_roundtrip) {
+    using namespace sstables::trie;
+    // For every (chunk_position, byte_length), block_count -> recovered_length is a
+    // lossy upper bound: recovered >= original, and it never over-rounds by more than
+    // a full block.
+    for (int64_t chunk_position : {int64_t{0}, int64_t{1}, int64_t{7}, int64_t{511},
+                                   int64_t{512}, int64_t{513}, int64_t{1024},
+                                   int64_t{100'000}, int64_t{100'001}}) {
+        for (int64_t chunk_length : {int64_t{1}, int64_t{2}, int64_t{511}, int64_t{512},
+                                     int64_t{513}, int64_t{4096}, int64_t{65536}}) {
+            const auto blocks = bti_chunk_length_to_block_count(chunk_position, chunk_length);
+            const auto recovered = bti_chunk_length_from_block_count(chunk_position, blocks);
+            BOOST_CHECK_GE(recovered, chunk_length);
+            BOOST_CHECK_LT(recovered - chunk_length, sstable_compressed_block_size);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(test_bti_pack_unpack_length_and_offset_roundtrip) {
+    using namespace sstables::trie;
+    for (uint32_t uncompressed_chunk_length : {uint32_t{4096}, uint32_t{16384}, uint32_t{65536}}) {
+        const auto max_len = bti_max_chunk_length_blocks(uncompressed_chunk_length);
+        const auto packed_bits = bti_packed_length_and_offset_bit_width(uncompressed_chunk_length);
+        // The packed value never exceeds its advertised bit width / byte width.
+        BOOST_CHECK_LE(bti_packed_length_and_offset_bytewidth(uncompressed_chunk_length) * 8, 64u);
+        for (uint64_t block_count : {uint64_t{1}, uint64_t{2}, uint64_t{7}, max_len}) {
+            for (uint64_t offset : {uint64_t{0}, uint64_t{1}, uint64_t{uncompressed_chunk_length}}) {
+                const auto packed = bti_pack_length_and_offset(block_count, offset, uncompressed_chunk_length);
+                BOOST_CHECK_LT(packed, uint64_t{1} << packed_bits);
+                auto [decoded_len, decoded_offset] = bti_unpack_length_and_offset(packed, uncompressed_chunk_length);
+                // The block count and offset are both stored exactly.
+                BOOST_CHECK_EQUAL(decoded_offset, offset);
+                BOOST_CHECK_EQUAL(decoded_len, block_count);
+            }
+        }
+    }
+}
+
 struct clustering_index_entry {
     sstables::clustering_info first_ck;
     sstables::clustering_info last_ck;
