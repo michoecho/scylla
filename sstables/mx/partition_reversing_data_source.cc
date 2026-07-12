@@ -11,6 +11,7 @@
 #include "partition_reversing_data_source.hh"
 #include "reader_permit.hh"
 #include "sstables/compress.hh"
+#include "sstables/compressed_file_cursor_stream.hh"
 #include "sstables/consumer.hh"
 #include "sstables/processing_result_generator.hh"
 #include "sstables/reversing_source_cursor.hh"
@@ -488,6 +489,94 @@ public:
     }
 };
 
+// The physical-position implementation of reversing_source_cursor, wrapping a
+// single shared compressed_file_cursor. The forward parsers borrow the cursor
+// (borrowed_cursor_stream) and the rows handed back are read backwards from the
+// same cursor via read_backwards_exactly -- for this format forward parsing and
+// backward reads must share one physical cursor position, so unlike the logical
+// case the parsers cannot each own a private stream.
+class compressed_reversing_cursor final : public reversing_source_cursor {
+    compressed_file_cursor _cursor;
+
+    // prev_row_start(), while walking back to find the previous row's start, reads
+    // exactly the bytes of that previous row -- the same bytes the next
+    // read_backwards() would re-decompress to hand it back. We stash them here as
+    // [start, end) and let the next read_backwards() reuse them.
+    struct prefetched_row {
+        sstable_position start;
+        sstable_position end;
+        temporary_buffer<char> data;
+    };
+    std::optional<prefetched_row> _prefetched_row;
+
+public:
+    compressed_reversing_cursor(file_cursor raw, reader_permit permit, compressor& compressor, uint64_t uncompressed_chunk_length)
+        : _cursor(std::move(raw), std::move(permit), compressor, uncompressed_chunk_length)
+    {}
+
+    future<std::unique_ptr<data_consumer::continuous_data_consumer_input_stream>>
+    make_forward_input_stream(sstable_position, sstable_position) override {
+        // The parser positions the borrowed cursor itself (init_stream_position),
+        // so the range is not needed here.
+        co_return std::make_unique<borrowed_cursor_stream>(_cursor);
+    }
+
+    future<temporary_buffer<char>>
+    read_forwards(sstable_position start, sstable_position end, size_t size) override {
+        // Reading rows backwards is the cursor's usual job; read the header forwards
+        // through the same cursor's consume interface.
+        _cursor.init_stream_position(start);
+        auto out = temporary_buffer<char>(size);
+        size_t filled = 0;
+        while (filled < size) {
+            size_t before = filled;
+            co_await _cursor.consume_one(end, [&] (temporary_buffer<char> data) -> consumption_result<char> {
+                std::memcpy(out.get_write() + filled, data.get(), data.size());
+                filled += data.size();
+                return continue_consuming{};
+            });
+            if (filled == before) {
+                // The stream reached `end` (or eof) before yielding `size` bytes;
+                // stop rather than spin forever.
+                throw_malformed_sstable_exception(format(
+                        "partition_reversing_data_source: forward read of [{}, {}) yielded only {} of {} bytes",
+                        start, end, filled, size));
+            }
+        }
+        co_return out;
+    }
+
+    future<temporary_buffer<char>>
+    read_backwards(sstable_position start, sstable_position end, size_t size) override {
+        if (_prefetched_row && _prefetched_row->start == start && _prefetched_row->end == end) {
+            SCYLLA_ASSERT(_prefetched_row->data.size() == size);
+            // The buffer is exclusively owned (freshly read), so hand it over
+            // directly; the caller may mutate it in place.
+            auto ret = std::move(_prefetched_row->data);
+            _prefetched_row = std::nullopt;
+            co_return ret;
+        }
+        _cursor.seek(end);
+        co_return co_await _cursor.read_backwards_exactly(size);
+    }
+
+    future<sstable_position> prev_row_start(sstable_position row_start, uint64_t prev_len) override {
+        _cursor.seek(row_start);
+        auto data = co_await _cursor.read_backwards_exactly(prev_len);
+        auto prev_start = _cursor.stream_position().position;
+        _prefetched_row = prefetched_row{prev_start, row_start, std::move(data)};
+        co_return prev_start;
+    }
+
+    void drop_read_ahead() override {
+        _prefetched_row = std::nullopt;
+    }
+
+    future<> close() override {
+        return _cursor.close();
+    }
+};
+
 // The intermediary data source that reads from an sstable, and produces
 // data buffers, as if the sstable had all rows written in a reversed order.
 //
@@ -599,9 +688,12 @@ private:
                 _permit, _cached_column_translation);
     }
 
-    // Builds the cursor backing all IO into the data file. For now this is always
-    // a logical_reversing_cursor (data_stream/data_read); the physical-position
-    // compressed cursor is added in a later commit.
+    // Builds the cursor backing all IO into the data file. The physical-position
+    // compressed_reversing_cursor exists (above) but is not selected here yet: its
+    // input positions only become physical once start_position() and the
+    // logical->physical mapping are flipped for compressed `mu` (a later commit).
+    // Until then the reversing path is fed logical positions, which the compressed
+    // cursor cannot consume, so every sstable keeps using logical_reversing_cursor.
     static std::unique_ptr<reversing_source_cursor> make_cursor(const shared_sstable& sst, reader_permit permit,
             tracing::trace_state_ptr trace_state, sstable_position partition_start) {
         return std::make_unique<logical_reversing_cursor>(sst, std::move(permit), std::move(trace_state),
