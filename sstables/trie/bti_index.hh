@@ -94,13 +94,20 @@ public:
     // but it mustn't be extended after `finish()`,
     // because `finish()` writes a footer which is used by the reader
     // to find the root of the trie.
-    explicit bti_partition_index_writer(sstable_version_types, sstables::file_writer&);
+    // `physical` selects the on-disk payload format: physical (full chunk
+    // coordinates, used by compressed `mu` sstables) or legacy (variable-width
+    // pre-compression position, used by `ms`/`mt` and uncompressed `mu`). It must
+    // match the position kind of the `sstable_position`s passed to `add()`.
+    // `uncompressed_chunk_length` is the sstable's uncompressed chunk length; it
+    // determines the widths of the packed compressed chunk length and offset fields
+    // in physical payloads and is ignored (may be 0) when `physical` is false.
+    explicit bti_partition_index_writer(sstable_version_types, sstables::file_writer&, bool physical, uint32_t uncompressed_chunk_length);
     bti_partition_index_writer(bti_partition_index_writer&&) noexcept;
     bti_partition_index_writer& operator=(bti_partition_index_writer&&) noexcept;
     ~bti_partition_index_writer() noexcept;
     explicit operator bool() const noexcept { return bool(_impl); }
     // Add a new partition key to the index.
-    void add(const schema&, dht::decorated_key, const utils::hashed_key&, int64_t data_or_rowsdb_file_pos);
+    void add(const schema&, dht::decorated_key, const utils::hashed_key&, bti_partition_index_target pos);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
     // The writer mustn't be used again after this.
@@ -124,7 +131,10 @@ public:
     // The trie will be written to the given file writer.
     // Note: the file doesn't have to be empty,
     // and it can be extended later.
-    explicit bti_row_index_writer(sstables::file_writer&);
+    // `uncompressed_chunk_length` is the sstable's uncompressed chunk length; it
+    // determines the widths of the packed compressed chunk length and offset fields
+    // in physical payloads and is ignored (may be 0) for logical positions.
+    explicit bti_row_index_writer(sstable_version_types, sstables::file_writer&, uint32_t uncompressed_chunk_length);
     bti_row_index_writer(bti_row_index_writer&&) noexcept;
     bti_row_index_writer& operator=(bti_row_index_writer&&) noexcept;
     explicit operator bool() const noexcept { return bool(_impl); }
@@ -135,7 +145,7 @@ public:
         const schema& s,
         const sstables::clustering_info& first_ck,
         const sstables::clustering_info& last_ck,
-        uint64_t offset_from_partition_start,
+        sstable_position_offset offset_from_partition_start,
         const sstables::deletion_time& range_tombstone_before_first_ck);
     // Flushes all remaining contents, and returns the position of the root node in the output stream.
     // If add() was never called, returns -1.
@@ -151,11 +161,10 @@ public:
     // `partition_data_end` is the position of the END_OF_PARTITION flag byte in Data.db,
     // which lies 1 byte before the start of the next partition.
     // So `partition_data_end` is *NOT* the start position of the next partition.
-    int64_t finish(
-        sstable_version_types,
+    bti_partition_index_target finish(
         const schema&,
-        int64_t partition_data_start,
-        int64_t partition_data_end,
+        sstable_position partition_data_start,
+        sstable_position partition_data_end,
         const sstables::key&,
         const sstables::deletion_time& partition_tombstone);
 };
