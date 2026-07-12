@@ -994,8 +994,8 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
         auto close_partitions_db = defer([&] noexcept { partitions_db_writer.close(); });
         auto close_rows_db = defer([&] noexcept { rows_db_writer.close(); });
 
-        auto partition_index_writer = sstables::trie::bti_partition_index_writer(sst_ver, partitions_db_writer);
-        auto row_index_writer = sstables::trie::bti_row_index_writer(rows_db_writer);
+        auto partition_index_writer = sstables::trie::bti_partition_index_writer(sst_ver, partitions_db_writer, /*physical=*/false, /*uncompressed_chunk_length=*/0);
+        auto row_index_writer = sstables::trie::bti_row_index_writer(sst_ver, rows_db_writer, /*uncompressed_chunk_length=*/0);
 
         std::optional<partition_index_entry> last_partition_entry;
         std::optional<partition_end_entry> last_partition_end_entry;
@@ -1005,10 +1005,9 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
                 auto pk = sstables::key::from_partition_key(*the_schema, last.dk.key());
                 auto hash = utils::make_hashed_key(bytes_view(pk));
                 auto payload = row_index_writer.finish(
-                    sst_ver,
                     *the_schema,
-                    last.data_file_offset,
-                    last_partition_end_entry.value().data_file_offset,
+                    sstables::sstable_position::from_logical(last.data_file_offset),
+                    sstables::sstable_position::from_logical(last_partition_end_entry.value().data_file_offset),
                     pk,
                     last.partition_tombstone);
                 partition_index_writer.add(*the_schema, last.dk, hash, payload);
@@ -1027,7 +1026,7 @@ SEASTAR_THREAD_TEST_CASE(test_exhaustive) {
                         *the_schema,
                         e.first_ck,
                         e.last_ck,
-                        e.data_file_offset - last_partition_entry.value().data_file_offset,
+                        sstables::sstable_position_offset::from_logical(e.data_file_offset - last_partition_entry.value().data_file_offset),
                         e.range_tombstone_before_first_ck);
                 },
                 [&](const partition_end_entry& e) {
