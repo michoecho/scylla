@@ -1153,12 +1153,13 @@ SEASTAR_THREAD_TEST_CASE(test_read_row_index_header) {
     memory_data_sink_buffers bufs;
     {
         sstables::file_writer fw(data_sink(std::make_unique<memory_data_sink>(bufs)));
-        auto close_fw = defer([&] noexcept{ fw.close(); });
+        auto close_fw = defer([&] noexcept { fw.close(); });
         sstables::trie::write_row_index_header(
             sstables::sstable_version_types::mt,
             fw,
             pk,
-            partition_data_start,
+            sstables::sstable_position::from_logical(partition_data_start),
+            /*uncompressed_chunk_length=*/0,
             number_of_blocks,
             root_pos,
             tomb
@@ -1173,9 +1174,10 @@ SEASTAR_THREAD_TEST_CASE(test_read_row_index_header) {
         constexpr size_t max_cuts = 2;
         auto in = seastar::input_stream<char>(make_fragmented(ndcs, vec, max_cuts));
         auto semaphore = tests::reader_concurrency_semaphore_wrapper();
-        auto result = sstables::trie::read_row_index_header(std::move(in), 0, stream_size, semaphore.make_permit()).get();
+        auto result = sstables::trie::read_row_index_header(
+            /*physical=*/false, /*uncompressed_chunk_length=*/0, std::move(in), 0, stream_size, semaphore.make_permit()).get();
         SCYLLA_ASSERT(bytes_view(result.partition_key) == bytes_view(pk));
-        SCYLLA_ASSERT(result.data_file_offset == partition_data_start);
+        SCYLLA_ASSERT(result.data_file_position == sstables::sstable_position::from_logical(partition_data_start));
         SCYLLA_ASSERT(result.number_of_blocks == number_of_blocks);
         SCYLLA_ASSERT(result.trie_root == root_pos);
         SCYLLA_ASSERT(result.partition_tombstone == tomb);  

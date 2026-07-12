@@ -9,8 +9,10 @@
 #pragma once
 
 #include <memory>
+#include <variant>
 #include <seastar/core/shared_ptr.hh>
 #include "sstables/abstract_index_reader.hh"
+#include "sstables/sstable_position.hh"
 
 namespace sstables {
     class file_writer;
@@ -56,6 +58,25 @@ struct bti_partitions_db_footer {
     uint64_t partition_count;
     uint64_t trie_root_position;
 };
+
+// A position within Rows.db, pointing at a partition's row index header.
+// Unlike a Data.db position, it has no logical/physical distinction and no chunk
+// coordinates -- it is a plain offset into Rows.db -- so it is its own named type
+// rather than an sstable_position.
+struct rows_db_position {
+    uint64_t value;
+};
+
+// The location a BTI partition index entry points to. It is either the partition
+// itself in Data.db (an sstable_position), or the partition's row index
+// header in Rows.db (a rows_db_position), when the partition has an intra-partition
+// index.
+//
+// On disk the two cases are distinguished by the sign of the serialized position:
+// Data.db positions are serialized bit-negated. That negation is purely a
+// serialization detail applied by `bti_partition_index_writer`; the positions here
+// hold the plain, non-negated coordinate.
+using bti_partition_index_target = std::variant<sstable_position, rows_db_position>;
 
 // Transforms a stream of (partition key, offset in Data.db, hash bits) tuples
 // into a stream of trie nodes fed into bti_trie_sink.
