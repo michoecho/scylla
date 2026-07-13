@@ -22,6 +22,7 @@
 #include "db/corrupt_data_handler.hh"
 #include "keys/keys.hh"
 
+#include <deque>
 #include <functional>
 #include <queue>
 #include <boost/iterator/iterator_facade.hpp>
@@ -539,6 +540,72 @@ private:
     std::unique_ptr<file_writer> _partitions_writer;
     optimized_optional<trie::bti_row_index_writer> _bti_row_index_writer;
     optimized_optional<trie::bti_partition_index_writer> _bti_partition_index_writer;
+
+    // Post-compression coordinates of a single compressed chunk of Data.db,
+    // as reported by the compressing output stream's chunk observer.
+    struct compressed_chunk_coords {
+        // Start of this chunk in the pre-compression (uncompressed) stream.
+        uint64_t uncompressed_start;
+        // Length of this chunk in the pre-compression (uncompressed) stream.
+        uint64_t uncompressed_length;
+        // Start of this chunk in the compressed (on-disk) file.
+        uint64_t chunk_start;
+        // Length of this chunk in the compressed (on-disk) file.
+        uint64_t chunk_length;
+    };
+    // Coordinates of the compressed chunks of Data.db that have been reported by
+    // the chunk observer but not yet consumed, in ascending order of
+    // `uncompressed_start`. They are accumulated between calls to
+    // flush_ready_index_ops(), which translates the positions of all buffered
+    // index writes falling into these chunks and then forgets all of them.
+    // So this deque is empty after every flush_ready_index_ops() call.
+    std::deque<compressed_chunk_coords> _compressed_chunks;
+
+    // A buffered `bti_row_index_writer::add()` call, awaiting the post-compression
+    // position of the row index block it points to.
+    struct buffered_row_index_add {
+        clustering_info first;
+        clustering_info last;
+        // Pre-compression offset of this block from its partition's start. Together
+        // with `absolute_offset` it identifies the partition start (their
+        // difference), which phase 2 uses to derive the offset stored in the index.
+        uint64_t offset_from_partition_start;
+        // Absolute position in the uncompressed Data.db stream, used to look up
+        // the post-compression coordinates of the block.
+        uint64_t absolute_offset;
+        sstables::deletion_time preceding_range_tombstone;
+        // The block's resolved *absolute* position, filled in once the enclosing
+        // chunk has been compressed. Phase 2 subtracts the partition start from it
+        // to obtain the partition-relative offset the row index stores.
+        std::optional<sstable_position> resolved;
+    };
+    // A buffered `bti_row_index_writer::finish()` + `bti_partition_index_writer::add()`
+    // pair (the partition-level index write), awaiting the post-compression
+    // positions of the partition's start and end.
+    struct buffered_partition_index_op {
+        // Arguments for `bti_row_index_writer::finish`.
+        uint64_t partition_data_start;
+        uint64_t partition_data_end;
+        sstables::key partition_key;
+        sstables::deletion_time partition_tombstone;
+        // Arguments for `bti_partition_index_writer::add`.
+        dht::decorated_key dk;
+        utils::hashed_key murmur_hash;
+        // The post-compression coordinates of `partition_data_start` and
+        // `partition_data_end`, filled in once their enclosing chunks have been
+        // compressed. They may be resolved by different flush calls (the start can
+        // lie in an earlier chunk than the end), so they are stashed here as soon
+        // as each becomes available and the chunk that resolved them is forgotten.
+        std::optional<sstable_position> resolved_start;
+        std::optional<sstable_position> resolved_end;
+    };
+    // Buffered index writes awaiting their post-compression positions, in
+    // ascending position order (which is the order they must be replayed in).
+    // Row adds and partition ops are buffered separately and replayed in merge
+    // order. The front of each queue is flushed first.
+    std::deque<buffered_row_index_add> _buffered_row_adds;
+    std::deque<buffered_partition_index_op> _buffered_partition_ops;
+
     // The key of the last `consume_new_partition` call.
     // A partition key can only be inserted into Partitions.db
     // after its intra-partition index is written to Rows.db.
@@ -682,6 +749,12 @@ private:
     void close_index_writer();
     void close_rows_writer();
     void close_partitions_writer();
+
+    // Translates the positions of buffered index writes using the compressed
+    // chunks recorded since the last call (forgetting all of them afterwards),
+    // then replays in position order every buffered write whose position(s) are
+    // now known. Writes whose chunks haven't been compressed yet stay buffered.
+    void flush_ready_index_ops();
 
     void ensure_tombstone_is_written() {
         if (!_tombstone_written) {
@@ -1006,7 +1079,15 @@ void writer::init_file_writers() {
                 &_sst._components->compression,
                 _sst.get_version(),
                 _sst._schema->get_compressor_params(),
-                std::move(compressor)), _sst.get_filename());
+                std::move(compressor),
+                [this] (uint64_t post_compression_pos, uint64_t pre_compression_pos, uint64_t size, uint64_t uncompressed_size) {
+                    _compressed_chunks.push_back(compressed_chunk_coords{
+                        .uncompressed_start = pre_compression_pos,
+                        .uncompressed_length = uncompressed_size,
+                        .chunk_start = post_compression_pos,
+                        .chunk_length = size,
+                    });
+                }), _sst.get_filename());
     }
 
     if (_sst.has_component(component_type::Index)) {
@@ -1014,16 +1095,23 @@ void writer::init_file_writers() {
         _index_writer = std::make_unique<crc32_digest_file_writer>(std::move(out), _sst.sstable_buffer_size, _sst.index_filename());
     }
     if (_sst.has_component(component_type::Partitions) && _sst.has_component(component_type::Rows)) {
+        // The uncompressed chunk length bounds the offset-within-chunk field in
+        // physical payloads, so it determines that field's on-disk width. It is
+        // meaningful only for compressed sstables (which use physical positions);
+        // 0 for the rest, where the width is unused.
+        uint32_t uncompressed_chunk_length = _compression_enabled
+            ? _sst._schema->get_compressor_params().chunk_length()
+            : 0;
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Rows).get();
         _rows_writer = std::make_unique<crc32_digest_file_writer>(std::move(out), _sst.sstable_buffer_size, component_name(_sst, component_type::Rows));
-        // D3: the BTI writers accept typed positions, but callers still pass the
-        // legacy (logical) format and logical positions, so nothing changes on disk
-        // yet. The physical path (physical=true / a nonzero uncompressed_chunk_length /
-        // physical positions) is wired up in D5.
-        _bti_row_index_writer = trie::bti_row_index_writer(_sst.get_version(), *_rows_writer, /*uncompressed_chunk_length=*/0);
+        _bti_row_index_writer = trie::bti_row_index_writer(_sst.get_version(), *_rows_writer, uncompressed_chunk_length);
         out = _sst._storage->make_data_or_index_sink(_sst, component_type::Partitions).get();
         _partitions_writer = std::make_unique<crc32_digest_file_writer>(std::move(out), _sst.sstable_buffer_size, component_name(_sst, component_type::Partitions));
-        _bti_partition_index_writer = trie::bti_partition_index_writer(_sst.get_version(), *_partitions_writer, /*physical=*/false, /*uncompressed_chunk_length=*/0);
+        // Physical (post-compression) positions are used only by compressed `mu`
+        // sstables; everything else uses legacy pre-compression positions. This must
+        // match the position kind produced in flush_ready_index_ops().
+        bool physical = !holds_logical_position(_sst.get_version()) && _compression_enabled;
+        _bti_partition_index_writer = trie::bti_partition_index_writer(_sst.get_version(), *_partitions_writer, physical, uncompressed_chunk_length);
     }
     if (_delayed_filter) {
         file_output_stream_options options;
@@ -1056,6 +1144,155 @@ void writer::close_data_writer() {
     }
 }
 
+void writer::flush_ready_index_ops() {
+    // Physical positions (full chunk coordinates) are used only by compressed `mu`
+    // sstables. Everything else -- the legacy `ms`/`mt` formats, and uncompressed
+    // `mu` -- uses logical (pre-compression) positions, because without compression
+    // there are no chunks to point at. `make_pos` builds whichever variant this
+    // sstable uses (the chunk coordinates are ignored for logical positions).
+    bool logical = holds_logical_position(_sst.get_version()) || !_compression_enabled;
+    auto make_pos = [logical] (uint64_t chunk_start, uint64_t chunk_length, uint64_t offset_within_chunk, int64_t uncompressed) {
+        // The physical position stores chunk_length_hint as an upper bound on the
+        // chunk's on-disk byte length; the exact extent is such a bound.
+        return logical
+            ? sstable_position::from_logical(uncompressed)
+            : sstable_position::from_physical(
+                    chunk_start, chunk_length, offset_within_chunk);
+    };
+    if (!_compression_enabled) {
+        // No compression: positions are final on-disk positions (logical), and are
+        // known as soon as they are buffered. Resolve everything up front so phase 2
+        // can replay it all. Row adds resolve to the block's *absolute* position (not
+        // the partition-relative offset); phase 2 subtracts the partition start to
+        // obtain the offset the row index stores.
+        for (auto& add : _buffered_row_adds) {
+            add.resolved = make_pos(0, 0, 0, static_cast<int64_t>(add.absolute_offset));
+        }
+        for (auto& op : _buffered_partition_ops) {
+            op.resolved_start = make_pos(0, 0, 0, static_cast<int64_t>(op.partition_data_start));
+            op.resolved_end = make_pos(0, 0, 0, static_cast<int64_t>(op.partition_data_end));
+        }
+    }
+    // Phase 1: translate the positions of buffered index writes using the chunks
+    // recorded since the last flush, then forget all those chunks.
+    //
+    // We iterate over the recorded chunks from the oldest. The buffered ops are in
+    // ascending position order, so for each chunk we translate the tail of ops
+    // whose (still unresolved) position falls into it. A partition op has two
+    // positions (start and end) which may lie in different chunks, so it may be
+    // resolved partially (start only) by one chunk and finished by a later one.
+    //
+    // Cursors into the queues, pointing at the next op whose respective position
+    // still needs translating. They only move forward, because positions ascend.
+    size_t row_cursor = 0;
+    size_t part_start_cursor = 0;
+    size_t part_end_cursor = 0;
+    // Locates `pos` within chunk `c` and returns a physical position whose chunk
+    // coordinates come from `pos`, but whose (pre-compression) uncompressed component
+    // is `uncompressed`. All positions here are absolute: `uncompressed` is `pos`
+    // itself for both partition positions and row adds. (Row adds are turned into
+    // partition-relative offsets later, in phase 2, by subtracting the partition
+    // start; see below.)
+    auto translate_in_chunk = [&make_pos] (const compressed_chunk_coords& c, uint64_t pos, int64_t uncompressed) {
+        SCYLLA_ASSERT(pos >= c.uncompressed_start);
+        return make_pos(c.chunk_start, c.chunk_length, pos - c.uncompressed_start, uncompressed);
+    };
+    for (const auto& c : _compressed_chunks) {
+        // A position belongs to this chunk iff it lies in
+        // [uncompressed_start, uncompressed_start + uncompressed_length).
+        // The chunk's uncompressed length is reported by the observer, so every
+        // recorded chunk (including the last one) has a known upper bound.
+        uint64_t chunk_end = c.uncompressed_start + c.uncompressed_length;
+        while (row_cursor < _buffered_row_adds.size()
+                && _buffered_row_adds[row_cursor].absolute_offset < chunk_end) {
+            auto& add = _buffered_row_adds[row_cursor];
+            // Resolve the block to its absolute position in Data.db; phase 2 turns it
+            // into the partition-relative offset the row index stores.
+            add.resolved = translate_in_chunk(c, add.absolute_offset, static_cast<int64_t>(add.absolute_offset));
+            ++row_cursor;
+        }
+        while (part_start_cursor < _buffered_partition_ops.size()
+                && _buffered_partition_ops[part_start_cursor].partition_data_start < chunk_end) {
+            auto& op = _buffered_partition_ops[part_start_cursor];
+            if (!op.resolved_start.has_value()) {
+                op.resolved_start = translate_in_chunk(c, op.partition_data_start, static_cast<int64_t>(op.partition_data_start));
+            }
+            ++part_start_cursor;
+        }
+        while (part_end_cursor < _buffered_partition_ops.size()
+                && _buffered_partition_ops[part_end_cursor].partition_data_end < chunk_end) {
+            auto& op = _buffered_partition_ops[part_end_cursor];
+            if (!op.resolved_end.has_value()) {
+                op.resolved_end = translate_in_chunk(c, op.partition_data_end, static_cast<int64_t>(op.partition_data_end));
+            }
+            ++part_end_cursor;
+        }
+    }
+    // All recorded chunks have now been consumed (their relevant positions copied
+    // into the buffered ops). Forget them; the next flush starts from a clean set.
+    _compressed_chunks.clear();
+
+    // Phase 2: replay the buffered ops in merge order by position, emitting each
+    // as long as its position(s) are resolved. Stop at the first op (in position
+    // order) that isn't ready yet, to preserve the order the stateful trie writers
+    // require (all of a partition's row adds precede its finish()). A partition op
+    // is keyed by `partition_data_end`, which lies after all of its row adds.
+    while (!_buffered_row_adds.empty() || !_buffered_partition_ops.empty()) {
+        bool have_row = !_buffered_row_adds.empty();
+        bool have_part = !_buffered_partition_ops.empty();
+        // Pick whichever queue's front comes first in Data.db position order.
+        bool take_row = have_row
+            && (!have_part
+                || _buffered_row_adds.front().absolute_offset
+                       <= _buffered_partition_ops.front().partition_data_end);
+        if (take_row) {
+            auto& add = _buffered_row_adds.front();
+            if (!add.resolved) {
+                break;
+            }
+            // The row index stores each block's position as an offset from its
+            // partition's start. That partition's op is always at the front of the
+            // partition queue here (all of a partition's row adds precede its finish()
+            // in position order, and previous partitions' ops have already been
+            // popped), and its start is resolved no later than any of its rows (the
+            // start lies in an earlier-or-equal chunk). So subtract the resolved
+            // partition start to obtain the offset.
+            SCYLLA_ASSERT(!_buffered_partition_ops.empty());
+            auto& part = _buffered_partition_ops.front();
+            SCYLLA_ASSERT(part.resolved_start.has_value());
+            SCYLLA_ASSERT(add.absolute_offset - add.offset_from_partition_start == part.partition_data_start);
+            auto offset_from_partition_start = *add.resolved - *part.resolved_start;
+            _bti_row_index_writer->add(
+                _schema,
+                add.first,
+                add.last,
+                offset_from_partition_start,
+                add.preceding_range_tombstone
+            );
+            _buffered_row_adds.pop_front();
+        } else {
+            auto& op = _buffered_partition_ops.front();
+            if (!op.resolved_start || !op.resolved_end) {
+                break;
+            }
+            auto partitions_db_payload = _bti_row_index_writer->finish(
+                _schema,
+                *op.resolved_start,
+                *op.resolved_end,
+                op.partition_key,
+                op.partition_tombstone
+            );
+            _bti_partition_index_writer->add(
+                _schema,
+                std::move(op.dk),
+                op.murmur_hash,
+                partitions_db_payload
+            );
+            _buffered_partition_ops.pop_front();
+        }
+    }
+}
+
 void writer::close_index_writer() {
     if (_index_writer) {
         _sst.get_components_digests().map[component_type::Index] = close_digest_writer(_index_writer);
@@ -1078,6 +1315,12 @@ void writer::close_rows_writer() {
 }
 
 void writer::consume_new_partition(const dht::decorated_key& dk) {
+    // Before writing a new partition key, flush the buffered index writes whose
+    // chunks have already been compressed (and forget those chunks).
+    if (_bti_partition_index_writer) {
+        flush_ready_index_ops();
+    }
+
     _c_stats.start_offset = _data_writer->offset();
     _prev_row_start = _data_writer->offset();
 
@@ -1676,13 +1919,18 @@ void writer::write_pi_block(const pi_block& block) {
     }
   }
     if (_bti_row_index_writer) {
-        _bti_row_index_writer->add(
-            _schema,
-            block.first,
-            block.last,
-            sstable_position_offset::from_logical(block.offset),
-            to_deletion_time(block.preceding_range_tombstone)
-        );
+        // Buffer the row index add() until the post-compression position of the
+        // block is known (i.e. until the chunk containing it has been flushed).
+        // `block.offset` is relative to the partition start; the absolute Data.db
+        // position is needed to look up the post-compression coordinates.
+        _buffered_row_adds.push_back(buffered_row_index_add{
+            .first = block.first,
+            .last = block.last,
+            .offset_from_partition_start = block.offset,
+            .absolute_offset = _current_partition_position + block.offset,
+            .preceding_range_tombstone = to_deletion_time(block.preceding_range_tombstone),
+            .resolved = std::nullopt,
+        });
     }
 }
 
@@ -1767,19 +2015,21 @@ stop_iteration writer::consume_end_of_partition() {
     write_promoted_index();
 
     if (_bti_partition_index_writer) {
-        auto partitions_db_payload = _bti_row_index_writer->finish(
-            _schema,
-            sstable_position::from_logical(_current_partition_position),
-            sstable_position::from_logical(end_of_partition_position),
-            *_partition_key,
-            _pi_write_m.partition_tombstone
-        );
-        _bti_partition_index_writer->add(
-            _schema,
-            *std::exchange(_current_dk_for_bti, std::nullopt),
-            _current_murmur_hash,
-            partitions_db_payload
-        );
+        // Buffer this partition's finish()/add() until the post-compression
+        // positions of its start and end are known. It is replayed (in merge
+        // order with the row adds, which are buffered as they come) by
+        // flush_ready_index_ops(), which runs before each new partition key is
+        // written and at finish.
+        _buffered_partition_ops.push_back(buffered_partition_index_op{
+            .partition_data_start = _current_partition_position,
+            .partition_data_end = end_of_partition_position,
+            .partition_key = *_partition_key,
+            .partition_tombstone = _pi_write_m.partition_tombstone,
+            .dk = *std::exchange(_current_dk_for_bti, std::nullopt),
+            .murmur_hash = _current_murmur_hash,
+            .resolved_start = std::nullopt,
+            .resolved_end = std::nullopt,
+        });
     }
 
     // compute size of the current row.
@@ -1812,6 +2062,19 @@ void writer::consume_end_of_stream() {
 
     close_index_writer();
 
+    // Close the Data.db writer first so that all compressed chunks are flushed
+    // and their post-compression coordinates are reported to the chunk observer.
+    // Only then can the remaining buffered index writes be resolved and replayed
+    // into the trie writers (which write to Partitions.db / Rows.db), so this must
+    // happen before those writers are closed.
+    close_data_writer();
+    if (_bti_partition_index_writer) {
+        flush_ready_index_ops();
+        // With the stream closed, every position is resolvable, so nothing must
+        // remain buffered.
+        SCYLLA_ASSERT(_buffered_row_adds.empty() && _buffered_partition_ops.empty());
+    }
+
     close_partitions_writer();
     close_rows_writer();
 
@@ -1825,7 +2088,6 @@ void writer::consume_end_of_stream() {
     seal_statistics(_sst.get_version(), _sst._components->statistics, _collector,
         _sst._schema->get_partitioner().name(), _sst._schema->bloom_filter_fp_chance(),
         _sst._schema, _sst.get_first_decorated_key(), _sst.get_last_decorated_key(), _enc_stats);
-    close_data_writer();
 
   if (_sst._components->summary) {
     _sst.write_summary();

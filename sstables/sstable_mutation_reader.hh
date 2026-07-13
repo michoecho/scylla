@@ -14,6 +14,7 @@
 #include <seastar/core/do_with.hh>
 #include <seastar/core/byteorder.hh>
 #include "index_reader.hh"
+#include "sstables/decompressing_input_stream.hh"
 #include "sstables/mx/partition_reversing_data_source.hh"
 #include "sstables/sstables.hh"
 
@@ -128,6 +129,19 @@ inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_rows(const s
     // This potentially enables read-ahead beyond end, until last_end, which
     // can be beneficial if the user wants to fast_forward_to() on the
     // returned context, and may make small skips.
+    if (toread.start.is_physical()
+            && !holds_logical_position(sst->get_version()) && sst->has_component(component_type::CompressionInfo)) {
+        // The decompressing stream always verifies per-chunk checksums; with
+        // integrity checking on it also folds the whole-file digest (verified
+        // once a full sequential read reaches end of file).
+        std::optional<uint32_t> digest;
+        if (integrity == integrity_check::yes) {
+            digest = sst->get_digest();
+        }
+        auto input = make_decompressing_input_stream(sst, sstable::disk_read_range(toread.start, last_end),
+                consumer.permit(), consumer.trace_state(), digest);
+        co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end);
+    }
     auto input = co_await sst->data_stream(sstable::disk_read_range(toread.start, last_end),
             consumer.permit(), consumer.trace_state(), sst->_partition_range_history, integrity);
     co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end);
@@ -156,7 +170,7 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
         .the_context = std::make_unique<DataConsumeRowsContext>(
                 s, std::move(sst), consumer,
                 std::make_unique<data_consumer::continuous_data_consumer_seastar_input_stream>(input_stream<char>(std::move(reversing_data_source.the_source))),
-                toread.start, toread.end),
+                sstable_position::from_logical(0), std::nullopt),
         .current_position_in_sstable = reversing_data_source.current_position_in_sstable
     };
 }
@@ -164,6 +178,18 @@ inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
 template <typename DataConsumeRowsContext>
 inline future<std::unique_ptr<DataConsumeRowsContext>> data_consume_single_partition(const schema& s, shared_sstable sst, typename DataConsumeRowsContext::consumer& consumer,
         sstable::disk_read_range toread, integrity_check integrity) {
+    if (toread.start.is_physical()
+            && !holds_logical_position(sst->get_version()) && sst->has_component(component_type::CompressionInfo)) {
+        // The decompressing stream always verifies per-chunk checksums; with
+        // integrity checking on it also folds the whole-file digest (verified
+        // once a full sequential read reaches end of file).
+        std::optional<uint32_t> digest;
+        if (integrity == integrity_check::yes) {
+            digest = sst->get_digest();
+        }
+        auto input = make_decompressing_input_stream(sst, toread, consumer.permit(), consumer.trace_state(), digest);
+        co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end);
+    }
     auto input = co_await sst->data_stream(toread,
             consumer.permit(), consumer.trace_state(), sst->_single_partition_history, integrity);
     co_return std::make_unique<DataConsumeRowsContext>(s, std::move(sst), consumer, std::move(input), toread.start, toread.end);
