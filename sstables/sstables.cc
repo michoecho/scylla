@@ -2751,25 +2751,45 @@ uint64_t sstable::ondisk_data_size() const {
 }
 
 sstable_position sstable::start_position() const {
-    // Physical start positions (for compressed `mu`) require the physical index
-    // format, which is not implemented yet; until then every version reads from
-    // logical position 0. The physical branch is added together with the physical
-    // index writer/reader.
+    if (!holds_logical_position(_version) && has_component(component_type::CompressionInfo)) {
+        // `mu` is read by the physical cursor, which navigates by chunk
+        // coordinates, so the start position must carry the real coordinates of
+        // the first chunk. They come from the compression component: the first
+        // chunk begins at on-disk position 0, and its length is the extent of
+        // chunk 0. The logical/uncompressed position is 0.
+        const auto& comp = _components->compression;
+        auto accessor = comp.offsets.get_accessor();
+        auto chunk = comp.locate(0, accessor);
+        // chunk_length_hint is an upper bound on the chunk's on-disk byte length;
+        // the exact extent is such a bound.
+        return sstable_position::from_physical(
+                chunk.chunk_start, chunk.chunk_len, chunk.offset);
+    }
     return sstable_position::from_logical(0);
 }
 
 sstable_position sstable::end_position() const {
-    // Physical end sentinels (for compressed `mu`) require the physical index
-    // format, which is not implemented yet; until then every version ends at the
-    // uncompressed data size.
+    if (!holds_logical_position(_version) && has_component(component_type::CompressionInfo)) {
+        // For `mu`, the end-of-data sentinel must be a physical position past the
+        // last chunk so it orders after every real position. The physical cursor
+        // treats chunk_position >= compressed_file_length as end of data, so we
+        // anchor the sentinel at the on-disk data size.
+        auto physical_end = ondisk_data_size();
+        return sstable_position::from_physical(physical_end, 0, 0);
+    }
     return sstable_position::from_logical(data_size());
 }
 
 sstable_position sstable::sstable_position_from_logical_position(uint64_t logical_position) const {
-    // The physical mapping (for compressed `mu`) requires the physical index
-    // format, which is not implemented yet; until then every version maps a
-    // logical position to itself.
-    return sstable_position::from_logical(logical_position);
+    if (!_components->compression || holds_logical_position(_version)) {
+        return sstable_position::from_logical(logical_position);
+    }
+    if (logical_position >= data_size()) {
+        return end_position();
+    }
+    const auto& comp = _components->compression;
+    auto chunk = comp.locate(logical_position, comp.offsets.get_accessor());
+    return sstable_position::from_physical(chunk.chunk_start, chunk.chunk_len, chunk.offset);
 }
 
 disk_read_range sstable::disk_read_range_from_logical_range(uint64_t begin, uint64_t end) const {
@@ -3195,14 +3215,13 @@ future<std::unique_ptr<data_consumer::continuous_data_consumer_input_stream>> ss
         digest = get_digest();
     }
 
-    if (range.start.is_physical()) {
-        // A physical range means the caller navigates the compressed data file by
-        // chunk coordinates: read it through the decompressing stream, which opens
-        // its own (traced) file, verifies per-chunk checksums, and - when reading
-        // the whole file in order from the start - folds each chunk's checksum into
-        // a running whole-file digest (verified at end of file) when `digest` is
-        // set. This is version-agnostic: the choice of physical positions is made
-        // by the higher layer that produced the range.
+    if (_components->compression && !holds_logical_position(_version)) {
+        // The physical-position compressed format (`mu`) is read through the
+        // decompressing stream, which navigates the data file by chunk
+        // coordinates. It opens its own (traced) file, verifies per-chunk
+        // checksums, and - when reading the whole file in order from the start -
+        // folds each chunk's checksum into a running whole-file digest (verified
+        // at end of file) when `digest` is set.
         co_return make_decompressing_input_stream(shared_from_this(), range, permit, std::move(trace_state), digest);
     }
 
@@ -3215,11 +3234,11 @@ future<std::unique_ptr<data_consumer::continuous_data_consumer_input_stream>> ss
     };
 
     if (_components->compression) {
-        // Compressed formats decompress on the fly using the external
-        // compression offsets, verifying per-chunk checksums (and the whole-file
-        // digest when `digest` is set). The resulting decompressed byte stream is
-        // a plain input_stream fed to the parsers through the seastar-input-stream
-        // adapter.
+        // Logical-position compressed formats (mc..me, ka/la) decompress on the
+        // fly using the external compression offsets, verifying per-chunk
+        // checksums (and the whole-file digest when `digest` is set). The
+        // resulting decompressed byte stream is a plain input_stream fed to the
+        // parsers through the seastar-input-stream adapter.
         if (_version >= sstable_version_types::mc) {
             co_return std::make_unique<data_consumer::continuous_data_consumer_seastar_input_stream>(
                 make_compressed_file_m_format_input_stream(stream_creator, &_components->compression, _version,
