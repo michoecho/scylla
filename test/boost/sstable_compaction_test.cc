@@ -8161,5 +8161,3 @@ SEASTAR_TEST_CASE(test_compaction_output_is_not_leaked_when_attach_fails) {
         BOOST_REQUIRE_EQUAL(after, expected);
     });
 }
-
-BOOST_AUTO_TEST_SUITE_END()
