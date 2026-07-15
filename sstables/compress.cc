@@ -112,7 +112,7 @@ uint32_t read_chunk_length_field(const char* src, uint32_t uncompressed_chunk_le
     const uint64_t bound = compressed_chunk_length_limit(uncompressed_chunk_length);
     if (compressed_len > bound) {
         throw_malformed_sstable_exception(format(
-                "compressed chunk length field out of range: {}, max={}",
+                "compressed chunk length field out of range: got {}, expected at most {}",
                 compressed_len, bound));
     }
     return compressed_len;
@@ -370,6 +370,10 @@ public:
             , _offsets(_compression_metadata->offsets.get_accessor())
             , _permit(std::move(permit))
     {
+        // This class is not supposed to be used with sstables indexed by physical position.
+        // They are handled elsewhere.
+        SCYLLA_ASSERT(!sstables::chunk_has_length_framing(version));
+
         uint64_t pos = range.start.to_logical();
         size_t len = range.end.to_logical() - range.start.to_logical();
         _pos = _beg_pos = pos;
@@ -514,6 +518,10 @@ class compressed_raw_file_data_source_impl : public data_source_impl {
     std::function<future<input_stream<char>>()> _stream_creator;
     std::optional<input_stream<char>> _input_stream;
     sstables::compression* _compression_metadata;
+    // Width of one chunk-length field (0 if the version stores no per-chunk
+    // framing); the chunk carries this header at the front and an equal-width
+    // footer at the back.
+    size_t _frame_len;
     sstables::compression::segmented_offsets::accessor _offsets;
     [[no_unique_address]] sstables::digest_members<check_digest> _digests;
     reader_permit _permit;
@@ -536,6 +544,8 @@ public:
                 file_input_stream_options options,
                 reader_permit permit, std::optional<uint32_t> digest)
             : _compression_metadata(cm)
+            , _frame_len(sstables::chunk_has_length_framing(version)
+                    ? sstables::chunk_length_field_size(cm->uncompressed_chunk_length()) : 0)
             , _offsets(_compression_metadata->offsets.get_accessor())
             , _permit(std::move(permit))
     {
@@ -560,30 +570,66 @@ public:
             _input_stream = co_await _stream_creator();
         }
 
-        auto chunk_len = get_chunk_len(_current_chunk_index);
-        if (!chunk_len) {
-            sstables::throw_malformed_sstable_exception(format("compressed raw reader chunk_len must be greater than zero, pos={}", _pos));
+        uint64_t chunk_len;
+        temporary_buffer<char> buf;
+        std::optional<reader_permit::resource_units> res_units;
+        if (_frame_len) {
+            // Framed (`mu`) sstables store each chunk's compressed length in chunk header.
+            auto header = co_await _input_stream->read_exactly(_frame_len);
+            if (header.size() != _frame_len) {
+                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk header of {} bytes, actual={}", _pos, _frame_len, header.size()));
+            }
+            auto compressed_len = sstables::read_chunk_length_field(header.get(), _compression_metadata->uncompressed_chunk_length());
+            // A framed chunk is [header][compressed data][4-byte checksum][footer],
+            // with the header and footer each _frame_len bytes wide.
+            chunk_len = 2 * _frame_len + compressed_len + 4;
+            res_units = co_await _permit.request_memory(chunk_len);
+            auto body = co_await _input_stream->read_exactly(chunk_len - _frame_len);
+            if (body.size() != chunk_len - _frame_len) {
+                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, _frame_len + body.size()));
+            }
+            // Reassemble the header with the rest into a single buffer.
+            buf = temporary_buffer<char>(chunk_len);
+            std::copy_n(header.get(), _frame_len, buf.get_write());
+            std::copy_n(body.get(), body.size(), buf.get_write() + _frame_len);
+        } else {
+            chunk_len = get_chunk_len(_current_chunk_index);
+            if (!chunk_len) {
+                sstables::throw_malformed_sstable_exception(format("compressed raw reader chunk_len must be greater than zero, pos={}", _pos));
+            }
+            res_units = co_await _permit.request_memory(chunk_len);
+            buf = co_await _input_stream->read_exactly(chunk_len);
+            if (buf.size() != chunk_len) {
+                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, buf.size()));
+            }
         }
 
-        auto res_units = co_await _permit.request_memory(chunk_len);
-        auto buf = co_await _input_stream->read_exactly(chunk_len);
-        if (buf.size() != chunk_len) {
-            sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, buf.size()));
-        }
-
-        auto compressed_len = chunk_len - 4;
-        auto expected_checksum = read_be<uint32_t>(buf.get() + compressed_len);
-        auto actual_checksum = crc32_utils::checksum(buf.get(), compressed_len);
+        const char* compressed_data = buf.get() + _frame_len;
+        auto compressed_len = chunk_len - 2 * _frame_len - 4;
+        // The per-chunk checksum covers the header (if any) and the compressed
+        // data -- everything up to but not including the checksum. The trailing
+        // footer (if any) is not checksummed by it.
+        const char* checksummed_data = buf.get();
+        auto checksummed_len = chunk_len - _frame_len - 4;
+        auto expected_checksum = read_be<uint32_t>(compressed_data + compressed_len);
+        auto actual_checksum = crc32_utils::checksum(checksummed_data, checksummed_len);
         if (expected_checksum != actual_checksum) {
             sstables::throw_malformed_sstable_exception(format("compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}", chunk_len, _pos, expected_checksum, actual_checksum));
         }
 
         if constexpr (check_digest) {
             if (_digests.can_calculate_digest) {
-                _digests.actual_digest = checksum_combine_or_feed<crc32_utils>(_digests.actual_digest, actual_checksum, buf.get(), compressed_len);
+                _digests.actual_digest = checksum_combine_or_feed<crc32_utils>(_digests.actual_digest, actual_checksum, checksummed_data, checksummed_len);
                 uint32_t be_actual_checksum = cpu_to_be(actual_checksum);
                 _digests.actual_digest = crc32_utils::checksum(_digests.actual_digest,
                         reinterpret_cast<const char*>(&be_actual_checksum), sizeof(be_actual_checksum));
+                // The whole-file digest is a plain checksum over every byte of the
+                // file, so fold in the footer too (it follows the per-chunk
+                // checksum on disk).
+                if (_frame_len) {
+                    _digests.actual_digest = crc32_utils::checksum(_digests.actual_digest,
+                            buf.get() + chunk_len - _frame_len, _frame_len);
+                }
             }
         }
 
@@ -592,13 +638,13 @@ public:
 
         if constexpr (check_digest) {
             if (_digests.can_calculate_digest
-                    && _current_chunk_index == _compression_metadata->offsets.size()
+                    && _pos == _compression_metadata->compressed_file_length()
                     && _digests.expected_digest != _digests.actual_digest) {
                 sstables::throw_malformed_sstable_exception(seastar::format("Digest mismatch: expected={}, actual={}", _digests.expected_digest, _digests.actual_digest));
             }
         }
 
-        co_return make_tracked_temporary_buffer(std::move(buf), std::move(res_units));
+        co_return make_tracked_temporary_buffer(std::move(buf), std::move(*res_units));
     }
 
     virtual future<> close() override {
