@@ -117,6 +117,19 @@ public:
     friend struct fmt::formatter<std::optional<sstable_position>>;
 };
 
+struct disk_read_range {
+    sstable_position start;
+    sstable_position end;
+
+    disk_read_range(sstable_position start, sstable_position end)
+      : start(start)
+      , end(end)
+    {}
+    explicit operator bool() const {
+        return start != end;
+    }
+};
+
 // Basically the same as sstable_position, except it represents a position
 // relative to another position (specifically: a position of row relative
 // to partition start), and it has different arithmetic operations defined.
