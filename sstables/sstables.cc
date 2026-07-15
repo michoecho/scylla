@@ -3103,6 +3103,21 @@ bool uses_legacy_dk_order(sstable_version_types v) {
     return v != sstable_version_types::ms;
 }
 
+// Whether the index of a compressed sstable holds logical (i.e. pre-compression)
+// or physical (chunk position, chunk size, offset inside chunk)
+// positions of rows and partitions.
+bool holds_logical_position(sstable_version_types v) {
+    return true;
+}
+
+// For versions that store a full physical position in the index (i.e. those
+// for which holds_compressed_position() is false, currently `mu`), each
+// compressed chunk on disk is framed by a header and a footer, both holding this
+// chunk's size. This lets a reader navigate between neighboring chunks.
+bool chunk_has_length_framing(sstable_version_types v) {
+    return !holds_logical_position(v);
+}
+
 component_type sstable::component_from_sstring(version_types v, const sstring &s) {
     try {
         return reverse_map(s, sstable_version_constants::get_component_map(v));
