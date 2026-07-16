@@ -3511,8 +3511,18 @@ future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, read
     co_return result;
 }
 
+// `frame_len` is the width, in bytes, of the length header and (equal-width)
+// footer that frame each compressed chunk in a physically-indexed ("mu")
+// Data.db; it is 0 for formats without such framing (ka/la, mc..me). The
+// on-disk chunk layout is:
+//
+//     [ header ][ compressed data ][ 4-byte checksum ][ footer ]
+//
+// The per-chunk checksum covers the header and the compressed data, but neither
+// the checksum itself nor the footer. The whole-file digest, on the other hand,
+// covers every byte of the file, so it also folds in the footer.
 template <typename ChecksumType>
-static future<bool> do_validate_compressed(input_stream<char>& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest) {
+static future<bool> do_validate_compressed(input_stream<char>& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest, size_t frame_len) {
     bool valid = true;
     uint64_t offset = 0;
     uint32_t actual_full_checksum = ChecksumType::init_checksum();
@@ -3536,10 +3546,19 @@ static future<bool> do_validate_compressed(input_stream<char>& stream, const sst
             break;
         }
 
-        // The chunk checksum covers everything in the chunk except its own
-        // trailing 4 bytes: the length prefix (if any) and the compressed data.
+        // A well-formed chunk must be large enough to hold at least the framing
+        // (header + footer) and its 4-byte checksum. A shorter one is corrupt
+        // metadata; bail out before the length arithmetic below underflows.
+        if (chunk_len < 4 + frame_len) {
+            sstlog.error("Corrupt chunk at offset {}: chunk of size {} is too small to hold its {}-byte framing and checksum", offset, chunk_len, frame_len);
+            valid = false;
+            break;
+        }
+
+        // The checksummed region is the header plus the compressed data, i.e. the
+        // whole chunk minus its trailing 4-byte checksum and its footer.
         const char* checksummed_data = buf.get();
-        auto checksummed_len = chunk_len - 4;
+        auto checksummed_len = chunk_len - 4 - frame_len;
         auto expected_checksum = read_be<uint32_t>(checksummed_data + checksummed_len);
         auto actual_checksum = ChecksumType::checksum(checksummed_data, checksummed_len);
         if (actual_checksum != expected_checksum) {
@@ -3553,6 +3572,12 @@ static future<bool> do_validate_compressed(input_stream<char>& stream, const sst
                 uint32_t be_actual_checksum = cpu_to_be(actual_checksum);
                 actual_full_checksum = ChecksumType::checksum(actual_full_checksum,
                         reinterpret_cast<const char*>(&be_actual_checksum), sizeof(be_actual_checksum));
+            }
+            // Fold in the footer, which on disk follows the per-chunk checksum,
+            // to match how the writer computed the whole-file digest.
+            if (frame_len) {
+                actual_full_checksum = ChecksumType::checksum(actual_full_checksum,
+                        checksummed_data + checksummed_len + 4, frame_len);
             }
         }
 
@@ -3745,11 +3770,16 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
     if (sst->get_compression()) {
         auto raw_stream = co_await sst->data_stream_raw(
                 permit, nullptr, nullptr);
+        const auto& compression = sst->get_compression();
+        // Physically-indexed ("mu") sstables frame each compressed chunk with a
+        // length header and an equal-width footer; other formats don't (frame_len 0).
+        const size_t frame_len = chunk_has_length_framing(sst->get_version())
+                ? chunk_length_field_size(compression.uncompressed_chunk_length()) : 0;
         try {
             if (sst->get_version() >= sstable_version_types::mc) {
-                valid = co_await do_validate_compressed<crc32_utils>(raw_stream, sst->get_compression(), true, digest);
+                valid = co_await do_validate_compressed<crc32_utils>(raw_stream, compression, true, digest, frame_len);
             } else {
-                valid = co_await do_validate_compressed<adler32_utils>(raw_stream, sst->get_compression(), false, digest);
+                valid = co_await do_validate_compressed<adler32_utils>(raw_stream, compression, false, digest, frame_len);
             }
         } catch (malformed_sstable_exception& e) {
             valid = false;
