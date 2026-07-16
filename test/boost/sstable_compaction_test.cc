@@ -602,6 +602,7 @@ static void compact_corrupted_by_compression_mode(const std::string& tname,
                 BOOST_FAIL("expecting compaction to fail with exception");
             } catch (const ExceptionType& e) {
                 std::string what = e.what();
+                testlog.info("Got: {}", what);
                 BOOST_REQUIRE(what.find(compaction_err_msg) != std::string::npos);
                 BOOST_REQUIRE(std::ranges::any_of(integrity_err_msgs, [&] (const sstring& msg) {
                     return what.find(msg) != std::string::npos;
@@ -633,7 +634,7 @@ static void compact_corrupted_by_compression_mode(const std::string& tname,
         // chunk with its length (mu and later) may instead be rejected earlier,
         // when that bogus on-disk length prefix is parsed, rather than reading a
         // huge buffer just to fail the checksum afterwards.
-        test_failing_compact(schema, {sst}, error_msg, {"failed checksum", "length prefix"});
+        test_failing_compact(schema, {sst}, error_msg, {"failed checksum", "length field out of range"});
 
         testlog.info("Compacting {}compressed SSTable with invalid digest", compress ? "" : "un");
 
