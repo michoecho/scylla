@@ -39,16 +39,28 @@ const std::stacktrace& stacktrace_of_exception(const std::exception_ptr& eptr) {
     return *trace;
 }
 
+// Optimization is disabled for this function so the stacktrace captured at
+// throw time carries a distinct "throwing_frame" frame; the sanity test below
+// looks for it. Under -O the throw is in tail position and this frame is
+// elided. clang and gcc spell per-function "no optimization" differently.
+#if defined(__clang__)
+[[clang::optnone]]
+#elif defined(__GNUC__)
+[[gnu::optimize("O0")]]
+#endif
+void throwing_frame() {
+    throw std::runtime_error("Error");
+}
+
 TEST_SUITE("Exception stacktrace tests") {
     TEST_CASE("Exception stacktrace sanity") {
         try {
-            throw std::runtime_error("Error");
+            throwing_frame();
         } catch (...) {
             auto st = stacktrace_of_exception(std::current_exception());
-            auto function_name = std::string_view(__FUNCTION__);
             CHECK(st.size() > 1);
-            CHECK(std::ranges::any_of(st, [&](const std::stacktrace_entry& frame) {
-                return frame.description().contains(function_name);
+            CHECK(std::ranges::any_of(st, [](const std::stacktrace_entry& frame) {
+                return frame.description().contains("throwing_frame");
             }));
             CHECK(std::ranges::any_of(st, [](const std::stacktrace_entry& frame) {
                 return frame.description().contains("main");
