@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Run a command (default: claude) inside a bubblewrap sandbox.
+
+The sandbox exposes only what's needed: system libs/binaries (read-only),
+Claude config/state and the project dir (read-write), and — when present —
+the bits required for hardware-accelerated Vulkan/OpenGL and Wayland.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def resolve_claude_paths():
+    """Return (bin_dir, install_dir) for the real claude executable."""
+    claude = shutil.which("claude")
+    if not claude:
+        return None, None
+    real = Path(claude).resolve()
+    bin_dir = Path(claude).parent
+    install_dir = real.parent.parent
+    return str(bin_dir), str(install_dir)
+
+
+def ensure_dirs(home):
+    for d in (
+        f"{home}/.claude",
+        f"{home}/.cache/claude-cli-nodejs",
+        f"{home}/.cache/claude",
+        f"{home}/.local/state/claude",
+        f"{home}/.cache/Code",   # VS Code cache (rest lives under ~/.config/Code)
+        f"{home}/.vscode-shared/sharedStorage",  # VS Code application storage
+    ):
+        os.makedirs(d, exist_ok=True)
+
+
+def gpu_sys_binds():
+    """Minimal /sys binds so Mesa can probe GPU PCI devices (RADV/ANV).
+
+    We tmpfs over /sys and bind back only the DRM symlink indexes plus the
+    specific PCI branch(es) the GPUs live on — not the whole device tree.
+    Returns [] if there's no /sys/devices (nothing to expose).
+    """
+    if not Path("/sys/devices").is_dir():
+        return []
+
+    args = ["--tmpfs", "/sys"]
+    for idx in ("/sys/class/drm", "/sys/dev/char"):
+        if Path(idx).is_dir():
+            args += ["--ro-bind", idx, idx]
+
+    # Resolve each DRM node to its top-level PCI branch, e.g.
+    #   /sys/class/drm/card1 -> /sys/devices/pci0000:00/0000:00:02.0/drm/card1
+    # We bind /sys/devices/pci0000:00/0000:00:02.0 so the relative symlinks in
+    # class/drm and dev/char resolve inside the tmpfs.
+    branches = set()
+    drm = Path("/sys/class/drm")
+    if drm.is_dir():
+        for node in drm.iterdir():
+            if not (node.name.startswith("card") or node.name.startswith("renderD")):
+                continue
+            try:
+                target = node.resolve()
+            except OSError:
+                continue
+            parts = target.parts
+            if len(parts) < 5 or parts[:3] != ("/", "sys", "devices"):
+                continue
+            if not parts[3].startswith("pci"):
+                continue
+            # /sys/devices/pci0000:00/<slot> — the shallowest PCI branch.
+            branches.add(str(Path(*parts[:5])))
+
+    for branch in sorted(branches):
+        args += ["--ro-bind", branch, branch]
+    return args
+
+
+def optional_binds(home):
+    """Binds that only apply when the source path exists."""
+    args = []
+
+    def ro(path):
+        if Path(path).exists():
+            args.extend(["--ro-bind", path, path])
+
+    def rw(path):
+        if Path(path).exists():
+            args.extend(["--bind", path, path])
+
+    # GPU device nodes (re-added after --dev /dev wipes them).
+    if Path("/dev/dri").is_dir():
+        args += ["--dev-bind", "/dev/dri", "/dev/dri"]
+
+    # Minimal /sys for Mesa GPU probing.
+    args += gpu_sys_binds()
+
+    # NixOS graphics driver tree (Vulkan ICDs + Mesa libs, symlinked into /nix).
+    ro("/run/opengl-driver")
+    ro("/run/opengl-driver-32")
+
+    # Writable XDG_RUNTIME_DIR: Wayland lives here, and GUI apps (VS Code)
+    # write lock/IPC files into it. Bind the whole dir rw rather than just the
+    # Wayland socket so those apps have somewhere to put their runtime state.
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    if Path(runtime_dir).is_dir():
+        args += ["--bind", runtime_dir, runtime_dir]
+    else:
+        # Fall back to exposing just the Wayland socket read-only.
+        wl_display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        wl_socket = f"{runtime_dir}/{wl_display}"
+        if Path(wl_socket).is_socket():
+            args += ["--ro-bind", wl_socket, wl_socket]
+
+    # Real /dev/shm: Chromium/Electron (VS Code) uses large shared-memory
+    # segments; bwrap's default tmpfs from --dev is too small and causes
+    # renderer crashes. Bind the host's real shm.
+    if Path("/dev/shm").is_dir():
+        args += ["--bind", "/dev/shm", "/dev/shm"]
+
+    # D-Bus session bus: a11y, secrets/keyring, GNOME integration.
+    ro("/etc/machine-id")
+    dbus_addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    dbus_sock = f"{runtime_dir}/bus"
+    if dbus_addr.startswith("unix:path="):
+        dbus_sock = dbus_addr.split("unix:path=", 1)[1].split(",", 1)[0]
+    # Covered by the runtime_dir rw bind when it lives there; bind explicitly
+    # otherwise (e.g. abstract sockets or a path outside XDG_RUNTIME_DIR).
+    if (
+        Path(dbus_sock).is_socket()
+        and not dbus_sock.startswith(f"{runtime_dir}/")
+    ):
+        args += ["--bind", dbus_sock, dbus_sock]
+
+    # VS Code writable state: settings/UI, extensions, and caches.
+    rw(f"{home}/.config/Code")
+    rw(f"{home}/.vscode")
+    # VS Code keeps most of its cache under ~/.config/Code (bound above);
+    # ~/.cache/Code is only used occasionally. Bind just that instead of all
+    # of ~/.cache, which would expose every other app's cache.
+    rw(f"{home}/.cache/Code")
+    # Application-scoped state (workspace trust, trusted extension publishers)
+    # lives here since VS Code 1.130 — outside the user-data-dir, so the
+    # project-local --user-data-dir the flake sets does NOT cover it. Without
+    # this bind VS Code recreates the DB on the sandbox's throwaway root every
+    # launch ("wasCreated: true" in main.log) and re-prompts to trust the folder.
+    rw(f"{home}/.vscode-shared")
+    ro(f"{home}/.config/dconf")   # GTK/dconf settings (fonts, theme)
+
+    rw(f"{home}/.claude.json")   # created/updated by claude
+    ro(f"{home}/.gitconfig")
+    ro(f"{home}/.nvm")           # needed for node
+    ro(f"{home}/.cargo")         # needed for cargo
+    ro(f"{home}/.rustup")
+    ro(f"{home}/.ssh/known_hosts")  # host key verification
+
+    # OPTIONAL: for git over SSH, expose your keys read-only (uncomment):
+    # ro(f"{home}/.ssh")
+
+    return args
+
+
+def main():
+    project_dir = os.getcwd()
+    home = os.environ["HOME"]
+    ensure_dirs(home)
+
+    bin_dir, install_dir = resolve_claude_paths()
+
+    args = [
+        # System binaries and libraries (read-only)
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/lib", "/lib",
+        "--ro-bind", "/lib64", "/lib64",
+        "--ro-bind", "/bin", "/bin",
+        "--ro-bind", "/nix", "/nix",
+
+        # System config (read-only)
+        "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+        "--ro-bind", "/etc/hosts", "/etc/hosts",
+        "--ro-bind", "/etc/ssl", "/etc/ssl",
+        "--ro-bind", "/etc/static/ssl", "/etc/static/ssl",
+        "--ro-bind", "/etc/passwd", "/etc/passwd",
+        "--ro-bind", "/etc/group", "/etc/group",
+        "--ro-bind", "/etc/fonts", "/etc/fonts",
+        "--ro-bind", "/etc/nix", "/etc/nix",
+        "--ro-bind", "/etc/static/nix", "/etc/static/nix",
+
+        "--ro-bind", "/run/wrappers/bin", "/run/wrappers/bin",
+        "--ro-bind", "/run/current-system/sw/bin", "/run/current-system/sw/bin",
+        "--ro-bind", f"{home}/.nix-profile/bin", f"{home}/.nix-profile/bin",
+    ]
+
+    # Claude installation (read-only)
+    if bin_dir:
+        args += ["--ro-bind", bin_dir, bin_dir]
+    if install_dir:
+        args += ["--ro-bind", install_dir, install_dir]
+
+    args += [
+        # Claude config and state (read-write for auth/settings)
+        "--bind", f"{home}/.claude", f"{home}/.claude",
+        "--bind", f"{home}/.cache/claude-cli-nodejs", f"{home}/.cache/claude-cli-nodejs",
+        "--bind", f"{home}/.cache/claude", f"{home}/.cache/claude",
+        "--bind", f"{home}/.local/state/claude", f"{home}/.local/state/claude",
+
+        # Project directory (read-write)
+        "--bind", project_dir, project_dir,
+
+        # Temp, proc, dev. Fresh private tmpfs at /tmp; unset every inherited
+        # temp-dir pointer. These reference host paths that don't exist inside
+        # (e.g. TMPDIR=/tmp/claude-1000, or the nix-shell's TMP/TEMP/TEMPDIR=
+        # /tmp/claude-1000/nix-shell.XXXX), which break apps that write there
+        # (VS Code's `--wait` marker). Node's os.tmpdir() honours TMPDIR, TMP,
+        # and TEMP, so all must go; apps then fall back to /tmp.
+        "--tmpfs", "/tmp",
+        "--unsetenv", "TMPDIR",
+        "--unsetenv", "TMP",
+        "--unsetenv", "TEMP",
+        "--unsetenv", "TEMPDIR",
+        "--proc", "/proc",
+        "--dev", "/dev",
+
+        # No X server inside the sandbox — force Wayland-only clients and stop
+        # apps from trying (and failing on) X11/XCB. Wayland is picked up via
+        # $WAYLAND_DISPLAY, which we leave intact.
+        "--unsetenv", "DISPLAY",
+
+        # Namespacing
+        "--share-net",
+        "--unshare-pid",
+        "--die-with-parent",
+        "--chdir", project_dir,
+    ]
+
+    args += optional_binds(home)
+
+    cmd = sys.argv[1:] or ["claude"]
+    os.execvp("bwrap", ["bwrap", *args, *cmd])
+
+
+if __name__ == "__main__":
+    main()

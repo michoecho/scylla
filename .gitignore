@@ -1,8 +1,12 @@
 /.cache
 /.direnv
 /.envrc
+/.local
 /out
 /compile_commands.json
+
+# Nix build result symlink (e.g. from `nix build .#code`)
+/result
 
 # AFL++ fuzzer output (queue, crashes, stats). The seed corpus under
 # fuzz/*/in is kept; everything the fuzzer generates lives in fuzz/*/out.
