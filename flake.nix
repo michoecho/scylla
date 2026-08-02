@@ -20,6 +20,24 @@
         config.allowUnfree = true;
       };
 
+      # The Hegel stack, built entirely from source. Upstream's own CMake and
+      # flake fetch a prebuilt libhegel from a GitHub release at configure
+      # time; we compile the Rust engine ourselves and hand it to the C++
+      # binding via HEGEL_LIBHEGEL_LIBRARY, so no build step downloads
+      # anything. reflect-cpp is hegel's one third-party dependency (pulled by
+      # FetchContent upstream) and is not in nixpkgs, so it is packaged too.
+      #
+      # Kept as one function because the three are wired to each other:
+      # hegel-cpp asserts it got the exact libhegel/reflect-cpp versions its
+      # release pins.
+      hegelPackagesFor = pkgs: rec {
+        libhegel = pkgs.callPackage ./nix/libhegel.nix { };
+        reflectcpp = pkgs.callPackage ./nix/reflectcpp.nix { };
+        hegel-cpp = pkgs.callPackage ./nix/hegel-cpp.nix {
+          inherit libhegel reflectcpp;
+        };
+      };
+
       # VS Code pre-loaded with the extensions this project needs, built from
       # Nix so it's reproducible and identical inside and outside the sandbox.
       # cpptools is unfree (allowUnfree is set on pkgsUnstableFor).
@@ -79,10 +97,19 @@
     {
       # `nix run .#code` / `nix build .#code` — the same wrapped editor the
       # devShell (and the sandbox) uses.
-      packages = forAllSystems (system: {
-        code = vscodeFor (pkgsUnstableFor system);
-        perf2perfetto = (pkgsStableFor system).callPackage ./nix/perf2perfetto.nix { };
-      });
+      packages = forAllSystems (system:
+        let pkgs = pkgsStableFor system;
+        in {
+          code = vscodeFor (pkgsUnstableFor system);
+          perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
+
+          # Hegel (property-based testing), packaged nixpkgs-style from source.
+          # Upstream ships a flake, but it downloads a prebuilt engine .so from
+          # a GitHub release; these build the whole stack from source instead.
+          # Three packages because they are three separate builds: a Rust
+          # cdylib, a CMake library, and the C++ binding that consumes both.
+          inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
+        });
 
       devShells = forAllSystems (system:
         let
@@ -143,6 +170,12 @@
               libbacktrace
               zstd
               lz4
+
+              # Property-based testing; see src/hegel_test.cc. hegel-cpp
+              # propagates reflect-cpp, and its CMake config finds the engine
+              # shared library shipped inside its own prefix, so only this one
+              # entry is needed for find_package(hegel) to work.
+              (hegelPackagesFor pkgs).hegel-cpp
 
               pkgs-unstable.claude-code
               code

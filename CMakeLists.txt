@@ -42,6 +42,12 @@ target_include_directories(nanobench_header INTERFACE ${NANOBENCH_INCLUDE_DIR})
 
 find_package(CLI11 REQUIRED)
 
+# Hegel, a property-based testing library (see src/hegel_test.cc). The nix
+# packages under nix/ build it and its Rust engine from source; hegelConfig
+# re-creates the imported target for the engine shared library it ships beside
+# its archive, so linking hegel::hegel is all a consumer needs.
+find_package(hegel REQUIRED)
+
 # Stacktraces from exceptions (src/exception_hacks.cc). Boost splits this in
 # two: the from_exception library does the capture at throw time, and it only
 # records instruction addresses. Turning those into names is a separate
@@ -66,6 +72,9 @@ add_executable(cpp_template
     # runs AFL++ against it. Both of the latter are inert outside the Fuzz
     # preset: the target is compiled but not registered, the test is skip()'d.
     src/fuzz.cc
+    # Property-based tests: the worked example that proves Hegel finds a
+    # planted bug in a toy function.
+    src/hegel_test.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
@@ -77,6 +86,7 @@ target_link_libraries(cpp_template PRIVATE
     Boost::stacktrace_from_exception
     ${BACKTRACE_LIBRARY}
     ${CMAKE_DL_LIBS}
+    hegel::hegel
 )
 
 target_include_directories(cpp_template SYSTEM PRIVATE ${BACKTRACE_INCLUDE_DIR})
