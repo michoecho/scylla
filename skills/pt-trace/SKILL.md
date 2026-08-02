@@ -8,7 +8,7 @@ description: Capture an Intel PT execution trace of a single doctest test case a
 `tools/pt-trace` runs the test binary under `perf record` with Intel PT, but only
 records the region a test wraps in `pt::Trace` (see `src/pt_control.h`). It can
 then decode the trace to text (`perf script`) or to a Fuchsia trace (`.ftf`) for
-Perfetto, using the vendored `perf2perfetto` dlfilter.
+Perfetto, using the `perf2perfetto` dlfilter.
 
 ## Prerequisites
 
@@ -16,14 +16,9 @@ Perfetto, using the vendored `perf2perfetto` dlfilter.
   must show `intel_pt//`. Without it, `perf record -e intel_pt//u` fails.
 - The test binary built: `cmake --build --preset Debug` (binary at
   `out/build/Debug/cpp_template`).
-- For `--ftf` / `--perfetto`: the dlfilter must be built once:
-
-  ```sh
-  cargo build --release --manifest-path vendor/perf2perfetto/Cargo.toml
-  ```
-
-  This needs `libclang` for bindgen. Inside the flake devshell `LIBCLANG_PATH`
-  is set automatically; outside it, export it to your clang's lib dir.
+- For `--ftf` / `--perfetto`: the `perf2perfetto` dlfilter. Nothing to build —
+  the devshell provides it prebuilt and points `$PERF2PERFETTO_DLFILTER` at it.
+  Outside `nix develop` the variable is unset and you must pass `--dlfilter`.
 
 ## 1. Make the test traceable
 
@@ -78,7 +73,8 @@ Notes:
 - `--itrace SPEC` — `perf script` itrace spec for `--script` (default `be`;
   use `i0ns` for full per-instruction decode). The `--ftf` path always uses
   `bei0ns` because the dlfilter needs branch records.
-- `--dlfilter PATH` — override the `libperf2perfetto.so` location.
+- `--dlfilter PATH` — override the `libperf2perfetto.so` location (defaults to
+  `$PERF2PERFETTO_DLFILTER`).
 - `-e, --event SPEC` — perf event (default `intel_pt//u`, user space only). For
   more exact cycle/instruction counts try `intel_pt/cyc=1,noretcomp=1/u`.
 - `-v, --verbose` — print the perf command lines and keep perf's own output.
@@ -97,7 +93,8 @@ and `perf.data` are throwaway artifacts — delete them when done.
 ## Troubleshooting
 
 - `cannot find perf binary` — install `perf` or pass `--perf /path/to/perf`.
-- `dlfilter not found` — build it (see Prerequisites).
+- `no dlfilter` / `dlfilter not found` — run inside `nix develop` so
+  `$PERF2PERFETTO_DLFILTER` is set, or pass `--dlfilter PATH`.
 - `perf record` fails with an event error — the host has no Intel PT
   (`/sys/devices/intel_pt` missing); tracing is not possible there.
 - Empty / tiny trace — the test didn't enter a `pt::Trace` scope, or the

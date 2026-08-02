@@ -75,6 +75,7 @@
       # devShell (and the sandbox) uses.
       packages = forAllSystems (system: {
         code = vscodeFor (pkgsUnstableFor system);
+        perf2perfetto = (pkgsStableFor system).callPackage ./nix/perf2perfetto.nix { };
       });
 
       devShells = forAllSystems (system:
@@ -103,6 +104,11 @@
           nanobench = pkgs.nanobench.overrideAttrs (old: {
             patches = (old.patches or [ ]) ++ [ ./nix/patches/nanobench-real-cpu-cycles.patch ];
           });
+
+          # The `perf script` dlfilter that turns an Intel PT trace into a
+          # Perfetto/Fuchsia trace, used by tools/pt-trace. Built from the
+          # upstream cargo project; see nix/perf2perfetto.nix.
+          perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
         in
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
@@ -121,17 +127,14 @@
               zstd
               lz4
 
-              cargo
-              rustc
-
               pkgs-unstable.claude-code
               code
               codex
             ];
 
-            # perf2perfetto's build.rs runs bindgen, which needs libclang at
-            # build time. Point it at the same LLVM the shell already provides.
-            LIBCLANG_PATH = "${llvmPkgs.libclang.lib}/lib";
+            # Absolute path to the prebuilt dlfilter. tools/pt-trace passes this
+            # to `perf script --dlfilter`; there is nothing to build by hand.
+            PERF2PERFETTO_DLFILTER = "${perf2perfetto}/lib/libperf2perfetto.so";
 
             hardeningDisable = [ "all" ];
           };

@@ -20,7 +20,7 @@ of each fifo itself.
 Decoding to Perfetto:
 
   Besides `--script` (plain text decode), --ftf decodes the trace to a Fuchsia
-  trace (.ftf) via the vendored perf2perfetto dlfilter, and --perfetto serves
+  trace (.ftf) via the perf2perfetto dlfilter, and --perfetto serves
   that file to https://ui.perfetto.dev so you can view it in a browser.
 
 Example:
@@ -49,13 +49,11 @@ import webbrowser
 CTL_ENV = "PERF_CTL_FIFO"
 ACK_ENV = "PERF_ACK_FIFO"
 
-# Vendored perf2perfetto dlfilter, relative to the repo root (this script lives
-# in tools/). Built with `cargo build --release` inside the submodule.
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DLFILTER = os.path.join(
-    REPO_ROOT, "vendor", "perf2perfetto", "target", "release",
-    "libperf2perfetto.so",
-)
+# The perf2perfetto dlfilter comes from the Nix devshell, which points this at
+# the prebuilt library in the store (see nix/perf2perfetto.nix). Outside the
+# devshell it's unset and --dlfilter must be given explicitly.
+DLFILTER_ENV = "PERF2PERFETTO_DLFILTER"
+DLFILTER = os.environ.get(DLFILTER_ENV)
 
 # Port the Perfetto UI fetches the trace from; mirrors perfetto's own
 # open_trace_in_ui helper.
@@ -99,7 +97,8 @@ def parse_args(argv):
     )
     parser.add_argument(
         "--dlfilter", default=DLFILTER,
-        help=f"Path to libperf2perfetto.so (default: {DLFILTER}).",
+        help=f"Path to libperf2perfetto.so (default: ${DLFILTER_ENV}, "
+             f"currently {DLFILTER or 'unset'}).",
     )
     parser.add_argument(
         "--perfetto", action="store_true",
@@ -141,14 +140,17 @@ def decode_ftf(args):
     for errors (e) and full instructions (i0ns) so the cycle/instruction
     counters in the trace are as accurate as the dlfilter can make them.
     """
-    if not os.path.exists(args.dlfilter):
+    if not args.dlfilter:
         print(
-            f"pt-trace: dlfilter not found at {args.dlfilter}\n"
-            f"pt-trace: build it with "
-            f"`cargo build --release --manifest-path "
-            f"vendor/perf2perfetto/Cargo.toml`",
+            f"pt-trace: no dlfilter: ${DLFILTER_ENV} is unset and --dlfilter "
+            f"was not given\n"
+            f"pt-trace: run inside `nix develop`, which sets it",
             file=sys.stderr,
         )
+        return False
+    if not os.path.exists(args.dlfilter):
+        print(f"pt-trace: dlfilter not found at {args.dlfilter}",
+              file=sys.stderr)
         return False
 
     script_cmd = [
