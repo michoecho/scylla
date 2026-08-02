@@ -77,6 +77,8 @@ static hegel::Settings example_settings() {
     return settings;
 }
 
+TEST_SUITE("hegel") {
+
 TEST_CASE("hegel finds the overflow bug in buggy_midpoint") {
     CHECK_THROWS_AS(
         hegel::test(midpoint_is_within_bounds,
@@ -109,4 +111,6 @@ TEST_CASE("hegel confirms the fixed midpoint holds") {
             }
         },
         {"midpoint_fixed", __FILE__, __LINE__}, example_settings());
+}
+
 }
