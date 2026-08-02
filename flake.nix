@@ -34,10 +34,19 @@
         let
           withExts = pkgs-unstable.vscode-with-extensions.override {
             vscode = pkgs-unstable.vscode;
-            vscodeExtensions = with pkgs-unstable.vscode-extensions; [
+            vscodeExtensions = (with pkgs-unstable.vscode-extensions; [
               anthropic.claude-code
               ms-vscode.cpptools
               llvm-vs-code-extensions.vscode-clangd
+            ])
+            # Not packaged in nixpkgs, so pull it straight from the marketplace.
+            ++ pkgs-unstable.vscode-utils.extensionsFromVscodeMarketplace [
+              {
+                name = "chatgpt";
+                publisher = "openai";
+                version = "26.727.40816";
+                sha256 = "0ql0a58b69j2806s5m85gc21v5ksxibxvks5yf7q462s3mwflihd";
+              }
             ];
           };
         in
@@ -95,6 +104,7 @@
 
               pkgs-unstable.claude-code
               code
+              codex
             ];
 
             # perf2perfetto's build.rs runs bindgen, which needs libclang at
