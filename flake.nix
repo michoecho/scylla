@@ -111,6 +111,15 @@
             patches = (old.patches or [ ]) ++ [ ./nix/patches/nanobench-real-cpu-cycles.patch ];
           });
 
+          # nixpkgs' boost plus a from_exception library that can look up the
+          # trace of any std::exception_ptr, not only of the exception being
+          # handled right now. Upstream's lookup already goes through an
+          # exception_ptr internally, so the patch mostly just exposes it; see
+          # the patch header and src/exception_hacks.cc.
+          boost = pkgs.boost.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./nix/patches/boost-stacktrace-from-exception-ptr.patch ];
+          });
+
           # The `perf script` dlfilter that turns an Intel PT trace into a
           # Perfetto/Fuchsia trace, used by tools/pt-trace. Built from the
           # upstream cargo project; see nix/perf2perfetto.nix.
@@ -130,6 +139,8 @@
               gdb
               boost.dev
               boost
+              # Name resolution backend for Boost.Stacktrace; see CMakeLists.
+              libbacktrace
               zstd
               lz4
 

@@ -42,6 +42,19 @@ target_include_directories(nanobench_header INTERFACE ${NANOBENCH_INCLUDE_DIR})
 
 find_package(CLI11 REQUIRED)
 
+# Stacktraces from exceptions (src/exception_hacks.cc). Boost splits this in
+# two: the from_exception library does the capture at throw time, and it only
+# records instruction addresses. Turning those into names is a separate
+# backend, chosen by a BOOST_STACKTRACE_USE_* macro at compile time. The
+# default backend resolves names with dladdr, which sees only dynamic symbols
+# and so leaves ordinary function names blank in this executable; libbacktrace
+# reads DWARF instead and names every frame (it is also what std::stacktrace
+# uses under the hood). The macro has to match in every TU that includes
+# boost/stacktrace, hence a target-wide definition below.
+find_package(Boost REQUIRED CONFIG COMPONENTS stacktrace_from_exception)
+find_path(BACKTRACE_INCLUDE_DIR backtrace.h REQUIRED)
+find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
+
 add_executable(cpp_template
     src/main.cc
     src/exception_hacks.cc
@@ -63,12 +76,17 @@ target_link_libraries(cpp_template PRIVATE
     doctest::doctest
     CLI11::CLI11
     nanobench_header
-    # stdc++exp: GNU libstdc++ backend for std::stacktrace, used by the
-    # exception hack to record a trace at throw time. ${CMAKE_DL_LIBS}: dlsym,
-    # used to chain to the real __cxa_allocate_exception/__cxa_free_exception.
-    stdc++exp
+    # Trace capture at throw time, plus the libbacktrace name resolution its
+    # frames are printed with. ${CMAKE_DL_LIBS} is dladdr, which Boost uses to
+    # attribute each frame to its shared object.
+    Boost::stacktrace_from_exception
+    ${BACKTRACE_LIBRARY}
     ${CMAKE_DL_LIBS}
 )
+
+target_include_directories(cpp_template SYSTEM PRIVATE ${BACKTRACE_INCLUDE_DIR})
+
+target_compile_definitions(cpp_template PRIVATE BOOST_STACKTRACE_USE_BACKTRACE)
 
 target_compile_options(cpp_template PRIVATE
     -Wall
