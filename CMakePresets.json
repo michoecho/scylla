@@ -51,6 +51,17 @@
                 "BUILD_FUZZERS": "ON"
             },
             "inherits": ["Base"]
+        },
+        {
+            "name": "FuzzCmplog",
+            "description": "CmpLog (redqueen) build of the same sources, passed to afl-fuzz as `-c`. Not a fuzzing target itself: afl-fuzz runs the Fuzz binary and consults this one to learn comparison operands.",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-DCMPLOG_BUILD"
+            },
+            "environment": {
+                "AFL_LLVM_CMPLOG": "1"
+            },
+            "inherits": ["Fuzz"]
         }
     ],
     "buildPresets": [
@@ -69,6 +80,13 @@
         {
             "name": "Fuzz",
             "configurePreset": "Fuzz"
+        },
+        {
+            "name": "FuzzCmplog",
+            "configurePreset": "FuzzCmplog",
+            "environment": {
+                "AFL_LLVM_CMPLOG": "1"
+            }
         }
     ],
     "testPresets": [

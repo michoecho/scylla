@@ -170,8 +170,11 @@ std::string run_capture(const std::string& cmd) {
 // runs until the *external* timeout (ctest's TIMEOUT property) kills it — that
 // is the intended failure mode. AFL_BENCH_UNTIL_CRASH makes the success path
 // exit as soon as the first crash is saved, so the happy path is fast.
+// Skipped in the CmpLog build too (CMPLOG_BUILD, set by the FuzzCmplog preset):
+// that binary is afl-fuzz's `-c` input, not a fuzzing target, so it must not
+// launch a nested fuzzing run of its own.
 TEST_CASE("AFL++ finds the deliberate bug" * doctest::skip(
-#ifdef BUILD_FUZZERS
+#if defined(BUILD_FUZZERS) && !defined(CMPLOG_BUILD)
               false
 #else
               true

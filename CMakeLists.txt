@@ -102,6 +102,29 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # Because the fuzz entry point lives in the one binary (the `fuzz` subcommand),
 # there is no separate target — the cost is just that this preset rebuilds the
 # whole program with instrumentation + ASAN. See skills/afl-fuzz.
+#
+# The `FuzzCmplog` preset builds these same sources a second time as the CmpLog
+# (redqueen) binary. It differs from `Fuzz` in two ways, both set in the preset
+# itself: AFL_LLVM_CMPLOG=1 in the compiler's environment (an env-only knob, with
+# no compile flag of its own) swaps in the CmpLog instrumentation, and
+# -DCMPLOG_BUILD tells the source it is that binary, so the AFL self-test
+# compiles out of it — see src/fuzz.cc.
+#
+# afl-fuzz never fuzzes the CmpLog binary. It runs the normal Fuzz binary and
+# consults this one to learn the operands of each comparison, then writes those
+# values straight into the input at the right offset (input-to-state) rather than
+# mutating its way to them:
+#
+#     cmake --preset Fuzz       && cmake --build --preset Fuzz
+#     cmake --preset FuzzCmplog && cmake --build --preset FuzzCmplog
+#     afl-fuzz -i corpus -o out \
+#         -c out/build/FuzzCmplog/cpp_template \
+#         -- out/build/Fuzz/cpp_template fuzz --test-case=<name>
+#
+# Deliberately not wired into the AFL self-test: that test proves the fuzzing
+# machinery works, and it does so from the Fuzz preset alone. Making it depend on
+# a second build directory would mean two build modes had to be in sync before a
+# single test could run.
 option(BUILD_FUZZERS "Instrument cpp_template for AFL++ fuzzing (needs afl-clang-fast++)" OFF)
 if(BUILD_FUZZERS)
     # BUILD_FUZZERS is a compile definition, not just a CMake variable: FUZZ_TARGET
