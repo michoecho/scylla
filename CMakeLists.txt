@@ -19,10 +19,14 @@ endif()
 
 find_package(doctest REQUIRED)
 
-# nanobench is a single header. Its top-level CMake builds the standalone test
-# binaries, so wire up just the header as an INTERFACE target instead.
-add_library(nanobench INTERFACE)
-target_include_directories(nanobench INTERFACE vendor/nanobench/src/include)
+# nanobench is a single header, and src/bench.cc compiles the implementation
+# itself via ANKERL_NANOBENCH_IMPLEMENT. The nixpkgs package also ships a
+# prebuilt libnanobench.a holding those same symbols, so link against the
+# header alone (an INTERFACE target over the package's include dir) rather than
+# nanobench::nanobench, which would drag in the archive and duplicate them.
+find_path(NANOBENCH_INCLUDE_DIR nanobench.h REQUIRED)
+add_library(nanobench_header INTERFACE)
+target_include_directories(nanobench_header INTERFACE ${NANOBENCH_INCLUDE_DIR})
 
 # Coverage trick: Clang's -fcoverage-mapping drops regions for headers reached
 # via a system include path (-isystem), so SYSTEM-include deps (doctest, most
@@ -58,7 +62,7 @@ add_executable(cpp_template
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
     CLI11::CLI11
-    nanobench
+    nanobench_header
     # stdc++exp: GNU libstdc++ backend for std::stacktrace, used by the
     # exception hack to record a trace at throw time. ${CMAKE_DL_LIBS}: dlsym,
     # used to chain to the real __cxa_allocate_exception/__cxa_free_exception.

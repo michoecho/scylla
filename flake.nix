@@ -92,6 +92,17 @@
           doctest = pkgs.doctest.overrideAttrs (old: {
             patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-test-subcommand.patch ];
           });
+
+          # nixpkgs' nanobench with our patch making the perf counters ask for
+          # real CPU cycles (PERF_COUNT_HW_CPU_CYCLES) rather than preferring
+          # ref cycles, which don't scale with the core's actual clock.
+          #
+          # Only the header is consumed: src/bench.cc defines
+          # ANKERL_NANOBENCH_IMPLEMENT and compiles the implementation itself,
+          # so linking the package's libnanobench.a would duplicate symbols.
+          nanobench = pkgs.nanobench.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./nix/patches/nanobench-real-cpu-cycles.patch ];
+          });
         in
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
@@ -100,6 +111,7 @@
               cli11
               cmake
               doctest
+              nanobench
               ninja
               llvmPkgs.clang-tools
               llvmPkgs.llvm

@@ -1,0 +1,24 @@
+commit e7d79bc3a202189b06bff31f0e0bb6b7598e4d40
+Author: Michał Chojnowski <michocho98@gmail.com>
+Date:   Sun Aug 2 14:43:42 2026 +0200
+
+    Unconditionally use real CPU cycles instead of ref cycles
+
+diff --git a/src/include/nanobench.h b/src/include/nanobench.h
+index d233dcc..d001252 100644
+--- a/src/include/nanobench.h
++++ b/src/include/nanobench.h
+@@ -2698,12 +2698,7 @@ PerformanceCounters::PerformanceCounters()
+     , mVal()
+     , mHas() {
+ 
+-    // HW events
+-    mHas.cpuCycles = mPc->monitor(PERF_COUNT_HW_REF_CPU_CYCLES, LinuxPerformanceCounters::Target(&mVal.cpuCycles, true, false));
+-    if (!mHas.cpuCycles) {
+-        // Fallback to cycles counter, reference cycles not available in many systems.
+-        mHas.cpuCycles = mPc->monitor(PERF_COUNT_HW_CPU_CYCLES, LinuxPerformanceCounters::Target(&mVal.cpuCycles, true, false));
+-    }
++    mHas.cpuCycles = mPc->monitor(PERF_COUNT_HW_CPU_CYCLES, LinuxPerformanceCounters::Target(&mVal.cpuCycles, true, false));
+     mHas.instructions = mPc->monitor(PERF_COUNT_HW_INSTRUCTIONS, LinuxPerformanceCounters::Target(&mVal.instructions, true, true));
+     mHas.branchInstructions =
+         mPc->monitor(PERF_COUNT_HW_BRANCH_INSTRUCTIONS, LinuxPerformanceCounters::Target(&mVal.branchInstructions, true, false));
