@@ -8,7 +8,7 @@
 #include "doctest/doctest.h"
 
 #include "bench.h"
-#include "fuzz_driver.h"
+#include "fuzz.h"
 
 TEST_CASE("sanity") {
     CHECK(1 + 1 == 2);
@@ -50,22 +50,29 @@ int main(int argc, char* argv[]) {
     // Same passthrough as `test`; we just scope doctest to the bench suite below.
     bench->prefix_command();
 
-    // `fuzz <target>` is the AFL entry point, compiled into this same binary.
-    // afl-fuzz execs `cpp_template fuzz <target>` and drives the named target
-    // (see src/fuzz_driver.cc). In a non-AFL build it replays one stdin
-    // testcase, so it doubles as a crash reproducer. Only useful when the
-    // binary is built with afl-clang-fast++ (the Fuzz preset).
-    std::string fuzz_target;
-    CLI::App* fuzz = app.add_subcommand("fuzz", "Run an AFL++ fuzz target");
-    fuzz->add_option("target", fuzz_target, "Name of the fuzz target")->required();
+    // `fuzz` lists and runs the FUZZ_TARGETs, which are doctest cases in the
+    // fuzz suite (see fuzz.h). Same passthrough as `test`/`bench`, so:
+    //
+    //     cpp_template fuzz --list-test-cases     # list the targets
+    //     cpp_template fuzz --test-case=<name>    # run one under AFL
+    //
+    // afl-fuzz execs the latter form. In a non-AFL build a target instead
+    // replays one stdin testcase, so it doubles as a crash reproducer.
+    CLI::App* fuzz = app.add_subcommand("fuzz", "List or run the AFL++ fuzz targets");
+    fuzz->prefix_command();
 
     CLI11_PARSE(app, argc, argv);
 
     if (*test)
         return run_doctest(argv[0], {}, test->remaining());
 
+    // Fuzz targets are skip()'d like benchmarks, for the same reason: a normal
+    // test run must not start a fuzzer. --no-skip re-enables them and
+    // --test-suite=fuzz keeps the run to targets only.
     if (*fuzz)
-        return fuzz::run(fuzz_target);
+        return run_doctest(argv[0],
+                           {"--no-skip", "--test-suite=" FUZZ_SUITE},
+                           fuzz->remaining());
 
     if (*bench)
         // Benchmarks are skip()'d by default; --no-skip re-enables them and

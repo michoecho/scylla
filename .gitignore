@@ -9,6 +9,7 @@
 # Nix build result symlink (e.g. from `nix build .#code`)
 /result
 
-# AFL++ fuzzer output (queue, crashes, stats). The seed corpus under
-# fuzz/*/in is kept; everything the fuzzer generates lives in fuzz/*/out.
-/fuzz/*/out
+# AFL++ scratch: seed corpora and fuzzer output (queue, crashes, stats). Fuzz
+# runs are ad-hoc and their corpora are throwaway, so the whole directory is
+# ignored; the fuzz targets themselves live in src/.
+/fuzz

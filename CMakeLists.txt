@@ -61,16 +61,11 @@ add_executable(cpp_template
     src/bench.cc
     src/pt_control.cc
     src/pt_control_test.cc
-    # The `fuzz <target>` subcommand: AFL's entry point, compiled into this one
-    # binary alongside test/bench (see src/fuzz_driver.cc).
-    src/fuzz_driver.cc
-    # Worked example fuzz target. The varint decoder isn't used by the program;
-    # it's here so the fuzz subcommand has something to drive. The bug it can
-    # trip is behind DELIBERATE_BUGS_FOR_FUZZING (off unless BUILD_FUZZERS), so
-    # the normal test suite stays green.
-    src/fuzz_example/varint.cc
-    src/fuzz_example/fuzz_varint.cc
-    src/fuzz_example/varint_test.cc
+    # The AFL driver behind FUZZ_TARGET (persistent loop in a fuzz build, stdin
+    # replay otherwise), plus the worked example target and the self-test that
+    # runs AFL++ against it. Both of the latter are inert outside the Fuzz
+    # preset: the target is compiled but not registered, the test is skip()'d.
+    src/fuzz.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
@@ -94,12 +89,41 @@ target_compile_options(cpp_template PRIVATE
     -Wno-gnu-statement-expression
 )
 
-# So src/fuzz_example/*.cc can include "varint.h" by name. (main.cc and
-# fuzz_driver.cc reach their headers via src/ being each file's own directory.)
-target_include_directories(cpp_template PRIVATE src/fuzz_example)
-
 # For stable stacktraces.
 target_link_options(cpp_template PRIVATE -no-pie)
+
+# Fuzzing build. Off by default. The `Fuzz` preset turns this on AND sets the
+# compiler to afl-clang-fast++, so the whole cpp_template binary gets AFL's
+# coverage instrumentation. Fuzz targets are doctest cases in the `fuzz` suite
+# (see src/fuzz.h), so you fuzz one with:
+#
+#     afl-fuzz -i corpus -o out -- ./cpp_template fuzz --test-case=<name>
+#
+# Because the fuzz entry point lives in the one binary (the `fuzz` subcommand),
+# there is no separate target — the cost is just that this preset rebuilds the
+# whole program with instrumentation + ASAN. See skills/afl-fuzz.
+option(BUILD_FUZZERS "Instrument cpp_template for AFL++ fuzzing (needs afl-clang-fast++)" OFF)
+if(BUILD_FUZZERS)
+    # BUILD_FUZZERS is a compile definition, not just a CMake variable: FUZZ_TARGET
+    # (src/fuzz.h) keys off it to decide whether to register a target as a doctest
+    # case, and the AFL self-test keys off it to un-skip itself.
+    #
+    # ASAN turns a memory-safety bug into a hard crash AFL can observe, instead
+    # of a silent read of adjacent memory; afl-clang-fast++ adds the coverage
+    # instrumentation on top.
+    target_compile_definitions(cpp_template PRIVATE BUILD_FUZZERS)
+    target_compile_options(cpp_template PRIVATE -fsanitize=address)
+    target_link_options(cpp_template PRIVATE -fsanitize=address)
+
+    # The AFL self-test runs afl-fuzz until it finds the planted bug, with no
+    # internal timeout by design: if the infrastructure is broken (no
+    # instrumentation, target never invoked) AFL searches forever, and this
+    # external timeout is what turns that into a test failure. Applied to every
+    # discovered test rather than by name, because doctest_discover_tests
+    # creates them at build time — they don't exist yet for set_tests_properties.
+    # The other tests here are microseconds long, so a shared 10s cap is free.
+    set(FUZZ_TEST_PROPERTIES TIMEOUT 10)
+endif()
 
 enable_testing()
 # doctestConfig.cmake puts its lib/cmake/doctest on CMAKE_MODULE_PATH, so this
@@ -113,25 +137,7 @@ doctest_discover_tests(cpp_template
     TEST_SUBCOMMAND test
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     EXTRA_ARGS --exit
-    PROPERTIES ENVIRONMENT_MODIFICATION LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw
+    PROPERTIES
+        ENVIRONMENT_MODIFICATION LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw
+        ${FUZZ_TEST_PROPERTIES}
 )
-
-# Fuzzing build. Off by default. The `Fuzz` preset turns this on AND sets the
-# compiler to afl-clang-fast++, so the whole cpp_template binary gets AFL's
-# coverage instrumentation. You then fuzz a target with:
-#
-#     afl-fuzz -i corpus -o out -- ./cpp_template fuzz varint
-#
-# Because the fuzz entry point lives in the one binary (the `fuzz` subcommand),
-# there is no separate target — the cost is just that this preset rebuilds the
-# whole program with instrumentation + ASAN. See skills/afl-fuzz.
-option(BUILD_FUZZERS "Instrument cpp_template for AFL++ fuzzing (needs afl-clang-fast++)" OFF)
-if(BUILD_FUZZERS)
-    # DELIBERATE_BUGS_FOR_FUZZING compiles in the example decoder's intentional
-    # out-of-bounds read for the fuzzer to find. ASAN turns that read into a
-    # hard crash AFL can observe instead of a silent read of adjacent memory;
-    # afl-clang-fast++ adds the coverage instrumentation on top.
-    target_compile_definitions(cpp_template PRIVATE DELIBERATE_BUGS_FOR_FUZZING)
-    target_compile_options(cpp_template PRIVATE -fsanitize=address)
-    target_link_options(cpp_template PRIVATE -fsanitize=address)
-endif()
