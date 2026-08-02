@@ -83,6 +83,15 @@
           pkgs-unstable = pkgsUnstableFor system;
           code = vscodeFor pkgs-unstable;
           llvmPkgs = pkgs.llvmPackages;
+
+          # nixpkgs' doctest plus our TEST_SUBCOMMAND extension to
+          # doctest_discover_tests, which lets the discovered runner be invoked
+          # through a subcommand (`cpp_template test ...`). Upstream ships the
+          # patched scripts/cmake/*.cmake into lib/cmake/doctest, so CMakeLists
+          # picks the change up via find_package(doctest).
+          doctest = pkgs.doctest.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-test-subcommand.patch ];
+          });
         in
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
@@ -90,6 +99,7 @@
               aflplusplus
               cli11
               cmake
+              doctest
               ninja
               llvmPkgs.clang-tools
               llvmPkgs.llvm

@@ -17,7 +17,7 @@ if(ENABLE_TEST_COVERAGE)
     add_link_options(-fprofile-instr-generate=/dev/null -fcoverage-mapping -Wl,--build-id -no-pie)
 endif()
 
-add_subdirectory(vendor/doctest)
+find_package(doctest REQUIRED)
 
 # nanobench is a single header. Its top-level CMake builds the standalone test
 # binaries, so wire up just the header as an INTERFACE target instead.
@@ -33,7 +33,7 @@ target_include_directories(nanobench INTERFACE vendor/nanobench/src/include)
 # property. NO_SYSTEM_FROM_IMPORTED only applies to IMPORTED targets.)
 #
 # if(ENABLE_TEST_COVERAGE)
-#     set_target_properties(doctest PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "")
+#     set_target_properties(doctest::doctest PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "")
 # endif()
 
 find_package(CLI11 REQUIRED)
@@ -80,11 +80,9 @@ target_include_directories(cpp_template PRIVATE src/fuzz_example)
 target_link_options(cpp_template PRIVATE -no-pie)
 
 enable_testing()
-if (DEFINED DOCTEST_CMAKE_HELPER)
-    include(${DOCTEST_CMAKE_HELPER})
-else()
-    include(doctest)
-endif()
+# doctestConfig.cmake puts its lib/cmake/doctest on CMAKE_MODULE_PATH, so this
+# picks up the doctest_discover_tests helper from the same (patched) package.
+include(doctest)
 
 # The executable parses args with CLI11 and runs the suite under a `test`
 # subcommand; TEST_SUBCOMMAND (our doctest patch) prepends it to every
