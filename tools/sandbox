@@ -4,8 +4,18 @@
 The sandbox exposes only what's needed: system libs/binaries (read-only),
 Claude config/state and the project dir (read-write), and — when present —
 the bits required for hardware-accelerated Vulkan/OpenGL and Wayland.
+
+Usage:
+
+  tools/sandbox [--whole-sys] [command ...]
+
+--whole-sys read-only-binds the host's entire /sys instead of the narrow GPU
+subset. Needed for perf/Intel PT; see whole_sys_binds() for why nothing
+narrower works. Everything before the command is consumed as a flag, so use
+`--` if the command itself starts with one.
 """
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -34,6 +44,23 @@ def ensure_dirs(home):
         f"{home}/.vscode-shared/sharedStorage",  # VS Code application storage
     ):
         os.makedirs(d, exist_ok=True)
+
+
+def whole_sys_binds():
+    """Read-only-bind the host's entire /sys.
+
+    Coarser than gpu_sys_binds(), but required by perf (Intel PT): perf finds
+    its sysfs root by scanning /proc/mounts for the first `sysfs` line and
+    treating that mount point as the root. Under the tmpfs /sys that
+    gpu_sys_binds() sets up, binding back /sys/bus and /sys/devices makes those
+    the first sysfs mounts, so perf roots itself at /sys/bus and looks for the
+    doubled path /sys/bus/event_source/bus/event_source/devices/intel_pt.
+    Only a real mount *at* /sys gives perf the right root, so there is no
+    narrower bind that works here.
+    """
+    if not Path("/sys").is_dir():
+        return []
+    return ["--ro-bind", "/sys", "/sys"]
 
 
 def gpu_sys_binds():
@@ -78,7 +105,7 @@ def gpu_sys_binds():
     return args
 
 
-def optional_binds(home):
+def optional_binds(home, whole_sys=False):
     """Binds that only apply when the source path exists."""
     args = []
 
@@ -94,8 +121,9 @@ def optional_binds(home):
     if Path("/dev/dri").is_dir():
         args += ["--dev-bind", "/dev/dri", "/dev/dri"]
 
-    # Minimal /sys for Mesa GPU probing.
-    args += gpu_sys_binds()
+    # /sys: the whole tree when asked (perf/Intel PT), else the GPU subset.
+    # The wide bind is a superset, so it covers Mesa's probing too.
+    args += whole_sys_binds() if whole_sys else gpu_sys_binds()
 
     # NixOS graphics driver tree (Vulkan ICDs + Mesa libs, symlinked into /nix).
     ro("/run/opengl-driver")
@@ -162,7 +190,39 @@ def optional_binds(home):
     return args
 
 
+def parse_args(argv):
+    """Split our own flags off the front of argv; the rest is the command.
+
+    argparse.REMAINDER stops at the first non-flag argument, so the command's
+    own flags pass through untouched.
+    """
+    parser = argparse.ArgumentParser(
+        prog="sandbox",
+        description="Run a command (default: claude) in a bubblewrap sandbox.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--whole-sys", action="store_true",
+        help="Read-only-bind the host's entire /sys instead of the narrow GPU "
+             "subset. Needed for perf/Intel PT; see whole_sys_binds().",
+    )
+    parser.add_argument(
+        "command", nargs=argparse.REMAINDER,
+        help="The command to run, and its arguments (default: claude).",
+    )
+    args = parser.parse_args(argv)
+
+    # argparse.REMAINDER keeps a leading "--"; drop it so a command that starts
+    # with a flag can still be passed as `sandbox --whole-sys -- cmd --flag`.
+    cmd = args.command
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    return args.whole_sys, cmd
+
+
 def main():
+    whole_sys, cmd = parse_args(sys.argv[1:])
     project_dir = os.getcwd()
     home = os.environ["HOME"]
     ensure_dirs(home)
@@ -235,10 +295,9 @@ def main():
         "--chdir", project_dir,
     ]
 
-    args += optional_binds(home)
+    args += optional_binds(home, whole_sys=whole_sys)
 
-    cmd = sys.argv[1:] or ["claude"]
-    os.execvp("bwrap", ["bwrap", *args, *cmd])
+    os.execvp("bwrap", ["bwrap", *args, *(cmd or ["claude"])])
 
 
 if __name__ == "__main__":
