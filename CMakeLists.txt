@@ -160,6 +160,7 @@ doctest_discover_tests(cpp_template
     TEST_SUBCOMMAND test
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     EXTRA_ARGS --exit
+    ADD_LABELS ON
     PROPERTIES
         ENVIRONMENT_MODIFICATION LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw
         ${FUZZ_TEST_PROPERTIES}
