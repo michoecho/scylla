@@ -39,7 +39,7 @@ void throwing_frame() {
     throw std::runtime_error("Error");
 }
 
-TEST_SUITE("Exception stacktrace tests") {
+TEST_SUITE("Exception stacktrace") {
     static bool has_frame(const boost::stacktrace::stacktrace& st, std::string_view name) {
         return std::ranges::any_of(st, [name](const boost::stacktrace::frame& frame) {
             return frame.name().contains(name);
