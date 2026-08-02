@@ -36,8 +36,14 @@
             vscode = pkgs-unstable.vscode;
             vscodeExtensions = (with pkgs-unstable.vscode-extensions; [
               anthropic.claude-code
+              eamodio.gitlens
               ms-vscode.cpptools
+              ms-vscode.cmake-tools
+              ms-python.python
+              ms-python.vscode-pylance
+              ms-python.debugpy
               llvm-vs-code-extensions.vscode-clangd
+              vadimcn.vscode-lldb
             ])
             # Not packaged in nixpkgs, so pull it straight from the marketplace.
             ++ pkgs-unstable.vscode-utils.extensionsFromVscodeMarketplace [
