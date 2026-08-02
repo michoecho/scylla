@@ -10,10 +10,6 @@
 #include "bench.h"
 #include "fuzz.h"
 
-TEST_CASE("sanity") {
-    CHECK(1 + 1 == 2);
-}
-
 // Run doctest with `prepend` forced ahead of the user's args, then `user_args`.
 // Benchmarks force --no-skip --test-suite=bench so only the bench suite runs;
 // `test` prepends nothing. Returns doctest's exit code.
