@@ -171,6 +171,11 @@
               zstd
               lz4
 
+              # Test runner for the Python tools under tools/. CMake only
+              # locates an interpreter (find_package(Python3)); the packages
+              # come from here, so no build step ever installs anything.
+              (python3.withPackages (ps: [ ps.pytest ]))
+
               # Property-based testing; see src/hegel_test.cc. hegel-cpp
               # propagates reflect-cpp, and its CMake config finds the engine
               # shared library shipped inside its own prefix, so only this one
