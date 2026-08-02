@@ -136,6 +136,14 @@
             # to `perf script --dlfilter`; there is nothing to build by hand.
             PERF2PERFETTO_DLFILTER = "${perf2perfetto}/lib/libperf2perfetto.so";
 
+            # Keep Python bytecode out of the source tree: without this, running
+            # anything in tools/ drops a __pycache__/ next to it. The prefix
+            # must be absolute, and the repo root isn't known until the shell
+            # starts, hence shellHook rather than a plain attribute.
+            shellHook = ''
+              export PYTHONPYCACHEPREFIX="''${PYTHONPYCACHEPREFIX:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")/.cache/pycache}"
+            '';
+
             hardeningDisable = [ "all" ];
           };
         });

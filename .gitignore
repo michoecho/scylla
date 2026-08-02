@@ -9,9 +9,6 @@
 # Nix build result symlink (e.g. from `nix build .#code`)
 /result
 
-# Bytecode from the Python helpers in tools/
-__pycache__/
-
 # AFL++ fuzzer output (queue, crashes, stats). The seed corpus under
 # fuzz/*/in is kept; everything the fuzzer generates lives in fuzz/*/out.
 /fuzz/*/out
