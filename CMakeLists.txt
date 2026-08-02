@@ -175,3 +175,53 @@ doctest_discover_tests(cpp_template
         ENVIRONMENT_MODIFICATION LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw
         ${FUZZ_TEST_PROPERTIES}
 )
+
+# Tests for the Python tools under tools/, which drive the built binary rather
+# than link against it (tools/pt-trace orchestrates perf around cpp_template).
+# They run as pytest, registered one CTest test per file: coarse enough to stay
+# cheap, fine enough that `ctest -j` parallelizes them and a failure names a
+# file.
+#
+# Listed explicitly rather than globbed, so that adding a test file is a
+# deliberate edit here and CMake never has to re-glob to stay correct.
+#
+# The binary under test is passed in as CPP_TEMPLATE_BIN via
+# $<TARGET_FILE:cpp_template>, which resolves per-preset -- so `ctest --preset
+# SanitizeTest` tests the sanitized binary with no path duplicated in Python.
+# The generator expression also makes each test depend on the built binary.
+#
+# pytest itself comes from the Nix devshell, not from CMake: having the build
+# system create venvs or install packages is what puts network and mutable
+# state into a dependency graph CMake cannot model.
+#
+# The interpreter is deliberately spelled `python3` (resolved from PATH at test
+# time) rather than a configure-time absolute path from find_package(Python3).
+# Those differ here: the devshell's python3 is the one carrying pytest, and a
+# build directory may well have been configured outside it. Resolving late
+# keeps the build dir independent of which shell ran cmake.
+set(PYTHON_TOOL_TESTS
+    tools/tests/test_pt_trace.py
+)
+
+foreach(test_file IN LISTS PYTHON_TOOL_TESTS)
+    cmake_path(GET test_file STEM test_name)
+    add_test(
+        NAME "python.${test_name}"
+        COMMAND python3 -m pytest
+                "${PROJECT_SOURCE_DIR}/${test_file}"
+                -q --no-header
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+    # pytest reports "no tests ran" as exit code 5. That happens when every test
+    # skipped for lack of hardware (no intel_pt PMU, say), which is not a
+    # failure of the code under test.
+    set_tests_properties("python.${test_name}" PROPERTIES
+        LABELS "python"
+        SKIP_RETURN_CODE 5
+        TIMEOUT 300
+        # Mirror the coverage variable used for the doctest tests, so binaries
+        # these spawn contribute their .profraw to the report.
+        ENVIRONMENT_MODIFICATION
+            "CPP_TEMPLATE_BIN=set:$<TARGET_FILE:cpp_template>;LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw"
+    )
+endforeach()

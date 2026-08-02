@@ -40,29 +40,13 @@ __attribute__((noinline)) static std::uint64_t pt_outer(int n) {
     return pt_middle(n) + pt_middle(n / 2);
 }
 
-// Exercises the scoped helper end-to-end. Run untraced it's just a normal test
-// (the helpers no-op when PERF_CTL_FIFO/PERF_ACK_FIFO are unset). Run under
-// tools/pt-trace, the body between enable() and disable() is what perf records:
-//
-//   tools/pt-trace --script -- ./out/build/Debug/cpp_template test \
-//       --test-case='intel pt scoped trace'
-//
-// then look for pt_traced_function in the `perf script` output.
-TEST_CASE("intel pt scoped trace") {
-    std::uint64_t result;
-    {
-        pt::Trace _; // enable() now; disable() at end of scope
-        result = pt_traced_function(100000);
-    }
-    pt_sink = result;
+TEST_SUITE("intel pt") {
 
-    // Independent of tracing: just confirms the work ran.
-    CHECK(result != 0);
-}
-
-// Like above, but the traced region calls into a nested tree of functions, so
-// the decoded trace shows a call hierarchy. Useful for eyeballing the Perfetto
-// flamegraph:
+// Exercises the scoped helper end-to-end, over a nested tree of functions so
+// the decoded trace shows a call hierarchy. Run untraced it's just a normal
+// test (the helpers no-op when PERF_CTL_FIFO/PERF_ACK_FIFO are unset). Run
+// under tools/pt-trace, the body between enable() and disable() is what perf
+// records. Useful for eyeballing the Perfetto flamegraph:
 //
 //   tools/pt-trace --perfetto -- ./out/build/Debug/cpp_template test \
 //       --test-case='intel pt nested calls'
@@ -75,4 +59,6 @@ TEST_CASE("intel pt nested calls") {
     pt_sink = result;
 
     CHECK(result != 0);
+}
+
 }

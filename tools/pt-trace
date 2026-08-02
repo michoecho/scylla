@@ -28,10 +28,10 @@ Example:
   tools/pt-trace -- ./out/build/Debug/cpp_template test --test-case=pt_control*
 
   tools/pt-trace --script -- ./out/build/Debug/cpp_template test \\
-      --test-case='intel pt scoped trace'
+      --test-case='intel pt nested calls'
 
   tools/pt-trace --perfetto -- ./out/build/Debug/cpp_template test \\
-      --test-case='intel pt scoped trace'
+      --test-case='intel pt nested calls'
 """
 
 import argparse
