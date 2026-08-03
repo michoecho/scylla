@@ -233,7 +233,7 @@ function(add_module name)
     # build depends on. Only the module's own cases are discovered, because the
     # runner applies its source-file filter to --list-test-cases too.
     doctest_discover_tests(${name}_test
-        TEST_PREFIX "${name}."
+        TEST_PREFIX "${name}:::"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         ADD_LABELS ON
         PROPERTIES LABELS "module.${name}")
