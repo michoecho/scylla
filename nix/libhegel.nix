@@ -33,6 +33,33 @@ rustPlatform.buildRustPackage rec {
   # Nix vendors straight from the lockfile with no extra hash to maintain.
   cargoLock.lockFile = "${src}/Cargo.lock";
 
+  # Debug info, so a profile of the engine names its Rust frames instead of
+  # showing bare addresses (tools/pt-trace decodes traces through the symbol
+  # table; see skills/pt-trace).
+  #
+  # This overrides the *release* profile rather than switching to the debug
+  # one: cargoBuildType stays "release", so the engine keeps opt-level=3 and
+  # the timings stay representative. Debug info only adds DWARF sections; it
+  # does not change codegen.
+  CARGO_PROFILE_RELEASE_DEBUG = "full";
+
+  # Cargo emits the DWARF, but nixpkgs' fixup phase would strip it straight
+  # back out of the .so. Both halves are needed to actually ship it.
+  dontStrip = true;
+
+  # Record source paths that outlive the build, so a debugger can list the
+  # engine's Rust source. See the same treatment (and the reasoning for doing
+  # it here rather than via the debugger's substitute-path) in nix/hegel-cpp.nix.
+  #
+  # Two prefixes, because a Rust build has two source roots: the crate itself,
+  # unpacked at /build/source, and the dependencies Nix vendors from the
+  # lockfile into /build/cargo-vendor-dir. Only the first is remapped to a path
+  # that persists; the vendor dir is a build-time artifact with no store
+  # equivalent, so its frames stay unlisted -- they are third-party crates, not
+  # the engine, and mapping them would need every dependency's source in the
+  # closure.
+  RUSTFLAGS = "--remap-path-prefix=/build/source=${src}";
+
   # Only the C ABI crate is wanted; the workspace root (`hegeltest`, the Rust
   # binding) and the proc-macro crate are not part of this closure.
   buildAndTestSubdir = "hegel-c";

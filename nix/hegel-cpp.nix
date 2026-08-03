@@ -50,6 +50,38 @@ stdenv.mkDerivation rec {
 
   nativeBuildInputs = [ cmake ninja ];
 
+  # Debug info for the binding, matching the engine (nix/libhegel.nix), so
+  # profiles name hegel's own frames rather than bare addresses.
+  #
+  # RelWithDebInfo rather than Debug: the optimisation level stays where a
+  # release build has it, so timings remain representative and only DWARF is
+  # added. nixpkgs' cmake hook defaults this to Release, hence setting it
+  # explicitly here.
+  cmakeBuildType = "RelWithDebInfo";
+
+  # cmake emits the DWARF; without this, nixpkgs' fixup phase strips it again.
+  dontStrip = true;
+
+  # Record source paths that still exist after the build.
+  #
+  # DWARF stores file *paths*, never the source text, and the debugger reads
+  # them off disk when you ask for a listing. Left alone, those paths point at
+  # the build sandbox (/build/source/...), which is gone by then -- so gdb
+  # knows the line number but cannot show the line.
+  #
+  # Rewriting the prefix at compile time points them at the fixed-output source
+  # in the store, which does persist. This is preferred over fixing it up in
+  # the debugger with `set substitute-path`, for two reasons:
+  #
+  #   * Every nixpkgs stdenv build uses /build/source, so a substitution rule
+  #     for one package silently matches every other package's frames too --
+  #     showing the wrong file rather than no file.
+  #   * The mapping lives with the package, so it cannot go stale against a
+  #     hand-maintained .gdbinit after a version bump.
+  #
+  # No debugger configuration is needed as a result.
+  env.NIX_CFLAGS_COMPILE = "-fdebug-prefix-map=/build/source=${src}";
+
   # reflectcpp is propagated: hegel's public headers include <rfl.hpp>, and
   # hegelConfig.cmake does find_dependency(reflectcpp), so every consumer needs
   # both on the search path.
