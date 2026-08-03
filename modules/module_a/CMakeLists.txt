@@ -2,5 +2,4 @@
 # graph, and the case that exercises doctest's cross-shared-object registry.
 add_module(module_a
     TYPE SHARED
-    SOURCES a.cc
-    TEST_SOURCES a_test.cc)
+    SOURCES a.cc a_test.cc)

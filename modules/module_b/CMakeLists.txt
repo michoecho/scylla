@@ -2,5 +2,4 @@
 # --whole-archive is what keeps the test registrations from being dropped.
 add_module(module_b
     TYPE STATIC
-    SOURCES b.cc
-    TEST_SOURCES b_test.cc)
+    SOURCES b.cc b_test.cc)
