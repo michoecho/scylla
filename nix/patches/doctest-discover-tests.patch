@@ -1,0 +1,128 @@
+diff --git a/scripts/cmake/doctest.cmake b/scripts/cmake/doctest.cmake
+index 3f8234c..3f0bc7d 100644
+--- a/scripts/cmake/doctest.cmake
++++ b/scripts/cmake/doctest.cmake
+@@ -109,7 +109,7 @@ function(doctest_discover_tests TARGET)
+   cmake_parse_arguments(
+     ""
+     ""
+-    "TEST_PREFIX;TEST_SUFFIX;WORKING_DIRECTORY;TEST_LIST;JUNIT_OUTPUT_DIR"
++    "TEST_PREFIX;TEST_SUFFIX;TEST_SUBCOMMAND;WORKING_DIRECTORY;TEST_LIST;JUNIT_OUTPUT_DIR"
+     "TEST_SPEC;EXTRA_ARGS;PROPERTIES;ADD_LABELS"
+     ${ARGN}
+   )
+@@ -146,6 +146,7 @@ function(doctest_discover_tests TARGET)
+             -D "TEST_ADD_LABELS=${_ADD_LABELS}"
+             -D "TEST_PREFIX=${_TEST_PREFIX}"
+             -D "TEST_SUFFIX=${_TEST_SUFFIX}"
++            -D "TEST_SUBCOMMAND=${_TEST_SUBCOMMAND}"
+             -D "TEST_LIST=${_TEST_LIST}"
+             -D "TEST_JUNIT_OUTPUT_DIR=${_JUNIT_OUTPUT_DIR}"
+             -D "CTEST_FILE=${ctest_tests_file}"
+diff --git a/scripts/cmake/doctestAddTests.cmake b/scripts/cmake/doctestAddTests.cmake
+index e559893..bc8c6f6 100644
+--- a/scripts/cmake/doctestAddTests.cmake
++++ b/scripts/cmake/doctestAddTests.cmake
+@@ -3,6 +3,7 @@
+ 
+ set(prefix "${TEST_PREFIX}")
+ set(suffix "${TEST_SUFFIX}")
++set(subcommand ${TEST_SUBCOMMAND})
+ set(spec ${TEST_SPEC})
+ set(extra_args ${TEST_EXTRA_ARGS})
+ set(properties ${TEST_PROPERTIES})
+@@ -36,7 +37,7 @@ if("${spec}" MATCHES .)
+ endif()
+ 
+ execute_process(
+-  COMMAND ${TEST_EXECUTOR} "${TEST_EXECUTABLE}" ${spec} --list-test-cases
++  COMMAND ${TEST_EXECUTOR} "${TEST_EXECUTABLE}" ${subcommand} ${spec} --list-test-cases
+   OUTPUT_VARIABLE output
+   RESULT_VARIABLE result
+   WORKING_DIRECTORY "${TEST_WORKING_DIR}"
+@@ -51,6 +52,48 @@ endif()
+ 
+ string(REPLACE "\n" ";" output "${output}")
+ 
++# Ask again in XML, which is the only listing format carrying the source
++# location of each case. Parsed into two parallel lists -- CMake has no maps --
++# that are looked up by name below to set DEF_SOURCE_LINE. A second discovery
++# process is the price of not reimplementing the plain-text parsing above
++# against XML escaping rules.
++#
++# Best-effort: a doctest without the XML reporter, or a runner that wraps the
++# binary such that the XML never reaches us, leaves the locations empty and
++# every test simply keeps the properties it had before.
++set(case_names "")
++set(case_locations "")
++execute_process(
++  COMMAND ${TEST_EXECUTOR} "${TEST_EXECUTABLE}" ${subcommand} ${spec} --list-test-cases --reporters=xml
++  OUTPUT_VARIABLE xmloutput
++  RESULT_VARIABLE xmlresult
++  WORKING_DIRECTORY "${TEST_WORKING_DIR}"
++)
++if(${xmlresult} EQUAL 0)
++  string(REPLACE "\n" ";" xmloutput "${xmloutput}")
++  foreach(xmlline ${xmloutput})
++    # Attribute order is fixed by doctest's reporter, so one regex covers a
++    # <TestCase> line; anything else in the document does not match and is
++    # skipped. testsuite= is optional because the reporter omits it entirely
++    # for cases that belong to no suite. The name is XML-escaped, so a bare
++    # quote never occurs inside it and [^"]* cannot run past its delimiter.
++    if("${xmlline}" MATCHES "<TestCase name=\"([^\"]*)\"( testsuite=\"[^\"]*\")? filename=\"([^\"]*)\" line=\"([0-9]+)\"")
++      set(xml_name "${CMAKE_MATCH_1}")
++      set(xml_file "${CMAKE_MATCH_3}")
++      set(xml_line "${CMAKE_MATCH_4}")
++      # Undo the XML escaping the reporter applied to the test name, so the
++      # name matches the one from the plain-text listing.
++      string(REPLACE "&quot;" "\"" xml_name "${xml_name}")
++      string(REPLACE "&apos;" "'"  xml_name "${xml_name}")
++      string(REPLACE "&lt;"   "<"  xml_name "${xml_name}")
++      string(REPLACE "&gt;"   ">"  xml_name "${xml_name}")
++      string(REPLACE "&amp;"  "&"  xml_name "${xml_name}")
++      list(APPEND case_names "${xml_name}")
++      list(APPEND case_locations "${xml_file}:${xml_line}")
++    endif()
++  endforeach()
++endif()
++
+ # Parse output
+ foreach(line ${output})
+   if("${line}" STREQUAL "===============================================================================" OR "${line}" MATCHES [==[^\[doctest\] ]==])
+@@ -61,7 +104,7 @@ foreach(line ${output})
+   if(${add_labels})
+     # get test suite that test belongs to
+     execute_process(
+-      COMMAND ${TEST_EXECUTOR} "${TEST_EXECUTABLE}" --test-case=${test} --list-test-suites
++      COMMAND ${TEST_EXECUTOR} "${TEST_EXECUTABLE}" ${subcommand} --test-case=${test} --list-test-suites
+       OUTPUT_VARIABLE labeloutput
+       RESULT_VARIABLE labelresult
+       WORKING_DIRECTORY "${TEST_WORKING_DIR}"
+@@ -97,14 +140,27 @@ foreach(line ${output})
+     "${prefix}${test}${suffix}"
+     ${TEST_EXECUTOR}
+     "${TEST_EXECUTABLE}"
++    ${subcommand}
+     "--test-case=${test_name}"
+     "${TEST_JUNIT_OUTPUT_PARAM}"
+     ${extra_args}
+   )
++  # DEF_SOURCE_LINE is what the VS Code CMake Tools test explorer reads to make
++  # "go to test" jump to the case, matching what gtest_discover_tests sets.
++  # Omitted entirely when the location is unknown, rather than set to a bogus
++  # value the IDE would try to open.
++  set(def_source_line "")
++  list(FIND case_names "${test}" case_index)
++  if(NOT case_index EQUAL -1)
++    list(GET case_locations ${case_index} location)
++    set(def_source_line DEF_SOURCE_LINE "${location}")
++  endif()
++
+   add_command(set_tests_properties
+     "${prefix}${test}${suffix}"
+     PROPERTIES
+     WORKING_DIRECTORY "${TEST_WORKING_DIR}"
++    ${def_source_line}
+     ${properties}
+     LABELS ${labels}
+   )

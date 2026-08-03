@@ -118,13 +118,15 @@
           code = vscodeFor pkgs-unstable;
           llvmPkgs = pkgs.llvmPackages;
 
-          # nixpkgs' doctest plus our TEST_SUBCOMMAND extension to
-          # doctest_discover_tests, which lets the discovered runner be invoked
-          # through a subcommand (`cpp_template test ...`). Upstream ships the
-          # patched scripts/cmake/*.cmake into lib/cmake/doctest, so CMakeLists
-          # picks the change up via find_package(doctest).
+          # nixpkgs' doctest plus our two extensions to doctest_discover_tests:
+          # a TEST_SUBCOMMAND argument, which lets the discovered runner be
+          # invoked through a subcommand (`cpp_template test ...`), and a
+          # DEF_SOURCE_LINE property on each registered test, which is what the
+          # VS Code test explorer reads to make "go to test" work. Upstream
+          # ships the patched scripts/cmake/*.cmake into lib/cmake/doctest, so
+          # CMakeLists picks the change up via find_package(doctest).
           doctest = pkgs.doctest.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-test-subcommand.patch ];
+            patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
           });
 
           # nixpkgs' nanobench with our patch making the perf counters ask for
