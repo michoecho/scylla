@@ -1,4 +1,4 @@
-#include "fuzz.h"
+#include "main/fuzz.h"
 
 #include <cstddef>
 #include <cstdint>

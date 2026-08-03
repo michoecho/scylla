@@ -19,7 +19,7 @@ endif()
 
 find_package(doctest REQUIRED)
 
-# nanobench is a single header, and src/bench.cc compiles the implementation
+# nanobench is a single header, and modules/main/bench.cc compiles the implementation
 # itself via ANKERL_NANOBENCH_IMPLEMENT. The nixpkgs package also ships a
 # prebuilt libnanobench.a holding those same symbols, so link against the
 # header alone (an INTERFACE target over the package's include dir) rather than
@@ -42,13 +42,13 @@ target_include_directories(nanobench_header INTERFACE ${NANOBENCH_INCLUDE_DIR})
 
 find_package(CLI11 REQUIRED)
 
-# Hegel, a property-based testing library (see src/hegel_test.cc). The nix
+# Hegel, a property-based testing library (see modules/main/hegel_test.cc). The nix
 # packages under nix/ build it and its Rust engine from source; hegelConfig
 # re-creates the imported target for the engine shared library it ships beside
 # its archive, so linking hegel::hegel is all a consumer needs.
 find_package(hegel REQUIRED)
 
-# Stacktraces from exceptions (src/exception_hacks.cc). Boost splits this in
+# Stacktraces from exceptions (modules/main/exception_hacks.cc). Boost splits this in
 # two: the from_exception library does the capture at throw time, and it only
 # records instruction addresses. Turning those into names is a separate
 # backend, chosen by a BOOST_STACKTRACE_USE_* macro at compile time. The
@@ -61,54 +61,14 @@ find_package(Boost REQUIRED CONFIG COMPONENTS stacktrace_from_exception)
 find_path(BACKTRACE_INCLUDE_DIR backtrace.h REQUIRED)
 find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 
-add_executable(cpp_template
-    src/main.cc
-    src/exception_hacks.cc
-    src/bench.cc
-    src/pt_control.cc
-    src/pt_control_test.cc
-    # The AFL driver behind FUZZ_TARGET (persistent loop in a fuzz build, stdin
-    # replay otherwise), plus the worked example target and the self-test that
-    # runs AFL++ against it. Both of the latter are inert outside the Fuzz
-    # preset: the target is compiled but not registered, the test is skip()'d.
-    src/fuzz.cc
-    # Property-based tests: the worked example that proves Hegel finds a
-    # planted bug in a toy function.
-    src/hegel_test.cc
-    # The `test-locations` reporter that CMake test discovery lists source
-    # locations with, so the IDE can jump to a test. Inert unless selected.
-    src/test_locations_reporter.cc
-)
-target_link_libraries(cpp_template PRIVATE
-    doctest::doctest
-    CLI11::CLI11
-    nanobench_header
-    # Trace capture at throw time, plus the libbacktrace name resolution its
-    # frames are printed with. ${CMAKE_DL_LIBS} is dladdr, which Boost uses to
-    # attribute each frame to its shared object.
-    Boost::stacktrace_from_exception
-    ${BACKTRACE_LIBRARY}
-    ${CMAKE_DL_LIBS}
-    hegel::hegel
-)
-
-target_include_directories(cpp_template SYSTEM PRIVATE ${BACKTRACE_INCLUDE_DIR})
-
-target_compile_definitions(cpp_template PRIVATE BOOST_STACKTRACE_USE_BACKTRACE)
-
-target_compile_options(cpp_template PRIVATE
-    -Wall
-    -Wextra
-    -Wno-gnu-statement-expression
-)
-
-# For stable stacktraces.
-target_link_options(cpp_template PRIVATE -no-pie)
+# Everything the program is made of lives in the `main` module
+# (modules/main/), which is defined after this file includes Module.cmake --
+# so the executable itself is created down there, below add_subdirectory.
 
 # Fuzzing build. Off by default. The `Fuzz` preset turns this on AND sets the
 # compiler to afl-clang-fast++, so the whole cpp_template binary gets AFL's
 # coverage instrumentation. Fuzz targets are doctest cases in the `fuzz` suite
-# (see src/fuzz.h), so you fuzz one with:
+# (see modules/main/include/main/fuzz.h), so you fuzz one with:
 #
 #     afl-fuzz -i corpus -o out -- ./cpp_template fuzz --test-case=<name>
 #
@@ -121,7 +81,7 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # itself: AFL_LLVM_CMPLOG=1 in the compiler's environment (an env-only knob, with
 # no compile flag of its own) swaps in the CmpLog instrumentation, and
 # -DCMPLOG_BUILD tells the source it is that binary, so the AFL self-test
-# compiles out of it — see src/fuzz.cc.
+# compiles out of it — see modules/main/fuzz.cc.
 #
 # afl-fuzz never fuzzes the CmpLog binary. It runs the normal Fuzz binary and
 # consults this one to learn the operands of each comparison, then writes those
@@ -138,19 +98,11 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # machinery works, and it does so from the Fuzz preset alone. Making it depend on
 # a second build directory would mean two build modes had to be in sync before a
 # single test could run.
+#
+# The instrumentation itself is applied to the `main` module, which is where
+# the sources keying off BUILD_FUZZERS now live; see modules/main/CMakeLists.txt.
 option(BUILD_FUZZERS "Instrument cpp_template for AFL++ fuzzing (needs afl-clang-fast++)" OFF)
 if(BUILD_FUZZERS)
-    # BUILD_FUZZERS is a compile definition, not just a CMake variable: FUZZ_TARGET
-    # (src/fuzz.h) keys off it to decide whether to register a target as a doctest
-    # case, and the AFL self-test keys off it to un-skip itself.
-    #
-    # ASAN turns a memory-safety bug into a hard crash AFL can observe, instead
-    # of a silent read of adjacent memory; afl-clang-fast++ adds the coverage
-    # instrumentation on top.
-    target_compile_definitions(cpp_template PRIVATE BUILD_FUZZERS)
-    target_compile_options(cpp_template PRIVATE -fsanitize=address)
-    target_link_options(cpp_template PRIVATE -fsanitize=address)
-
     # The AFL self-test runs afl-fuzz until it finds the planted bug, with no
     # internal timeout by design: if the infrastructure is broken (no
     # instrumentation, target never invoked) AFL searches forever, and this
@@ -171,18 +123,34 @@ include(doctest)
 include(${PROJECT_SOURCE_DIR}/cmake/Module.cmake)
 add_subdirectory(modules)
 
-# The executable parses args with CLI11 and runs the suite under a `test`
-# subcommand; TEST_SUBCOMMAND (our doctest patch) prepends it to every
-# discovery and per-test invocation.
-doctest_discover_tests(cpp_template
-    TEST_SUBCOMMAND test
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    EXTRA_ARGS --exit
-    ADD_LABELS ON
-    PROPERTIES
-        ENVIRONMENT_MODIFICATION LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw
-        ${FUZZ_TEST_PROPERTIES}
-)
+# The program: main() and nothing else. Every source it is built from lives in
+# the `main` module, so this target exists only to turn that library into a
+# runnable binary -- and to hold the one TU that may define
+# DOCTEST_CONFIG_IMPLEMENT, which a library cannot.
+#
+# No doctest_discover_tests here. The tests inside the main module are
+# discovered from main_test like every other module's, so registering them a
+# second time through this binary would run each one twice under a second name.
+add_executable(cpp_template src/main.cc ${MODULE_RUN})
+target_include_directories(cpp_template PRIVATE ${MODULE_RUN_INCLUDE_DIR})
+
+# Whole-archived for the same reason a module test executable is: a doctest
+# case (and a FUZZ_TARGET, and a bench) is registered by a static initializer
+# that nothing in the program references, so a plain link drops the archive
+# members holding them and the `test`, `bench` and `fuzz` subcommands all come
+# up empty. MODULE_WHOLE_ARCHIVE_LIBS is the closure add_module computed for
+# exactly this; it is empty for a SHARED module, whose initializers run at load
+# time, so the ordinary link below covers that case.
+get_target_property(main_whole_archive main MODULE_WHOLE_ARCHIVE_LIBS)
+if(main_whole_archive)
+    target_link_libraries(cpp_template PRIVATE
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,${main_whole_archive}>")
+else()
+    target_link_libraries(cpp_template PRIVATE main)
+endif()
+
+# For stable stacktraces.
+target_link_options(cpp_template PRIVATE -no-pie)
 
 # Tests for the Python tools under tools/, which drive the built binary rather
 # than link against it (tools/pt-trace orchestrates perf around cpp_template).

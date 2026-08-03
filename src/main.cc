@@ -7,32 +7,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest/doctest.h"
 
-#include "bench.h"
-#include "fuzz.h"
-
-// Run doctest with `prepend` forced ahead of the user's args, then `user_args`.
-// Benchmarks force --no-skip --test-suite=bench so only the bench suite runs;
-// `test` prepends nothing. Returns doctest's exit code.
-static int run_doctest(const char* argv0,
-                       const std::vector<std::string>& prepend,
-                       const std::vector<std::string>& user_args) {
-    doctest::Context context;
-    context.setAsDefaultForAssertsOutOfTestCases();
-
-    // c_str() pointers below must outlive the run; the source vectors do.
-    std::vector<const char*> forwarded;
-    forwarded.push_back(argv0);
-    for (const std::string& arg : prepend)
-        forwarded.push_back(arg.c_str());
-    for (const std::string& arg : user_args)
-        forwarded.push_back(arg.c_str());
-    context.applyCommandLine(static_cast<int>(forwarded.size()), forwarded.data());
-
-    int res = context.run();
-    if (context.shouldExit()) // important - query flags (and --exit) rely on the user doing this
-        return res;
-    return res;
-}
+#include "module_run.h"
 
 int main(int argc, char* argv[]) {
     CLI::App app{"cpp_template"};
@@ -59,25 +34,27 @@ int main(int argc, char* argv[]) {
 
     CLI11_PARSE(app, argc, argv);
 
+    // CLI11 is kept for the parse (and for `--help`, which lists the
+    // subcommands and their descriptions), but what each one *does* lives in
+    // run::execute, shared with the module test runners. The suite scoping that
+    // bench and fuzz need is applied there, so it cannot drift between the two
+    // entry points -- which is what broke the AFL self-test when it started
+    // running from main_test as well as from here.
+    run::Command command;
     if (*test)
-        return run_doctest(argv[0], {}, test->remaining());
+        command = {run::Command::Kind::Test, test->remaining()};
+    else if (*fuzz)
+        command = {run::Command::Kind::Fuzz, fuzz->remaining()};
+    else if (*bench)
+        command = {run::Command::Kind::Bench, bench->remaining()};
 
-    // Fuzz targets are skip()'d like benchmarks, for the same reason: a normal
-    // test run must not start a fuzzer. --no-skip re-enables them and
-    // --test-suite=fuzz keeps the run to targets only.
-    if (*fuzz)
-        return run_doctest(argv[0],
-                           {"--no-skip", "--test-suite=" FUZZ_SUITE},
-                           fuzz->remaining());
+    // No subcommand: this is a program that embeds its tests, not a test
+    // runner, so a bare invocation runs the program. (A module test runner
+    // defaults to `test` instead; see run::classify.)
+    if (command.kind == run::Command::Kind::None) {
+        std::println("Hello, world!");
+        return 0;
+    }
 
-    if (*bench)
-        // Benchmarks are skip()'d by default; --no-skip re-enables them and
-        // --test-suite=bench keeps the run to benchmarks only. User filters
-        // (passed after `bench`) still apply on top.
-        return run_doctest(argv[0],
-                           {"--no-skip", "--test-suite=" BENCH_SUITE},
-                           bench->remaining());
-
-    std::println("Hello, world!");
-    return 0;
+    return run::execute(argv[0], command);
 }

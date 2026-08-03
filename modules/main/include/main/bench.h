@@ -2,10 +2,10 @@
 
 #include "doctest/doctest.h"
 
-// Name of the doctest test suite that all benchmarks live in. The `bench`
-// subcommand (see main.cc) targets this suite, and BENCHMARK() puts every
-// benchmark into it.
-#define BENCH_SUITE "bench"
+// BENCH_SUITE, the doctest suite every benchmark lives in, comes from the
+// shared runner (cmake/module_run.h): it is that dispatcher which scopes a
+// `bench` run to the suite, and BENCHMARK() below is what puts cases into it.
+#include "module_run.h"
 
 // Define a benchmark. It registers as a doctest test case so listing and
 // filtering work, but lives in the BENCH_SUITE suite and is marked skip() so a

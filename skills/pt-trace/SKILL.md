@@ -6,7 +6,7 @@ description: Capture an Intel PT execution trace of a single doctest test case a
 # Tracing a test with Intel PT
 
 `tools/pt-trace` runs the test binary under `perf record` with Intel PT, but only
-records the region a test wraps in `pt::Trace` (see `src/pt_control.h`). It can
+records the region a test wraps in `pt::Trace` (see `modules/main/pt_control.h`). It can
 then decode the trace to text (`perf script`) or to a Fuchsia trace (`.ftf`) for
 Perfetto, using the `perf2perfetto` dlfilter.
 
@@ -35,7 +35,7 @@ TEST_CASE("my hot path") {
 ```
 
 When the test runs untraced (normal `ctest`), the helpers no-op, so this is safe
-to leave in place. See `src/pt_control_test.cc` for worked examples.
+to leave in place. See `modules/main/pt_control_test.cc` for worked examples.
 
 ## 2. Capture the trace
 

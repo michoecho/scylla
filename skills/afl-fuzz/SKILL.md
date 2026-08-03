@@ -1,6 +1,6 @@
 ---
 name: afl-fuzz
-description: Fuzz a function in this project with AFL++ to find crashes (out-of-bounds, asserts, UB), then turn a crash into a doctest regression test. Use when asked to fuzz code, harden a parser/decoder, find memory-safety bugs in a function, or add a fuzz target. The worked example is the `deliberate_bug` target at the bottom of src/fuzz.cc.
+description: Fuzz a function in this project with AFL++ to find crashes (out-of-bounds, asserts, UB), then turn a crash into a doctest regression test. Use when asked to fuzz code, harden a parser/decoder, find memory-safety bugs in a function, or add a fuzz target. The worked example is the `deliberate_bug` target at the bottom of modules/main/fuzz.cc.
 ---
 
 # Fuzzing a function with AFL++
@@ -56,20 +56,22 @@ them tiny: whatever a target touches is the surface AFL explores.
   so it can't rot — but not registered at all, keeping the normal binary's test
   list clean. A signature error surfaces in every build, not just under `Fuzz`.
 - Under the fuzz build, the case body calls `fuzz::run`, which drives the target
-  in AFL **persistent mode with shared memory** (`src/fuzz.cc`).
+  in AFL **persistent mode with shared memory** (`modules/main/fuzz.cc`).
 
 ## Architecture
 
-- `src/fuzz.h` — the `FUZZ_TARGET` macro and the `fuzz::invoke` adapter that
+- `modules/main/include/main/fuzz.h` — the `FUZZ_TARGET` macro and the `fuzz::invoke` adapter that
   converts AFL's bytes to whichever parameter shape the target takes.
-- `src/fuzz.cc` — the driver: `__AFL_INIT()` + the `__AFL_LOOP` persistent loop
+- `modules/main/fuzz.cc` — the driver: `__AFL_INIT()` + the `__AFL_LOOP` persistent loop
   in an AFL build, single-testcase stdin replay otherwise. The AFL macros sit at
   **file scope, not inside a namespace** — see the gotcha below. The worked
   example (`deliberate_bug`, a target that aborts on `FF FF FF FF`) and the
   self-test that fuzzes it live at the bottom of the same file.
-- `src/main.cc` — the `fuzz` subcommand: scopes doctest to the fuzz suite with
-  `--no-skip` and forwards the rest of the args, so all of doctest's listing and
-  filtering works unchanged.
+- `cmake/module_run.cc` — the `fuzz` subcommand: scopes doctest to the fuzz
+  suite with `--no-skip` and forwards the rest of the args, so all of doctest's
+  listing and filtering works unchanged. Shared by `src/main.cc` and by every
+  module test runner, so `<module>_test fuzz --test-case=<name>` works too —
+  which is what lets the self-test fuzz whichever binary is running it.
 
 Because AFL only mutates the bytes handed to the target (not `argv`), the fixed
 subcommand args are parsed once per process and the fuzzed bytes only ever reach
@@ -118,7 +120,7 @@ fixes:
 
 ## The self-test
 
-The bottom of `src/fuzz.cc` holds an end-to-end check of this whole pipeline: it
+The bottom of `modules/main/fuzz.cc` holds an end-to-end check of this whole pipeline: it
 re-executes **its own binary** (`/proc/self/exe`) under `afl-fuzz` against the
 `deliberate_bug` target and asserts AFL reports persistent mode, stops on a
 crash, and saves a crashing input. It is `skip()`'d outside the fuzz build
@@ -184,7 +186,7 @@ read one byte past `len` lands in still-valid memory — ASAN sees nothing and t
 fuzzer runs forever finding no crash, even though the bug is real. A fresh
 `new std::byte[size]` puts an ASAN redzone right after the last byte.
 
-`fuzz::run` in `src/fuzz.cc` does this copy centrally, for every target, so
+`fuzz::run` in `modules/main/fuzz.cc` does this copy centrally, for every target, so
 individual targets no longer have to remember it. Don't bypass it by capturing
 AFL's raw pointer.
 
@@ -193,7 +195,7 @@ Other gotchas:
 - **AFL macros must be at file scope, not in a namespace.** `__AFL_LOOP` expands
   to a block containing a bare `extern int __afl_connected;` with no `__asm__`
   label, so inside a `namespace fuzz` it mangles to `fuzz::__afl_connected` and
-  the link fails with an undefined reference. `src/fuzz.cc` keeps the driver in
+  the link fails with an undefined reference. `modules/main/fuzz.cc` keeps the driver in
   a file-scope function for exactly this reason; `fuzz::run` is a thin wrapper.
 - `__AFL_LOOP` uses a GNU statement expression, hence `-Wno-gnu-statement-expression`.
 - No ASAN → memory-safety bugs read garbage silently instead of crashing. The

@@ -5,7 +5,7 @@
 #define ANKERL_NANOBENCH_IMPLEMENT
 #include <nanobench.h>
 
-#include "bench.h"
+#include "main/bench.h"
 
 // Placeholder benchmark: lookup cost of std::map (balanced tree) vs
 // std::unordered_map (hash table) over the same set of keys. Skipped by a

@@ -7,10 +7,11 @@
 
 #include "doctest/doctest.h"
 
-// Name of the doctest test suite every FUZZ_TARGET lives in. The `fuzz`
-// subcommand (see main.cc) scopes doctest to this suite, so `fuzz --list-test-cases`
-// lists the fuzz targets and `fuzz --test-case=<name>` runs one under AFL.
-#define FUZZ_SUITE "fuzz"
+// FUZZ_SUITE, the doctest suite every FUZZ_TARGET lives in, comes from the
+// shared runner (cmake/module_run.h): it is that dispatcher which scopes a
+// `fuzz` run to the suite, so `fuzz --list-test-cases` lists the targets and
+// `fuzz --test-case=<name>` runs one under AFL.
+#include "module_run.h"
 
 namespace fuzz {
 

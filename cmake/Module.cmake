@@ -46,15 +46,30 @@ option(BUILD_SHARED_LIBS "Build module libraries as shared libraries by default"
 set(MODULE_TEST_MAIN "${CMAKE_CURRENT_LIST_DIR}/module_test_main.cc"
     CACHE INTERNAL "Test runner main() shared by all module test executables")
 
+# The test/bench/fuzz subcommand dispatch, shared by the module test runners
+# above and by the shipping executable (src/main.cc). One implementation, so a
+# fuzz target behaves the same whichever binary afl-fuzz is pointed at -- see
+# the AFL self-test, which fuzzes its own executable.
+set(MODULE_RUN "${CMAKE_CURRENT_LIST_DIR}/module_run.cc"
+    CACHE INTERNAL "Subcommand dispatch shared by every runner")
+
+# Where module_run.h lives, for the runners and for any module whose headers
+# use the BENCH_SUITE / FUZZ_SUITE names it defines.
+set(MODULE_RUN_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}"
+    CACHE INTERNAL "Include directory holding module_run.h")
+
 # The `test-locations` reporter that CMake test discovery lists source
 # locations with, so the IDE can jump to a test. Linked into every module test
-# executable for the same reason it is linked into the main binary: discovery
-# runs against each of them separately.
-set(MODULE_TEST_REPORTER "${PROJECT_SOURCE_DIR}/src/test_locations_reporter.cc"
+# executable, because discovery runs against each of them separately.
+#
+# It lives in the main module (which compiles it into its library as well) but
+# is named by path rather than inherited through a link dependency: a module
+# test executable must not have to depend on the main module to be discoverable.
+set(MODULE_TEST_REPORTER "${PROJECT_SOURCE_DIR}/modules/main/test_locations_reporter.cc"
     CACHE INTERNAL "Discovery reporter shared by all module test executables")
 
 function(add_module name)
-    cmake_parse_arguments(M "" "TYPE" "SOURCES;TEST_SOURCES;DEPS;LINK_LIBRARIES" ${ARGN})
+    cmake_parse_arguments(M "" "TYPE" "SOURCES;TEST_SOURCES;DEPS;LINK_LIBRARIES;TEST_PROPERTIES" ${ARGN})
 
     if(NOT M_TYPE)
         if(BUILD_SHARED_LIBS)
@@ -93,8 +108,12 @@ function(add_module name)
     #
     # PRIVATE on the module's own directory keeps its internal headers off that
     # public path while its own sources reach them unprefixed.
+    # MODULE_RUN_INCLUDE_DIR is PUBLIC because a module's own public headers may
+    # use the suite names from module_run.h (bench.h and fuzz.h do), so anything
+    # including them needs it on its path too.
     target_include_directories(${name}
         PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${MODULE_RUN_INCLUDE_DIR}
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     target_link_libraries(${name} PUBLIC ${M_DEPS} ${M_LINK_LIBRARIES})
@@ -123,7 +142,9 @@ function(add_module name)
     set_target_properties(${name} PROPERTIES MODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
     # --- the test executable ---------------------------------------------
-    add_executable(${name}_test ${MODULE_TEST_MAIN} ${MODULE_TEST_REPORTER})
+    add_executable(${name}_test
+        ${MODULE_TEST_MAIN} ${MODULE_RUN} ${MODULE_TEST_REPORTER})
+    target_include_directories(${name}_test PRIVATE ${MODULE_RUN_INCLUDE_DIR})
     target_compile_definitions(${name}_test PRIVATE
         DOCTEST_CONFIG_IMPLEMENTATION_IN_DLL
         # Baked in at compile time so the binary is self-contained: running it
@@ -239,9 +260,22 @@ function(add_module name)
     # the IDE's test panel one entry per case, while the stamps are what the
     # build depends on. Only the module's own cases are discovered, because the
     # runner applies its source-file filter to --list-test-cases too.
+    #
+    # TEST_PROPERTIES is appended after the label, so a module can set CTest
+    # properties on its own discovered tests (a timeout, an environment) without
+    # this function having to know what they are.
+    #
+    # LLVM_PROFILE_FILE names a per-process .profraw next to the test binary, so
+    # a coverage build (ENABLE_TEST_COVERAGE) collects the module suites too --
+    # %p%m keeps concurrent `ctest -j` runs from overwriting each other's file.
+    # Harmless without coverage instrumentation: nothing writes the file.
     doctest_discover_tests(${name}_test
         TEST_PREFIX "${name}:::"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         ADD_LABELS ON
-        PROPERTIES LABELS "module.${name}")
+        PROPERTIES
+            LABELS "module.${name}"
+            ENVIRONMENT_MODIFICATION
+                LLVM_PROFILE_FILE=set:$<TARGET_FILE:${name}_test>.%p%m.profraw
+            ${M_TEST_PROPERTIES})
 endfunction()
