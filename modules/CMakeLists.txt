@@ -2,6 +2,7 @@
 # target_link_module() only requires that the dependency exists by the time it
 # is called.
 add_subdirectory(snapshot)
+add_subdirectory(exhaustigen)
 add_subdirectory(module_a)
 add_subdirectory(module_b)
 add_subdirectory(module_c)
