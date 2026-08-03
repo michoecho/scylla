@@ -72,9 +72,21 @@ def parse_args(argv):
         "-o", "--output", default="perf.data",
         help="perf.data output path (default: perf.data).",
     )
+    # cyc=1 turns on cycle-accurate mode: the CPU emits a CYC packet carrying
+    # the elapsed core cycles alongside the flow-control packets. Without it the
+    # only timing source is MTC (plus the coarser TSC), which fires every 2^N
+    # crystal ticks -- so every branch between two MTC packets decodes to the
+    # *same* timestamp, and function boundaries all land on a fixed grid
+    # (~1000ns here, hundreds of instructions wide). That grid is a decode
+    # artifact, not real timing, and it makes short functions untimeable.
+    #
+    # cyc_thresh=0 (the default) asks for a CYC packet at every opportunity,
+    # which is the finest resolution the hardware offers; raise it to trade
+    # resolution for less trace volume if the AUX buffer starts overflowing.
     parser.add_argument(
-        "-e", "--event", default="intel_pt//u",
-        help="perf event spec to record (default: intel_pt//u, user-space only).",
+        "-e", "--event", default="intel_pt/cyc=0/u",
+        help="perf event spec to record (default: intel_pt/cyc=0/u, "
+             "user-space only).",
     )
     parser.add_argument(
         "--script", action="store_true",
@@ -94,6 +106,19 @@ def parse_args(argv):
         "--ftf-mode", default="c", choices=["t", "c", "i"],
         help="Time axis for the .ftf: t=timestamp, c=cpu cycles, "
              "i=instructions (default: c).",
+    )
+    parser.add_argument(
+        "--time", default=None, metavar="START,END",
+        help="Restrict the .ftf decode to a time window, passed straight to "
+             "`perf script --time` (e.g. 1564449.120,1564449.122). A full "
+             "instruction decode of a long region can run to hundreds of MB, "
+             "which the Perfetto UI will not load; slicing keeps it usable.",
+    )
+    parser.add_argument(
+        "--decode-only", action="store_true",
+        help="Skip recording and decode an existing perf.data (-o/--output). "
+             "Lets you re-slice a capture with --time without re-running the "
+             "program.",
     )
     parser.add_argument(
         "--dlfilter", default=DLFILTER,
@@ -127,9 +152,14 @@ def parse_args(argv):
     cmd = args.command
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
-    if not cmd:
+    # --decode-only works off an existing perf.data, so there is no program.
+    if not cmd and not args.decode_only:
         parser.error("missing program to trace; pass it after `--`.")
     args.command = cmd
+
+    # --decode-only exists to produce a trace; without one there is nothing to do.
+    if args.decode_only and not args.ftf:
+        parser.error("--decode-only needs --ftf (or --perfetto) to decode into.")
     return args
 
 
@@ -161,6 +191,8 @@ def decode_ftf(args):
         "--dlarg", args.ftf,
         "--dlarg", args.ftf_mode,
     ]
+    if args.time:
+        script_cmd += ["--time", args.time]
     if args.verbose:
         print("pt-trace:", " ".join(script_cmd), file=sys.stderr)
     rc = subprocess.run(script_cmd).returncode
@@ -239,6 +271,17 @@ def main(argv):
     if shutil.which(args.perf) is None and not os.path.exists(args.perf):
         print(f"pt-trace: cannot find perf binary {args.perf!r}", file=sys.stderr)
         return 127
+
+    # Re-decoding an existing capture: skip straight to the decode stage.
+    if args.decode_only:
+        if not os.path.exists(args.output):
+            print(f"pt-trace: no {args.output} to decode", file=sys.stderr)
+            return 1
+        if not decode_ftf(args):
+            return 1
+        if args.perfetto:
+            open_in_perfetto(args.ftf)
+        return 0
 
     tmp = tempfile.mkdtemp(prefix="pt-trace.")
     ctl_fifo = os.path.join(tmp, "ctl.fifo")
