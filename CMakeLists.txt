@@ -164,7 +164,14 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # The binary under test is passed in as CPP_TEMPLATE_BIN via
 # $<TARGET_FILE:cpp_template>, which resolves per-preset -- so `ctest --preset
 # SanitizeTest` tests the sanitized binary with no path duplicated in Python.
-# The generator expression also makes each test depend on the built binary.
+#
+# That generator expression resolves a path; it does not build anything. ctest
+# is not the build system and will happily run a test whose binary was never
+# compiled, which fails in the fixture that checks CPP_TEMPLATE_BIN exists --
+# an unhelpful way to learn you only built the module targets. The
+# `build_cpp_template` fixture below closes that: a setup test that invokes the
+# build, which every python test REQUIRES, so `ctest` after a bare configure
+# builds the binary rather than failing on its absence.
 #
 # pytest itself comes from the Nix devshell, not from CMake: having the build
 # system create venvs or install packages is what puts network and mutable
@@ -177,6 +184,25 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # keeps the build dir independent of which shell ran cmake.
 set(PYTHON_TOOL_TESTS
     tools/tests/test_pt_trace.py
+)
+
+# The setup half of the fixture: build cpp_template, in this build directory,
+# with whatever generator and configuration configured it. Spelled as a
+# cmake --build invocation rather than a bare ninja/make call so it stays
+# generator-agnostic; --config matters only for multi-config generators and is
+# ignored elsewhere.
+add_test(
+    NAME "python.build_cpp_template"
+    COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}"
+            --target cpp_template --config $<CONFIG>
+)
+set_tests_properties("python.build_cpp_template" PROPERTIES
+    LABELS "python"
+    FIXTURES_SETUP build_cpp_template
+    # A build is not parallel-safe against itself: two ctest workers running it
+    # at once would race in the same build directory.
+    RUN_SERIAL TRUE
+    TIMEOUT 600
 )
 
 foreach(test_file IN LISTS PYTHON_TOOL_TESTS)
@@ -195,6 +221,9 @@ foreach(test_file IN LISTS PYTHON_TOOL_TESTS)
         LABELS "python"
         SKIP_RETURN_CODE 5
         TIMEOUT 300
+        # Pulls in the setup test above, so selecting a python test by name or
+        # label builds the binary first even from a freshly configured tree.
+        FIXTURES_REQUIRED build_cpp_template
         # Mirror the coverage variable used for the doctest tests, so binaries
         # these spawn contribute their .profraw to the report.
         ENVIRONMENT_MODIFICATION
