@@ -46,6 +46,13 @@ option(BUILD_SHARED_LIBS "Build module libraries as shared libraries by default"
 set(MODULE_TEST_MAIN "${CMAKE_CURRENT_LIST_DIR}/module_test_main.cc"
     CACHE INTERNAL "Test runner main() shared by all module test executables")
 
+# The `test-locations` reporter that CMake test discovery lists source
+# locations with, so the IDE can jump to a test. Linked into every module test
+# executable for the same reason it is linked into the main binary: discovery
+# runs against each of them separately.
+set(MODULE_TEST_REPORTER "${PROJECT_SOURCE_DIR}/src/test_locations_reporter.cc"
+    CACHE INTERNAL "Discovery reporter shared by all module test executables")
+
 function(add_module name)
     cmake_parse_arguments(M "" "TYPE" "SOURCES;TEST_SOURCES;DEPS;LINK_LIBRARIES" ${ARGN})
 
@@ -116,7 +123,7 @@ function(add_module name)
     set_target_properties(${name} PROPERTIES MODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
     # --- the test executable ---------------------------------------------
-    add_executable(${name}_test ${MODULE_TEST_MAIN})
+    add_executable(${name}_test ${MODULE_TEST_MAIN} ${MODULE_TEST_REPORTER})
     target_compile_definitions(${name}_test PRIVATE
         DOCTEST_CONFIG_IMPLEMENTATION_IN_DLL
         # Baked in at compile time so the binary is self-contained: running it

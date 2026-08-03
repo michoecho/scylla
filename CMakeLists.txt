@@ -75,6 +75,9 @@ add_executable(cpp_template
     # Property-based tests: the worked example that proves Hegel finds a
     # planted bug in a toy function.
     src/hegel_test.cc
+    # The `test-locations` reporter that CMake test discovery lists source
+    # locations with, so the IDE can jump to a test. Inert unless selected.
+    src/test_locations_reporter.cc
 )
 target_link_libraries(cpp_template PRIVATE
     doctest::doctest
