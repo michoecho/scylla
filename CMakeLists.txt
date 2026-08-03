@@ -163,6 +163,11 @@ enable_testing()
 # picks up the doctest_discover_tests helper from the same (patched) package.
 include(doctest)
 
+# Modules: libraries that own their tests, with per-module "tests passed" stamps
+# ordering each module's tests after its dependencies'. See cmake/Module.cmake.
+include(${PROJECT_SOURCE_DIR}/cmake/Module.cmake)
+add_subdirectory(modules)
+
 # The executable parses args with CLI11 and runs the suite under a `test`
 # subcommand; TEST_SUBCOMMAND (our doctest patch) prepends it to every
 # discovery and per-test invocation.
