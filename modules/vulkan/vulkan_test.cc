@@ -49,6 +49,12 @@ Renderer::Config test_config() {
     // focus. The swapchain still presents.
     config.visible = false;
     config.screenshot_max_dim = kScreenshotMaxDim;
+    // Do not pace the test to the display. Under FIFO an acquire blocks until
+    // the compositor hands an image back, which for a window nobody is
+    // compositing (hidden, or the screen locked) means waiting out the 2s
+    // acquire timeout every frame. MAILBOX recycles images without waiting for
+    // a vblank, so the frames here complete as fast as the GPU draws them.
+    config.present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
     return config;
 }
 
@@ -70,6 +76,23 @@ std::unique_ptr<Renderer> try_make_renderer() {
             return nullptr;
         }
         throw;
+    }
+}
+
+// Returns std::string, not const char*: doctest's MESSAGE streams a character
+// pointer as a pointer.
+std::string present_mode_name(VkPresentModeKHR mode) {
+    switch (mode) {
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:
+        return "IMMEDIATE";
+    case VK_PRESENT_MODE_MAILBOX_KHR:
+        return "MAILBOX";
+    case VK_PRESENT_MODE_FIFO_KHR:
+        return "FIFO";
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+        return "FIFO_RELAXED";
+    default:
+        return "<other>";
     }
 }
 
@@ -104,6 +127,9 @@ TEST_CASE("Renderer screenshot returns a scaled down image of what was drawn") {
     }
 
     MESSAGE("device: " << renderer->device_name());
+    // Not asserted: a surface that only supports FIFO is still perfectly able
+    // to pass this test, just more slowly.
+    MESSAGE("present mode: " << present_mode_name(renderer->present_mode()));
 
     // Before anything has been drawn there is nothing to hand back.
     CHECK_FALSE(renderer->take_screenshot().has_value());

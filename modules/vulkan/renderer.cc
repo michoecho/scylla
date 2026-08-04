@@ -445,7 +445,7 @@ void Renderer::create_swapchain() {
 
     auto ret = vkb::SwapchainBuilder{physical_device_.physical_device, device_.device, surface_}
                    .set_desired_format(desired)
-                   .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
+                   .set_desired_present_mode(config_.present_mode)
                    .set_desired_extent(static_cast<uint32_t>(w), static_cast<uint32_t>(h))
                    // The frame is rendered into an offscreen image and blitted
                    // here, so the swapchain image is a transfer destination.

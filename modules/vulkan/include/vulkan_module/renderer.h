@@ -93,6 +93,16 @@ struct RendererConfig {
     // Longest downscaled screenshot edge. Preserves aspect ratio; the
     // other edge is rounded up to a multiple of 4.
     uint32_t screenshot_max_dim = 480;
+    // Present mode to ask for. FIFO is the sensible default for a real window
+    // -- it is the only mode required to be supported, and it paces the loop to
+    // the display. It is a poor default for a test: FIFO blocks each acquire
+    // until the compositor releases an image, so a hidden window (or a locked
+    // screen) makes every frame wait out its timeout. MAILBOX and IMMEDIATE
+    // both return as soon as an image is free, so tests ask for one of those.
+    //
+    // vk-bootstrap falls back to FIFO if the surface does not support this, so
+    // an unsupported request degrades rather than fails.
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
 };
 
 class Renderer {
@@ -142,6 +152,12 @@ public:
 
     VkExtent2D swapchain_extent() const {
         return swapchain_.extent;
+    }
+
+    // What the swapchain was actually built with, which is not necessarily
+    // Config::present_mode -- vk-bootstrap falls back to FIFO.
+    VkPresentModeKHR present_mode() const {
+        return swapchain_.present_mode;
     }
 
 private:
