@@ -5,6 +5,7 @@
 /out
 /compile_commands.json
 /.vscode
+/ignored
 
 # Nix build result symlink (e.g. from `nix build .#code`)
 /result
