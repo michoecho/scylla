@@ -116,7 +116,7 @@
           pkgs = pkgsStableFor system;
           pkgs-unstable = pkgsUnstableFor system;
           code = vscodeFor pkgs-unstable;
-          llvmPkgs = pkgs.llvmPackages;
+          llvmPkgs = pkgs.llvmPackages_22;
 
           # nixpkgs' doctest plus our two extensions to doctest_discover_tests:
           # a TEST_SUBCOMMAND argument, which lets the discovered runner be
@@ -187,7 +187,28 @@
               pkgs-unstable.claude-code
               code
               pkgs-unstable.codex
+
+              shader-slang
+              vulkan-loader
+              vulkan-headers
+              vulkan-tools
+              vulkan-validation-layers
+              vulkan-memory-allocator
+              glslang
+              freetype
+              libxkbcommon
+              wayland
+              wayland-protocols
+              wayland-scanner
+              pkg-config
+              dbus
+              abseil-cpp
+              sdl3
             ];
+
+            # For Vulkan on wayland
+            VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+            FIRA_CODE_PATH = "${pkgs.nerd-fonts.fira-code}";
 
             # Absolute path to the prebuilt dlfilter. tools/pt-trace passes this
             # to `perf script --dlfilter`; there is nothing to build by hand.
