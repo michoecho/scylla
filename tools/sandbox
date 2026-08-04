@@ -37,6 +37,7 @@ def resolve_claude_paths():
 def ensure_dirs(home):
     for d in (
         f"{home}/.claude",
+        f"{home}/.codex",
         f"{home}/.cache/claude-cli-nodejs",
         f"{home}/.cache/claude",
         f"{home}/.local/state/claude",
@@ -262,6 +263,7 @@ def main():
     args += [
         # Claude config and state (read-write for auth/settings)
         "--bind", f"{home}/.claude", f"{home}/.claude",
+        "--bind", f"{home}/.codex", f"{home}/.codex",
         "--bind", f"{home}/.cache/claude-cli-nodejs", f"{home}/.cache/claude-cli-nodejs",
         "--bind", f"{home}/.cache/claude", f"{home}/.cache/claude",
         "--bind", f"{home}/.local/state/claude", f"{home}/.local/state/claude",
