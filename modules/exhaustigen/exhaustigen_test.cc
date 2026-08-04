@@ -151,6 +151,50 @@ TEST_CASE("gen_subset enumerates the power set") {
         )snap"_snap));
 }
 
+TEST_CASE("gen_splits enumerates the ordered splits of a sum") {
+    std::string out;
+    Gen g;
+    do {
+        out += render(g.gen_splits(4, 3, 1));
+    } while (!g.is_done());
+
+    check_snapshot(out, snapshot(R"snap(
+        |1 1 2
+        |1 2 1
+        |2 1 1
+        )snap"_snap));
+}
+
+// Every pass has exactly `k` elements, so with a zero minimum the slots that
+// contribute nothing are still present, as zeros.
+TEST_CASE("gen_splits with a zero minimum pads with empty slots") {
+    std::string out;
+    Gen g;
+    do {
+        out += render(g.gen_splits(2, 2));
+    } while (!g.is_done());
+
+    check_snapshot(out, snapshot(R"snap(
+        |0 2
+        |1 1
+        |2 0
+        )snap"_snap));
+}
+
+// Nothing sums to 5 with exactly two elements of at most 2, so there is no
+// choice point at all and the loop runs its single pass.
+TEST_CASE("gen_splits yields nothing when the bounds cannot reach the sum") {
+    std::string out;
+    Gen g;
+    do {
+        out += render(g.gen_splits(5, 2, 0, 2));
+    } while (!g.is_done());
+
+    check_snapshot(out, snapshot(R"snap(
+        |
+        )snap"_snap));
+}
+
 // The bounds passed to gen() may depend on earlier choices, which is what a
 // nest of for loops cannot express. Here the second choice's range is decided
 // by the first.

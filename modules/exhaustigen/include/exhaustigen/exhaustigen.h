@@ -31,6 +31,7 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -118,6 +119,51 @@ public:
                 r.emplace_back(in.at(*ix));
                 idxs.erase(ix);
             }
+        }
+        return r;
+    }
+
+    // Every vector of exactly `k` elements, each in [min, max], summing to `n`.
+    //
+    // Order matters: 1+2 and 2+1 are separate passes. If nothing sums to `n`
+    // under those bounds -- k*min > n, or k*max < n -- the result is empty on
+    // every pass, and the loop runs once: there is no choice point to
+    // enumerate. Note that this empty vector is not a split of `n` unless `n`
+    // and `k` are both zero, so a caller that cares must check.
+    //
+    // Each element is a choice point, bounded so that every pass produces a
+    // valid split rather than a candidate that has to be filtered: an element
+    // can be no larger than what the slots after it are able to leave behind,
+    // and no smaller than what they are able to absorb.
+    //
+    // With the default bounds the enumeration has C(n+k-1, k-1) passes -- the
+    // stars-and-bars count of the ways to write `n` as `k` ordered addends.
+    std::vector<size_t> gen_splits(
+        size_t n, size_t k, size_t min = 0,
+        size_t max = std::numeric_limits<size_t>::max()) {
+        std::vector<size_t> r;
+        // Feasible iff k*min <= n <= k*max, tested without forming either
+        // product: both overflow for a large bound and a large `k`.
+        const bool reaches_up =
+            max == 0 ? n == 0 : k >= n / max + (n % max != 0);
+        if (min > max || !reaches_up || (min != 0 && k > n / min)) {
+            return r;
+        }
+        size_t left = n;
+        for (size_t slots = k; slots > 0; --slots) {
+            // What the remaining slots after this one can absorb. Neither
+            // product below is formed unless it is already known to fit in
+            // `left`, so neither can overflow.
+            const size_t rest = slots - 1;
+            const bool rest_covers_all =
+                max == 0 ? left == 0 : rest >= left / max + (left % max != 0);
+            const size_t floor_ = rest_covers_all ? 0 : left - rest * max;
+            const size_t lo = floor_ > min ? floor_ : min;
+            const size_t rest_min = min == 0 ? 0 : rest * min;
+            const size_t hi = (left - rest_min < max) ? left - rest_min : max;
+            const size_t e = lo + gen(hi - lo);
+            r.emplace_back(e);
+            left -= e;
         }
         return r;
     }
