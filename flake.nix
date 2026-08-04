@@ -204,6 +204,11 @@
               dbus
               abseil-cpp
               sdl3
+              # Instance/device selection and swapchain building for the vulkan
+              # module. Packaged in nixpkgs, so no submodule and no local
+              # derivation; it ships a CMake config, hence
+              # find_package(vk-bootstrap).
+              vk-bootstrap
             ];
 
             # For Vulkan on wayland

@@ -6,6 +6,7 @@
 /compile_commands.json
 /.vscode
 /ignored
+/.claude/settings.local.json
 
 # Nix build result symlink (e.g. from `nix build .#code`)
 /result

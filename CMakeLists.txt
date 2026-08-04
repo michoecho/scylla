@@ -42,6 +42,23 @@ target_include_directories(nanobench_header INTERFACE ${NANOBENCH_INCLUDE_DIR})
 
 find_package(CLI11 REQUIRED)
 
+# The Vulkan stack behind the `vulkan` module (modules/vulkan/): the loader and
+# headers, SDL3 for windowing and surface creation, vk-bootstrap for
+# instance/device selection and swapchain building, and VMA for allocation.
+# All four come from the devShell; none is vendored or a submodule.
+#
+# Vulkan::Vulkan links the loader and pulls in the C headers. The module uses
+# the C API only, so nothing here needs vulkan.hpp.
+find_package(Vulkan REQUIRED)
+find_package(SDL3 REQUIRED CONFIG)
+find_package(vk-bootstrap REQUIRED CONFIG)
+find_package(VulkanMemoryAllocator REQUIRED CONFIG)
+
+# Shader compilation for the vulkan module. slangc emits SPIR-V straight from
+# .slang, and the compiled shaders land next to the test binaries so a test can
+# find them relative to its own executable path.
+find_program(SLANGC slangc REQUIRED)
+
 # Hegel, a property-based testing library (see modules/main/hegel_test.cc). The nix
 # packages under nix/ build it and its Rust engine from source; hegelConfig
 # re-creates the imported target for the engine shared library it ships beside
