@@ -28,6 +28,8 @@ namespace {
 using exhaustigen::Gen;
 using snapshot_testing::check_snapshot;
 using snapshot_testing::snapshot;
+// The multi-line spelling these snapshots are written in. A literal operator is
+// found by ordinary lookup, not ADL, so it has to be named here.
 
 // One pass per line, elements space-separated -- so an empty result is a blank
 // line, and the number of lines is the size of the enumeration.
@@ -51,14 +53,15 @@ TEST_CASE("gen_vec enumerates every vector up to the length and element bound") 
         out += render(g.gen_vec(2, 1));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(
-                                 "\n"
-                                 "0\n"
-                                 "1\n"
-                                 "0 0\n"
-                                 "0 1\n"
-                                 "1 0\n"
-                                 "1 1\n"));
+    check_snapshot(out, snapshot(R"snap(
+                                 |
+                                 |0
+                                 |1
+                                 |0 0
+                                 |0 1
+                                 |1 0
+                                 |1 1
+                                 )snap"_snap));
 }
 
 TEST_CASE("gen_comb enumerates combinations with repeats") {
@@ -68,47 +71,48 @@ TEST_CASE("gen_comb enumerates combinations with repeats") {
         out += render(g.gen_comb(kIn));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(
-                                 "\n"
-                                 "33\n"
-                                 "55\n"
-                                 "77\n"
-                                 "33 33\n"
-                                 "33 55\n"
-                                 "33 77\n"
-                                 "55 33\n"
-                                 "55 55\n"
-                                 "55 77\n"
-                                 "77 33\n"
-                                 "77 55\n"
-                                 "77 77\n"
-                                 "33 33 33\n"
-                                 "33 33 55\n"
-                                 "33 33 77\n"
-                                 "33 55 33\n"
-                                 "33 55 55\n"
-                                 "33 55 77\n"
-                                 "33 77 33\n"
-                                 "33 77 55\n"
-                                 "33 77 77\n"
-                                 "55 33 33\n"
-                                 "55 33 55\n"
-                                 "55 33 77\n"
-                                 "55 55 33\n"
-                                 "55 55 55\n"
-                                 "55 55 77\n"
-                                 "55 77 33\n"
-                                 "55 77 55\n"
-                                 "55 77 77\n"
-                                 "77 33 33\n"
-                                 "77 33 55\n"
-                                 "77 33 77\n"
-                                 "77 55 33\n"
-                                 "77 55 55\n"
-                                 "77 55 77\n"
-                                 "77 77 33\n"
-                                 "77 77 55\n"
-                                 "77 77 77\n"));
+    check_snapshot(out, snapshot(R"snap(
+                                 |
+                                 |33
+                                 |55
+                                 |77
+                                 |33 33
+                                 |33 55
+                                 |33 77
+                                 |55 33
+                                 |55 55
+                                 |55 77
+                                 |77 33
+                                 |77 55
+                                 |77 77
+                                 |33 33 33
+                                 |33 33 55
+                                 |33 33 77
+                                 |33 55 33
+                                 |33 55 55
+                                 |33 55 77
+                                 |33 77 33
+                                 |33 77 55
+                                 |33 77 77
+                                 |55 33 33
+                                 |55 33 55
+                                 |55 33 77
+                                 |55 55 33
+                                 |55 55 55
+                                 |55 55 77
+                                 |55 77 33
+                                 |55 77 55
+                                 |55 77 77
+                                 |77 33 33
+                                 |77 33 55
+                                 |77 33 77
+                                 |77 55 33
+                                 |77 55 55
+                                 |77 55 77
+                                 |77 77 33
+                                 |77 77 55
+                                 |77 77 77
+                                 )snap"_snap));
 }
 
 TEST_CASE("gen_perm enumerates each ordering exactly once") {
@@ -118,13 +122,14 @@ TEST_CASE("gen_perm enumerates each ordering exactly once") {
         out += render(g.gen_perm(kIn));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(
-                                 "33 55 77\n"
-                                 "33 77 55\n"
-                                 "55 33 77\n"
-                                 "55 77 33\n"
-                                 "77 33 55\n"
-                                 "77 55 33\n"));
+    check_snapshot(out, snapshot(R"snap(
+                                 |33 55 77
+                                 |33 77 55
+                                 |55 33 77
+                                 |55 77 33
+                                 |77 33 55
+                                 |77 55 33
+                                 )snap"_snap));
 }
 
 TEST_CASE("gen_subset enumerates the power set") {
@@ -134,15 +139,16 @@ TEST_CASE("gen_subset enumerates the power set") {
         out += render(g.gen_subset(kIn));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(
-                                 "\n"
-                                 "77\n"
-                                 "55\n"
-                                 "55 77\n"
-                                 "33\n"
-                                 "33 77\n"
-                                 "33 55\n"
-                                 "33 55 77\n"));
+    check_snapshot(out, snapshot(R"snap(
+                                 |
+                                 |77
+                                 |55
+                                 |55 77
+                                 |33
+                                 |33 77
+                                 |33 55
+                                 |33 55 77
+                                 )snap"_snap));
 }
 
 // The bounds passed to gen() may depend on earlier choices, which is what a
@@ -156,17 +162,18 @@ TEST_CASE("a later bound may depend on an earlier choice") {
         out += render({n, g.gen(n)});
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(
-                                 "0 0\n"
-                                 "1 0\n"
-                                 "1 1\n"
-                                 "2 0\n"
-                                 "2 1\n"
-                                 "2 2\n"
-                                 "3 0\n"
-                                 "3 1\n"
-                                 "3 2\n"
-                                 "3 3\n"));
+    check_snapshot(out, snapshot(R"snap(
+                                 |0 0
+                                 |1 0
+                                 |1 1
+                                 |2 0
+                                 |2 1
+                                 |2 2
+                                 |3 0
+                                 |3 1
+                                 |3 2
+                                 |3 3
+                                 )snap"_snap));
 }
 
 // At the head of a while loop the generator has made no choices yet, so

@@ -34,27 +34,138 @@
 //
 // --- the value ---------------------------------------------------------------
 //
-// Expected values are spelled as one or more *single-line* string literals,
-// concatenated by the ordinary C++ adjacent-literal rule:
+// Two spellings, and the updater writes whichever suits the value.
 //
-//     check_snapshot(render(3), snapshot(
-//         "1\n"
-//         "2\n"));
+// A value with no line break is one ordinary literal, on the line of the call:
 //
-// Never a raw string literal. The updater has to rewrite this text, and the
-// set of things it must understand to do that safely is exactly "a run of
-// single-line literals" -- a deliberately tiny grammar it can verify
-// completely and bail on when surprised. See updater.h.
+//     check_snapshot(render(3), snapshot("[1, 2, 3]\n"));
+//
+// Anything spanning lines is a *block literal*: a raw string with a `snap`
+// delimiter, passed through the _snap suffix, whose lines carry a `|` margin.
+//
+//     check_snapshot(render(3), snapshot(R"snap(
+//                                        |1
+//                                        |2
+//                                        )snap"_snap));
+//
+// which is exactly the value "1\n2\n". Escaped newlines are what expect tests
+// are worst at reading, and this form has none: the text in the file is the
+// text the value holds, laid out as the program actually printed it.
+//
+// _snap strips, at compile time (see below), the newline that follows the
+// opening delimiter and, from every line, the leading spaces and the `|`. The
+// margin is what makes the two independent: everything after the `|` is
+// content, so the block may be indented to sit under its call without the
+// indentation becoming part of the value, and a value with its own leading
+// whitespace survives intact.
+//
+// A literal operator is found by ordinary unqualified lookup rather than by
+// ADL, so a test file that may be rewritten into this form needs
+//
+//     using snapshot_testing::operator""_snap;
+//
+// alongside its using-declarations for snapshot() and check_snapshot(). Without
+// it the block the updater writes will not compile -- which is a build error,
+// not a corrupted file, but an avoidable surprise. See example_test.cc.
+//
+// Never a raw string without _snap, and no other escape form. The updater has
+// to rewrite this text, and the set of things it must understand to do that
+// safely is exactly these two shapes -- a deliberately tiny grammar it can
+// verify completely and bail on when surprised. See updater.h.
 
 #ifndef SNAPSHOT_SNAPSHOT_H
 #define SNAPSHOT_SNAPSHOT_H
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <source_location>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace snapshot_testing {
+
+// --- the block literal -------------------------------------------------------
+//
+// R"snap(...)snap"_snap, the multi-line spelling described above. Everything
+// here runs at compile time and allocates nothing: the stripped text lives in a
+// static constexpr array, so the resulting string_view has static storage
+// duration exactly as a plain literal's does, and a Snapshot built from one can
+// outlive the full-expression that made it.
+//
+// A template on a class-type non-type parameter rather than the GNU
+// `template <char...>` string-literal extension, which is not standard C++.
+
+namespace detail {
+
+// The stripping rule, in one place, used both to size the result and to fill
+// it -- so the two cannot disagree.
+//
+// Skips one leading newline (the one that follows the opening delimiter, which
+// exists only so the first content line can start in column 1), then for each
+// line drops leading spaces up to and including a `|`. A line with no `|` keeps
+// its content but loses that indentation; a line whose content begins with
+// spaces keeps them, because they sit after the margin.
+//
+// `emit` receives each retained character in order. Threading a callback
+// through is what lets the size pass and the copy pass be the same code.
+template <typename Emit>
+constexpr void strip_margins(std::string_view raw, Emit emit) {
+    std::size_t i = (!raw.empty() && raw[0] == '\n') ? 1 : 0;
+    while (i < raw.size()) {
+        while (i < raw.size() && raw[i] == ' ') ++i;
+        if (i < raw.size() && raw[i] == '|') ++i;
+        while (i < raw.size()) {
+            const char c = raw[i++];
+            emit(c);
+            if (c == '\n') break;
+        }
+    }
+}
+
+constexpr std::size_t stripped_size(std::string_view raw) {
+    std::size_t n = 0;
+    strip_margins(raw, [&n](char) { ++n; });
+    return n;
+}
+
+// A string literal usable as a template argument: a structural type holding the
+// characters by value, which is how C++20 lets a literal parameterise a
+// template at all.
+template <std::size_t N>
+struct RawLiteral {
+    std::array<char, N> data{};
+
+    consteval RawLiteral(const char (&literal)[N]) {  // NOLINT(google-explicit-constructor)
+        std::copy_n(literal, N, data.begin());
+    }
+
+    // N counts the terminating null, which is not part of the text.
+    constexpr std::string_view view() const { return {data.data(), N - 1}; }
+};
+
+// The stripped text, as static storage. Instantiated once per distinct literal,
+// so identical blocks in different tests share one array.
+template <RawLiteral L>
+struct StrippedLiteral {
+    static constexpr std::size_t size = stripped_size(L.view());
+
+    static constexpr std::array<char, size + 1> text = [] {
+        std::array<char, size + 1> out{};  // the extra element is the null
+        std::size_t n = 0;
+        strip_margins(L.view(), [&out, &n](char c) { out[n++] = c; });
+        return out;
+    }();
+};
+
+}  // namespace detail
+
+// The suffix itself. See the block-literal section above for what it strips.
+template <detail::RawLiteral L>
+constexpr std::string_view operator""_snap() {
+    return {detail::StrippedLiteral<L>::text.data(), detail::StrippedLiteral<L>::size};
+}
 
 // An expected value plus the source location of the call that wrote it.
 //
@@ -205,5 +316,7 @@ void discard_updates();
 std::string flush_updates();
 
 }  // namespace snapshot_testing
+
+using snapshot_testing::operator""_snap;
 
 #endif  // SNAPSHOT_SNAPSHOT_H

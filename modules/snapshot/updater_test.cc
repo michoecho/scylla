@@ -26,6 +26,7 @@
 #include <string_view>
 #include <vector>
 
+#include "snapshot/snapshot.h"  // for _snap, asserted against at the bottom
 #include "snapshot/updater.h"
 
 namespace {
@@ -81,15 +82,119 @@ TEST_CASE("keeps a value that occupies a single line inline") {
           "x(snapshot(\"one line\\n\"));\n");
 }
 
-TEST_CASE("expands a value spanning lines to one literal per line") {
-    // One literal per line of the value, so that a later change shows up as a
-    // line-granular diff rather than one enormous changed line. Continuation
-    // literals align under the call's opening parenthesis.
+TEST_CASE("writes a value spanning lines as a block literal") {
+    // One value line per source line, behind a `|` margin, aligned under the
+    // call's opening parenthesis. The point of the form is that the escapes are
+    // gone: what is in the file is what the value holds.
     CHECK(rewrite("x(snapshot(\"\"));\n",
                   {{.line = 1, .column = at_name(2), .old_value = "", .new_value = "a\nb\n"}}) ==
+          "x(snapshot(R\"snap(\n"
+          "           |a\n"
+          "           |b\n"
+          "           )snap\"_snap));\n");
+}
+
+TEST_CASE("keeps the closing delimiter inline when the value has no final newline") {
+    // A line break before the delimiter would be inside the raw string, so it
+    // would come back as a trailing newline the value never had.
+    CHECK(rewrite("x(snapshot(\"\"));\n",
+                  {{.line = 1, .column = at_name(2), .old_value = "", .new_value = "a\nb"}}) ==
+          "x(snapshot(R\"snap(\n"
+          "           |a\n"
+          "           |b)snap\"_snap));\n");
+}
+
+TEST_CASE("preserves leading whitespace in a block literal's lines") {
+    // Everything after the `|` is content, which is the whole reason for the
+    // margin: the block's own indentation cannot leak into the value, and the
+    // value's own indentation cannot be mistaken for it.
+    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
+                                           .column = at_name(2),
+                                           .old_value = "",
+                                           .new_value = "root\n    leaf\n"}}) ==
+          "x(snapshot(R\"snap(\n"
+          "           |root\n"
+          "           |    leaf\n"
+          "           )snap\"_snap));\n");
+}
+
+TEST_CASE("reads a block literal back as the value it was written from") {
+    // The round trip that the two independent implementations of the strip rule
+    // -- here and in snapshot.h -- have to agree on. The old value is what the
+    // previous case wrote, and it has to decode to what was written.
+    CHECK(rewrite("x(snapshot(R\"snap(\n"
+                  "           |root\n"
+                  "           |    leaf\n"
+                  "           )snap\"_snap));\n",
+                  {{.line = 1,
+                    .column = at_name(2),
+                    .old_value = "root\n    leaf\n",
+                    .new_value = "z\n"}}) == "x(snapshot(\"z\\n\"));\n");
+}
+
+TEST_CASE("strips only one margin pipe, so a value may begin with one") {
+    // `|x` as content is written as `||x` and read back to `|x`: the strip stops
+    // eating at the first pipe, so a second one is content.
+    const std::string written =
+        rewrite("x(snapshot(\"\"));\n", {{.line = 1,
+                                         .column = at_name(2),
+                                         .old_value = "",
+                                         .new_value = "|a\n  |b\n"}});
+    CHECK(written ==
+          "x(snapshot(R\"snap(\n"
+          "           ||a\n"
+          "           |  |b\n"
+          "           )snap\"_snap));\n");
+
+    // And back again, unchanged.
+    CHECK(rewrite(written, {{.line = 1,
+                             .column = at_name(2),
+                             .old_value = "|a\n  |b\n",
+                             .new_value = "z"}}) == "x(snapshot(\"z\"));\n");
+}
+
+TEST_CASE("falls back to escaped literals for a value a block cannot carry") {
+    // A tab or carriage return written raw would be invisible in the file, and
+    // an invisible character in an expected value is one nobody can review.
+    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
+                                           .column = at_name(2),
+                                           .old_value = "",
+                                           .new_value = "a\tb\nc\n"}}) ==
+          "x(snapshot(\n"
+          "           \"a\\tb\\n\"\n"
+          "           \"c\\n\"));\n");
+}
+
+TEST_CASE("falls back to escaped literals for a value holding the closing delimiter") {
+    // The one structural case: a raw string ends at its delimiter, and the
+    // delimiter is fixed, so no choice of margin could rescue this.
+    CHECK(rewrite("x(snapshot(\"\"));\n",
+                  {{.line = 1,
+                    .column = at_name(2),
+                    .old_value = "",
+                    .new_value = "a\nsee )snap\"_snap here\n"}}) ==
           "x(snapshot(\n"
           "           \"a\\n\"\n"
-          "           \"b\\n\"));\n");
+          "           \"see )snap\\\"_snap here\\n\"));\n");
+}
+
+TEST_CASE("refuses a call mixing a block literal with an ordinary one") {
+    // Two spellings of a whole value, not two halves of one. Reading a mixture
+    // would mean rewriting text the writer could never have produced.
+    CHECK(error_from("x(snapshot(R\"snap(\n"
+                     "           |a\n"
+                     "           )snap\"_snap \"b\"));\n",
+                     {{.line = 1, .column = at_name(2), .old_value = "a\nb", .new_value = "c"}}) ==
+          "snapshot(...) mixes a block literal with another literal; write the "
+          "value as one or the other (at line 1 column 3)");
+}
+
+TEST_CASE("refuses an unterminated block literal") {
+    CHECK(error_from("x(snapshot(R\"snap(\n"
+                     "           |a\n",
+                     {{.line = 1, .column = at_name(2), .old_value = "a\n", .new_value = "b"}}) ==
+          "unterminated block literal inside snapshot(...): no )snap\"_snap "
+          "(at line 1 column 3)");
 }
 
 TEST_CASE("applies several updates whose line numbers shift") {
@@ -105,10 +210,11 @@ TEST_CASE("applies several updates whose line numbers shift") {
                        .new_value = "1\n2\n3\n"},
                       {.line = 2, .column = at_name(2), .old_value = "two", .new_value = "2"},
                   }) ==
-          "a(snapshot(\n"
-          "           \"1\\n\"\n"
-          "           \"2\\n\"\n"
-          "           \"3\\n\"));\n"
+          "a(snapshot(R\"snap(\n"
+          "           |1\n"
+          "           |2\n"
+          "           |3\n"
+          "           )snap\"_snap));\n"
           "b(snapshot(\"2\"));\n");
 }
 
@@ -336,3 +442,46 @@ TEST_CASE("refuses a new value that is not valid UTF-8") {
                      {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "\xc3"}}) ==
           "new snapshot value at line 1 is not valid UTF-8");
 }
+
+// --- the two strip rules -----------------------------------------------------
+//
+// The margin rule exists twice: once in snapshot.h, evaluated by the compiler
+// when a block literal is read, and once in updater.cc, evaluated when the
+// updater reads that same text back out of the file. They describe the same
+// transformation and neither can be expressed in terms of the other -- one runs
+// at compile time on a literal, the other at run time on a string_view -- so
+// the risk is that they drift apart and the updater starts believing a value
+// the program never held.
+//
+// These assert the compile-time half directly. The run-time half is asserted by
+// the round-trip cases above, and both are pinned to the same expected values.
+
+using snapshot_testing::operator""_snap;
+
+static_assert(R"snap(
+              |a
+              |b
+              )snap"_snap == "a\nb\n",
+              "the ordinary case: one value line per source line");
+
+static_assert(R"snap(
+              |a
+              |b)snap"_snap == "a\nb",
+              "a closing delimiter on the last content line means no final newline");
+
+static_assert(R"snap(
+              |root
+              |    leaf
+              )snap"_snap == "root\n    leaf\n",
+              "everything after the margin is content, including whitespace");
+
+static_assert(R"snap(
+              ||a
+              |  |b
+              )snap"_snap == "|a\n  |b\n",
+              "only one pipe is stripped, so a value may itself start with one");
+
+static_assert(R"snap(
+              |
+              |b
+              )snap"_snap == "\nb\n", "an empty value line is a bare margin");

@@ -76,17 +76,57 @@ std::vector<std::size_t> line_offsets(std::string_view source) {
 
 // --- literal parsing ---------------------------------------------------------
 //
-// The single piece of syntax this tool understands. Between the snapshot( and
-// its closing paren it accepts a run of single-line string literals separated
-// by whitespace and comments, and decodes their concatenation.
+// The two pieces of syntax this tool understands. Between the snapshot( and its
+// closing paren it accepts either:
 //
-// Deliberately absent: raw string literals, encoding prefixes (L, u8, u, U),
+//   * a run of single-line string literals separated by whitespace and
+//     comments, and decodes their concatenation; or
+//   * one block literal, R"snap(...)snap"_snap, decoded by stripping the
+//     margins exactly as the _snap suffix does at compile time.
+//
+// One or the other, never both: they are two spellings of a whole value, and a
+// mixture is not something the writer below can produce, so reading one would
+// mean rewriting text nobody wrote.
+//
+// The block form is the *only* raw string accepted, and only with that exact
+// delimiter and that exact suffix. A raw string is otherwise unreadable to a
+// decoder this small -- its delimiter is arbitrary, so where it ends is a
+// parsing question -- and pinning the delimiter is what turns that back into a
+// literal search for a fixed terminator.
+//
+// Deliberately absent: any other raw string, encoding prefixes (L, u8, u, U),
 // and any escape whose meaning depends on how many characters follow it
 // (\x, \0-\7, \u). Those are all legal C++ that this refuses to read, because
 // each one is a way for the text in the file to mean something other than what
 // a naive decoder thinks -- and being wrong about the old value is how an
 // updater overwrites the wrong thing. Snapshot values are written by
 // render_literals below, which emits none of them.
+
+// The block literal's fixed spelling. Fixed so that finding its end is a search
+// for a known string rather than a decision.
+constexpr std::string_view kBlockOpen = "R\"snap(";
+constexpr std::string_view kBlockClose = ")snap\"_snap";
+
+// Decode a block literal's raw text: drop the newline just past the opening
+// delimiter, then from each line the leading spaces and one `|`.
+//
+// The mirror of detail::strip_margins in snapshot.h, which does this at compile
+// time. The two must agree -- this reads back what that produced -- so the rule
+// is stated identically in both and tested against a value that round-trips.
+std::string strip_margins(std::string_view raw) {
+    std::string value;
+    std::size_t i = (!raw.empty() && raw[0] == '\n') ? 1 : 0;
+    while (i < raw.size()) {
+        while (i < raw.size() && raw[i] == ' ') ++i;
+        if (i < raw.size() && raw[i] == '|') ++i;
+        while (i < raw.size()) {
+            const char c = raw[i++];
+            value.push_back(c);
+            if (c == '\n') break;
+        }
+    }
+    return value;
+}
 
 struct ParsedLiterals {
     bool ok = false;
@@ -98,6 +138,11 @@ struct ParsedLiterals {
 ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
     ParsedLiterals result;
     std::string value;
+
+    // Which spelling this call turned out to use. The two are alternatives, so
+    // once one has been read the other is a refusal rather than a continuation.
+    bool saw_quoted = false;
+    bool saw_block = false;
 
     while (true) {
         // Whitespace and comments between literals.
@@ -133,12 +178,41 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
             return result;
         }
 
+        // The block literal, R"snap(...)snap"_snap. Checked before the plain
+        // literal because it also begins with a character run that is not a
+        // quote, and its opening delimiter is unambiguous.
+        if (source.compare(pos, kBlockOpen.size(), kBlockOpen) == 0) {
+            if (saw_quoted || saw_block) {
+                result.error = "snapshot(...) mixes a block literal with another "
+                               "literal; write the value as one or the other";
+                return result;
+            }
+            const std::size_t body = pos + kBlockOpen.size();
+            const std::size_t close = source.find(kBlockClose, body);
+            if (close == std::string_view::npos) {
+                result.error = "unterminated block literal inside snapshot(...): no "
+                               ")snap\"_snap";
+                return result;
+            }
+            value = strip_margins(source.substr(body, close - body));
+            saw_block = true;
+            pos = close + kBlockClose.size();
+            continue;
+        }
+
         if (source[pos] != '"') {
             result.error = std::string("expected a string literal or ')' inside "
                                        "snapshot(...), found '") +
                            source[pos] + "'";
             return result;
         }
+
+        if (saw_block) {
+            result.error = "snapshot(...) mixes a block literal with another "
+                           "literal; write the value as one or the other";
+            return result;
+        }
+        saw_quoted = true;
 
         ++pos;  // opening quote
         while (true) {
@@ -185,9 +259,10 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
 
 std::string render_literals(std::string_view value, unsigned indent) {
     // A value occupying a single line stays inline: snapshot("foo\n"). Anything
-    // genuinely spanning lines gets one literal per line, so that a later change
-    // to it shows up as a line-granular diff rather than one enormous changed
-    // line -- which is most of what makes a snapshot reviewable.
+    // genuinely spanning lines becomes a block literal, whose lines are the
+    // value's own lines -- so a later change shows up as a line-granular diff
+    // rather than one enormous changed line, and the text in the file reads as
+    // the program printed it rather than as a run of escapes.
     //
     // The test is for a newline anywhere but the very end: a lone trailing
     // newline is what nearly every line-oriented value ends with, and breaking
@@ -198,6 +273,23 @@ std::string render_literals(std::string_view value, unsigned indent) {
 
     const std::string pad(indent, ' ');
     std::string out;
+
+    // What a block literal cannot carry, in which case the escaped
+    // one-literal-per-line form is used instead.
+    //
+    // A raw string ends at its closing delimiter, so a value containing that
+    // exact sequence would end the literal early -- and no choice of margin
+    // fixes it, because the terminator is fixed by parse_literals. The other
+    // two are legible rather than structural: a tab or a carriage return
+    // written raw is invisible in the file, and an invisible character in an
+    // expected value is one nobody can review. Escaped, they are at least
+    // spelled.
+    //
+    // Both spellings decode to the same value, and the parser reads either, so
+    // this choice costs nothing but the layout.
+    const bool block_safe = value.find(kBlockClose) == std::string_view::npos &&
+                            value.find('\t') == std::string_view::npos &&
+                            value.find('\r') == std::string_view::npos;
 
     auto emit_literal = [&out](std::string_view line) {
         out.push_back('"');
@@ -216,6 +308,52 @@ std::string render_literals(std::string_view value, unsigned indent) {
 
     if (!multiline) {
         emit_literal(value);
+        return out;
+    }
+
+    if (block_safe) {
+        // The block form. The opening delimiter is followed immediately by a
+        // newline -- stripped on the way back in -- so that the first content
+        // line starts in column 1 of its own source line and aligns with the
+        // rest under the call.
+        //
+        // Every line gets the margin, so the block is one rectangle the eye can
+        // follow. Where the closing delimiter goes is decided below, and is not
+        // always the next line.
+        out += kBlockOpen;
+        // Each source line is a newline, the margin, and the value line
+        // *without* its terminator: the newline separating two value lines is
+        // the same newline that separates the two source lines carrying them,
+        // written once. Emitting the line with its terminator and then
+        // starting the next one would write it twice.
+        std::size_t start = 0;
+        while (start < value.size()) {
+            const std::size_t nl = value.find('\n', start);
+            const std::size_t end = (nl == std::string_view::npos) ? value.size() : nl;
+            out += "\n";
+            out += pad;
+            out += "|";
+            out += value.substr(start, end - start);
+            start = (nl == std::string_view::npos) ? value.size() : nl + 1;
+        }
+        // Where the closing delimiter goes is decided by the value's own last
+        // character, and the two cases are not cosmetic.
+        //
+        // Ending in a newline, the delimiter goes on the next line, indented
+        // with the others: the strip pass sees that line as margin with no
+        // content and contributes nothing, so the value keeps exactly the
+        // newline the loop wrote.
+        //
+        // Not ending in one, the delimiter must sit immediately after the last
+        // character, because any line break before it would be inside the raw
+        // string and would come back as a trailing newline the value never had.
+        // That line is therefore longer than the rest -- correctness over the
+        // rectangle.
+        if (value.back() == '\n') {
+            out += "\n";
+            out += pad;
+        }
+        out += kBlockClose;
         return out;
     }
 

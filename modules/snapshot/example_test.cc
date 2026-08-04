@@ -33,6 +33,12 @@ namespace {
 using snapshot_testing::check_snapshot;
 using snapshot_testing::snapshot;
 
+// The multi-line spelling below. A literal operator is found by ordinary
+// lookup, not by ADL, so it has to be named here for the updater's block
+// literals to compile -- unlike the two functions above, which would be
+// reachable anyway.
+using snapshot_testing::operator""_snap;
+
 struct Item {
     std::string name;
     int count = 0;
@@ -62,11 +68,12 @@ TEST_CASE("render_table lays out rows in aligned columns") {
         {.name = "cherry", .count = 100, .price = 0.05},
     };
 
-    check_snapshot(render_table(items), snapshot(
-                                                 "apple          3     1.50\n"
-                                                 "banana        12     0.25\n"
-                                                 "cherry       100     0.05\n"
-                                                 "total        115\n"));
+    check_snapshot(render_table(items), snapshot(R"snap(
+                                                 |apple          3     1.50
+                                                 |banana        12     0.25
+                                                 |cherry       100     0.05
+                                                 |total        115
+                                                 )snap"_snap));
 }
 
 TEST_CASE("render_table on no items still prints a total row") {
@@ -88,7 +95,8 @@ void check_single_item(const Item& item, const snapshot_testing::Snapshot& expec
 
 TEST_CASE("a snapshot can be passed to a helper") {
     check_single_item({.name = "kiwi", .count = 7, .price = 2.0},
-                      snapshot(
-                               "kiwi           7     2.00\n"
-                               "total          7\n"));
+                      snapshot(R"snap(
+                               |kiwi           7     2.00
+                               |total          7
+                               )snap"_snap));
 }

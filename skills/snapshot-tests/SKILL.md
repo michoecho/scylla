@@ -28,6 +28,7 @@ target_link_module(module_x PRIVATE snapshot)
 
 using snapshot_testing::check_snapshot;
 using snapshot_testing::snapshot;
+using snapshot_testing::operator""_snap;   // for multi-line values; see below
 
 TEST_CASE("render_table lays out aligned columns") {
     check_snapshot(render_table(items), snapshot());
@@ -96,11 +97,43 @@ silently accept every future change to that snapshot.
 
 ## Rules for the expected value
 
+Two spellings, and the updater picks whichever suits the value.
+
+**Single line** — one ordinary literal, inline:
+
+```cpp
+check_snapshot(f(), snapshot("total 0\n"));
+```
+
+**Spanning lines** — a block literal: a `snap`-delimited raw string through the
+`_snap` suffix, with a `|` margin. No escaped newlines; the file holds the text
+the program printed.
+
+```cpp
+check_snapshot(f(), snapshot(R"snap(
+                             |apple    3
+                             |total  115
+                             )snap"_snap));
+```
+
+`_snap` strips, at compile time, the newline after the opening delimiter and
+each line's leading spaces plus one `|`. Everything *after* the `|` is content,
+so the block's indentation never leaks into the value and a value's own leading
+whitespace survives. A value line starting with `|` is written `||`.
+
+**`_snap` must be in scope** — a literal operator is found by unqualified lookup,
+not ADL. Add `using snapshot_testing::operator""_snap;` to any test file, or the
+block the updater writes won't compile.
+
 | Do | Don't |
 |---|---|
-| `snapshot("a\n" "b\n")` — adjacent single-line literals | `snapshot(R"(...)")` — raw strings are refused |
-| `\n \t \r \" \\` | `\x41`, `\0`, `ሴ` — variable-length escapes are refused |
+| `snapshot("a\n")` — one single-line literal | `snapshot(R"(...)")` — any raw string but the `_snap` block |
+| `snapshot(R"snap(...)snap"_snap)` — block literal | mixing a block with an ordinary literal in one call |
+| `\n \t \r \" \\` in quoted form | `\x41`, `\0`, `ሴ` — variable-length escapes are refused |
 | plain `"..."` | `L"..."`, `u8"..."` — prefixes are refused |
+
+Values holding a tab, a carriage return, or the literal text `)snap"_snap` fall
+back to the escaped one-literal-per-line form automatically.
 
 Values must be UTF-8. Both the source file and the new value are validated
 before anything is written.
@@ -128,23 +161,28 @@ Serialize to text that reads well and is **deterministic**. The formatting
 function is what makes the snapshot useful:
 
 - No addresses, timestamps, hash values, or unordered-container iteration order.
-- One record per line — the updater emits one literal per line, so a diff of the
-  snapshot is a line diff of the value.
+- One record per line — the updater emits one source line per value line, so a
+  diff of the snapshot is a line diff of the value.
 - Include the fields you'd want to see when it breaks; a snapshot is free to be
   large.
 
 ## Layout the updater produces
 
 Single line (including one trailing `\n`) stays inline; anything spanning lines
-gets one literal per line, aligned under the opening paren:
+becomes a block literal aligned under the opening paren:
 
 ```cpp
 check_snapshot(f(), snapshot("total 0\n"));
 
-check_snapshot(f(), snapshot(
-                             "a\n"
-                             "b\n"));
+check_snapshot(f(), snapshot(R"snap(
+                             |a
+                             |b
+                             )snap"_snap));
 ```
+
+A value with no trailing newline keeps `)snap"_snap` on the last content line —
+a break before it would be inside the raw string and add a newline the value
+never had.
 
 ## Run
 
@@ -180,7 +218,10 @@ still decode to the value the test saw, and rewrites only that span.
 | ``no `snapshot` identifier at line N column C`` | file edited since the test ran, or `snapshot()` got wrapped in a macro — rebuild, re-run, then update |
 | `no longer holds the recorded value` | file edited since the test ran — rebuild, re-run, then update |
 | ``` `snapshot` at ... is not followed by '(' ``` | problematic syntax, fix on case-by-case basis |
-| `expected a string literal or ')' ... found 'R'` | raw string literal; use adjacent single-line literals |
+| `expected a string literal or ')' ... found 'R'` | a raw string that isn't the `R"snap(...)snap"_snap` block form |
+| `mixes a block literal with another literal` | one spelling per call — a block *or* quoted literals, not both |
+| `unterminated block literal ... no )snap"_snap` | the block's closing delimiter is missing or misspelled |
+| `no matching literal operator for ... _snap` | add `using snapshot_testing::operator""_snap;` to the test file |
 | `unsupported escape '\x'` | only `\n \t \r \" \\` are decoded; rewrite the value |
 | `unterminated string literal` | a literal spans a line break; keep each on one line |
 | `refusing to update ...: reported a relative path` | the TU was compiled with a relative source path; build via the CMake presets, which pass absolute ones |
