@@ -111,9 +111,9 @@ the program printed.
 
 ```cpp
 check_snapshot(f(), snapshot(R"snap(
-                             |apple    3
-                             |total  115
-                             )snap"_snap));
+    |apple    3
+    |total  115
+    )snap"_snap));
 ```
 
 `_snap` strips, at compile time, the newline after the opening delimiter and
@@ -169,15 +169,17 @@ function is what makes the snapshot useful:
 ## Layout the updater produces
 
 Single line (including one trailing `\n`) stays inline; anything spanning lines
-becomes a block literal aligned under the opening paren:
+becomes a block literal indented **4 spaces from the line holding the call** —
+relative to the line, not to the `snapshot` identifier, so a call nested deep in
+an expression doesn't fling its value off to the right:
 
 ```cpp
 check_snapshot(f(), snapshot("total 0\n"));
 
 check_snapshot(f(), snapshot(R"snap(
-                             |a
-                             |b
-                             )snap"_snap));
+    |a
+    |b
+    )snap"_snap));
 ```
 
 A value with no trailing newline keeps `)snap"_snap` on the last content line —

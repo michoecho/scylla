@@ -111,8 +111,13 @@ struct UpdateResult {
 // new string and only a wholly successful pass produces one.
 UpdateResult apply_updates(std::string_view source, std::vector<Update> updates);
 
-// Render `value` as the source text of a run of single-line string literals,
-// indented to sit under a snapshot( at `indent` columns.
+// Render `value` as the source text of a snapshot's literals, with any
+// continuation lines indented by `indent` columns.
+//
+// `indent` is the final width, already including the continuation step: the
+// caller computes it from the indentation of the line the call sits on, not
+// from the column of the identifier, so the layout does not depend on how deep
+// in an expression the call is nested.
 //
 // Exposed for the updater's own tests. A value occupying a single line becomes
 // one literal on the same line as the call. A value spanning lines becomes a

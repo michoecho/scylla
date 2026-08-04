@@ -69,11 +69,11 @@ TEST_CASE("render_table lays out rows in aligned columns") {
     };
 
     check_snapshot(render_table(items), snapshot(R"snap(
-                                                 |apple          3     1.50
-                                                 |banana        12     0.25
-                                                 |cherry       100     0.05
-                                                 |total        115
-                                                 )snap"_snap));
+        |apple          3     1.50
+        |banana        12     0.25
+        |cherry       100     0.05
+        |total        115
+        )snap"_snap));
 }
 
 TEST_CASE("render_table on no items still prints a total row") {
@@ -96,7 +96,7 @@ void check_single_item(const Item& item, const snapshot_testing::Snapshot& expec
 TEST_CASE("a snapshot can be passed to a helper") {
     check_single_item({.name = "kiwi", .count = 7, .price = 2.0},
                       snapshot(R"snap(
-                               |kiwi           7     2.00
-                               |total          7
-                               )snap"_snap));
+                          |kiwi           7     2.00
+                          |total          7
+                          )snap"_snap));
 }

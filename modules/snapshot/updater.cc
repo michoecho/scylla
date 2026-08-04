@@ -381,6 +381,11 @@ namespace {
 // character.
 constexpr std::string_view kName = "snapshot";
 
+// How far a value's lines sit in from the indentation of the line holding the
+// call. One indentation step, so the value reads as the continuation of the
+// statement it belongs to.
+constexpr unsigned kContinuationIndent = 4;
+
 // Whether `offset` starts the identifier `snapshot` and not some longer name
 // that merely contains it.
 //
@@ -428,7 +433,7 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
     struct Resolved {
         std::size_t literals_start = 0;  // just past the '('
         std::size_t literals_end = 0;    // the closing paren
-        unsigned indent = 0;             // 1-based column of the 's' of snapshot
+        unsigned indent = 0;             // leading whitespace of the call's line
         const Update* update = nullptr;
     };
 
@@ -505,10 +510,21 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
             return result;
         }
 
+        // The indentation of the line the call sits on -- its leading
+        // whitespace, not the column of the identifier. A continuation line is
+        // laid out relative to the statement, so a call nested deep in an
+        // expression does not drag the value out to wherever the identifier
+        // happened to land. Measured from the start of the line up to its first
+        // non-blank character, which for a line that is nothing but blanks is
+        // its whole length.
+        std::size_t first_text = line_start;
+        while (first_text < line_end && (source[first_text] == ' ' || source[first_text] == '\t'))
+            ++first_text;
+
         resolved.push_back(Resolved{
             .literals_start = pos,
             .literals_end = parsed.end - 1,  // parsed.end is one past the ')'
-            .indent = static_cast<unsigned>(name_start - line_start + 1),
+            .indent = static_cast<unsigned>(first_text - line_start),
             .update = &update,
         });
     }
@@ -524,16 +540,20 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
 
     std::string text(source);
     for (const Resolved& item : resolved) {
-        // A multi-line value is laid out with its literals starting on the line
-        // after the call, indented to sit directly under the opening
-        // parenthesis: `indent` is the 1-based column of the 's', "snapshot" is
-        // 8 characters wide, and the '(' takes one more, so the text after it
-        // begins at indent + 9. Aligning there rather than at a fixed offset is
-        // what keeps a nested snapshot's value visually attached to the call
-        // that owns it.
+        // A multi-line value is laid out with its lines starting on the line
+        // after the call, one continuation step in from the statement that owns
+        // it: `indent` is the call line's own leading whitespace, and the value
+        // sits kContinuationIndent further right.
+        //
+        // Relative to the line rather than to the identifier, so the layout does
+        // not depend on how deep in an expression the call happens to sit. A
+        // snapshot passed as the second argument of a nested call would
+        // otherwise have its value flung far to the right, and a long enough
+        // prefix would push every line past the column limit with nothing the
+        // author could do about it.
         text.replace(item.literals_start, item.literals_end - item.literals_start,
                      render_literals(item.update->new_value,
-                                     item.indent + static_cast<unsigned>(kName.size())));
+                                     item.indent + kContinuationIndent));
     }
 
     result.ok = true;

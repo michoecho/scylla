@@ -83,15 +83,50 @@ TEST_CASE("keeps a value that occupies a single line inline") {
 }
 
 TEST_CASE("writes a value spanning lines as a block literal") {
-    // One value line per source line, behind a `|` margin, aligned under the
-    // call's opening parenthesis. The point of the form is that the escapes are
-    // gone: what is in the file is what the value holds.
+    // One value line per source line, behind a `|` margin, one indentation step
+    // in from the line holding the call. The point of the form is that the
+    // escapes are gone: what is in the file is what the value holds.
     CHECK(rewrite("x(snapshot(\"\"));\n",
                   {{.line = 1, .column = at_name(2), .old_value = "", .new_value = "a\nb\n"}}) ==
           "x(snapshot(R\"snap(\n"
-          "           |a\n"
-          "           |b\n"
-          "           )snap\"_snap));\n");
+          "    |a\n"
+          "    |b\n"
+          "    )snap\"_snap));\n");
+}
+
+TEST_CASE("indents a value one step in from the line holding the call") {
+    // The layout is relative to the *line*, not to the identifier: the call's
+    // line is indented eight, so the value sits at twelve.
+    CHECK(rewrite("        x(snapshot(\"\"));\n",
+                  {{.line = 1, .column = at_name(10), .old_value = "", .new_value = "a\nb\n"}}) ==
+          "        x(snapshot(R\"snap(\n"
+          "            |a\n"
+          "            |b\n"
+          "            )snap\"_snap));\n");
+}
+
+TEST_CASE("does not indent a value by how deep in an expression the call sits") {
+    // The same line indentation as above, but the call is buried far to the
+    // right. Aligning under the identifier would fling the value out with it --
+    // and a long enough prefix would push every line past the column limit with
+    // nothing the author could do about it. The value lands in the same place.
+    CHECK(rewrite("        f(g(h(1), snapshot(\"\")));\n",
+                  {{.line = 1, .column = at_name(18), .old_value = "", .new_value = "a\nb\n"}}) ==
+          "        f(g(h(1), snapshot(R\"snap(\n"
+          "            |a\n"
+          "            |b\n"
+          "            )snap\"_snap)));\n");
+}
+
+TEST_CASE("indents the escaped fallback form the same way") {
+    // The two spellings are one layout rule, not two.
+    CHECK(rewrite("        x(snapshot(\"\"));\n", {{.line = 1,
+                                                   .column = at_name(10),
+                                                   .old_value = "",
+                                                   .new_value = "a\tb\nc\n"}}) ==
+          "        x(snapshot(\n"
+          "            \"a\\tb\\n\"\n"
+          "            \"c\\n\"));\n");
 }
 
 TEST_CASE("keeps the closing delimiter inline when the value has no final newline") {
@@ -100,8 +135,8 @@ TEST_CASE("keeps the closing delimiter inline when the value has no final newlin
     CHECK(rewrite("x(snapshot(\"\"));\n",
                   {{.line = 1, .column = at_name(2), .old_value = "", .new_value = "a\nb"}}) ==
           "x(snapshot(R\"snap(\n"
-          "           |a\n"
-          "           |b)snap\"_snap));\n");
+          "    |a\n"
+          "    |b)snap\"_snap));\n");
 }
 
 TEST_CASE("preserves leading whitespace in a block literal's lines") {
@@ -113,9 +148,9 @@ TEST_CASE("preserves leading whitespace in a block literal's lines") {
                                            .old_value = "",
                                            .new_value = "root\n    leaf\n"}}) ==
           "x(snapshot(R\"snap(\n"
-          "           |root\n"
-          "           |    leaf\n"
-          "           )snap\"_snap));\n");
+          "    |root\n"
+          "    |    leaf\n"
+          "    )snap\"_snap));\n");
 }
 
 TEST_CASE("reads a block literal back as the value it was written from") {
@@ -123,9 +158,9 @@ TEST_CASE("reads a block literal back as the value it was written from") {
     // -- here and in snapshot.h -- have to agree on. The old value is what the
     // previous case wrote, and it has to decode to what was written.
     CHECK(rewrite("x(snapshot(R\"snap(\n"
-                  "           |root\n"
-                  "           |    leaf\n"
-                  "           )snap\"_snap));\n",
+                  "    |root\n"
+                  "    |    leaf\n"
+                  "    )snap\"_snap));\n",
                   {{.line = 1,
                     .column = at_name(2),
                     .old_value = "root\n    leaf\n",
@@ -142,9 +177,9 @@ TEST_CASE("strips only one margin pipe, so a value may begin with one") {
                                          .new_value = "|a\n  |b\n"}});
     CHECK(written ==
           "x(snapshot(R\"snap(\n"
-          "           ||a\n"
-          "           |  |b\n"
-          "           )snap\"_snap));\n");
+          "    ||a\n"
+          "    |  |b\n"
+          "    )snap\"_snap));\n");
 
     // And back again, unchanged.
     CHECK(rewrite(written, {{.line = 1,
@@ -161,8 +196,8 @@ TEST_CASE("falls back to escaped literals for a value a block cannot carry") {
                                            .old_value = "",
                                            .new_value = "a\tb\nc\n"}}) ==
           "x(snapshot(\n"
-          "           \"a\\tb\\n\"\n"
-          "           \"c\\n\"));\n");
+          "    \"a\\tb\\n\"\n"
+          "    \"c\\n\"));\n");
 }
 
 TEST_CASE("falls back to escaped literals for a value holding the closing delimiter") {
@@ -174,16 +209,16 @@ TEST_CASE("falls back to escaped literals for a value holding the closing delimi
                     .old_value = "",
                     .new_value = "a\nsee )snap\"_snap here\n"}}) ==
           "x(snapshot(\n"
-          "           \"a\\n\"\n"
-          "           \"see )snap\\\"_snap here\\n\"));\n");
+          "    \"a\\n\"\n"
+          "    \"see )snap\\\"_snap here\\n\"));\n");
 }
 
 TEST_CASE("refuses a call mixing a block literal with an ordinary one") {
     // Two spellings of a whole value, not two halves of one. Reading a mixture
     // would mean rewriting text the writer could never have produced.
     CHECK(error_from("x(snapshot(R\"snap(\n"
-                     "           |a\n"
-                     "           )snap\"_snap \"b\"));\n",
+                     "    |a\n"
+                     "    )snap\"_snap \"b\"));\n",
                      {{.line = 1, .column = at_name(2), .old_value = "a\nb", .new_value = "c"}}) ==
           "snapshot(...) mixes a block literal with another literal; write the "
           "value as one or the other (at line 1 column 3)");
@@ -191,7 +226,7 @@ TEST_CASE("refuses a call mixing a block literal with an ordinary one") {
 
 TEST_CASE("refuses an unterminated block literal") {
     CHECK(error_from("x(snapshot(R\"snap(\n"
-                     "           |a\n",
+                     "    |a\n",
                      {{.line = 1, .column = at_name(2), .old_value = "a\n", .new_value = "b"}}) ==
           "unterminated block literal inside snapshot(...): no )snap\"_snap "
           "(at line 1 column 3)");
@@ -211,10 +246,10 @@ TEST_CASE("applies several updates whose line numbers shift") {
                       {.line = 2, .column = at_name(2), .old_value = "two", .new_value = "2"},
                   }) ==
           "a(snapshot(R\"snap(\n"
-          "           |1\n"
-          "           |2\n"
-          "           |3\n"
-          "           )snap\"_snap));\n"
+          "    |1\n"
+          "    |2\n"
+          "    |3\n"
+          "    )snap\"_snap));\n"
           "b(snapshot(\"2\"));\n");
 }
 

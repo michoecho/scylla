@@ -54,14 +54,14 @@ TEST_CASE("gen_vec enumerates every vector up to the length and element bound") 
     } while (!g.is_done());
 
     check_snapshot(out, snapshot(R"snap(
-                                 |
-                                 |0
-                                 |1
-                                 |0 0
-                                 |0 1
-                                 |1 0
-                                 |1 1
-                                 )snap"_snap));
+        |
+        |0
+        |1
+        |0 0
+        |0 1
+        |1 0
+        |1 1
+        )snap"_snap));
 }
 
 TEST_CASE("gen_comb enumerates combinations with repeats") {
@@ -72,47 +72,47 @@ TEST_CASE("gen_comb enumerates combinations with repeats") {
     } while (!g.is_done());
 
     check_snapshot(out, snapshot(R"snap(
-                                 |
-                                 |33
-                                 |55
-                                 |77
-                                 |33 33
-                                 |33 55
-                                 |33 77
-                                 |55 33
-                                 |55 55
-                                 |55 77
-                                 |77 33
-                                 |77 55
-                                 |77 77
-                                 |33 33 33
-                                 |33 33 55
-                                 |33 33 77
-                                 |33 55 33
-                                 |33 55 55
-                                 |33 55 77
-                                 |33 77 33
-                                 |33 77 55
-                                 |33 77 77
-                                 |55 33 33
-                                 |55 33 55
-                                 |55 33 77
-                                 |55 55 33
-                                 |55 55 55
-                                 |55 55 77
-                                 |55 77 33
-                                 |55 77 55
-                                 |55 77 77
-                                 |77 33 33
-                                 |77 33 55
-                                 |77 33 77
-                                 |77 55 33
-                                 |77 55 55
-                                 |77 55 77
-                                 |77 77 33
-                                 |77 77 55
-                                 |77 77 77
-                                 )snap"_snap));
+        |
+        |33
+        |55
+        |77
+        |33 33
+        |33 55
+        |33 77
+        |55 33
+        |55 55
+        |55 77
+        |77 33
+        |77 55
+        |77 77
+        |33 33 33
+        |33 33 55
+        |33 33 77
+        |33 55 33
+        |33 55 55
+        |33 55 77
+        |33 77 33
+        |33 77 55
+        |33 77 77
+        |55 33 33
+        |55 33 55
+        |55 33 77
+        |55 55 33
+        |55 55 55
+        |55 55 77
+        |55 77 33
+        |55 77 55
+        |55 77 77
+        |77 33 33
+        |77 33 55
+        |77 33 77
+        |77 55 33
+        |77 55 55
+        |77 55 77
+        |77 77 33
+        |77 77 55
+        |77 77 77
+        )snap"_snap));
 }
 
 TEST_CASE("gen_perm enumerates each ordering exactly once") {
@@ -123,13 +123,13 @@ TEST_CASE("gen_perm enumerates each ordering exactly once") {
     } while (!g.is_done());
 
     check_snapshot(out, snapshot(R"snap(
-                                 |33 55 77
-                                 |33 77 55
-                                 |55 33 77
-                                 |55 77 33
-                                 |77 33 55
-                                 |77 55 33
-                                 )snap"_snap));
+        |33 55 77
+        |33 77 55
+        |55 33 77
+        |55 77 33
+        |77 33 55
+        |77 55 33
+        )snap"_snap));
 }
 
 TEST_CASE("gen_subset enumerates the power set") {
@@ -140,15 +140,15 @@ TEST_CASE("gen_subset enumerates the power set") {
     } while (!g.is_done());
 
     check_snapshot(out, snapshot(R"snap(
-                                 |
-                                 |77
-                                 |55
-                                 |55 77
-                                 |33
-                                 |33 77
-                                 |33 55
-                                 |33 55 77
-                                 )snap"_snap));
+        |
+        |77
+        |55
+        |55 77
+        |33
+        |33 77
+        |33 55
+        |33 55 77
+        )snap"_snap));
 }
 
 // The bounds passed to gen() may depend on earlier choices, which is what a
@@ -163,17 +163,17 @@ TEST_CASE("a later bound may depend on an earlier choice") {
     } while (!g.is_done());
 
     check_snapshot(out, snapshot(R"snap(
-                                 |0 0
-                                 |1 0
-                                 |1 1
-                                 |2 0
-                                 |2 1
-                                 |2 2
-                                 |3 0
-                                 |3 1
-                                 |3 2
-                                 |3 3
-                                 )snap"_snap));
+        |0 0
+        |1 0
+        |1 1
+        |2 0
+        |2 1
+        |2 2
+        |3 0
+        |3 1
+        |3 2
+        |3 3
+        )snap"_snap));
 }
 
 // At the head of a while loop the generator has made no choices yet, so

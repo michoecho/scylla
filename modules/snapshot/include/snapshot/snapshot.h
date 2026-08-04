@@ -44,20 +44,24 @@
 // delimiter, passed through the _snap suffix, whose lines carry a `|` margin.
 //
 //     check_snapshot(render(3), snapshot(R"snap(
-//                                        |1
-//                                        |2
-//                                        )snap"_snap));
+//         |1
+//         |2
+//         )snap"_snap));
 //
 // which is exactly the value "1\n2\n". Escaped newlines are what expect tests
 // are worst at reading, and this form has none: the text in the file is the
 // text the value holds, laid out as the program actually printed it.
 //
+// The updater indents the block one step in from the line the call sits on --
+// relative to the line, not to the `snapshot` token, so a call nested deep in
+// an expression does not drag its value out to the right margin.
+//
 // _snap strips, at compile time (see below), the newline that follows the
 // opening delimiter and, from every line, the leading spaces and the `|`. The
 // margin is what makes the two independent: everything after the `|` is
-// content, so the block may be indented to sit under its call without the
-// indentation becoming part of the value, and a value with its own leading
-// whitespace survives intact.
+// content, so the block may be indented freely without the indentation
+// becoming part of the value, and a value with its own leading whitespace
+// survives intact.
 //
 // A literal operator is found by ordinary unqualified lookup rather than by
 // ADL, so a test file that may be rewritten into this form needs
