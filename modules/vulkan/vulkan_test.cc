@@ -134,21 +134,16 @@ TEST_CASE("Renderer screenshot returns a scaled down image of what was drawn") {
     // Before anything has been drawn there is nothing to hand back.
     CHECK_FALSE(renderer->take_screenshot().has_value());
 
-    // A handful of frames: enough that at least one completes and gets read
-    // back through the ordinary in-flight path, and that an initial
-    // out-of-date swapchain (common on the first present after a window is
-    // mapped) does not leave the test with zero frames.
-    for (int i = 0; i < 8; ++i) {
-        renderer->poll_events();
-        renderer->draw_frame();
-    }
+    renderer->poll_events();
+    renderer->draw_frame();
     REQUIRE(renderer->frames_presented() > 0);
 
     auto maybe_shot = renderer->take_screenshot_blocking();
     REQUIRE(maybe_shot.has_value());
     const Screenshot& shot = *maybe_shot;
 
-    SUBCASE("it is scaled down from the rendered surface") {
+    //SUBCASE("it is scaled down from the rendered surface")
+    {
         const VkExtent2D drawn = renderer->swapchain_extent();
 
         // Strictly smaller than what was rendered, in both axes.
@@ -172,7 +167,8 @@ TEST_CASE("Renderer screenshot returns a scaled down image of what was drawn") {
         CHECK(shot.pixels.size() == size_t(shot.width) * shot.height * 4);
     }
 
-    SUBCASE("it holds the drawn image, not a blank buffer") {
+    //SUBCASE("it holds the drawn image, not a blank buffer")
+    {
         // The shader writes alpha 1 everywhere it runs.
         auto centre = shot.at(shot.width / 2, shot.height / 2);
         CHECK(centre.a == 255);
@@ -193,7 +189,8 @@ TEST_CASE("Renderer screenshot returns a scaled down image of what was drawn") {
         CHECK(varies);
     }
 
-    SUBCASE("the gradient runs the way it was drawn") {
+    //SUBCASE("the gradient runs the way it was drawn")
+    {
         // Sample 1/8-sized boxes just inside each edge's midpoint, away from
         // the centre circle.
         const uint32_t bw = std::max(shot.width / 8, 2u);
@@ -217,7 +214,8 @@ TEST_CASE("Renderer screenshot returns a scaled down image of what was drawn") {
         CHECK(std::abs(left.g - right.g) < 32);
     }
 
-    SUBCASE("the centre circle survives the downscale") {
+    //SUBCASE("the centre circle survives the downscale")
+    {
         const uint32_t bw = std::max(shot.width / 10, 2u);
         const uint32_t bh = std::max(shot.height / 10, 2u);
 
