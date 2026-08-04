@@ -186,7 +186,7 @@
 
               pkgs-unstable.claude-code
               code
-              codex
+              pkgs-unstable.codex
             ];
 
             # Absolute path to the prebuilt dlfilter. tools/pt-trace passes this
