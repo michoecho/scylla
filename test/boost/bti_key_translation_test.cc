@@ -843,13 +843,23 @@ static managed_bytes make_random_value(std::mt19937& engine, tests::value_genera
 
 // Encodes `ckp` and checks that the result is sane.
 // Doesn't check *what* the encoding is, only that producing it is well-behaved.
-static void check_encoding_is_well_behaved(const schema& s, const clustering_key_prefix& ckp) {
+//
+// If `allow_marshal_exception`, the input isn't guaranteed to hold valid values
+// of the key's types, so the encoder is additionally allowed to reject it with a
+// marshal_exception. That's the only legal way for it to refuse an input:
+// hanging, crashing, or returning garbage is not acceptable for any input.
+static void check_encoding_is_well_behaved(const schema& s, const clustering_key_prefix& ckp,
+        bool allow_marshal_exception = false) {
     using encoding = sstables::trie::lazy_comparable_bytes_from_clustering_position;
     for (int weight = -1; weight <= 1; ++weight) {
         auto pipv = position_in_partition_view(ckp, bound_weight(weight));
-        auto encoded = linearize(encoding(s, pipv).begin());
-        // The encoding always ends with the terminator byte, so it's never empty.
-        BOOST_REQUIRE(!encoded.empty());
+        try {
+            auto encoded = linearize(encoding(s, pipv).begin());
+            // The encoding always ends with the terminator byte, so it's never empty.
+            BOOST_REQUIRE(!encoded.empty());
+        } catch (const marshal_exception&) {
+            BOOST_REQUIRE(allow_marshal_exception);
+        }
     }
 }
 
@@ -916,6 +926,38 @@ BOOST_AUTO_TEST_CASE(test_comparable_bytes_from_compound_random_valid_data) {
                         actual < 0 ? "<" : actual > 0 ? ">" : "=="));
                 }
             }
+        }
+    }
+}
+
+// Feeds completely random bytes (with random splits into components)
+// to the BTI clustering key encoder, and checks it handles them gracefully.
+//
+// The encoder has no business trusting the contents of its input:
+// a corrupted sstable mustn't be able to hang or crash the encoder.
+BOOST_AUTO_TEST_CASE(test_comparable_bytes_from_compound_random_garbage_data) {
+    auto engine = std::mt19937(tests::random::get_int<uint32_t>());
+
+    constexpr int n_schemas = 30;
+    constexpr int n_keys_per_schema = 30;
+    for (int i = 0; i < n_schemas; ++i) {
+        auto s = make_random_clustering_key_schema(engine);
+        const auto& types = s->clustering_key_prefix_type()->types();
+        testlog.info("schema {}: ck types={}", i, fmt::join(
+            types | std::views::transform([] (const data_type& t) { return t->name(); }), ", "));
+
+        for (int j = 0; j < n_keys_per_schema; ++j) {
+            const auto n_components = tests::random::get_int<size_t>(0, types.size(), engine);
+            std::vector<managed_bytes> components;
+            for (size_t k = 0; k < n_components; ++k) {
+                // Random size (including 0, i.e. "empty") and random contents.
+                const auto size = tests::random::get_int<size_t>(0, 24, engine);
+                components.push_back(managed_bytes(managed_bytes_view(
+                    bytes_view(tests::random::get_bytes(size, engine)))));
+            }
+            auto ckp = clustering_key_prefix::from_range(components);
+            testlog.debug("key={}", ckp);
+            check_encoding_is_well_behaved(*s, ckp, true);
         }
     }
 }
