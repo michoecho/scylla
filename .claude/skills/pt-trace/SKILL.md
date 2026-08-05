@@ -180,8 +180,7 @@ rejected up front rather than loaded as an empty trace.
   `bei0ns` because the dlfilter needs branch records.
 - `--dlfilter PATH` — override the `libperf2perfetto.so` location (defaults to
   `$PERF2PERFETTO_DLFILTER`).
-- `-e, --event SPEC` — perf event (default `intel_pt//u`, user space only). For
-  more exact cycle/instruction counts try `intel_pt/cyc=1,noretcomp=1/u`.
+- `-e, --event SPEC` — perf event (default `intel_pt/cyc=1/u`, user space only).
 - `-v, --verbose` — print the perf command lines and keep perf's own output.
 
 ## Verifying the result
