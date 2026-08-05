@@ -65,7 +65,7 @@ find_program(SLANGC slangc REQUIRED)
 # its archive, so linking hegel::hegel is all a consumer needs.
 find_package(hegel REQUIRED)
 
-# Stacktraces from exceptions (modules/main/exception_hacks.cc). Boost splits this in
+# Stacktraces from exceptions (modules/exception_hacks/). Boost splits this in
 # two: the from_exception library does the capture at throw time, and it only
 # records instruction addresses. Turning those into names is a separate
 # backend, chosen by a BOOST_STACKTRACE_USE_* macro at compile time. The

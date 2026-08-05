@@ -10,7 +10,6 @@
 add_module(main
     SOURCES
         bench.cc
-        exception_hacks.cc
         # The AFL driver behind FUZZ_TARGET (persistent loop in a fuzz build,
         # stdin replay otherwise), plus the worked example target and the
         # self-test that runs AFL++ against it. Both of the latter are inert
@@ -31,19 +30,12 @@ add_module(main
 target_link_libraries(main PUBLIC
     CLI11::CLI11
     nanobench_header
-    # Trace capture at throw time, plus the libbacktrace name resolution its
-    # frames are printed with. ${CMAKE_DL_LIBS} is dladdr, which Boost uses
-    # to attribute each frame to its shared object.
-    Boost::stacktrace_from_exception
-    ${BACKTRACE_LIBRARY}
-    ${CMAKE_DL_LIBS}
     hegel::hegel)
 
-# exception_hacks.cc is the only TU that includes boost/stacktrace, but the
-# macro selecting the libbacktrace backend has to match in every TU that does,
-# and PUBLIC keeps that true for anything linking this module later.
-target_compile_definitions(main PUBLIC BOOST_STACKTRACE_USE_BACKTRACE)
-target_include_directories(main SYSTEM PUBLIC ${BACKTRACE_INCLUDE_DIR})
+# Stacktraces off exceptions. Nothing in `main` calls it today; it is linked so
+# the executable keeps carrying the from_exception library that captures traces
+# at throw time, and so its tests are gated behind main's.
+target_link_module(main PUBLIC exception_hacks)
 
 target_compile_options(main PRIVATE
     -Wall

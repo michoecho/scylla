@@ -144,7 +144,7 @@
           # trace of any std::exception_ptr, not only of the exception being
           # handled right now. Upstream's lookup already goes through an
           # exception_ptr internally, so the patch mostly just exposes it; see
-          # the patch header and src/exception_hacks.cc.
+          # the patch header and modules/exception_hacks/exception_hacks.cc.
           boost = pkgs.boost.overrideAttrs (old: {
             patches = (old.patches or [ ]) ++ [ ./nix/patches/boost-stacktrace-from-exception-ptr.patch ];
           });
