@@ -139,6 +139,25 @@ Notes:
   CORS header Perfetto needs, opens `ui.perfetto.dev/#!/?url=...`, and blocks
   serving until the UI fetches the file once (then exits). Ctrl-C to stop early.
 
+## Viewing a .ftf you already have
+
+`view` is `--perfetto`'s last step on its own — no recording, no perf, no
+dlfilter needed:
+
+```sh
+tools/pt-trace view perf.ftf
+```
+
+Same one-shot server and teardown as `--perfetto`. The browser is whatever
+`webbrowser.open` picks, so `$BROWSER` selects it:
+
+```sh
+BROWSER=firefox tools/pt-trace view perf.ftf
+```
+
+Use it to re-open a trace after the original `--perfetto` server exited, or to
+view a `.ftf` captured with plain `--ftf`.
+
 ## Useful options
 
 - `-o, --output FILE` — perf.data path (default `perf.data`).

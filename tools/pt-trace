@@ -23,6 +23,10 @@ Decoding to Perfetto:
   trace (.ftf) via the perf2perfetto dlfilter, and --perfetto serves
   that file to https://ui.perfetto.dev so you can view it in a browser.
 
+  To view a .ftf captured earlier, without recording anything:
+
+    tools/pt-trace view perf.ftf
+
 Example:
 
   tools/pt-trace -- ./out/build/Debug/cpp_template test --test-case='intel pt*'
@@ -59,6 +63,36 @@ DLFILTER = os.environ.get(DLFILTER_ENV)
 # open_trace_in_ui helper.
 PERFETTO_PORT = 9001
 PERFETTO_ORIGIN = "https://ui.perfetto.dev"
+
+
+def view_main(argv):
+    """`pt-trace view FILE.ftf` -- show an existing .ftf, recording nothing.
+
+    Split off from the main parser rather than folded into it as a subparser:
+    the recording CLI is all flags plus a REMAINDER command, and `view` shares
+    none of it -- no perf, no dlfilter, no program to launch. It is only the
+    last step of --perfetto, run against a file that already exists.
+    """
+    parser = argparse.ArgumentParser(
+        prog="pt-trace view",
+        description="Open an existing .ftf trace in the Perfetto UI.",
+    )
+    parser.add_argument(
+        "ftf", metavar="FILE.ftf",
+        help="Path to a .ftf produced earlier by --ftf.",
+    )
+    args = parser.parse_args(argv)
+
+    if not os.path.exists(args.ftf):
+        print(f"pt-trace: no such file: {args.ftf}", file=sys.stderr)
+        return 1
+    # A .ftf the decode never wrote to is not worth opening: the UI would load
+    # an empty trace and say nothing about why.
+    if os.path.getsize(args.ftf) == 0:
+        print(f"pt-trace: {args.ftf} is empty", file=sys.stderr)
+        return 1
+
+    return 0 if open_in_perfetto(args.ftf) else 1
 
 
 def parse_args(argv):
@@ -266,6 +300,12 @@ def open_in_perfetto(ftf_path):
 
 
 def main(argv):
+    # Dispatched before the main parser sees anything: `view` takes a plain
+    # file path, not the flags-then---then-command shape of a recording run,
+    # and needs neither perf nor the dlfilter.
+    if argv and argv[0] == "view":
+        return view_main(argv[1:])
+
     args = parse_args(argv)
 
     if shutil.which(args.perf) is None and not os.path.exists(args.perf):
