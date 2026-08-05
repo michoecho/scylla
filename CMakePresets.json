@@ -25,7 +25,10 @@
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g"
             },
-            "inherits": ["Base", "clang"]
+            "inherits": [
+                "Base",
+                "clang"
+            ]
         },
         {
             "name": "Sanitize",
@@ -33,14 +36,20 @@
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fsanitize=undefined -fsanitize=address"
             },
-            "inherits": ["Base", "clang"]
+            "inherits": [
+                "Base",
+                "clang"
+            ]
         },
         {
             "name": "Release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             },
-            "inherits": ["Base", "clang"]
+            "inherits": [
+                "Base",
+                "clang"
+            ]
         },
         {
             "name": "Fuzz",
@@ -50,7 +59,9 @@
                 "CMAKE_CXX_COMPILER": "afl-clang-fast++",
                 "BUILD_FUZZERS": "ON"
             },
-            "inherits": ["Base"]
+            "inherits": [
+                "Base"
+            ]
         },
         {
             "name": "FuzzCmplog",
@@ -61,7 +72,9 @@
             "environment": {
                 "AFL_LLVM_CMPLOG": "1"
             },
-            "inherits": ["Fuzz"]
+            "inherits": [
+                "Fuzz"
+            ]
         }
     ],
     "buildPresets": [
@@ -101,8 +114,21 @@
             "description": "",
             "displayName": "",
             "configurePreset": "Sanitize",
-            "environment": {"ASAN_OPTIONS": "detect_leaks=0"},
-            "output": {"verbosity": "extra"}
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0"
+            },
+            "output": {
+                "verbosity": "extra"
+            }
+        },
+        {
+            "name": "Benchmark",
+            "description": "",
+            "displayName": "",
+            "configurePreset": "Release",
+            "environment": {
+                "BENCHMARK": "1"
+            }
         }
     ]
 }
