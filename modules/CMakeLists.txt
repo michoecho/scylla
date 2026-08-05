@@ -3,9 +3,6 @@
 # is called.
 add_subdirectory(snapshot)
 add_subdirectory(exhaustigen)
-add_subdirectory(module_a)
-add_subdirectory(module_b)
-add_subdirectory(module_c)
 add_subdirectory(vulkan)
 add_subdirectory(pt)
 add_subdirectory(exception_hacks)
