@@ -169,8 +169,8 @@ endif()
 # For stable stacktraces.
 target_link_options(cpp_template PRIVATE -no-pie)
 
-# Tests for the Python tools under tools/, which drive the built binary rather
-# than link against it (tools/pt-trace orchestrates perf around cpp_template).
+# Tests for the Python tools under tools/, which drive built binaries rather
+# than link against them (tools/pt-trace orchestrates perf around pt_test).
 # They run as pytest, registered one CTest test per file: coarse enough to stay
 # cheap, fine enough that `ctest -j` parallelizes them and a failure names a
 # file.
@@ -178,17 +178,20 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # Listed explicitly rather than globbed, so that adding a test file is a
 # deliberate edit here and CMake never has to re-glob to stay correct.
 #
-# The binary under test is passed in as CPP_TEMPLATE_BIN via
-# $<TARGET_FILE:cpp_template>, which resolves per-preset -- so `ctest --preset
-# SanitizeTest` tests the sanitized binary with no path duplicated in Python.
+# The binaries under test are passed in as CPP_TEMPLATE_BIN and PT_TEST_BIN via
+# $<TARGET_FILE:...>, which resolves per-preset -- so `ctest --preset
+# SanitizeTest` tests the sanitized binaries with no path duplicated in Python.
+# The PT tracing test uses pt_test, the `pt` module's own runner, so that it
+# tests the module's control protocol without also depending on the program
+# linking that module.
 #
-# That generator expression resolves a path; it does not build anything. ctest
+# Those generator expressions resolve paths; they do not build anything. ctest
 # is not the build system and will happily run a test whose binary was never
-# compiled, which fails in the fixture that checks CPP_TEMPLATE_BIN exists --
-# an unhelpful way to learn you only built the module targets. The
-# `build_cpp_template` fixture below closes that: a setup test that invokes the
-# build, which every python test REQUIRES, so `ctest` after a bare configure
-# builds the binary rather than failing on its absence.
+# compiled, which fails in the fixture that checks the path exists -- an
+# unhelpful way to learn you only built some other target. The
+# `build_python_test_bins` fixture below closes that: a setup test that invokes
+# the build, which every python test REQUIRES, so `ctest` after a bare configure
+# builds the binaries rather than failing on their absence.
 #
 # pytest itself comes from the Nix devshell, not from CMake: having the build
 # system create venvs or install packages is what puts network and mutable
@@ -203,19 +206,22 @@ set(PYTHON_TOOL_TESTS
     tools/tests/test_pt_trace.py
 )
 
-# The setup half of the fixture: build cpp_template, in this build directory,
-# with whatever generator and configuration configured it. Spelled as a
-# cmake --build invocation rather than a bare ninja/make call so it stays
-# generator-agnostic; --config matters only for multi-config generators and is
-# ignored elsewhere.
+# The setup half of the fixture: build every binary the python tests drive, in
+# this build directory, with whatever generator and configuration configured it.
+# Spelled as a cmake --build invocation rather than a bare ninja/make call so it
+# stays generator-agnostic; --config matters only for multi-config generators and
+# is ignored elsewhere.
+#
+# Note that building pt_test also *runs* nothing -- the module stamp targets are
+# what run a suite, and this names the executable itself.
 add_test(
-    NAME "python.build_cpp_template"
+    NAME "python.build_test_binaries"
     COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}"
-            --target cpp_template --config $<CONFIG>
+            --target cpp_template pt_test --config $<CONFIG>
 )
-set_tests_properties("python.build_cpp_template" PROPERTIES
+set_tests_properties("python.build_test_binaries" PROPERTIES
     LABELS "python"
-    FIXTURES_SETUP build_cpp_template
+    FIXTURES_SETUP build_python_test_bins
     # A build is not parallel-safe against itself: two ctest workers running it
     # at once would race in the same build directory.
     RUN_SERIAL TRUE
@@ -239,11 +245,17 @@ foreach(test_file IN LISTS PYTHON_TOOL_TESTS)
         SKIP_RETURN_CODE 5
         TIMEOUT 300
         # Pulls in the setup test above, so selecting a python test by name or
-        # label builds the binary first even from a freshly configured tree.
-        FIXTURES_REQUIRED build_cpp_template
+        # label builds the binaries first even from a freshly configured tree.
+        FIXTURES_REQUIRED build_python_test_bins
         # Mirror the coverage variable used for the doctest tests, so binaries
-        # these spawn contribute their .profraw to the report.
+        # these spawn contribute their .profraw to the report. A python test may
+        # spawn more than one of them (cpp_template, pt_test), so this is
+        # anchored to the build directory rather than to one target's path --
+        # naming it after cpp_template would file pt_test's profile under the
+        # wrong binary. %p%m still keeps concurrent writers apart, and
+        # tools/merge-coverage maps each .profraw back by build-id regardless of
+        # where it sits.
         ENVIRONMENT_MODIFICATION
-            "CPP_TEMPLATE_BIN=set:$<TARGET_FILE:cpp_template>;LLVM_PROFILE_FILE=set:$<TARGET_FILE:cpp_template>.%p%m.profraw"
+            "CPP_TEMPLATE_BIN=set:$<TARGET_FILE:cpp_template>;PT_TEST_BIN=set:$<TARGET_FILE:pt_test>;LLVM_PROFILE_FILE=set:${CMAKE_BINARY_DIR}/python-${test_name}.%p%m.profraw"
     )
 endforeach()

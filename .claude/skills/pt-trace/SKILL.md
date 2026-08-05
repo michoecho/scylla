@@ -6,7 +6,8 @@ description: Capture an Intel PT execution trace of a single doctest test case a
 # Tracing a test with Intel PT
 
 `tools/pt-trace` runs the test binary under `perf record` with Intel PT, but only
-records the region a test wraps in `pt::Trace` (see `modules/main/pt_control.h`). It can
+records the region a test wraps in `pt::Trace` (the `pt` module — see
+`modules/pt/include/pt/pt_control.h`). It can
 then decode the trace to text (`perf script`) or to a Fuchsia trace (`.ftf`) for
 Perfetto, using the `perf2perfetto` dlfilter.
 
@@ -26,6 +27,8 @@ The trace only covers code between `pt::enable()` and `pt::disable()`. Use the
 RAII scope to bound the region of interest:
 
 ```cpp
+#include "pt/pt_control.h"
+
 TEST_CASE("my hot path") {
     {
         pt::Trace _;          // enable() here; disable() at end of scope
@@ -34,8 +37,15 @@ TEST_CASE("my hot path") {
 }
 ```
 
+The helpers live in the `pt` module, so link it from the module whose test you
+are tracing (see skills/modules):
+
+```cmake
+target_link_module(module_x PRIVATE pt)
+```
+
 When the test runs untraced (normal `ctest`), the helpers no-op, so this is safe
-to leave in place. See `modules/main/pt_control_test.cc` for worked examples.
+to leave in place. See `modules/pt/pt_control_test.cc` for worked examples.
 
 ## 2. Capture the trace
 
@@ -59,7 +69,7 @@ Notes:
 - `test` is the doctest subcommand (the binary parses args with CLI11 and runs
   the suite under `test`); always include it before the doctest flags.
 - `--test-case=...` selects which test runs; quote patterns with spaces. Use a
-  glob like `--test-case=pt_control*` to match by prefix.
+  glob like `--test-case='intel pt*'` to match by prefix.
 - `--perfetto` implies `--ftf`. It serves the `.ftf` on `127.0.0.1:9001` with the
   CORS header Perfetto needs, opens `ui.perfetto.dev/#!/?url=...`, and blocks
   serving until the UI fetches the file once (then exits). Ctrl-C to stop early.

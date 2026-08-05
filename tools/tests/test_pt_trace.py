@@ -4,9 +4,14 @@ Runs the real thing: traces the `intel pt nested calls` doctest case under
 Intel PT, decodes the result to a Fuchsia trace (.ftf) via the perf2perfetto
 dlfilter, and checks the decoded trace names the functions the test calls.
 
+The case is traced in the `pt` module's own test binary rather than in the
+cpp_template executable. Both contain it, but pt_test is where it belongs: this
+tests the pt module's control protocol, so it should not also depend on the
+program choosing to link that module.
+
 This is deliberately an integration test rather than a unit test of pt-trace's
 internals. What can break here is the interaction between the pieces -- the
-control fifo protocol in src/pt_control.cc, perf's --control handling, and the
+control fifo protocol in modules/pt/pt_control.cc, perf's --control handling, and the
 dlfilter's symbolization -- and none of that is exercised by mocking.
 
 Requires real hardware support: an intel_pt PMU, a readable perf_event_paranoid,
@@ -24,7 +29,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 PT_TRACE = os.path.join(REPO_ROOT, "tools", "pt-trace")
 
 # The doctest case to trace, and the functions its traced region calls. These
-# are the noinline helpers in src/pt_control_test.cc, which nest as
+# are the noinline helpers in modules/pt/pt_control_test.cc, which nest as
 # pt_outer -> pt_middle -> pt_leaf; the decoded trace should name each one.
 TEST_CASE = "intel pt nested calls"
 EXPECTED_SYMBOLS = ["pt_leaf", "pt_middle", "pt_outer"]
@@ -52,7 +57,7 @@ def _skip_unless_intel_pt_available():
         pytest.skip("PERF2PERFETTO_DLFILTER unset or missing; run inside `nix develop`")
 
 
-def test_pt_trace_produces_ftf_naming_traced_functions(cpp_template_bin, tmp_path):
+def test_pt_trace_produces_ftf_naming_traced_functions(pt_test_bin, tmp_path):
     """tools/pt-trace --ftf decodes a trace that names the traced functions."""
     _skip_unless_intel_pt_available()
 
@@ -65,7 +70,7 @@ def test_pt_trace_produces_ftf_naming_traced_functions(cpp_template_bin, tmp_pat
             "--ftf", str(ftf),
             "-o", str(perf_data),
             "--",
-            str(cpp_template_bin), "test", f"--test-case={TEST_CASE}", "--exit",
+            str(pt_test_bin), "test", f"--test-case={TEST_CASE}", "--exit",
         ],
         cwd=REPO_ROOT,
         capture_output=True,

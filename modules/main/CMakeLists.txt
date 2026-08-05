@@ -11,7 +11,6 @@ add_module(main
     SOURCES
         bench.cc
         exception_hacks.cc
-        pt_control.cc
         # The AFL driver behind FUZZ_TARGET (persistent loop in a fuzz build,
         # stdin replay otherwise), plus the worked example target and the
         # self-test that runs AFL++ against it. Both of the latter are inert
@@ -21,7 +20,6 @@ add_module(main
         # The `test-locations` reporter that CMake test discovery lists source
         # locations with, so the IDE can jump to a test. Inert unless selected.
         test_locations_reporter.cc
-        pt_control_test.cc
         # Property-based tests: the worked example that proves Hegel finds a
         # planted bug in a toy function.
         hegel_test.cc

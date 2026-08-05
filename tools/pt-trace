@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Orchestrate an Intel PT trace of a program, scoped by the program itself.
 
-This is the host side of the control protocol in src/pt_control.{h,cc}. The
-flow:
+This is the host side of the control protocol in the `pt` module
+(modules/pt/, header modules/pt/include/pt/pt_control.h). The flow:
 
   1. Make a private temp dir with two named pipes (control + ack).
   2. Launch `perf record` with Intel PT enabled but *events disabled*
@@ -25,7 +25,7 @@ Decoding to Perfetto:
 
 Example:
 
-  tools/pt-trace -- ./out/build/Debug/cpp_template test --test-case=pt_control*
+  tools/pt-trace -- ./out/build/Debug/cpp_template test --test-case='intel pt*'
 
   tools/pt-trace --script -- ./out/build/Debug/cpp_template test \\
       --test-case='intel pt nested calls'
@@ -45,7 +45,7 @@ import sys
 import tempfile
 import webbrowser
 
-# Must match the env var names read by src/pt_control.cc.
+# Must match the env var names read by modules/pt/pt_control.cc.
 CTL_ENV = "PERF_CTL_FIFO"
 ACK_ENV = "PERF_ACK_FIFO"
 
