@@ -86,16 +86,17 @@ std::string conversion_table(unsigned exponent_bits, unsigned significand_bits,
 hegel::Settings hegel_settings() {
     hegel::Settings result;
     result.test_cases = 1000;
-    result.verbosity = hegel::Verbosity::Quiet;
+    result.verbosity = hegel::Verbosity::Normal;
     result.derandomize = true;
-    result.print_blob = false;
+    result.print_blob = true;
     return result;
 }
 
 std::uint64_t decode(std::uint64_t code, unsigned significand_bits) {
-    const std::uint64_t mask = significand_bits == 64
-                                   ? std::numeric_limits<std::uint64_t>::max()
-                                   : (std::uint64_t{1} << significand_bits) - 1;
+    if (significand_bits == exponential_histogram::kIntegerBits) {
+        return code;
+    }
+    const std::uint64_t mask = (std::uint64_t{1} << significand_bits) - 1;
     const std::uint64_t fraction = code & mask;
     const std::uint64_t exponent = code >> significand_bits;
     if (exponent == 0) {
@@ -150,29 +151,29 @@ TEST_CASE("integer_to_float is the greatest representable value not above input"
     hegel::test(
         [](hegel::TestCase& tc) {
             HEGEL_DRAW(tc, exponent_bits,
-                       gs::integers<unsigned>({.min_value = 0, .max_value = 5}));
+                       gs::integers<unsigned>({.min_value = 0, .max_value = exponential_histogram::kIntegerBits}));
             HEGEL_DRAW(tc, significand_bits,
-                       gs::integers<unsigned>({.min_value = 0, .max_value = 8}));
+                       gs::integers<unsigned>({.min_value = 0, .max_value = exponential_histogram::kIntegerBits - exponent_bits}));
             HEGEL_DRAW(tc, value,
-                       gs::integers<std::uint64_t>(
-                           {.min_value = 0, .max_value = 1'000'000}));
+                       gs::integers<std::uint64_t>());
 
             const std::uint64_t code =
                 exponential_histogram::integer_to_float(
                     value, exponent_bits, significand_bits)
                     .representation();
             const std::uint64_t rounded = decode(code, significand_bits);
-            if (rounded > value) {
-                throw std::runtime_error("conversion rounded upward");
-            }
+            REQUIRE(rounded <= value);
 
-            const std::uint64_t max_code =
-                (std::uint64_t{1} << (exponent_bits + significand_bits)) - 1;
-            if (code < max_code && decode(code + 1, significand_bits) <= value) {
-                throw std::runtime_error("conversion skipped a representable value");
+            std::uint64_t max_code_1 = exponential_histogram::low_mask(significand_bits) + ((exponential_histogram::kIntegerBits - significand_bits) << significand_bits);
+            std::uint64_t max_code_2 = exponential_histogram::low_mask(significand_bits + exponent_bits);
+            std::uint64_t max_code = std::min(max_code_1, max_code_2);
+            if (code < max_code) {
+                auto x = decode(code + 1, significand_bits);
+                REQUIRE(x > value);
             }
         },
-        {"integer_to_float_rounds_down", __FILE__, __LINE__}, hegel_settings());
+        {"integer_to_float_rounds_down", __FILE__, __LINE__}, hegel_settings()
+    );
 }
 
 }  // TEST_SUITE("hegel")
