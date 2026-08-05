@@ -58,7 +58,7 @@ def _skip_unless_intel_pt_available():
 
 
 def test_pt_trace_produces_ftf_naming_traced_functions(pt_test_bin, tmp_path):
-    """tools/pt-trace --ftf decodes a trace that names the traced functions."""
+    """tools/pt-trace run --ftf decodes a trace that names the traced functions."""
     _skip_unless_intel_pt_available()
 
     ftf = tmp_path / "perf.ftf"
@@ -67,10 +67,13 @@ def test_pt_trace_produces_ftf_naming_traced_functions(pt_test_bin, tmp_path):
     result = subprocess.run(
         [
             PT_TRACE,
+            "run",
             "--ftf", str(ftf),
             "-o", str(perf_data),
             "--",
-            str(pt_test_bin), "test", f"--test-case={TEST_CASE}", "--exit",
+            # No `test` subcommand: that is a cpp_template-ism (it parses argv
+            # with CLI11), and pt_test takes doctest flags directly.
+            str(pt_test_bin), f"--test-case={TEST_CASE}", "--exit",
         ],
         cwd=REPO_ROOT,
         capture_output=True,

@@ -5,7 +5,14 @@ description: Capture an Intel PT execution trace of a single doctest test case a
 
 # Tracing a test with Intel PT
 
-`tools/pt-trace` runs **any program** under `perf record` with Intel PT, but only
+`tools/pt-trace` has two subcommands, and one is always required:
+
+| | |
+|---|---|
+| `pt-trace run [flags] -- PROGRAM ARGS...` | record a program under Intel PT, then optionally decode |
+| `pt-trace view FILE.ftf` | open a `.ftf` captured earlier in the Perfetto UI |
+
+`run` executes **any program** under `perf record` with Intel PT, but only
 records the region that program wraps in `pt::Trace` (the `pt` module — see
 `modules/pt/include/pt/pt_control.h`). It can
 then decode the trace to text (`perf script`) or to a Fuchsia trace (`.ftf`) for
@@ -13,6 +20,9 @@ Perfetto, using the `perf2perfetto` dlfilter.
 
 Whatever follows `--` is exec'd as-is; pt-trace neither knows nor cares what it
 is. It is not tied to `cpp_template`, to doctest, or to tests at all.
+
+All the recording flags below belong to `run` and must come after it —
+`pt-trace --ftf -- ...` is an error, `pt-trace run --ftf -- ...` is correct.
 
 ## Which binary to trace
 
@@ -50,7 +60,7 @@ mistake does not announce itself — see the empty-trace note in Troubleshooting
   must show `intel_pt//`. Without it, `perf record -e intel_pt//u` fails.
 - The binary you intend to trace, built: `cmake --build --preset Debug`, or
   `--target <module>_test` for a single module's test binary.
-- For `--ftf` / `--perfetto`: the `perf2perfetto` dlfilter. Nothing to build —
+- For `run --ftf` / `run --perfetto`: the `perf2perfetto` dlfilter. Nothing to build —
   the devshell provides it prebuilt and points `$PERF2PERFETTO_DLFILTER` at it.
   Outside `nix develop` the variable is unset and you must pass `--dlfilter`.
 
@@ -95,22 +105,22 @@ the usual case:
 
 ```sh
 # Plain text decode to stdout (good for eyeballing control flow):
-tools/pt-trace --script -- ./out/build/Debug/modules/module_x/module_x_test \
+tools/pt-trace run --script -- ./out/build/Debug/modules/module_x/module_x_test \
     --test-case='my hot path'
 
 # Decode to a .ftf for Perfetto (writes perf.ftf):
-tools/pt-trace --ftf -- ./out/build/Debug/modules/module_x/module_x_test \
+tools/pt-trace run --ftf -- ./out/build/Debug/modules/module_x/module_x_test \
     --test-case='my hot path'
 
 # Decode and open it in Perfetto in the default browser:
-tools/pt-trace --perfetto -- ./out/build/Debug/modules/module_x/module_x_test \
+tools/pt-trace run --perfetto -- ./out/build/Debug/modules/module_x/module_x_test \
     --test-case='my hot path'
 ```
 
 Tracing something in the program itself — note the extra `test`:
 
 ```sh
-tools/pt-trace --ftf -- ./out/build/Debug/cpp_template test \
+tools/pt-trace run --ftf -- ./out/build/Debug/cpp_template test \
     --test-case='some case in the main module'
 ```
 
@@ -128,37 +138,38 @@ program's own startup or CLI path; for a module's test, use the form above.
 Any other program works too; it need not be a test, or even ours:
 
 ```sh
-tools/pt-trace --ftf -- ./some/other/binary --whatever-flags
+tools/pt-trace run --ftf -- ./some/other/binary --whatever-flags
 ```
 
 Notes:
 - `--test-case=...` selects which test runs; quote patterns with spaces. Use a
   glob like `--test-case='intel pt*'` to match by prefix. A pattern matching
   nothing is **not** an error — see Troubleshooting.
-- `--perfetto` implies `--ftf`. It serves the `.ftf` on `127.0.0.1:9001` with the
+- `run --perfetto` implies `--ftf`. It serves the `.ftf` on `127.0.0.1:9001` with the
   CORS header Perfetto needs, opens `ui.perfetto.dev/#!/?url=...`, and blocks
   serving until the UI fetches the file once (then exits). Ctrl-C to stop early.
 
 ## Viewing a .ftf you already have
 
-`view` is `--perfetto`'s last step on its own — no recording, no perf, no
+`view` is `run --perfetto`'s last step on its own — no recording, no perf, no
 dlfilter needed:
 
 ```sh
 tools/pt-trace view perf.ftf
 ```
 
-Same one-shot server and teardown as `--perfetto`. The browser is whatever
+Same one-shot server and teardown as `run --perfetto`. The browser is whatever
 `webbrowser.open` picks, so `$BROWSER` selects it:
 
 ```sh
 BROWSER=firefox tools/pt-trace view perf.ftf
 ```
 
-Use it to re-open a trace after the original `--perfetto` server exited, or to
-view a `.ftf` captured with plain `--ftf`.
+Use it to re-open a trace after the original `run --perfetto` server exited, or
+to view a `.ftf` captured with plain `run --ftf`. A missing or zero-byte file is
+rejected up front rather than loaded as an empty trace.
 
-## Useful options
+## Useful options for `run`
 
 - `-o, --output FILE` — perf.data path (default `perf.data`).
 - `--ftf [FILE]` — .ftf output path (default `perf.ftf`).
@@ -205,5 +216,5 @@ and `perf.data` are throwaway artifacts — delete them when done.
 
   `--list-test-cases` shows what that binary actually has. Remember a module
   test binary defaults to its own module's cases only (see skills/modules).
-- `cannot serve on port 9001` — a previous `--perfetto` run is still serving;
+- `cannot serve on port 9001` — a previous `run --perfetto` or `view` is still serving;
   stop it (or another process holds the port).

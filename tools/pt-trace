@@ -17,25 +17,29 @@ Because perf, not us, reads the control fifo, the orchestrator just has to
 create the pipes, pass the paths, and stay out of the way. perf opens both ends
 of each fifo itself.
 
+Two subcommands:
+
+  run   record a program under Intel PT, and optionally decode the result
+  view  open a .ftf captured earlier in the Perfetto UI
+
 Decoding to Perfetto:
 
-  Besides `--script` (plain text decode), --ftf decodes the trace to a Fuchsia
-  trace (.ftf) via the perf2perfetto dlfilter, and --perfetto serves
-  that file to https://ui.perfetto.dev so you can view it in a browser.
-
-  To view a .ftf captured earlier, without recording anything:
-
-    tools/pt-trace view perf.ftf
+  Besides `--script` (plain text decode), `run --ftf` decodes the trace to a
+  Fuchsia trace (.ftf) via the perf2perfetto dlfilter, and `run --perfetto`
+  serves that file to https://ui.perfetto.dev so you can view it in a browser.
 
 Example:
 
-  tools/pt-trace -- ./out/build/Debug/cpp_template test --test-case='intel pt*'
-
-  tools/pt-trace --script -- ./out/build/Debug/cpp_template test \\
+  tools/pt-trace run -- ./out/build/Debug/modules/pt/pt_test \\
       --test-case='intel pt nested calls'
 
-  tools/pt-trace --perfetto -- ./out/build/Debug/cpp_template test \\
+  tools/pt-trace run --script -- ./out/build/Debug/modules/pt/pt_test \\
       --test-case='intel pt nested calls'
+
+  tools/pt-trace run --perfetto -- ./out/build/Debug/modules/pt/pt_test \\
+      --test-case='intel pt nested calls'
+
+  tools/pt-trace view perf.ftf
 """
 
 import argparse
@@ -65,24 +69,13 @@ PERFETTO_PORT = 9001
 PERFETTO_ORIGIN = "https://ui.perfetto.dev"
 
 
-def view_main(argv):
+def view_main(args):
     """`pt-trace view FILE.ftf` -- show an existing .ftf, recording nothing.
 
-    Split off from the main parser rather than folded into it as a subparser:
-    the recording CLI is all flags plus a REMAINDER command, and `view` shares
-    none of it -- no perf, no dlfilter, no program to launch. It is only the
-    last step of --perfetto, run against a file that already exists.
+    This is `run --perfetto`'s last step on its own: no perf, no dlfilter, no
+    program to launch, just the one-shot server against a file that already
+    exists.
     """
-    parser = argparse.ArgumentParser(
-        prog="pt-trace view",
-        description="Open an existing .ftf trace in the Perfetto UI.",
-    )
-    parser.add_argument(
-        "ftf", metavar="FILE.ftf",
-        help="Path to a .ftf produced earlier by --ftf.",
-    )
-    args = parser.parse_args(argv)
-
     if not os.path.exists(args.ftf):
         print(f"pt-trace: no such file: {args.ftf}", file=sys.stderr)
         return 1
@@ -98,11 +91,23 @@ def view_main(argv):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="pt-trace",
-        description="Run a program under Intel PT, controlled via a fifo.",
+        description="Record and view Intel PT traces.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(
+        dest="subcommand", metavar="{run,view}",
+        # Required, so `pt-trace <program>` fails with a usage message naming
+        # both subcommands rather than doing something surprising.
+        required=True,
+    )
+    run = subparsers.add_parser(
+        "run",
+        help="Run a program under Intel PT and decode the result.",
+        description="Run a program under Intel PT, controlled via a fifo.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    run.add_argument(
         "-o", "--output", default="perf.data",
         help="perf.data output path (default: perf.data).",
     )
@@ -117,66 +122,78 @@ def parse_args(argv):
     # cyc_thresh=0 (the default) asks for a CYC packet at every opportunity,
     # which is the finest resolution the hardware offers; raise it to trade
     # resolution for less trace volume if the AUX buffer starts overflowing.
-    parser.add_argument(
+    run.add_argument(
         "-e", "--event", default="intel_pt/cyc=0/u",
         help="perf event spec to record (default: intel_pt/cyc=0/u, "
              "user-space only).",
     )
-    parser.add_argument(
+    run.add_argument(
         "--script", action="store_true",
         help="After recording, run `perf script` on the output and print it.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--itrace", default="be",
         help="perf script --itrace spec for --script (default: be, "
              "branches+errors). Use e.g. 'i0ns' for full instruction decode.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--ftf", nargs="?", const="perf.ftf", default=None, metavar="FILE",
         help="After recording, decode the trace to a Fuchsia trace (.ftf) via "
              "the perf2perfetto dlfilter (default file: perf.ftf).",
     )
-    parser.add_argument(
+    run.add_argument(
         "--ftf-mode", default="c", choices=["t", "c", "i"],
         help="Time axis for the .ftf: t=timestamp, c=cpu cycles, "
              "i=instructions (default: c).",
     )
-    parser.add_argument(
+    run.add_argument(
         "--time", default=None, metavar="START,END",
         help="Restrict the .ftf decode to a time window, passed straight to "
              "`perf script --time` (e.g. 1564449.120,1564449.122). A full "
              "instruction decode of a long region can run to hundreds of MB, "
              "which the Perfetto UI will not load; slicing keeps it usable.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--decode-only", action="store_true",
         help="Skip recording and decode an existing perf.data (-o/--output). "
              "Lets you re-slice a capture with --time without re-running the "
              "program.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--dlfilter", default=DLFILTER,
         help=f"Path to libperf2perfetto.so (default: ${DLFILTER_ENV}, "
              f"currently {DLFILTER or 'unset'}).",
     )
-    parser.add_argument(
+    run.add_argument(
         "--perfetto", action="store_true",
         help="Implies --ftf; serve the .ftf to ui.perfetto.dev and open it in "
              "a browser.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--perf", default="perf",
         help="perf binary to use (default: perf on PATH).",
     )
-    parser.add_argument(
+    run.add_argument(
         "-v", "--verbose", action="store_true",
         help="Print the perf command line and keep perf's own output.",
     )
-    parser.add_argument(
+    run.add_argument(
         "command", nargs=argparse.REMAINDER,
         help="-- followed by the program and its arguments.",
     )
+
+    subparsers.add_parser(
+        "view",
+        help="Open an existing .ftf trace in the Perfetto UI.",
+    ).add_argument(
+        "ftf", metavar="FILE.ftf",
+        help="Path to a .ftf produced earlier by `run --ftf`.",
+    )
     args = parser.parse_args(argv)
+
+    # `view` takes a bare path and none of the flags validated below.
+    if args.subcommand == "view":
+        return args
 
     # --perfetto needs a .ftf to show; default one in if the user didn't.
     if args.perfetto and args.ftf is None:
@@ -188,12 +205,12 @@ def parse_args(argv):
         cmd = cmd[1:]
     # --decode-only works off an existing perf.data, so there is no program.
     if not cmd and not args.decode_only:
-        parser.error("missing program to trace; pass it after `--`.")
+        run.error("missing program to trace; pass it after `--`.")
     args.command = cmd
 
     # --decode-only exists to produce a trace; without one there is nothing to do.
     if args.decode_only and not args.ftf:
-        parser.error("--decode-only needs --ftf (or --perfetto) to decode into.")
+        run.error("--decode-only needs --ftf (or --perfetto) to decode into.")
     return args
 
 
@@ -300,13 +317,10 @@ def open_in_perfetto(ftf_path):
 
 
 def main(argv):
-    # Dispatched before the main parser sees anything: `view` takes a plain
-    # file path, not the flags-then---then-command shape of a recording run,
-    # and needs neither perf nor the dlfilter.
-    if argv and argv[0] == "view":
-        return view_main(argv[1:])
-
     args = parse_args(argv)
+
+    if args.subcommand == "view":
+        return view_main(args)
 
     if shutil.which(args.perf) is None and not os.path.exists(args.perf):
         print(f"pt-trace: cannot find perf binary {args.perf!r}", file=sys.stderr)

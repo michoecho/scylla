@@ -23,7 +23,7 @@ __attribute__((noinline)) static std::uint64_t pt_traced_function(int n) {
 volatile std::uint64_t pt_sink = 0;
 
 // A small tree of noinline functions so the decoded trace has a visible call
-// hierarchy. In Perfetto (via tools/pt-trace --perfetto) these nest as
+// hierarchy. In Perfetto (via tools/pt-trace run --perfetto) these nest as
 // pt_outer -> pt_middle -> pt_leaf, which is what makes the flamegraph useful.
 __attribute__((noinline)) static std::uint64_t pt_leaf(int n) {
     return pt_traced_function(n);
@@ -48,7 +48,7 @@ TEST_SUITE("intel pt") {
 // under tools/pt-trace, the body between enable() and disable() is what perf
 // records. Useful for eyeballing the Perfetto flamegraph:
 //
-//   tools/pt-trace --perfetto -- ./out/build/Debug/cpp_template test \
+//   tools/pt-trace run --perfetto -- ./out/build/Debug/modules/pt/pt_test \
 //       --test-case='intel pt nested calls'
 TEST_CASE("intel pt nested calls") {
     std::uint64_t result;

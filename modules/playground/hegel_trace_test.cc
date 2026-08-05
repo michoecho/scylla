@@ -10,7 +10,8 @@
 //
 // Capture with:
 //
-//   tools/pt-trace --ftf -- ./out/build/Debug/cpp_template test \
+//   tools/pt-trace run --ftf -- \
+//       ./out/build/Debug/modules/playground/playground_test \
 //       --test-case='hegel under pt'
 //
 // Untraced -- a normal ctest run -- pt::Trace no-ops and this is an ordinary,
