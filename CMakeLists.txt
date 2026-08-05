@@ -15,6 +15,32 @@ if(ENABLE_TEST_COVERAGE)
     # resolve addresses without a load-bias guess.
     add_compile_options(-fprofile-instr-generate=/dev/null -fcoverage-mapping)
     add_link_options(-fprofile-instr-generate=/dev/null -fcoverage-mapping -Wl,--build-id -no-pie)
+
+    find_program(LLVM_COV llvm-cov REQUIRED)
+
+    # VS Code's CMake Tools coverage profile builds these targets immediately
+    # before and after running the selected CTest tests. Keep the orchestration
+    # in a CMake script so cleanup is recursive and llvm-cov's stdout can be
+    # written directly to an LCOV file without relying on shell redirection.
+    add_custom_target(coverage-clean
+        COMMAND ${CMAKE_COMMAND}
+            -DACTION=CLEAN
+            -DBINARY_DIR=${CMAKE_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/cmake/Coverage.cmake
+        COMMENT "Removing old LLVM coverage profiles"
+        VERBATIM
+    )
+
+    add_custom_target(coverage-export
+        COMMAND ${CMAKE_COMMAND}
+            -DACTION=EXPORT
+            -DBINARY_DIR=${CMAKE_BINARY_DIR}
+            -DMERGE_COVERAGE=${PROJECT_SOURCE_DIR}/tools/merge-coverage
+            -DLLVM_COV=${LLVM_COV}
+            -P ${PROJECT_SOURCE_DIR}/cmake/Coverage.cmake
+        COMMENT "Merging LLVM profiles and exporting LCOV"
+        VERBATIM
+    )
 endif()
 
 find_package(doctest REQUIRED)

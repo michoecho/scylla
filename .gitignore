@@ -4,7 +4,8 @@
 /.local
 /out
 /compile_commands.json
-/.vscode
+/.vscode/*
+!/.vscode/settings.json
 /ignored
 /.claude/settings.local.json
 

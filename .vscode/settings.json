@@ -1,0 +1,7 @@
+{
+    "cmake.preRunCoverageTarget": "coverage-clean",
+    "cmake.postRunCoverageTarget": "coverage-export",
+    "cmake.coverageInfoFiles": [
+        "${workspaceFolder}/out/build/Coverage/coverage/total.lcov"
+    ]
+}

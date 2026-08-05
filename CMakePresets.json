@@ -31,6 +31,16 @@
             ]
         },
         {
+            "name": "Coverage",
+            "description": "Debug build with LLVM source-based coverage instrumentation.",
+            "cacheVariables": {
+                "ENABLE_TEST_COVERAGE": "ON"
+            },
+            "inherits": [
+                "Debug"
+            ]
+        },
+        {
             "name": "Sanitize",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
@@ -83,6 +93,10 @@
             "configurePreset": "Debug"
         },
         {
+            "name": "Coverage",
+            "configurePreset": "Coverage"
+        },
+        {
             "name": "Sanitize",
             "configurePreset": "Sanitize"
         },
@@ -108,6 +122,11 @@
             "description": "",
             "displayName": "",
             "configurePreset": "Debug"
+        },
+        {
+            "name": "CoverageTest",
+            "description": "Run the LLVM-instrumented Coverage build.",
+            "configurePreset": "Coverage"
         },
         {
             "name": "SanitizeTest",
