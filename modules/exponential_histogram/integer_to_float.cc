@@ -62,7 +62,6 @@ namespace {
 
 using snapshot_testing::check_snapshot;
 using snapshot_testing::operator""_snap;
-using snapshot_testing::snapshot;
 namespace gs = hegel::generators;
 
 
@@ -109,7 +108,7 @@ std::uint64_t decode(std::uint64_t code, unsigned significand_bits) {
 }  // namespace
 
 TEST_CASE("integer_to_float exposes subnormals and rounded normal values") {
-    check_snapshot(conversion_table(2, 2, 31), snapshot(R"snap(
+    check_snapshot(conversion_table(2, 2, 31), R"snap(
         |0 -> 0
         |1 -> 1
         |2 -> 2
@@ -142,7 +141,7 @@ TEST_CASE("integer_to_float exposes subnormals and rounded normal values") {
         |29 -> 15
         |30 -> 15
         |31 -> 15
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_SUITE("hegel") {

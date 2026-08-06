@@ -5,7 +5,7 @@
 // from test files; include snapshot.h from anything else.
 //
 //     TEST_CASE("render") {
-//         check_snapshot(render(3), snapshot("[1, 2, 3]"));
+//         check_snapshot(render(3), "[1, 2, 3]"_snap);
 //     }
 
 #ifndef SNAPSHOT_CHECK_H
@@ -24,12 +24,12 @@ namespace snapshot_testing {
 //
 // An ordinary function, not a macro -- which is the whole point of this design.
 // A macro here would wreck the updater's anchor: std::source_location inside a
-// macro expansion no longer names the `snapshot` token, and the updater refuses
-// a location it cannot pin to that identifier. See snapshot.h.
+// macro expansion no longer names the literal, and the updater refuses a
+// location it cannot pin to that expression. See snapshot.h.
 //
 // It can be a function because doctest can be *told* where a failure happened
 // rather than inferring it from __LINE__ at the assertion site. So the failure
-// is blamed on the snapshot() call itself, even though this frame is elsewhere
+// is blamed on the _snap literal itself, even though this frame is elsewhere
 // and even when the Snapshot was built in a different function entirely.
 //
 // Each outcome produces exactly one doctest failure carrying everything the

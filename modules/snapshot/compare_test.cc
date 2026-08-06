@@ -39,7 +39,7 @@ doctest::String toString(const Comparison& result) {
 namespace {
 
 using snapshot_testing::Comparison;
-using snapshot_testing::snapshot;
+using snapshot_testing::operator""_snap;
 
 // Discards anything compare() recorded during the test, whatever the outcome.
 struct DiscardRecordings {
@@ -48,11 +48,22 @@ struct DiscardRecordings {
 
 std::size_t recorded() { return snapshot_testing::pending_updates().size(); }
 
+char source_character_at(const snapshot_testing::Snapshot& value) {
+    std::ifstream in(value.location.file_name(), std::ios::binary);
+    REQUIRE_MESSAGE(in, "cannot read this test's own source file");
+    std::string line;
+    for (unsigned n = 0; n < value.location.line(); ++n) REQUIRE(std::getline(in, line));
+
+    const std::size_t point = value.location.column() - 1;
+    REQUIRE(point < line.size());
+    return line[point];
+}
+
 }  // namespace
 
 TEST_CASE("a matching snapshot passes and records nothing") {
     const DiscardRecordings guard;
-    const Comparison result = snapshot_testing::compare("same", snapshot("same"));
+    const Comparison result = snapshot_testing::compare("same", "same"_snap);
     CHECK(result == Comparison::Matched);
     CHECK_FALSE(snapshot_testing::failed(result));
     CHECK(recorded() == 0);
@@ -62,7 +73,7 @@ TEST_CASE("a mismatch fails and records nothing without update mode") {
     // The file system is touched only when asked. A plain failing snapshot
     // reports and stops there.
     const DiscardRecordings guard;
-    const Comparison result = snapshot_testing::compare("actual", snapshot("expected"));
+    const Comparison result = snapshot_testing::compare("actual", "expected"_snap);
     CHECK(result == Comparison::Mismatched);
     CHECK(recorded() == 0);
 }
@@ -71,7 +82,7 @@ TEST_CASE("a mismatch with .update() records a rewrite") {
     const DiscardRecordings guard;
     // Not a stale marker: this .update() still had work to do.
     const Comparison result =
-        snapshot_testing::compare("actual", snapshot("expected").update());
+        snapshot_testing::compare("actual", "expected"_snap.update());
     CHECK(result == Comparison::MismatchedAndRecorded);
     REQUIRE(recorded() == 1);
 
@@ -90,7 +101,7 @@ TEST_CASE("a matching snapshot with .update() left on it fails") {
     // The state is StaleUpdateMarker and *not* either mismatched state: the
     // values agree, so nothing here may call this a mismatch. That distinction
     // is the reason these outcomes are an enum rather than a pass/fail bool.
-    const Comparison result = snapshot_testing::compare("same", snapshot("same").update());
+    const Comparison result = snapshot_testing::compare("same", "same"_snap.update());
     CHECK(result == Comparison::StaleUpdateMarker);
     CHECK(snapshot_testing::failed(result));
     CHECK(recorded() == 0);
@@ -100,7 +111,7 @@ TEST_CASE("render_mismatch lays the two values out against each other") {
     // A pure function of the two values, which is what lets check_snapshot put
     // this inside a single assertion message rather than printing it on the
     // side. Multi-line values are the case it exists for.
-    const snapshot_testing::Snapshot expected = snapshot("a\nb\n");
+    const snapshot_testing::Snapshot expected = "a\nb\n"_snap;
     const std::string rendered = snapshot_testing::render_mismatch("a\nc\n", expected);
 
     CHECK(rendered.find("--- expected (in source) ---\na\nb\n") != std::string::npos);
@@ -110,7 +121,7 @@ TEST_CASE("render_mismatch lays the two values out against each other") {
 }
 
 TEST_CASE("update() yields a copy, leaving the original alone") {
-    const snapshot_testing::Snapshot plain = snapshot("value");
+    const snapshot_testing::Snapshot plain = "value"_snap;
     const snapshot_testing::Snapshot forced = plain.update();
 
     CHECK(forced.value == plain.value);
@@ -121,39 +132,31 @@ TEST_CASE("update() yields a copy, leaving the original alone") {
 
 // --- the anchor ---------------------------------------------------------------
 //
-// The updater's entire design rests on a property of the compiler rather than
-// of any code here: the location reported for a snapshot() call names the
-// `snapshot` identifier, either at its first character (clang) or at the '('
-// just past its end (gcc).
+// The updater's entire design rests on a property of the implicit conversion:
+// its defaulted source_location reports the opening character of the literal
+// expression that is being converted.
 //
 // That is worth asserting directly. If a future compiler picks some third
-// point, every snapshot update would start failing with "no `snapshot`
-// identifier at ..." and the cause would be far from obvious; this test names
-// it. It reads its own source file to do so, which is the one honest way to
-// check a claim about where in a file a location points.
+// point, every snapshot update would start failing with "no snapshot literal"
+// and the cause would be far from obvious; this test names it.
 
-TEST_CASE("the reported location names the snapshot identifier") {
-    const snapshot_testing::Snapshot value = snapshot("anchor");
-
-    std::ifstream in(value.location.file_name(), std::ios::binary);
-    REQUIRE_MESSAGE(in, "cannot read this test's own source file");
-    std::string line;
-    for (unsigned n = 0; n < value.location.line(); ++n) REQUIRE(std::getline(in, line));
-
-    // Columns are 1-based, so the reported point is at index column - 1.
-    const std::size_t point = value.location.column() - 1;
-    REQUIRE(point < line.size());
-
-    static constexpr std::string_view kName = "snapshot";
-    const bool at_start = line.compare(point, kName.size(), kName) == 0;
-    const bool past_end =
-        point >= kName.size() && line.compare(point - kName.size(), kName.size(), kName) == 0;
-
-    // Bound to a name because doctest refuses to decompose a `||` expression.
-    const bool anchored = at_start || past_end;
-    CHECK_MESSAGE(anchored,
+TEST_CASE("the reported location names the snapshot literal") {
+    const snapshot_testing::Snapshot value = "anchor"_snap;
+    CHECK_MESSAGE(source_character_at(value) == '"',
                   "std::source_location reported column ", value.location.column(),
-                  " for a snapshot() call, which is neither end of the `snapshot` "
-                  "identifier; the updater's anchoring rule no longer holds for "
-                  "this compiler");
+                  " for a _snap literal, which does not name its opening quote; "
+                  "the updater's anchoring rule no longer holds for this compiler");
+}
+
+TEST_CASE("block and adjacent snapshot literals report their opening character") {
+    const snapshot_testing::Snapshot block = R"snap(
+        |a
+        |b
+        )snap"_snap;
+    const snapshot_testing::Snapshot adjacent = "a\n"
+                                                "b\n"_snap;
+
+    CHECK(source_character_at(block) == 'R');
+    CHECK(source_character_at(adjacent) == '"');
+    CHECK(adjacent.value == "a\nb\n");
 }

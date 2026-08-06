@@ -6,9 +6,9 @@
 // A change in column alignment, in ordering, in the separator -- anything a
 // row-by-row assertion would have missed -- shows up here as a diff.
 //
-// Note that nothing here is a macro. check_snapshot() and snapshot() are
-// ordinary functions, which is what lets the updater find these literals again;
-// see snapshot.h. Write your own helpers over them as functions too.
+// Note that nothing here is a macro. _snap tokens convert implicitly to
+// Snapshot at their use sites, which is what lets the updater find the literals
+// again; see snapshot.h. Write helpers over snapshots as functions too.
 //
 // To change what this asserts, do not edit the expected values. Change the code
 // and run:
@@ -31,7 +31,6 @@
 namespace {
 
 using snapshot_testing::check_snapshot;
-using snapshot_testing::snapshot;
 
 // The multi-line spelling below. A literal operator is found by ordinary
 // lookup, not by ADL, so it has to be named here for the updater's block
@@ -68,16 +67,16 @@ TEST_CASE("render_table lays out rows in aligned columns") {
         {.name = "cherry", .count = 100, .price = 0.05},
     };
 
-    check_snapshot(render_table(items), snapshot(R"snap(
+    check_snapshot(render_table(items), R"snap(
         |apple          3     1.50
         |banana        12     0.25
         |cherry       100     0.05
         |total        115
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_CASE("render_table on no items still prints a total row") {
-    check_snapshot(render_table({}), snapshot("total          0\n"));
+    check_snapshot(render_table({}), "total          0\n"_snap);
 }
 
 // A Snapshot is an ordinary value, so it can be passed to a helper -- and the
@@ -95,8 +94,8 @@ void check_single_item(const Item& item, const snapshot_testing::Snapshot& expec
 
 TEST_CASE("a snapshot can be passed to a helper") {
     check_single_item({.name = "kiwi", .count = 7, .price = 2.0},
-                      snapshot(R"snap(
+                      R"snap(
                           |kiwi           7     2.00
                           |total          7
-                          )snap"_snap));
+                          )snap"_snap);
 }

@@ -1,6 +1,6 @@
 ---
 name: snapshot-tests
-description: Write or update snapshot ("expect") tests — assertions whose expected value is rewritten into the source by the test runner, via SNAPSHOT_UPDATE=1 or a per-snapshot .update(). Use when asked to add a snapshot/expect test, accept new expected output, update snapshots after a behaviour change, characterise existing output, or fix a "no `snapshot` identifier at ..." / "no longer holds the recorded value" / "still has .update() on it" / "not valid UTF-8" / unsupported-literal error.
+description: Write or update snapshot ("expect") tests — _snap literals whose expected value is rewritten into the source by the test runner, via SNAPSHOT_UPDATE=1 or a per-snapshot .update(). Use when asked to add a snapshot/expect test, accept new expected output, update snapshots after a behaviour change, characterise existing output, or fix a "no snapshot literal at ..." / "no longer holds the recorded value" / "still has .update() on it" / "not valid UTF-8" / unsupported-literal error.
 ---
 
 # Snapshot (expect) tests
@@ -27,11 +27,10 @@ target_link_module(module_x PRIVATE snapshot)
 #include "snapshot/check.h"
 
 using snapshot_testing::check_snapshot;
-using snapshot_testing::snapshot;
-using snapshot_testing::operator""_snap;   // for multi-line values; see below
+using snapshot_testing::operator""_snap;
 
 TEST_CASE("render_table lays out aligned columns") {
-    check_snapshot(render_table(items), snapshot());
+    check_snapshot(render_table(items), ""_snap);
 }
 ```
 
@@ -49,21 +48,17 @@ come back green.
 
 ## No macros — and why it matters
 
-`snapshot()` and `check_snapshot()` are ordinary functions. This is load-bearing,
-not a style choice.
-
-`snapshot()` captures its call site through a defaulted
-`std::source_location::current()` argument, and that location is the *only* thing
-the updater uses to find the literal. For a plain function call the location is
-exact and lands on the callee's name — clang reports its first character, gcc the
-`(` just past it — so the updater can demand the identifier `snapshot` at one of
-those two spots and refuse anything else.
+`check_snapshot()` is an ordinary function, and `_snap` first produces an
+unlocated token. Its implicit conversion to `Snapshot` has a defaulted
+`std::source_location::current()` argument, so conversion captures the literal's
+opening character. That exact location is the only thing the updater uses to
+find the expression.
 
 Inside a macro expansion that guarantee evaporates: the reported location is
 wherever the expansion is anchored, not the macro's name, and it moves with the
 surrounding expression.
 
-**So: never wrap `snapshot()` in a macro.** Write helpers as functions
+**So: never wrap a `_snap` literal in a macro.** Write helpers as functions
 (see "Snapshots are values" below) and everything keeps working.
 
 ## Update after a behaviour change
@@ -84,7 +79,7 @@ For the inner loop on a single value. No env var; every other snapshot in the
 suite keeps asserting normally and can still catch an unintended change.
 
 ```cpp
-check_snapshot(render(x), snapshot("stale").update());
+check_snapshot(render(x), "stale"_snap.update());
 ```
 
 ```sh
@@ -102,7 +97,7 @@ Two spellings, and the updater picks whichever suits the value.
 **Single line** — one ordinary literal, inline:
 
 ```cpp
-check_snapshot(f(), snapshot("total 0\n"));
+check_snapshot(f(), "total 0\n"_snap);
 ```
 
 **Spanning lines** — a block literal: a `snap`-delimited raw string through the
@@ -110,10 +105,10 @@ check_snapshot(f(), snapshot("total 0\n"));
 the program printed.
 
 ```cpp
-check_snapshot(f(), snapshot(R"snap(
+check_snapshot(f(), R"snap(
     |apple    3
     |total  115
-    )snap"_snap));
+    )snap"_snap);
 ```
 
 `_snap` strips, at compile time, the newline after the opening delimiter and
@@ -127,8 +122,8 @@ block the updater writes won't compile.
 
 | Do | Don't |
 |---|---|
-| `snapshot("a\n")` — one single-line literal | `snapshot(R"(...)")` — any raw string but the `_snap` block |
-| `snapshot(R"snap(...)snap"_snap)` — block literal | mixing a block with an ordinary literal in one call |
+| `"a\n"_snap` — one single-line literal | `R"(...)"_snap` — any raw string but the supported block |
+| `R"snap(...)snap"_snap` — block literal | mixing a block with adjacent ordinary literals |
 | `\n \t \r \" \\` in quoted form | `\x41`, `\0`, `ሴ` — variable-length escapes are refused |
 | plain `"..."` | `L"..."`, `u8"..."` — prefixes are refused |
 
@@ -141,7 +136,7 @@ before anything is written.
 ## Snapshots are values
 
 `Snapshot` is an ordinary struct — pass it to helpers. The location is captured
-where `snapshot()` is *called*, so the helper can live anywhere:
+where a `_snap` token converts to `Snapshot`, so the helper can live anywhere:
 
 ```cpp
 void check_item(const Item& item, const snapshot_testing::Snapshot& expected) {
@@ -149,7 +144,7 @@ void check_item(const Item& item, const snapshot_testing::Snapshot& expected) {
 }
 
 TEST_CASE("...") {
-    check_item(kiwi, snapshot("kiwi  7\n"));       // location captured here
+    check_item(kiwi, "kiwi  7\n"_snap);       // location captured here
 }
 ```
 
@@ -169,17 +164,17 @@ function is what makes the snapshot useful:
 ## Layout the updater produces
 
 Single line (including one trailing `\n`) stays inline; anything spanning lines
-becomes a block literal indented **4 spaces from the line holding the call** —
-relative to the line, not to the `snapshot` identifier, so a call nested deep in
+becomes a block literal indented **4 spaces from the line holding the literal** —
+relative to the line, not to the literal's column, so an expression nested deep in
 an expression doesn't fling its value off to the right:
 
 ```cpp
-check_snapshot(f(), snapshot("total 0\n"));
+check_snapshot(f(), "total 0\n"_snap);
 
-check_snapshot(f(), snapshot(R"snap(
+check_snapshot(f(), R"snap(
     |a
     |b
-    )snap"_snap));
+    )snap"_snap);
 ```
 
 A value with no trailing newline keeps `)snap"_snap` on the last content line —
@@ -200,7 +195,7 @@ one test.
 
 | File | What |
 |---|---|
-| `include/snapshot/snapshot.h` | `snapshot()`, `Snapshot`, `compare` → `Comparison`, `render_mismatch` — no doctest dependency |
+| `include/snapshot/snapshot.h` | `_snap`, `Snapshot`, `compare` → `Comparison`, `render_mismatch` — no doctest dependency |
 | `include/snapshot/check.h` | `check_snapshot()` — the assertion; include this from tests |
 | `include/snapshot/updater.h` | `apply_updates` — pure `(source, diffs) -> text \| error` |
 | `updater.cc` | the rewriter: anchoring, literal parsing, UTF-8 checks, bottom-up edits |
@@ -209,19 +204,16 @@ one test.
 | `updater_test.cc`, `compare_test.cc` | plain unit tests (**not** snapshot tests — see gotchas) |
 
 The updater does not parse C++. It goes to the reported
-source location, verifies that it points to the `snapshot` identifier (or just past it),
-verifies the call's shape (`( <single-line literals> )`), checks the literals
+source location, verifies that it points to a supported `_snap` expression, checks the literals
 still decode to the value the test saw, and rewrites only that span.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| ``no `snapshot` identifier at line N column C`` | file edited since the test ran, or `snapshot()` got wrapped in a macro — rebuild, re-run, then update |
+| `no snapshot literal at line N column C` | file edited since the test ran, or the literal got wrapped in a macro — rebuild, re-run, then update |
 | `no longer holds the recorded value` | file edited since the test ran — rebuild, re-run, then update |
-| ``` `snapshot` at ... is not followed by '(' ``` | problematic syntax, fix on case-by-case basis |
-| `expected a string literal or ')' ... found 'R'` | a raw string that isn't the `R"snap(...)snap"_snap` block form |
-| `mixes a block literal with another literal` | one spelling per call — a block *or* quoted literals, not both |
+| `expected a string literal or _snap` | malformed adjacent quoted-literal form |
 | `unterminated block literal ... no )snap"_snap` | the block's closing delimiter is missing or misspelled |
 | `no matching literal operator for ... _snap` | add `using snapshot_testing::operator""_snap;` to the test file |
 | `unsupported escape '\x'` | only `\n \t \r \" \\` are decoded; rewrite the value |
@@ -236,7 +228,7 @@ still decode to the value the test saw, and rewrites only that span.
 
 ## Gotchas
 
-- **Never wrap `snapshot()` in a macro.** It destroys the location the updater
+- **Never wrap a `_snap` literal in a macro.** It destroys the location the updater
   anchors on; see above. Helpers over snapshots are plain functions.
 - **Rebuild between the update run and the verifying run** — the new values are
   in the source, not the binary.

@@ -27,7 +27,7 @@ namespace {
 
 using exhaustigen::Gen;
 using snapshot_testing::check_snapshot;
-using snapshot_testing::snapshot;
+using snapshot_testing::operator""_snap;
 // The multi-line spelling these snapshots are written in. A literal operator is
 // found by ordinary lookup, not ADL, so it has to be named here.
 
@@ -53,7 +53,7 @@ TEST_CASE("gen_vec enumerates every vector up to the length and element bound") 
         out += render(g.gen_vec(2, 1));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |
         |0
         |1
@@ -61,7 +61,7 @@ TEST_CASE("gen_vec enumerates every vector up to the length and element bound") 
         |0 1
         |1 0
         |1 1
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_CASE("gen_comb enumerates combinations with repeats") {
@@ -71,7 +71,7 @@ TEST_CASE("gen_comb enumerates combinations with repeats") {
         out += render(g.gen_comb(kIn));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |
         |33
         |55
@@ -112,7 +112,7 @@ TEST_CASE("gen_comb enumerates combinations with repeats") {
         |77 77 33
         |77 77 55
         |77 77 77
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_CASE("gen_perm enumerates each ordering exactly once") {
@@ -122,14 +122,14 @@ TEST_CASE("gen_perm enumerates each ordering exactly once") {
         out += render(g.gen_perm(kIn));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |33 55 77
         |33 77 55
         |55 33 77
         |55 77 33
         |77 33 55
         |77 55 33
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_CASE("gen_subset enumerates the power set") {
@@ -139,7 +139,7 @@ TEST_CASE("gen_subset enumerates the power set") {
         out += render(g.gen_subset(kIn));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |
         |77
         |55
@@ -148,7 +148,7 @@ TEST_CASE("gen_subset enumerates the power set") {
         |33 77
         |33 55
         |33 55 77
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_CASE("gen_splits enumerates the ordered splits of a sum") {
@@ -158,11 +158,11 @@ TEST_CASE("gen_splits enumerates the ordered splits of a sum") {
         out += render(g.gen_splits(4, 3, 1));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |1 1 2
         |1 2 1
         |2 1 1
-        )snap"_snap));
+        )snap"_snap);
 }
 
 // Every pass has exactly `k` elements, so with a zero minimum the slots that
@@ -174,11 +174,11 @@ TEST_CASE("gen_splits with a zero minimum pads with empty slots") {
         out += render(g.gen_splits(2, 2));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |0 2
         |1 1
         |2 0
-        )snap"_snap));
+        )snap"_snap);
 }
 
 // Nothing sums to 5 with exactly two elements of at most 2, so there is no
@@ -190,9 +190,9 @@ TEST_CASE("gen_splits yields nothing when the bounds cannot reach the sum") {
         out += render(g.gen_splits(5, 2, 0, 2));
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |
-        )snap"_snap));
+        )snap"_snap);
 }
 
 // The bounds passed to gen() may depend on earlier choices, which is what a
@@ -206,7 +206,7 @@ TEST_CASE("a later bound may depend on an earlier choice") {
         out += render({n, g.gen(n)});
     } while (!g.is_done());
 
-    check_snapshot(out, snapshot(R"snap(
+    check_snapshot(out, R"snap(
         |0 0
         |1 0
         |1 1
@@ -217,7 +217,7 @@ TEST_CASE("a later bound may depend on an earlier choice") {
         |3 1
         |3 2
         |3 3
-        )snap"_snap));
+        )snap"_snap);
 }
 
 // At the head of a while loop the generator has made no choices yet, so

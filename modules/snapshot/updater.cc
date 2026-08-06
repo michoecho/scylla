@@ -1,7 +1,6 @@
 #include "snapshot/updater.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -76,11 +75,10 @@ std::vector<std::size_t> line_offsets(std::string_view source) {
 
 // --- literal parsing ---------------------------------------------------------
 //
-// The two pieces of syntax this tool understands. Between the snapshot( and its
-// closing paren it accepts either:
+// The two pieces of _snap syntax this tool understands:
 //
 //   * a run of single-line string literals separated by whitespace and
-//     comments, and decodes their concatenation; or
+//     comments, with _snap on the last one, decoded as their concatenation; or
 //   * one block literal, R"snap(...)snap"_snap, decoded by stripping the
 //     margins exactly as the _snap suffix does at compile time.
 //
@@ -107,6 +105,16 @@ std::vector<std::size_t> line_offsets(std::string_view source) {
 constexpr std::string_view kBlockOpen = "R\"snap(";
 constexpr std::string_view kBlockClose = ")snap\"_snap";
 
+bool identifier_character(char c) {
+    const auto byte = static_cast<unsigned char>(c);
+    return c == '_' || (byte >= '0' && byte <= '9') ||
+           (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z');
+}
+
+bool suffix_ends_at(std::string_view source, std::size_t end) {
+    return end >= source.size() || !identifier_character(source[end]);
+}
+
 // Decode a block literal's raw text: drop the newline just past the opening
 // delimiter, then from each line the leading spaces and one `|`.
 //
@@ -131,7 +139,7 @@ std::string strip_margins(std::string_view raw) {
 struct ParsedLiterals {
     bool ok = false;
     std::string value;    // decoded concatenation, valid when ok
-    std::size_t end = 0;  // offset just past the closing paren, valid when ok
+    std::size_t end = 0;  // offset just past _snap, valid when ok
     std::string error;
 };
 
@@ -139,10 +147,25 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
     ParsedLiterals result;
     std::string value;
 
-    // Which spelling this call turned out to use. The two are alternatives, so
-    // once one has been read the other is a refusal rather than a continuation.
+    // A block is a complete literal expression, including its suffix.
+    if (source.compare(pos, kBlockOpen.size(), kBlockOpen) == 0) {
+        const std::size_t body = pos + kBlockOpen.size();
+        const std::size_t close = source.find(kBlockClose, body);
+        if (close == std::string_view::npos) {
+            result.error = "unterminated block snapshot literal: no )snap\"_snap";
+            return result;
+        }
+        if (!suffix_ends_at(source, close + kBlockClose.size())) {
+            result.error = "block snapshot literal has an unsupported suffix";
+            return result;
+        }
+        result.ok = true;
+        result.value = strip_margins(source.substr(body, close - body));
+        result.end = close + kBlockClose.size();
+        return result;
+    }
+
     bool saw_quoted = false;
-    bool saw_block = false;
 
     while (true) {
         // Whitespace and comments between literals.
@@ -155,7 +178,7 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
             } else if (source.compare(pos, 2, "/*") == 0) {
                 const std::size_t close = source.find("*/", pos + 2);
                 if (close == std::string_view::npos) {
-                    result.error = "unterminated comment inside snapshot(...)";
+                    result.error = "unterminated comment inside snapshot literal";
                     return result;
                 }
                 pos = close + 2;
@@ -165,51 +188,23 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
         }
 
         if (pos >= source.size()) {
-            result.error = "unterminated snapshot(...): reached end of file";
+            result.error = "unterminated snapshot literal: reached end of file";
             return result;
         }
 
-        // The closing paren ends the run. An empty run is legal: snapshot() is
-        // how a new snapshot is written before its first update.
-        if (source[pos] == ')') {
+        // The suffix ends the run. Even an empty snapshot is an ordinary empty
+        // string literal followed by it: ""_snap.
+        if (saw_quoted && source.compare(pos, 5, "_snap") == 0 &&
+            suffix_ends_at(source, pos + 5)) {
             result.ok = true;
             result.value = std::move(value);
-            result.end = pos + 1;
+            result.end = pos + 5;
             return result;
-        }
-
-        // The block literal, R"snap(...)snap"_snap. Checked before the plain
-        // literal because it also begins with a character run that is not a
-        // quote, and its opening delimiter is unambiguous.
-        if (source.compare(pos, kBlockOpen.size(), kBlockOpen) == 0) {
-            if (saw_quoted || saw_block) {
-                result.error = "snapshot(...) mixes a block literal with another "
-                               "literal; write the value as one or the other";
-                return result;
-            }
-            const std::size_t body = pos + kBlockOpen.size();
-            const std::size_t close = source.find(kBlockClose, body);
-            if (close == std::string_view::npos) {
-                result.error = "unterminated block literal inside snapshot(...): no "
-                               ")snap\"_snap";
-                return result;
-            }
-            value = strip_margins(source.substr(body, close - body));
-            saw_block = true;
-            pos = close + kBlockClose.size();
-            continue;
         }
 
         if (source[pos] != '"') {
-            result.error = std::string("expected a string literal or ')' inside "
-                                       "snapshot(...), found '") +
+            result.error = std::string("expected a string literal or _snap, found '") +
                            source[pos] + "'";
-            return result;
-        }
-
-        if (saw_block) {
-            result.error = "snapshot(...) mixes a block literal with another "
-                           "literal; write the value as one or the other";
             return result;
         }
         saw_quoted = true;
@@ -217,7 +212,7 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
         ++pos;  // opening quote
         while (true) {
             if (pos >= source.size() || source[pos] == '\n') {
-                result.error = "unterminated string literal inside snapshot(...)";
+                result.error = "unterminated string snapshot literal";
                 return result;
             }
             const char c = source[pos];
@@ -232,7 +227,7 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
             }
             // An escape. Only the fixed-length ones, for the reasons above.
             if (pos + 1 >= source.size()) {
-                result.error = "unterminated escape inside snapshot(...)";
+                result.error = "unterminated escape inside snapshot literal";
                 return result;
             }
             const char esc = source[pos + 1];
@@ -244,7 +239,7 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
                 case '\\': value.push_back('\\'); break;
                 default:
                     result.error = std::string("unsupported escape '\\") + esc +
-                                   "' inside snapshot(...); snapshot literals "
+                                   "' inside snapshot literal; snapshot literals "
                                    "support only \\n \\t \\r \\\" and \\\\";
                     return result;
             }
@@ -258,7 +253,7 @@ ParsedLiterals parse_literals(std::string_view source, std::size_t pos) {
 // --- rendering ---------------------------------------------------------------
 
 std::string render_literals(std::string_view value, unsigned indent) {
-    // A value occupying a single line stays inline: snapshot("foo\n"). Anything
+    // A value occupying a single line stays inline: "foo\n"_snap. Anything
     // genuinely spanning lines becomes a block literal, whose lines are the
     // value's own lines -- so a later change shows up as a line-granular diff
     // rather than one enormous changed line, and the text in the file reads as
@@ -308,6 +303,7 @@ std::string render_literals(std::string_view value, unsigned indent) {
 
     if (!multiline) {
         emit_literal(value);
+        out += "_snap";
         return out;
     }
 
@@ -369,6 +365,7 @@ std::string render_literals(std::string_view value, unsigned indent) {
         emit_literal(value.substr(start, end - start));
         start = end;
     }
+    out += "_snap";
     return out;
 }
 
@@ -376,35 +373,8 @@ std::string render_literals(std::string_view value, unsigned indent) {
 
 namespace {
 
-// The identifier this anchors on. Its length is the whole of the gcc/clang
-// difference: gcc points at the '(' immediately after it, clang at its first
-// character.
-constexpr std::string_view kName = "snapshot";
-
 // How far a value's lines sit in from the indentation of the line holding the
-// call. One indentation step, so the value reads as the continuation of the
-// statement it belongs to.
 constexpr unsigned kContinuationIndent = 4;
-
-// Whether `offset` starts the identifier `snapshot` and not some longer name
-// that merely contains it.
-//
-// The neighbours are checked on both sides, so `check_snapshot`, `snapshot_of`
-// and `mysnapshot` are all rejected. Without this, the anchor rule would
-// happily accept a location pointing into the middle of an unrelated
-// identifier, which is precisely the sort of near-miss the whole design exists
-// to refuse.
-bool is_name_at(std::string_view source, std::size_t offset) {
-    if (source.compare(offset, kName.size(), kName) != 0) return false;
-
-    auto part_of_identifier = [](char c) {
-        return c == '_' || std::isalnum(static_cast<unsigned char>(c)) != 0;
-    };
-    if (offset > 0 && part_of_identifier(source[offset - 1])) return false;
-
-    const std::size_t after = offset + kName.size();
-    return after >= source.size() || !part_of_identifier(source[after]);
-}
 
 }  // namespace
 
@@ -431,8 +401,8 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
     // fully resolved changes nothing -- and, because no edit has happened yet,
     // every recorded location still describes the file the test actually saw.
     struct Resolved {
-        std::size_t literals_start = 0;  // just past the '('
-        std::size_t literals_end = 0;    // the closing paren
+        std::size_t literals_start = 0;  // first byte of the literal expression
+        std::size_t literals_end = 0;    // just past its _snap suffix
         unsigned indent = 0;             // leading whitespace of the call's line
         const Update* update = nullptr;
     };
@@ -460,33 +430,17 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
         }
         const std::size_t point = line_start + update.column - 1;
 
-        // The two conventions, and only these two. See updater.h: clang reports
-        // the identifier's first character, gcc the '(' just past its end, so
-        // the identifier begins either exactly at the reported point or exactly
-        // kName.size() bytes before it.
-        std::size_t name_start = 0;
-        if (is_name_at(source, point)) {
-            name_start = point;
-        } else if (point >= kName.size() && is_name_at(source, point - kName.size())) {
-            name_start = point - kName.size();
-        } else {
-            result.error = "no `snapshot` identifier at " + at +
+        // The implicit Snapshot conversion reports the beginning of the UDL
+        // expression: `"` for an ordinary literal, or `R` for the block form.
+        // This is an exact anchor, not a place from which to search.
+        if (source.compare(point, 1, "\"") != 0 &&
+            source.compare(point, kBlockOpen.size(), kBlockOpen) != 0) {
+            result.error = "no snapshot literal at " + at +
                            "; the file has changed since the test ran";
             return result;
         }
 
-        // Verify the rest of the shape. From here on the position is settled,
-        // so every failure is a description of what is wrong with the text
-        // found there rather than a reason to keep looking.
-        std::size_t pos = name_start + kName.size();
-        while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t')) ++pos;
-        if (pos >= source.size() || source[pos] != '(') {
-            result.error = "`snapshot` at " + at + " is not followed by '('";
-            return result;
-        }
-        ++pos;
-
-        const ParsedLiterals parsed = parse_literals(source, pos);
+        const ParsedLiterals parsed = parse_literals(source, point);
         if (!parsed.ok) {
             result.error = parsed.error + " (at " + at + ")";
             return result;
@@ -503,7 +457,7 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
         }
 
         const auto same_call = [&](const Resolved& other) {
-            return other.literals_start == pos;
+            return other.literals_start == point;
         };
         if (std::any_of(resolved.begin(), resolved.end(), same_call)) {
             result.error = "two updates resolve to the same snapshot at " + at;
@@ -522,8 +476,8 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
             ++first_text;
 
         resolved.push_back(Resolved{
-            .literals_start = pos,
-            .literals_end = parsed.end - 1,  // parsed.end is one past the ')'
+            .literals_start = point,
+            .literals_end = parsed.end,
             .indent = static_cast<unsigned>(first_text - line_start),
             .update = &update,
         });

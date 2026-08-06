@@ -90,7 +90,6 @@ namespace {
 using Histogram = exponential_histogram::exponential_histogram;
 using snapshot_testing::check_snapshot;
 using snapshot_testing::operator""_snap;
-using snapshot_testing::snapshot;
 namespace gs = hegel::generators;
 
 
@@ -121,7 +120,7 @@ TEST_CASE("exponential_histogram groups values and clamps at end") {
                                       21, 22, 100}) {
         histogram.insert(value);
     }
-    check_snapshot(render(histogram), snapshot(R"snap(
+    check_snapshot(render(histogram), R"snap(
         |[0, 1) 1
         |[1, 2) 1
         |[2, 3) 0
@@ -136,7 +135,7 @@ TEST_CASE("exponential_histogram groups values and clamps at end") {
         |[14, 16) 1
         |[16, 20) 1
         |[20, 22) 4
-        )snap"_snap));
+        )snap"_snap);
 }
 
 TEST_CASE("zero exponent and significand bits form a counter") {
@@ -144,7 +143,7 @@ TEST_CASE("zero exponent and significand bits form a counter") {
     histogram.insert(0);
     histogram.insert(42);
     histogram.insert(1000);
-    check_snapshot(render(histogram), snapshot("[0, 1) 3\n"));
+    check_snapshot(render(histogram), "[0, 1) 3\n"_snap);
 }
 
 TEST_CASE("either floating-point field may have zero bits") {
@@ -157,7 +156,7 @@ TEST_CASE("either floating-point field may have zero bits") {
 
     check_snapshot("exponent=0\n" + render(no_exponent) +
                        "significand=0\n" + render(no_significand),
-                   snapshot(R"snap(
+                   R"snap(
                        |exponent=0
                        |[0, 1) 1
                        |[1, 2) 1
@@ -170,7 +169,7 @@ TEST_CASE("either floating-point field may have zero bits") {
                        |[4, 8) 2
                        |[8, 16) 1
                        |[16, 21) 2
-                       )snap"_snap));
+                       )snap"_snap);
 }
 
 TEST_SUITE("hegel") {

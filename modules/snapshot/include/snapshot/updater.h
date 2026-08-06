@@ -1,50 +1,34 @@
-// Rewriting snapshot(...) literals in a source file.
+// Rewriting _snap literal expressions in a source file.
 //
 // This is the half of snapshot testing that edits your code, so it is written
 // to be boring and suspicious. It does not parse C++, and it does not search
 // for anything. It is handed a set of (line, column) locations that the
-// compiler itself reported -- via the defaulted std::source_location argument
-// of snapshot(), see snapshot.h -- and each one *is* the answer. The updater
-// only verifies that what is there matches the tiny shape it can rewrite.
+// implicit Snapshot conversion reported, see snapshot.h -- and each one *is*
+// the answer. The updater only verifies that what is there matches the tiny
+// shape it can rewrite.
 //
 // --- the anchor ---------------------------------------------------------------
 //
-// For a call to an ordinary function, std::source_location::current() as a
-// default argument reports the call site exactly. The two compilers this
-// project builds with pick opposite ends of the callee's name:
-//
-//     clang   the first character of the identifier      snapshot("a")
-//                                                        ^
-//     gcc     the opening parenthesis just past it       snapshot("a")
-//                                                                ^
-//
-// Both are pinned to the `snapshot` token, and neither wanders with the value's
-// length, the number of literals, the enclosing expression, or anything else.
-// So the rule is: the identifier `snapshot` begins either *at* the reported
-// column, or exactly `strlen("snapshot")` characters *before* it. Nothing else
-// is accepted -- not a nearby snapshot, not a best guess. If the identifier is
-// not at one of those two places, the file is not what the compiler saw, and
-// the update is refused.
-//
-// This is why snapshot() must be a plain function called directly at the site
-// of the literal. Wrapped in a macro, the reported location is wherever the
-// expansion is anchored -- not the macro's name, and not stable -- and no rule
-// of this kind could exist.
+// SnapshotLiteral converts implicitly to Snapshot through a constructor whose
+// defaulted std::source_location argument reports the conversion site exactly:
+// the opening quote of an ordinary literal, or the R of a block literal.
+// Nothing else is accepted -- not a nearby literal and not a best guess. If a
+// supported literal does not begin at that byte, the file is not what the
+// compiler saw and the update is refused.
 //
 // --- verification, not matching ------------------------------------------------
 //
-// Having found the identifier by position alone, the updater checks that what
-// follows it is exactly:
+// Having found the anchor by position alone, the updater checks that it begins
+// exactly one of:
 //
-//     snapshot ( <literals> )
+//     "..." "..."_snap
+//     R"snap(...)snap"_snap
 //
-// where <literals> is either a run of zero or more single-line string literals,
-// with whitespace, comments and newlines allowed between any two tokens, or a
-// single block literal R"snap(...)snap"_snap whose margins are stripped exactly
-// as the _snap suffix strips them at compile time (see snapshot.h). One or the
-// other: a call mixing the two is refused. It then
-// checks that those literals decode to the value the test reported seeing. Any
-// deviation aborts the whole update rather than being handled cleverly.
+// The quoted form may contain several adjacent literals, with whitespace,
+// comments and newlines between them; its last literal carries the suffix. The
+// block form has margins stripped exactly as the suffix does at compile time.
+// The updater then checks that the expression decodes to the value the test
+// reported seeing. Any deviation aborts the whole update.
 //
 // The old-value check is a staleness guard, not a search key: it proves the
 // file has not been edited since the test ran. Nothing is ever *located* by its
@@ -73,12 +57,11 @@
 
 namespace snapshot_testing {
 
-// One rewrite: at (line, column), replace the literals of a snapshot() call
-// currently holding `old_value` with `new_value`.
+// One rewrite: at (line, column), replace a _snap literal expression currently
+// holding `old_value` with `new_value`.
 //
 // Lines and columns are 1-based, and columns count bytes. The column is an
-// anchor, not a hint: it must name either end of the `snapshot` identifier, by
-// one of the two conventions above.
+// anchor, not a hint: it must name the literal's opening quote or R.
 struct Update {
     unsigned line = 0;
     unsigned column = 0;
@@ -102,10 +85,9 @@ struct UpdateResult {
 //
 // Fails, changing nothing, if: `source` is not valid UTF-8; any new value is
 // not valid UTF-8; a location does not name an existing line and column; there
-// is no `snapshot` identifier at either anchor position; it is not followed by
-// `(`, a run of single-line string literals *or* one block literal, and `)`;
-// the call mixes the two spellings; the literals there do not decode to the
-// update's `old_value`; or two updates resolve to the same call.
+// there is no supported _snap literal expression at the anchor; its literals do
+// not decode to the update's `old_value`; or two updates resolve to the same
+// expression.
 //
 // The result is all-or-nothing by construction: the rewrite is computed into a
 // new string and only a wholly successful pass produces one.
@@ -115,9 +97,8 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
 // continuation lines indented by `indent` columns.
 //
 // `indent` is the final width, already including the continuation step: the
-// caller computes it from the indentation of the line the call sits on, not
-// from the column of the identifier, so the layout does not depend on how deep
-// in an expression the call is nested.
+// caller computes it from the indentation of the line the literal sits on, not
+// from its column, so layout does not depend on expression nesting.
 //
 // Exposed for the updater's own tests. A value occupying a single line becomes
 // one literal on the same line as the call. A value spanning lines becomes a

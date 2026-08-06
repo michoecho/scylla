@@ -9,28 +9,27 @@
 // diff in behaviour, which is the whole point.
 //
 //     TEST_CASE("render") {
-//         check_snapshot(render(3), snapshot("[1, 2, 3]"));
+//         check_snapshot(render(3), "[1, 2, 3]"_snap);
 //     }
 //
 // --- no macros ---------------------------------------------------------------
 //
-// snapshot() is an ordinary function with a defaulted
-// std::source_location::current() argument, and check_snapshot() is an ordinary
-// function too. That is a load-bearing decision, not a style preference.
+// The _snap literal first produces an unlocated SnapshotLiteral. Its implicit
+// conversion to Snapshot has a defaulted std::source_location::current()
+// argument, so the conversion records the literal's use site. check_snapshot()
+// is an ordinary function too. These are load-bearing decisions, not style.
 //
 // The updater has to find the literal again in the source, and what it has to
-// go on is the location the compiler reported. For a plain function call that
-// location is exact and lands on the call itself: clang reports the first
-// character of the callee's name, gcc reports the opening parenthesis just past
-// it. Two conventions, both pinned to the `snapshot` token -- which is why the
-// updater can insist on finding that identifier right there and refuse to guess
-// otherwise. See updater.h.
+// go on is the location captured by the implicit conversion. That location is
+// exact and lands on the opening character of the literal expression, which is
+// why the updater can insist on finding a supported _snap literal right there
+// and refuse to guess otherwise. See updater.h.
 //
 // Inside a macro expansion none of that holds: the reported location is
-// wherever the expansion happens to be anchored, which is not the macro's own
-// name and moves with the surrounding expression. So an assertion *macro*
-// wrapping snapshot() would break the updater's only reliable handle. Write
-// helpers over snapshots as functions, and they keep working.
+// wherever the expansion happens to be anchored. So a macro wrapping the
+// literal would break the updater's only reliable handle. Helpers accepting a
+// Snapshot remain ordinary functions; conversion happens where the literal is
+// passed to them, so they keep the correct location.
 //
 // --- the value ---------------------------------------------------------------
 //
@@ -38,15 +37,15 @@
 //
 // A value with no line break is one ordinary literal, on the line of the call:
 //
-//     check_snapshot(render(3), snapshot("[1, 2, 3]\n"));
+//     check_snapshot(render(3), "[1, 2, 3]\n"_snap);
 //
 // Anything spanning lines is a *block literal*: a raw string with a `snap`
 // delimiter, passed through the _snap suffix, whose lines carry a `|` margin.
 //
-//     check_snapshot(render(3), snapshot(R"snap(
+//     check_snapshot(render(3), R"snap(
 //         |1
 //         |2
-//         )snap"_snap));
+//         )snap"_snap);
 //
 // which is exactly the value "1\n2\n". Escaped newlines are what expect tests
 // are worst at reading, and this form has none: the text in the file is the
@@ -68,9 +67,9 @@
 //
 //     using snapshot_testing::operator""_snap;
 //
-// alongside its using-declarations for snapshot() and check_snapshot(). Without
-// it the block the updater writes will not compile -- which is a build error,
-// not a corrupted file, but an avoidable surprise. See example_test.cc.
+// alongside its using-declaration for check_snapshot(). Without it a literal
+// the updater writes will not compile -- which is a build error, not a corrupted
+// file, but an avoidable surprise. See example_test.cc.
 //
 // Never a raw string without _snap, and no other escape form. The updater has
 // to rewrite this text, and the set of things it must understand to do that
@@ -134,6 +133,27 @@ constexpr std::size_t stripped_size(std::string_view raw) {
     return n;
 }
 
+// The same suffix serves ordinary quoted values and the margin-bearing block
+// form. Literal operators receive the decoded characters rather than the C++
+// spelling, so the block identifies itself by the shape the updater writes: an
+// opening newline followed by margin-prefixed content lines (and optionally a
+// final indentation-only delimiter line). Ordinary literals are left alone.
+constexpr bool has_block_margins(std::string_view raw) {
+    if (raw.empty() || raw[0] != '\n') return false;
+
+    bool saw_margin = false;
+    std::size_t i = 1;
+    while (i < raw.size()) {
+        while (i < raw.size() && raw[i] == ' ') ++i;
+        if (i == raw.size()) return saw_margin;
+        if (raw[i] != '|') return false;
+        saw_margin = true;
+        while (i < raw.size() && raw[i] != '\n') ++i;
+        if (i < raw.size()) ++i;
+    }
+    return saw_margin;
+}
+
 // A string literal usable as a template argument: a structural type holding the
 // characters by value, which is how C++20 lets a literal parameterise a
 // template at all.
@@ -153,12 +173,17 @@ struct RawLiteral {
 // so identical blocks in different tests share one array.
 template <RawLiteral L>
 struct StrippedLiteral {
-    static constexpr std::size_t size = stripped_size(L.view());
+    static constexpr bool strip = has_block_margins(L.view());
+    static constexpr std::size_t size = strip ? stripped_size(L.view()) : L.view().size();
 
     static constexpr std::array<char, size + 1> text = [] {
         std::array<char, size + 1> out{};  // the extra element is the null
         std::size_t n = 0;
-        strip_margins(L.view(), [&out, &n](char c) { out[n++] = c; });
+        if constexpr (strip) {
+            strip_margins(L.view(), [&out, &n](char c) { out[n++] = c; });
+        } else {
+            std::copy(L.view().begin(), L.view().end(), out.begin());
+        }
         return out;
     }();
 };
@@ -166,23 +191,44 @@ struct StrippedLiteral {
 }  // namespace detail
 
 // The suffix itself. See the block-literal section above for what it strips.
+struct SnapshotLiteral {
+    std::string_view value;
+    bool forced = false;
+
+    [[nodiscard]] constexpr SnapshotLiteral update() const {
+        SnapshotLiteral copy = *this;
+        copy.forced = true;
+        return copy;
+    }
+
+    constexpr operator std::string_view() const { return value; }
+};
+
 template <detail::RawLiteral L>
-constexpr std::string_view operator""_snap() {
-    return {detail::StrippedLiteral<L>::text.data(), detail::StrippedLiteral<L>::size};
+constexpr SnapshotLiteral operator""_snap() {
+    return SnapshotLiteral{
+        .value = {detail::StrippedLiteral<L>::text.data(), detail::StrippedLiteral<L>::size}};
 }
 
-// An expected value plus the source location of the call that wrote it.
+// An expected value plus the source location of its _snap literal.
 //
-// The location is an anchor, not a hint: it points at the `snapshot` token of
-// the call below, by one of the two conventions described above, and the
-// updater rejects anything that does not sit exactly there.
+// The location is an anchor, not a hint: it points at the literal's opening
+// quote (or the R of a block), and the updater rejects anything else.
 struct Snapshot {
     std::string_view value;
     std::source_location location;
 
+    // The conversion is deliberately implicit: it happens where a _snap
+    // literal is passed to check_snapshot(), compare(), or a helper accepting
+    // Snapshot. The default argument therefore captures that literal's use
+    // site, without a wrapper function or macro.
+    Snapshot(SnapshotLiteral literal,
+             std::source_location location = std::source_location::current())
+        : value(literal.value), location(location), forced(literal.forced) {}
+
     // Rewrite this one snapshot, without SNAPSHOT_UPDATE in the environment:
     //
-    //     check_snapshot(render(x), snapshot("stale").update());
+    //     check_snapshot(render(x), "stale"_snap.update());
     //
     // For the inner loop where you are iterating on a single expected value.
     // Marking the one snapshot beats the env var there, because every *other*
@@ -190,9 +236,8 @@ struct Snapshot {
     // change you did not mean to make.
     //
     // Returns a copy rather than mutating, so a Snapshot stays a value and
-    // `snapshot(...).update()` is a single expression. The location is carried
-    // through unchanged -- .update() captures nothing of its own, so the anchor
-    // still names the `snapshot` token.
+    // `"value"_snap.update()` is a single expression. The location is carried
+    // through unchanged -- .update() captures nothing of its own.
     //
     // Leaving one of these in a committed test is a mistake the runner refuses
     // to let pass; see `forced` below and the check in compare().
@@ -205,24 +250,6 @@ struct Snapshot {
     // Set by update(). Not part of the expected value.
     bool forced = false;
 };
-
-// snapshot("expected"): the expected value, tagged with where it is written.
-//
-// The defaulted location argument is what the updater anchors on, so this
-// function must be called *directly* at the site of the literal. Forwarding it
-// through another function would report that forwarder's call site instead, and
-// the updater would refuse the location rather than rewrite the wrong text.
-//
-// The value is a string_view of the literal itself, which has static storage
-// duration -- a Snapshot can therefore outlive the full-expression it was
-// built in, and be stored or passed on freely.
-//
-// Defaulted so that snapshot() with nothing in it -- the way a new snapshot is
-// written before its first update run -- is well-formed.
-inline Snapshot snapshot(std::string_view value = {},
-                         std::source_location location = std::source_location::current()) {
-    return Snapshot{.value = value, .location = location};
-}
 
 // What compare() found. Exactly one of these holds.
 //

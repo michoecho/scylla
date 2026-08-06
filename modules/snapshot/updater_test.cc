@@ -13,12 +13,8 @@
 // CHECK, and the error cases matter as much as the happy path -- refusing to
 // touch a file it cannot understand is most of what this code is for.
 //
-// Columns below are anchors, not hints, so they are spelled the way a compiler
-// would report them: at_name(n) is clang's convention (the first character of
-// the identifier, whose 0-based offset in the line is n) and past_name(n) is
-// gcc's (the '(' just past it). Going through these rather than bare numbers is
-// what keeps the tests readable -- and what makes a test that deliberately uses
-// a *wrong* column obviously deliberate.
+// Columns below are anchors, not hints. at_literal(n) converts the literal's
+// 0-based offset in its line into the 1-based column source_location reports.
 
 #include <doctest/doctest.h>
 
@@ -33,13 +29,8 @@ namespace {
 
 using snapshot_testing::Update;
 
-// The 1-based column of the 's' of `snapshot`. Clang's anchor.
-constexpr unsigned at_name(unsigned offset_in_line) { return offset_in_line + 1; }
-
-// The 1-based column of the '(' just past `snapshot`. Gcc's anchor.
-constexpr unsigned past_name(unsigned offset_in_line) {
-    return at_name(offset_in_line) + 8;  // strlen("snapshot")
-}
+// The 1-based column of the opening quote (or R) of a _snap literal.
+constexpr unsigned at_literal(unsigned offset_in_line) { return offset_in_line + 1; }
 
 // Rewrite `source` and return the resulting text, failing the test if the
 // updater refused. For the cases that are *supposed* to succeed.
@@ -65,44 +56,44 @@ std::string error_from(std::string_view source, std::vector<Update> updates) {
 TEST_CASE("rewrites a single-line snapshot in place") {
     //             0         1
     //             01234567890
-    //             check(f(), snapshot("old"));
-    CHECK(rewrite("check(f(), snapshot(\"old\"));\n",
-                  {{.line = 1, .column = at_name(11), .old_value = "old", .new_value = "new"}}) ==
-          "check(f(), snapshot(\"new\"));\n");
+    //             check(f(), "old"_snap);
+    CHECK(rewrite("check(f(), \"old\"_snap);\n",
+                  {{.line = 1, .column = at_literal(11), .old_value = "old", .new_value = "new"}}) ==
+          "check(f(), \"new\"_snap);\n");
 }
 
 TEST_CASE("keeps a value that occupies a single line inline") {
     // A lone trailing newline is not a line break for layout purposes: nearly
     // every line-oriented value ends with one, and splitting those across two
     // source lines would be noise.
-    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
-                                           .column = at_name(2),
+    CHECK(rewrite("x(\"\"_snap);\n", {{.line = 1,
+                                           .column = at_literal(2),
                                            .old_value = "",
                                            .new_value = "one line\n"}}) ==
-          "x(snapshot(\"one line\\n\"));\n");
+          "x(\"one line\\n\"_snap);\n");
 }
 
 TEST_CASE("writes a value spanning lines as a block literal") {
     // One value line per source line, behind a `|` margin, one indentation step
     // in from the line holding the call. The point of the form is that the
     // escapes are gone: what is in the file is what the value holds.
-    CHECK(rewrite("x(snapshot(\"\"));\n",
-                  {{.line = 1, .column = at_name(2), .old_value = "", .new_value = "a\nb\n"}}) ==
-          "x(snapshot(R\"snap(\n"
+    CHECK(rewrite("x(\"\"_snap);\n",
+                  {{.line = 1, .column = at_literal(2), .old_value = "", .new_value = "a\nb\n"}}) ==
+          "x(R\"snap(\n"
           "    |a\n"
           "    |b\n"
-          "    )snap\"_snap));\n");
+          "    )snap\"_snap);\n");
 }
 
 TEST_CASE("indents a value one step in from the line holding the call") {
     // The layout is relative to the *line*, not to the identifier: the call's
     // line is indented eight, so the value sits at twelve.
-    CHECK(rewrite("        x(snapshot(\"\"));\n",
-                  {{.line = 1, .column = at_name(10), .old_value = "", .new_value = "a\nb\n"}}) ==
-          "        x(snapshot(R\"snap(\n"
+    CHECK(rewrite("        x(\"\"_snap);\n",
+                  {{.line = 1, .column = at_literal(10), .old_value = "", .new_value = "a\nb\n"}}) ==
+          "        x(R\"snap(\n"
           "            |a\n"
           "            |b\n"
-          "            )snap\"_snap));\n");
+          "            )snap\"_snap);\n");
 }
 
 TEST_CASE("does not indent a value by how deep in an expression the call sits") {
@@ -110,258 +101,219 @@ TEST_CASE("does not indent a value by how deep in an expression the call sits") 
     // right. Aligning under the identifier would fling the value out with it --
     // and a long enough prefix would push every line past the column limit with
     // nothing the author could do about it. The value lands in the same place.
-    CHECK(rewrite("        f(g(h(1), snapshot(\"\")));\n",
-                  {{.line = 1, .column = at_name(18), .old_value = "", .new_value = "a\nb\n"}}) ==
-          "        f(g(h(1), snapshot(R\"snap(\n"
+    CHECK(rewrite("        f(g(h(1), \"\"_snap));\n",
+                  {{.line = 1, .column = at_literal(18), .old_value = "", .new_value = "a\nb\n"}}) ==
+          "        f(g(h(1), R\"snap(\n"
           "            |a\n"
           "            |b\n"
-          "            )snap\"_snap)));\n");
+          "            )snap\"_snap));\n");
 }
 
 TEST_CASE("indents the escaped fallback form the same way") {
     // The two spellings are one layout rule, not two.
-    CHECK(rewrite("        x(snapshot(\"\"));\n", {{.line = 1,
-                                                   .column = at_name(10),
+    CHECK(rewrite("        x(\"\"_snap);\n", {{.line = 1,
+                                                   .column = at_literal(10),
                                                    .old_value = "",
                                                    .new_value = "a\tb\nc\n"}}) ==
-          "        x(snapshot(\n"
+          "        x(\n"
           "            \"a\\tb\\n\"\n"
-          "            \"c\\n\"));\n");
+          "            \"c\\n\"_snap);\n");
 }
 
 TEST_CASE("keeps the closing delimiter inline when the value has no final newline") {
     // A line break before the delimiter would be inside the raw string, so it
     // would come back as a trailing newline the value never had.
-    CHECK(rewrite("x(snapshot(\"\"));\n",
-                  {{.line = 1, .column = at_name(2), .old_value = "", .new_value = "a\nb"}}) ==
-          "x(snapshot(R\"snap(\n"
+    CHECK(rewrite("x(\"\"_snap);\n",
+                  {{.line = 1, .column = at_literal(2), .old_value = "", .new_value = "a\nb"}}) ==
+          "x(R\"snap(\n"
           "    |a\n"
-          "    |b)snap\"_snap));\n");
+          "    |b)snap\"_snap);\n");
 }
 
 TEST_CASE("preserves leading whitespace in a block literal's lines") {
     // Everything after the `|` is content, which is the whole reason for the
     // margin: the block's own indentation cannot leak into the value, and the
     // value's own indentation cannot be mistaken for it.
-    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
-                                           .column = at_name(2),
+    CHECK(rewrite("x(\"\"_snap);\n", {{.line = 1,
+                                           .column = at_literal(2),
                                            .old_value = "",
                                            .new_value = "root\n    leaf\n"}}) ==
-          "x(snapshot(R\"snap(\n"
+          "x(R\"snap(\n"
           "    |root\n"
           "    |    leaf\n"
-          "    )snap\"_snap));\n");
+          "    )snap\"_snap);\n");
 }
 
 TEST_CASE("reads a block literal back as the value it was written from") {
     // The round trip that the two independent implementations of the strip rule
     // -- here and in snapshot.h -- have to agree on. The old value is what the
     // previous case wrote, and it has to decode to what was written.
-    CHECK(rewrite("x(snapshot(R\"snap(\n"
+    CHECK(rewrite("x(R\"snap(\n"
                   "    |root\n"
                   "    |    leaf\n"
-                  "    )snap\"_snap));\n",
+                  "    )snap\"_snap);\n",
                   {{.line = 1,
-                    .column = at_name(2),
+                    .column = at_literal(2),
                     .old_value = "root\n    leaf\n",
-                    .new_value = "z\n"}}) == "x(snapshot(\"z\\n\"));\n");
+                    .new_value = "z\n"}}) == "x(\"z\\n\"_snap);\n");
 }
 
 TEST_CASE("strips only one margin pipe, so a value may begin with one") {
     // `|x` as content is written as `||x` and read back to `|x`: the strip stops
     // eating at the first pipe, so a second one is content.
     const std::string written =
-        rewrite("x(snapshot(\"\"));\n", {{.line = 1,
-                                         .column = at_name(2),
+        rewrite("x(\"\"_snap);\n", {{.line = 1,
+                                         .column = at_literal(2),
                                          .old_value = "",
                                          .new_value = "|a\n  |b\n"}});
     CHECK(written ==
-          "x(snapshot(R\"snap(\n"
+          "x(R\"snap(\n"
           "    ||a\n"
           "    |  |b\n"
-          "    )snap\"_snap));\n");
+          "    )snap\"_snap);\n");
 
     // And back again, unchanged.
     CHECK(rewrite(written, {{.line = 1,
-                             .column = at_name(2),
+                             .column = at_literal(2),
                              .old_value = "|a\n  |b\n",
-                             .new_value = "z"}}) == "x(snapshot(\"z\"));\n");
+                             .new_value = "z"}}) == "x(\"z\"_snap);\n");
 }
 
 TEST_CASE("falls back to escaped literals for a value a block cannot carry") {
     // A tab or carriage return written raw would be invisible in the file, and
     // an invisible character in an expected value is one nobody can review.
-    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
-                                           .column = at_name(2),
+    CHECK(rewrite("x(\"\"_snap);\n", {{.line = 1,
+                                           .column = at_literal(2),
                                            .old_value = "",
                                            .new_value = "a\tb\nc\n"}}) ==
-          "x(snapshot(\n"
+          "x(\n"
           "    \"a\\tb\\n\"\n"
-          "    \"c\\n\"));\n");
+          "    \"c\\n\"_snap);\n");
 }
 
 TEST_CASE("falls back to escaped literals for a value holding the closing delimiter") {
     // The one structural case: a raw string ends at its delimiter, and the
     // delimiter is fixed, so no choice of margin could rescue this.
-    CHECK(rewrite("x(snapshot(\"\"));\n",
+    CHECK(rewrite("x(\"\"_snap);\n",
                   {{.line = 1,
-                    .column = at_name(2),
+                    .column = at_literal(2),
                     .old_value = "",
                     .new_value = "a\nsee )snap\"_snap here\n"}}) ==
-          "x(snapshot(\n"
+          "x(\n"
           "    \"a\\n\"\n"
-          "    \"see )snap\\\"_snap here\\n\"));\n");
-}
-
-TEST_CASE("refuses a call mixing a block literal with an ordinary one") {
-    // Two spellings of a whole value, not two halves of one. Reading a mixture
-    // would mean rewriting text the writer could never have produced.
-    CHECK(error_from("x(snapshot(R\"snap(\n"
-                     "    |a\n"
-                     "    )snap\"_snap \"b\"));\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "a\nb", .new_value = "c"}}) ==
-          "snapshot(...) mixes a block literal with another literal; write the "
-          "value as one or the other (at line 1 column 3)");
+          "    \"see )snap\\\"_snap here\\n\"_snap);\n");
 }
 
 TEST_CASE("refuses an unterminated block literal") {
-    CHECK(error_from("x(snapshot(R\"snap(\n"
+    CHECK(error_from("x(R\"snap(\n"
                      "    |a\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "a\n", .new_value = "b"}}) ==
-          "unterminated block literal inside snapshot(...): no )snap\"_snap "
+                     {{.line = 1, .column = at_literal(2), .old_value = "a\n", .new_value = "b"}}) ==
+          "unterminated block snapshot literal: no )snap\"_snap "
           "(at line 1 column 3)");
+}
+
+TEST_CASE("refuses a longer user-defined suffix beginning with _snap") {
+    CHECK(error_from("x(R\"snap(\n"
+                     "    |a\n"
+                     "    )snap\"_snapshot);\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "a\n", .new_value = "b"}}) ==
+          "block snapshot literal has an unsupported suffix (at line 1 column 3)");
 }
 
 TEST_CASE("applies several updates whose line numbers shift") {
     // The first rewrite grows by three lines, so the second update's recorded
     // line would be wrong if the rewrites were applied top-down. This is the
     // case the bottom-up ordering exists for.
-    CHECK(rewrite("a(snapshot(\"one\"));\n"
-                  "b(snapshot(\"two\"));\n",
+    CHECK(rewrite("a(\"one\"_snap);\n"
+                  "b(\"two\"_snap);\n",
                   {
                       {.line = 1,
-                       .column = at_name(2),
+                       .column = at_literal(2),
                        .old_value = "one",
                        .new_value = "1\n2\n3\n"},
-                      {.line = 2, .column = at_name(2), .old_value = "two", .new_value = "2"},
+                      {.line = 2, .column = at_literal(2), .old_value = "two", .new_value = "2"},
                   }) ==
-          "a(snapshot(R\"snap(\n"
+          "a(R\"snap(\n"
           "    |1\n"
           "    |2\n"
           "    |3\n"
-          "    )snap\"_snap));\n"
-          "b(snapshot(\"2\"));\n");
+          "    )snap\"_snap);\n"
+          "b(\"2\"_snap);\n");
 }
 
 TEST_CASE("distinguishes two snapshots on one line") {
     //             0         1         2
     //             012345678901234567890
-    //             p(snapshot("a")); q(snapshot("b"));
-    CHECK(rewrite("p(snapshot(\"a\")); q(snapshot(\"b\"));\n",
+    //             p("a"_snap); q("b"_snap);
+    CHECK(rewrite("p(\"a\"_snap); q(\"b\"_snap);\n",
                   {
-                      {.line = 1, .column = at_name(2), .old_value = "a", .new_value = "A"},
-                      {.line = 1, .column = at_name(20), .old_value = "b", .new_value = "B"},
-                  }) == "p(snapshot(\"A\")); q(snapshot(\"B\"));\n");
+                      {.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "A"},
+                      {.line = 1, .column = at_literal(15), .old_value = "b", .new_value = "B"},
+                  }) == "p(\"A\"_snap); q(\"B\"_snap);\n");
 }
 
 TEST_CASE("distinguishes two snapshots on one line holding the same value") {
     // Nothing tells these apart but their position -- which is all the updater
     // has ever used, and exactly why it does not search by value.
-    CHECK(rewrite("p(snapshot(\"x\")); q(snapshot(\"x\"));\n",
+    CHECK(rewrite("p(\"x\"_snap); q(\"x\"_snap);\n",
                   {
-                      {.line = 1, .column = at_name(2), .old_value = "x", .new_value = "first"},
-                      {.line = 1, .column = at_name(20), .old_value = "x", .new_value = "second"},
-                  }) == "p(snapshot(\"first\")); q(snapshot(\"second\"));\n");
+                      {.line = 1, .column = at_literal(2), .old_value = "x", .new_value = "first"},
+                      {.line = 1, .column = at_literal(15), .old_value = "x", .new_value = "second"},
+                  }) == "p(\"first\"_snap); q(\"second\"_snap);\n");
 }
 
 TEST_CASE("joins an existing multi-literal value before comparing") {
     // The old value is the concatenation of the literals, so a snapshot that
     // was previously written across several lines still matches.
-    CHECK(rewrite("x(snapshot(\n"
+    CHECK(rewrite("x(\n"
                   "    \"a\\n\"\n"
-                  "    \"b\\n\"));\n",
-                  {{.line = 1, .column = at_name(2), .old_value = "a\nb\n", .new_value = "c\n"}}) ==
-          "x(snapshot(\"c\\n\"));\n");
+                  "    \"b\\n\"_snap);\n",
+                  {{.line = 2, .column = at_literal(4), .old_value = "a\nb\n", .new_value = "c\n"}}) ==
+          "x(\n"
+          "    \"c\\n\"_snap);\n");
 }
 
 TEST_CASE("reads whitespace and comments between literals") {
-    CHECK(rewrite("x(snapshot(\"a\"  // why\n"
-                  "           /* and */ \"b\"));\n",
-                  {{.line = 1, .column = at_name(2), .old_value = "ab", .new_value = "c"}}) ==
-          "x(snapshot(\"c\"));\n");
-}
-
-TEST_CASE("allows whitespace between the name and its parenthesis") {
-    // Not idiomatic, but legal C++, and the identifier is still where the
-    // anchor says it is.
-    CHECK(rewrite("x(snapshot (\"a\"));\n",
-                  {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "b"}}) ==
-          "x(snapshot (\"b\"));\n");
+    CHECK(rewrite("x(\"a\"  // why\n"
+                  "           /* and */ \"b\"_snap);\n",
+                  {{.line = 1, .column = at_literal(2), .old_value = "ab", .new_value = "c"}}) ==
+          "x(\"c\"_snap);\n");
 }
 
 TEST_CASE("preserves text around the snapshot on both sides") {
-    CHECK(rewrite("before x(snapshot(\"a\")) after\n"
+    CHECK(rewrite("before x(\"a\"_snap) after\n"
                   "next line\n",
-                  {{.line = 1, .column = at_name(9), .old_value = "a", .new_value = "z"}}) ==
-          "before x(snapshot(\"z\")) after\n"
+                  {{.line = 1, .column = at_literal(9), .old_value = "a", .new_value = "z"}}) ==
+          "before x(\"z\"_snap) after\n"
           "next line\n");
 }
 
 TEST_CASE("escapes characters that would otherwise break the literal") {
-    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
-                                           .column = at_name(2),
+    CHECK(rewrite("x(\"\"_snap);\n", {{.line = 1,
+                                           .column = at_literal(2),
                                            .old_value = "",
                                            .new_value = "quote \" back \\ tab \t"}}) ==
-          "x(snapshot(\"quote \\\" back \\\\ tab \\t\"));\n");
+          "x(\"quote \\\" back \\\\ tab \\t\"_snap);\n");
 }
 
 TEST_CASE("keeps a value that is valid multi-byte UTF-8") {
-    CHECK(rewrite("x(snapshot(\"\"));\n", {{.line = 1,
-                                           .column = at_name(2),
+    CHECK(rewrite("x(\"\"_snap);\n", {{.line = 1,
+                                           .column = at_literal(2),
                                            .old_value = "",
                                            .new_value = "héllo → 日本"}}) ==
-          "x(snapshot(\"héllo → 日本\"));\n");
+          "x(\"héllo → 日本\"_snap);\n");
 }
 
 TEST_CASE("an empty update set leaves the source untouched") {
-    CHECK(rewrite("x(snapshot(\"a\"));\n", {}) == "x(snapshot(\"a\"));\n");
+    CHECK(rewrite("x(\"a\"_snap);\n", {}) == "x(\"a\"_snap);\n");
 }
 
-// --- the two location conventions --------------------------------------------
-//
-// std::source_location for a call to an ordinary function reports the call
-// site, and the compilers this project builds with pick opposite ends of the
-// callee's name: clang the first character, gcc the '(' just past it. Both are
-// exact, so the updater accepts either anchor and nothing in between.
+// --- the location convention -------------------------------------------------
 
-TEST_CASE("accepts clang's anchor: the first character of the name") {
-    CHECK(rewrite("x(snapshot(\"a\"));\n",
-                  {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "b"}}) ==
-          "x(snapshot(\"b\"));\n");
-}
-
-TEST_CASE("accepts gcc's anchor: the parenthesis just past the name") {
-    CHECK(rewrite("x(snapshot(\"a\"));\n",
-                  {{.line = 1, .column = past_name(2), .old_value = "a", .new_value = "b"}}) ==
-          "x(snapshot(\"b\"));\n");
-}
-
-TEST_CASE("accepts either anchor for a value spanning lines") {
-    // Both conventions report line 1 here: the call *begins* there, and a value
-    // spilling onto later lines moves neither anchor. That the anchor does not
-    // move with the value is the property the whole design rests on.
-    const std::string source = "x(snapshot(\n"
-                               "    \"a\\n\"\n"
-                               "    \"b\\n\"));\n";
-    const std::string expected = "x(snapshot(\"c\\n\"));\n";
-
-    CHECK(rewrite(source,
-                  {{.line = 1, .column = at_name(2), .old_value = "a\nb\n", .new_value = "c\n"}}) ==
-          expected);
-    CHECK(rewrite(source, {{.line = 1,
-                            .column = past_name(2),
-                            .old_value = "a\nb\n",
-                            .new_value = "c\n"}}) == expected);
+TEST_CASE("accepts the opening character of the literal as its anchor") {
+    CHECK(rewrite("x(\"a\"_snap);\n",
+                  {{.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "b"}}) ==
+          "x(\"b\"_snap);\n");
 }
 
 // --- the bails ---------------------------------------------------------------
@@ -371,41 +323,19 @@ TEST_CASE("accepts either anchor for a value spanning lines") {
 // below is a case the updater tries to recover from.
 
 TEST_CASE("refuses a location that is merely near a snapshot") {
-    // The identifier occupies columns 3..10; column 9 is inside it but is
-    // neither anchor. Close is not good enough: a location no compiler would
-    // produce means something is wrong, and guessing which snapshot was meant is
-    // how the wrong one gets rewritten.
-    CHECK(error_from("x(snapshot(\"a\"));\n",
+    // Close is not good enough: the location must name the opening character.
+    CHECK(error_from("x(\"a\"_snap);\n",
                      {{.line = 1, .column = 9, .old_value = "a", .new_value = "b"}}) ==
-          "no `snapshot` identifier at line 1 column 9; the file has changed "
+          "no snapshot literal at line 1 column 9; the file has changed "
           "since the test ran");
-}
-
-TEST_CASE("refuses a location naming a longer identifier that ends in the name") {
-    // `my_snapshot` ends in `snapshot`, so a rule that only looked forward from
-    // the reported point would happily accept its tail. The neighbouring
-    // characters are checked on both sides for exactly this.
-    CHECK(error_from("x(my_snapshot(\"a\"));\n",
-                     {{.line = 1, .column = at_name(5), .old_value = "a", .new_value = "b"}}) ==
-          "no `snapshot` identifier at line 1 column 6; the file has changed "
-          "since the test ran");
-}
-
-TEST_CASE("refuses a name that is not followed by a parenthesis") {
-    // Something *called* snapshot that is not a call to it. Position said this
-    // is the place, the shape says it is not a snapshot, and the two
-    // disagreeing is a refusal rather than a search for a better candidate.
-    CHECK(error_from("int snapshot = 1;\n",
-                     {{.line = 1, .column = at_name(4), .old_value = "", .new_value = "b"}}) ==
-          "`snapshot` at line 1 column 5 is not followed by '('");
 }
 
 TEST_CASE("refuses when the source no longer holds the recorded value") {
     // The staleness guard: the location is well-formed, but the file has been
     // edited since the test ran, so rewriting here could clobber someone's work.
     CHECK(error_from(
-              "x(snapshot(\"actual\"));\n",
-              {{.line = 1, .column = at_name(2), .old_value = "stale", .new_value = "new"}}) ==
+              "x(\"actual\"_snap);\n",
+              {{.line = 1, .column = at_literal(2), .old_value = "stale", .new_value = "new"}}) ==
           "the snapshot at line 1 column 3 no longer holds the recorded value; "
           "the file has changed since the test ran");
 }
@@ -413,21 +343,21 @@ TEST_CASE("refuses when the source no longer holds the recorded value") {
 TEST_CASE("refuses two updates that resolve to the same snapshot") {
     // Only reachable from a corrupt update set, but the alternative is applying
     // both rewrites to one span and silently keeping whichever landed last.
-    CHECK(error_from("x(snapshot(\"a\"));\n",
+    CHECK(error_from("x(\"a\"_snap);\n",
                      {
-                         {.line = 1, .column = at_name(2), .old_value = "a", .new_value = "b"},
-                         {.line = 1, .column = past_name(2), .old_value = "a", .new_value = "c"},
-                     }) == "two updates resolve to the same snapshot at line 1 column 11");
+                         {.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "b"},
+                         {.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "c"},
+                     }) == "two updates resolve to the same snapshot at line 1 column 3");
 }
 
 TEST_CASE("refuses a line past the end of the file") {
-    CHECK(error_from("x(snapshot(\"a\"));\n",
-                     {{.line = 9, .column = at_name(2), .old_value = "a", .new_value = "b"}}) ==
+    CHECK(error_from("x(\"a\"_snap);\n",
+                     {{.line = 9, .column = at_literal(2), .old_value = "a", .new_value = "b"}}) ==
           "no such line in source file: line 9");
 }
 
 TEST_CASE("refuses a column past the end of its line") {
-    CHECK(error_from("x(snapshot(\"a\"));\n",
+    CHECK(error_from("x(\"a\"_snap);\n",
                      {{.line = 1, .column = 500, .old_value = "a", .new_value = "b"}}) ==
           "no such column in source file: line 1 column 500");
 }
@@ -435,46 +365,45 @@ TEST_CASE("refuses a column past the end of its line") {
 TEST_CASE("refuses a raw string literal") {
     // Legal C++ that this deliberately will not read, rather than risk decoding
     // it wrongly and rewriting the wrong span.
-    CHECK(error_from("x(snapshot(R\"(a)\"));\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "b"}}) ==
-          "expected a string literal or ')' inside snapshot(...), found 'R' "
-          "(at line 1 column 3)");
+    CHECK(error_from("x(R\"(a)\"_snap);\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "b"}}) ==
+          "no snapshot literal at line 1 column 3; the file has changed since the test ran");
 }
 
 TEST_CASE("refuses an escape it does not decode") {
     // \x is variable-length, so decoding it requires knowing where it stops --
     // exactly the kind of judgement this parser refuses to make.
-    CHECK(error_from("x(snapshot(\"a\\x41\"));\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "aA", .new_value = "b"}}) ==
-          "unsupported escape '\\x' inside snapshot(...); snapshot literals "
+    CHECK(error_from("x(\"a\\x41\"_snap);\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "aA", .new_value = "b"}}) ==
+          "unsupported escape '\\x' inside snapshot literal; snapshot literals "
           "support only \\n \\t \\r \\\" and \\\\ (at line 1 column 3)");
 }
 
 TEST_CASE("refuses a string literal running past its line") {
-    CHECK(error_from("x(snapshot(\"a\n"
-                     "b\"));\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "b"}}) ==
-          "unterminated string literal inside snapshot(...) (at line 1 column 3)");
+    CHECK(error_from("x(\"a\n"
+                     "b\"_snap);\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "b"}}) ==
+          "unterminated string snapshot literal (at line 1 column 3)");
 }
 
 TEST_CASE("refuses an unterminated comment inside the call") {
-    CHECK(error_from("x(snapshot(\"a\" /* forever\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "b"}}) ==
-          "unterminated comment inside snapshot(...) (at line 1 column 3)");
+    CHECK(error_from("x(\"a\" /* forever\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "b"}}) ==
+          "unterminated comment inside snapshot literal (at line 1 column 3)");
 }
 
 TEST_CASE("refuses a source file that is not valid UTF-8") {
     // Offsets into a file that is not what we think it is have no meaning.
-    CHECK(error_from("x(snapshot(\"\xff\"));\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "?", .new_value = "b"}}) ==
+    CHECK(error_from("x(\"\xff\"_snap);\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "?", .new_value = "b"}}) ==
           "source file is not valid UTF-8");
 }
 
 TEST_CASE("refuses a new value that is not valid UTF-8") {
     // Writing invalid UTF-8 into a source file produces something the compiler
     // may reject and the user's editor may mangle.
-    CHECK(error_from("x(snapshot(\"a\"));\n",
-                     {{.line = 1, .column = at_name(2), .old_value = "a", .new_value = "\xc3"}}) ==
+    CHECK(error_from("x(\"a\"_snap);\n",
+                     {{.line = 1, .column = at_literal(2), .old_value = "a", .new_value = "\xc3"}}) ==
           "new snapshot value at line 1 is not valid UTF-8");
 }
 
@@ -493,30 +422,35 @@ TEST_CASE("refuses a new value that is not valid UTF-8") {
 
 using snapshot_testing::operator""_snap;
 
+static_assert("  leading space"_snap.value == "  leading space",
+              "ordinary literals do not use the block margin convention");
+static_assert("a\nb\n"_snap.value == "a\nb\n",
+              "ordinary multiline literals retain their decoded value");
+
 static_assert(R"snap(
               |a
               |b
-              )snap"_snap == "a\nb\n",
+              )snap"_snap.value == "a\nb\n",
               "the ordinary case: one value line per source line");
 
 static_assert(R"snap(
               |a
-              |b)snap"_snap == "a\nb",
+              |b)snap"_snap.value == "a\nb",
               "a closing delimiter on the last content line means no final newline");
 
 static_assert(R"snap(
               |root
               |    leaf
-              )snap"_snap == "root\n    leaf\n",
+              )snap"_snap.value == "root\n    leaf\n",
               "everything after the margin is content, including whitespace");
 
 static_assert(R"snap(
               ||a
               |  |b
-              )snap"_snap == "|a\n  |b\n",
+              )snap"_snap.value == "|a\n  |b\n",
               "only one pipe is stripped, so a value may itself start with one");
 
 static_assert(R"snap(
               |
               |b
-              )snap"_snap == "\nb\n", "an empty value line is a bare margin");
+              )snap"_snap.value == "\nb\n", "an empty value line is a bare margin");
