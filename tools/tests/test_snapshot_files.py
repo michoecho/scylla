@@ -39,6 +39,33 @@ def test_reports_malformed_duplicate_missing_and_orphan(tmp_path):
     assert "orphan" in result.stderr
 
 
+def test_ignores_operator_declaration(tmp_path):
+    # `operator""_filesnap` is the literal's definition, not a use of it; the
+    # empty "" would otherwise be reported as a malformed UUID.
+    (tmp_path / "decl.cc").write_text(
+        'using snapshot_testing::operator""_filesnap;\n')
+    assert run(tmp_path).returncode == 0
+
+
+def test_reports_filesnap_nested_in_a_string_literal(tmp_path):
+    # The line-wise scan cannot tell `\"...\"_filesnap` used as test data from a
+    # real reference, so it reports it. The snapshot mechanism's own sources are
+    # the only place this arises, and SKIP excludes them by name.
+    (tmp_path / "data.cc").write_text(
+        f'const std::string s = "x(\\"{UUID}\\"_filesnap);\\n";\n')
+    result = run(tmp_path)
+    assert result.returncode == 1
+    assert "not immediately preceded" in result.stderr
+
+
+def test_skips_the_snapshot_mechanisms_own_sources(tmp_path):
+    path = tmp_path / "modules" / "snapshot"
+    path.mkdir(parents=True)
+    (path / "updater_test.cc").write_text(
+        f'const std::string s = "x(\\"{UUID}\\"_filesnap);\\n";\n')
+    assert run(tmp_path).returncode == 0
+
+
 def test_cleanup_only_removes_orphans_when_they_are_the_only_problem(tmp_path):
     orphan = "abcdefab-cdef-4abc-8def-abcdefabcdef"
     path = tmp_path / ".snapshots" / orphan[:2] / f"{orphan}.snap"

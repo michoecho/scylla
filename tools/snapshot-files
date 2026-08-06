@@ -3,13 +3,32 @@
 
 import argparse
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-UUID_RE = re.compile(rf"{UUID}")
-SOURCE_SUFFIXES = {".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+SOURCE_GLOBS = ("*.cc", "*.cpp", "*.cxx", "*.h", "*.hh", "*.hpp", "*.hxx")
+
+# rg searches for this fixed string and nothing more; everything structural is
+# decided here, against the text preceding each hit. Deliberately not a C++
+# parser: this validator only exists to catch developer mistakes in tests, and
+# scanning the whole repo with a real parser cost seconds.
+NEEDLE = '"_filesnap'
+
+# A reference: the closing quote is preceded by a canonical UUID.
+REFERENCE_RE = re.compile(rf'"{UUID}$')
+
+# `operator""_filesnap` declares the literal rather than using it. Recognised
+# explicitly, so that a genuinely malformed reference still gets reported.
+OPERATOR_RE = re.compile(r'operator\s*"$')
+
+# Files where `"_filesnap` appears in neither form: as a plain string, or with
+# escaped quotes inside a C++ string literal used as test data. Both are the
+# snapshot mechanism's own sources reasoning about the syntax, and neither is
+# something the line-wise scan can tell apart from the real thing.
+SKIP = ("modules/snapshot/updater.cc", "modules/snapshot/updater_test.cc")
 
 
 def main() -> int:
@@ -23,59 +42,40 @@ def main() -> int:
     references = defaultdict(list)
     problems = []
 
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
-            continue
-        if any(part in {".git", "out", ".snapshots"} for part in path.parts):
-            continue
-        text = path.read_text(encoding="utf-8")
-        i = 0
-        while i < len(text):
-            if text.startswith("//", i):
-                end = text.find("\n", i + 2)
-                i = len(text) if end < 0 else end + 1
-                continue
-            if text.startswith("/*", i):
-                end = text.find("*/", i + 2)
-                i = len(text) if end < 0 else end + 2
-                continue
-            if text[i] != '"':
-                i += 1
-                continue
-            start = i
-            i += 1
-            value = []
-            escaped = False
-            while i < len(text):
-                char = text[i]
-                if escaped:
-                    escaped = False
-                    value.append(char)
-                elif char == "\\":
-                    escaped = True
-                    value.append(char)
-                elif char == '"':
-                    break
-                else:
-                    value.append(char)
-                i += 1
-            if i >= len(text):
-                break
-            i += 1
-            if text.startswith("_filesnap", i) and (i + 9 == len(text) or
-                    not (text[i + 9].isalnum() or text[i + 9] == "_")):
-                # In `operator""_filesnap`, the quotes are part of the operator
-                # name rather than a literal use.
-                if re.search(r"operator\s*$", text[:start]):
-                    i += 9
-                    continue
-                line = text.count("\n", 0, start) + 1
-                candidate = "".join(value)
-                if UUID_RE.fullmatch(candidate):
-                    references[candidate].append(f"{path.relative_to(root)}:{line}")
-                else:
-                    problems.append(f"{path.relative_to(root)}:{line}: _filesnap is not immediately preceded by a quoted canonical UUID")
-                i += 9
+    # rg skips .gitignore'd trees (out/, and whatever else the repo ignores)
+    # for free, which is what keeps this fast; .snapshots is tracked, so it
+    # needs excluding by hand. --with-filename/--line-number keep the output
+    # unambiguous even when only one file matches, and --column is what lets
+    # the loop below look at the text preceding each hit.
+    command = ["rg", "--fixed-strings", "--no-heading", "--with-filename",
+               "--line-number", "--column", "--glob", "!.snapshots/**"]
+    for glob in SOURCE_GLOBS:
+        command += ["--glob", glob]
+    for skip in SKIP:
+        command += ["--glob", f"!{skip}"]
+    command += [NEEDLE, "."]
+
+    # Run from the root and search ".", rather than passing it as the path: a
+    # glob with a "/" in it anchors to the working directory, so SKIP's paths
+    # would silently match nothing. It also makes rg report relative paths.
+    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
+    # 0 = matches, 1 = none (a clean repo with no snapshots at all); 2 = error.
+    if result.returncode >= 2:
+        print(result.stderr.strip(), file=sys.stderr)
+        return 1
+
+    for entry in result.stdout.splitlines():
+        path_text, line, column, text = entry.split(":", 3)
+        location = f"{Path(path_text).relative_to('.')}:{line}"
+        # --column is 1-based and points at the quote the needle starts with,
+        # so this is the text before it: for a reference, the opening quote and
+        # the UUID.
+        before = text[:int(column) - 1]
+        match = REFERENCE_RE.search(before)
+        if match:
+            references[match.group()[1:]].append(location)
+        elif not OPERATOR_RE.search(before):
+            problems.append(f"{location}: _filesnap is not immediately preceded by a quoted canonical UUID")
 
     for uuid, locations in sorted(references.items()):
         if len(locations) > 1:
