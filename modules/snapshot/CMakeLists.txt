@@ -17,7 +17,10 @@ add_module(snapshot
         # code broke. See the comment at the top of each file.
         updater_test.cc
         compare_test.cc
+        filesnap_test.cc
         # The worked example, which is also what a reader should copy from.
         example_test.cc)
 
 target_compile_options(snapshot PRIVATE -Wall -Wextra)
+target_compile_definitions(snapshot PRIVATE
+    SNAPSHOT_ROOT="${PROJECT_SOURCE_DIR}/.snapshots")

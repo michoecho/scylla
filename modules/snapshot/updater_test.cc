@@ -450,6 +450,24 @@ static_assert(R"snap(
               )snap"_snap.value == "|a\n  |b\n",
               "only one pipe is stripped, so a value may itself start with one");
 
+TEST_CASE("bootstraps multiple file snapshot ids on one line") {
+    const std::string source = "x(\"\"_filesnap, \"\"_filesnap);\n";
+    const auto result = snapshot_testing::apply_filesnap_id_updates(
+        source,
+        {{.line = 1,
+          .column = 3,
+          .old_value = "",
+          .new_value = "11111111-1111-4111-8111-111111111111"},
+         {.line = 1,
+          .column = 16,
+          .old_value = "",
+          .new_value = "22222222-2222-4222-8222-222222222222"}});
+    REQUIRE(result.ok);
+    CHECK(result.text ==
+          "x(\"11111111-1111-4111-8111-111111111111\"_filesnap, "
+          "\"22222222-2222-4222-8222-222222222222\"_filesnap);\n");
+}
+
 static_assert(R"snap(
               |
               |b

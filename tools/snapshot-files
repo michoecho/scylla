@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Validate and optionally remove orphaned file-backed snapshots."""
+
+import argparse
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+UUID_RE = re.compile(rf"{UUID}")
+SOURCE_SUFFIXES = {".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--cleanup", action="store_true",
+                        help="delete orphan files if they are the only problems")
+    args = parser.parse_args()
+    root = args.root.resolve()
+    snapshot_root = root / ".snapshots"
+    references = defaultdict(list)
+    problems = []
+
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+            continue
+        if any(part in {".git", "out", ".snapshots"} for part in path.parts):
+            continue
+        text = path.read_text(encoding="utf-8")
+        i = 0
+        while i < len(text):
+            if text.startswith("//", i):
+                end = text.find("\n", i + 2)
+                i = len(text) if end < 0 else end + 1
+                continue
+            if text.startswith("/*", i):
+                end = text.find("*/", i + 2)
+                i = len(text) if end < 0 else end + 2
+                continue
+            if text[i] != '"':
+                i += 1
+                continue
+            start = i
+            i += 1
+            value = []
+            escaped = False
+            while i < len(text):
+                char = text[i]
+                if escaped:
+                    escaped = False
+                    value.append(char)
+                elif char == "\\":
+                    escaped = True
+                    value.append(char)
+                elif char == '"':
+                    break
+                else:
+                    value.append(char)
+                i += 1
+            if i >= len(text):
+                break
+            i += 1
+            if text.startswith("_filesnap", i) and (i + 9 == len(text) or
+                    not (text[i + 9].isalnum() or text[i + 9] == "_")):
+                # In `operator""_filesnap`, the quotes are part of the operator
+                # name rather than a literal use.
+                if re.search(r"operator\s*$", text[:start]):
+                    i += 9
+                    continue
+                line = text.count("\n", 0, start) + 1
+                candidate = "".join(value)
+                if UUID_RE.fullmatch(candidate):
+                    references[candidate].append(f"{path.relative_to(root)}:{line}")
+                else:
+                    problems.append(f"{path.relative_to(root)}:{line}: _filesnap is not immediately preceded by a quoted canonical UUID")
+                i += 9
+
+    for uuid, locations in sorted(references.items()):
+        if len(locations) > 1:
+            problems.append(f"duplicate {uuid}: " + ", ".join(locations))
+        expected = snapshot_root / uuid[:2] / f"{uuid}.snap"
+        if not expected.is_file():
+            problems.append(f"missing {expected.relative_to(root)} referenced by {locations[0]}")
+
+    orphans = []
+    if snapshot_root.exists():
+        for path in snapshot_root.rglob("*.snap"):
+            relative = path.relative_to(snapshot_root)
+            match = re.fullmatch(rf"([0-9a-f]{{2}})/({UUID})\.snap", str(relative))
+            if not match or match.group(1) != match.group(2)[:2]:
+                problems.append(f"malformed snapshot path {path.relative_to(root)}")
+            elif match.group(2) not in references:
+                orphans.append(path)
+
+    if orphans and args.cleanup and not problems:
+        for path in orphans:
+            path.unlink()
+            print(f"removed {path.relative_to(root)}")
+        for directory in sorted(snapshot_root.rglob("*"), reverse=True):
+            if directory.is_dir():
+                try: directory.rmdir()
+                except OSError: pass
+        return 0
+    problems.extend(f"orphan {path.relative_to(root)}" for path in orphans)
+    if problems:
+        print("\n".join(problems), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

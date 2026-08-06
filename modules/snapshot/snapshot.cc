@@ -1,145 +1,429 @@
 #include "snapshot/snapshot.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iomanip>
 #include <map>
+#include <random>
 #include <sstream>
+#include <sys/file.h>
+#include <system_error>
+#include <unistd.h>
 
 #include "snapshot/updater.h"
+
+#ifndef SNAPSHOT_ROOT
+#error "SNAPSHOT_ROOT must be configured as an absolute source-tree path"
+#endif
 
 namespace snapshot_testing {
 namespace {
 
-// Every update recorded this run, keyed by nothing -- order does not matter,
-// because apply_updates sorts by position itself.
-std::vector<PendingUpdate>& updates() {
-    static std::vector<PendingUpdate> instance;
-    return instance;
+std::vector<PendingUpdate> &updates() {
+  static std::vector<PendingUpdate> instance;
+  return instance;
 }
 
-}  // namespace
+struct Owner {
+  std::string file;
+  unsigned line;
+  unsigned column;
+};
+std::map<std::string, Owner> &owners() {
+  static std::map<std::string, Owner> instance;
+  return instance;
+}
+
+bool canonical_uuid(std::string_view id) {
+  if (id.size() != 36)
+    return false;
+  for (std::size_t i = 0; i < id.size(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (id[i] != '-')
+        return false;
+    } else if (!((id[i] >= '0' && id[i] <= '9') ||
+                 (id[i] >= 'a' && id[i] <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string generate_uuid() {
+  std::array<unsigned char, 16> bytes{};
+  std::random_device random;
+  for (unsigned char &byte : bytes)
+    byte = static_cast<unsigned char>(random());
+  bytes[6] = static_cast<unsigned char>((bytes[6] & 0x0f) | 0x40);
+  bytes[8] = static_cast<unsigned char>((bytes[8] & 0x3f) | 0x80);
+  std::ostringstream out;
+  out << std::hex << std::setfill('0');
+  for (std::size_t i = 0; i < bytes.size(); ++i) {
+    if (i == 4 || i == 6 || i == 8 || i == 10)
+      out << '-';
+    out << std::setw(2) << static_cast<unsigned>(bytes[i]);
+  }
+  return out.str();
+}
+
+std::filesystem::path snapshot_path(std::string_view id) {
+  return std::filesystem::path(SNAPSHOT_ROOT) / std::string(id.substr(0, 2)) /
+         (std::string(id) + ".snap");
+}
+
+struct ReadResult {
+  bool ok = false;
+  bool missing = false;
+  std::string bytes;
+  std::string error;
+};
+ReadResult read_bytes(const std::filesystem::path &path) {
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    if (ec)
+      return {.ok = false,
+              .missing = false,
+              .bytes = {},
+              .error = "cannot inspect " + path.string() + ": " + ec.message()};
+    return {.ok = false,
+            .missing = true,
+            .bytes = {},
+            .error = "missing file snapshot " + path.string()};
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in)
+    return {.ok = false,
+            .missing = false,
+            .bytes = {},
+            .error = "cannot read file snapshot " + path.string()};
+  std::ostringstream contents;
+  contents << in.rdbuf();
+  if (in.bad())
+    return {.ok = false,
+            .missing = false,
+            .bytes = {},
+            .error = "read failed for file snapshot " + path.string()};
+  return {.ok = true, .missing = false, .bytes = contents.str(), .error = {}};
+}
+
+bool printable_text(std::string_view value) {
+  if (value.size() > 8192)
+    return false;
+  for (unsigned char c : value)
+    if ((c < 0x20 && c != '\n' && c != '\r' && c != '\t') || c == 0x7f)
+      return false;
+  return true;
+}
+
+std::string byte_summary(std::string_view expected, std::string_view got) {
+  std::size_t first = 0;
+  while (first < expected.size() && first < got.size() &&
+         expected[first] == got[first])
+    ++first;
+  return std::format(
+      "expected {} bytes, actual {} bytes; first difference at byte {}",
+      expected.size(), got.size(), first);
+}
+
+std::string location_key(const std::source_location &location) {
+  return std::format("{}:{}:{}", location.file_name(), location.line(),
+                     location.column());
+}
+
+} // namespace
 
 bool update_mode() {
-    // Read once: the environment cannot meaningfully change mid-run, and a
-    // single read keeps every snapshot in a suite agreeing about the mode.
-    static const bool enabled = [] {
-        const char* value = std::getenv("SNAPSHOT_UPDATE");
-        return value != nullptr && std::string_view(value) == "1";
-    }();
-    return enabled;
+  static const bool enabled = [] {
+    const char *value = std::getenv("SNAPSHOT_UPDATE");
+    return value != nullptr && std::string_view(value) == "1";
+  }();
+  return enabled;
 }
 
-Comparison compare(std::string_view got, const Snapshot& expected) {
-    if (got == expected.value) {
-        // The values agree, so the only thing that can be wrong here is a
-        // leftover marker -- and it is reported as exactly that, never as a
-        // mismatch, so the output cannot claim the values differ when they do
-        // not.
-        //
-        // The passing path writes nothing and records nothing: a green suite
-        // must not depend on its own sources being present, let alone writable.
-        return expected.forced ? Comparison::StaleUpdateMarker : Comparison::Matched;
-    }
-
-    // Either the whole run is in update mode, or this one snapshot opted in.
-    const bool recording = update_mode() || expected.forced;
-    if (recording) {
-        updates().push_back(PendingUpdate{
-            .file = expected.location.file_name(),
-            .line = expected.location.line(),
-            .column = expected.location.column(),
-            .old_value = std::string(expected.value),
-            .new_value = std::string(got),
-        });
-    }
-
-    // A mismatch either way -- when rewriting too. A run that rewrote sources
-    // has changed the meaning of the test and must say so; see snapshot.h.
-    return recording ? Comparison::MismatchedAndRecorded : Comparison::Mismatched;
+Comparison compare(std::string_view got, const Snapshot &expected) {
+  if (got == expected.value)
+    return expected.forced ? Comparison::StaleUpdateMarker
+                           : Comparison::Matched;
+  const bool recording = update_mode() || expected.forced;
+  if (recording)
+    updates().push_back(PendingUpdate{.kind = PendingUpdate::Kind::Inline,
+                                      .file = expected.location.file_name(),
+                                      .line = expected.location.line(),
+                                      .column = expected.location.column(),
+                                      .old_value = std::string(expected.value),
+                                      .new_value = std::string(got),
+                                      .id = {},
+                                      .initialize = false,
+                                      .existed = true});
+  return recording ? Comparison::MismatchedAndRecorded : Comparison::Mismatched;
 }
 
-std::string render_mismatch(std::string_view got, const Snapshot& expected) {
-    return std::format("snapshot mismatch at {}:{}:{}\n"
-                       "--- expected (in source) ---\n{}\n"
-                       "--- actual ---\n{}",
-                       expected.location.file_name(), expected.location.line(),
-                       expected.location.column(), expected.value, got);
+Comparison compare(std::string_view got, const FileSnapshot &expected) {
+  const bool recording = update_mode() || expected.forced;
+  const bool initialize = expected.id.empty();
+  std::string id(expected.id);
+  if (id.empty()) {
+    if (!recording)
+      return Comparison::Mismatched;
+    id = generate_uuid();
+  } else if (!canonical_uuid(id)) {
+    return Comparison::Mismatched;
+  }
+
+  const Owner here{expected.location.file_name(), expected.location.line(),
+                   expected.location.column()};
+  const auto [owner, inserted] = owners().emplace(id, here);
+  if (!inserted &&
+      (owner->second.file != here.file || owner->second.line != here.line ||
+       owner->second.column != here.column)) {
+    return Comparison::Mismatched;
+  }
+
+  const ReadResult old = read_bytes(snapshot_path(id));
+  if (old.ok && old.bytes == got)
+    return expected.forced ? Comparison::StaleUpdateMarker
+                           : Comparison::Matched;
+  if (!recording || (!old.ok && !old.missing))
+    return Comparison::Mismatched;
+
+  updates().push_back(
+      PendingUpdate{.kind = PendingUpdate::Kind::File,
+                    .file = expected.location.file_name(),
+                    .line = expected.location.line(),
+                    .column = expected.location.column(),
+                    .old_value = old.ok ? old.bytes : std::string{},
+                    .new_value = std::string(got),
+                    .id = id,
+                    .initialize = initialize,
+                    .existed = old.ok});
+  return Comparison::MismatchedAndRecorded;
 }
 
-const std::vector<PendingUpdate>& pending_updates() { return updates(); }
+std::string render_mismatch(std::string_view got, const Snapshot &expected) {
+  return std::format(
+      "snapshot mismatch at {}:{}:{}\n--- expected (in source) ---\n{}\n"
+      "--- actual ---\n{}",
+      expected.location.file_name(), expected.location.line(),
+      expected.location.column(), expected.value, got);
+}
 
-void discard_updates() { updates().clear(); }
+std::string render_mismatch(std::string_view got,
+                            const FileSnapshot &expected) {
+  if (expected.id.empty())
+    return std::format("uninitialized file snapshot at {}",
+                       location_key(expected.location));
+  if (!canonical_uuid(expected.id))
+    return std::format("malformed file snapshot id '{}' at {}", expected.id,
+                       location_key(expected.location));
+  const auto found = owners().find(std::string(expected.id));
+  if (found != owners().end()) {
+    const Owner here{expected.location.file_name(), expected.location.line(),
+                     expected.location.column()};
+    if (found->second.file != here.file || found->second.line != here.line ||
+        found->second.column != here.column)
+      return std::format(
+          "duplicate file snapshot id '{}' at {}; first owned by {}:{}:{}",
+          expected.id, location_key(expected.location), found->second.file,
+          found->second.line, found->second.column);
+  }
+  const ReadResult old = read_bytes(snapshot_path(expected.id));
+  if (!old.ok)
+    return old.error + " (referenced at " + location_key(expected.location) +
+           ")";
+  if (printable_text(old.bytes) && printable_text(got))
+    return std::format(
+        "file snapshot mismatch at {}\n--- expected ({}) ---\n{}\n"
+        "--- actual ---\n{}",
+        location_key(expected.location), snapshot_path(expected.id).string(),
+        old.bytes, got);
+  return "file snapshot mismatch at " + location_key(expected.location) + ": " +
+         byte_summary(old.bytes, got);
+}
+
+const std::vector<PendingUpdate> &pending_updates() { return updates(); }
+void discard_updates() {
+  updates().clear();
+  owners().clear();
+}
 
 std::string flush_updates() {
-    if (updates().empty()) return {};
-
-    // Group by file, because apply_updates rewrites a whole file in one pass --
-    // which is what lets it apply many updates to one file bottom-up.
-    std::map<std::string, std::vector<Update>> by_file;
-    for (const PendingUpdate& pending : updates()) {
-        by_file[pending.file].push_back(Update{
-            .line = pending.line,
-            .column = pending.column,
-            .old_value = pending.old_value,
-            .new_value = pending.new_value,
-        });
-    }
+  if (updates().empty())
+    return {};
+  const std::filesystem::path root(SNAPSHOT_ROOT);
+  if (!root.is_absolute()) {
     updates().clear();
-
-    std::string errors;
-    for (const auto& [path, file_updates] : by_file) {
-        // The path is whatever the compiler was handed for the translation
-        // unit: std::source_location::file_name() is __FILE__, verbatim, so an
-        // absolute path on the command line yields an absolute path here and a
-        // relative one yields a relative path. CMake passes absolute paths, and
-        // this depends on that -- a test binary's working directory is the
-        // build tree, not the source tree, so a relative path would resolve
-        // against the wrong root.
-        //
-        // Checked rather than assumed, because the failure mode otherwise is
-        // either a baffling "cannot read", or -- far worse -- writing a
-        // rewritten source file into the build directory, where it would be
-        // silently ignored and the real test would never be updated.
-        if (!std::filesystem::path(path).is_absolute()) {
-            errors += "refusing to update " + path +
-                      ": std::source_location reported a relative path, which "
-                      "cannot be resolved from the test's working directory. "
-                      "Build with absolute source paths.\n";
-            continue;
-        }
-
-        std::ifstream in(path, std::ios::binary);
-        if (!in) {
-            errors += "cannot read " + path + "\n";
-            continue;
-        }
-        std::ostringstream buffer;
-        buffer << in.rdbuf();
-        in.close();
-
-        const UpdateResult rewritten = apply_updates(buffer.str(), file_updates);
-        if (!rewritten.ok) {
-            errors += path + ": " + rewritten.error + "\n";
-            continue;
-        }
-
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            errors += "cannot write " + path + "\n";
-            continue;
-        }
-        out << rewritten.text;
-        if (!out) {
-            errors += "write failed for " + path + "\n";
-            continue;
-        }
-        std::fprintf(stderr, "snapshot: updated %zu snapshot(s) in %s\n",
-                     file_updates.size(), path.c_str());
+    return "SNAPSHOT_ROOT is not absolute\n";
+  }
+  std::error_code root_error;
+  std::filesystem::create_directories(root, root_error);
+  if (root_error) {
+    updates().clear();
+    return "cannot create snapshot root " + root.string() + ": " +
+           root_error.message() + "\n";
+  }
+  struct UpdateLock {
+    int fd = -1;
+    ~UpdateLock() {
+      if (fd >= 0) {
+        ::flock(fd, LOCK_UN);
+        ::close(fd);
+      }
     }
+  } lock;
+  const std::filesystem::path lock_path = root / ".update.lock";
+  lock.fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0666);
+  if (lock.fd < 0 || ::flock(lock.fd, LOCK_EX) != 0) {
+    updates().clear();
+    return "cannot lock snapshot updates at " + lock_path.string() + "\n";
+  }
+  struct Write {
+    std::filesystem::path target;
+    std::string bytes;
+    std::filesystem::path temp;
+  };
+  std::map<std::string, std::vector<Update>> inline_by_file;
+  std::map<std::string, std::vector<Update>> ids_by_file;
+  std::vector<Write> writes;
+  std::string errors;
+
+  for (const PendingUpdate &pending : updates()) {
+    if (pending.kind == PendingUpdate::Kind::Inline) {
+      inline_by_file[pending.file].push_back(
+          {pending.line, pending.column, pending.old_value, pending.new_value});
+      continue;
+    }
+    if (pending.id.empty() || !canonical_uuid(pending.id)) {
+      errors += "invalid generated file snapshot id\n";
+      continue;
+    }
+    const auto path = snapshot_path(pending.id);
+    const ReadResult current = read_bytes(path);
+    if ((current.ok &&
+         (!pending.existed || current.bytes != pending.old_value)) ||
+        (current.missing && pending.existed) ||
+        (!current.ok && !current.missing)) {
+      errors += current.ok ? "file snapshot changed since the test ran: " +
+                                 path.string() + "\n"
+                           : current.error + "\n";
+      continue;
+    }
+    writes.push_back({path, pending.new_value, {}});
+    if (pending.initialize)
+      ids_by_file[pending.file].push_back(
+          {pending.line, pending.column, "", pending.id});
+  }
+
+  std::map<std::string, bool> source_names;
+  for (const auto &item : inline_by_file)
+    source_names[item.first] = true;
+  for (const auto &item : ids_by_file)
+    source_names[item.first] = true;
+  for (const auto &item : source_names) {
+    const std::string &name = item.first;
+    const std::filesystem::path path(name);
+    if (!path.is_absolute()) {
+      errors += "refusing relative source path " + name + "\n";
+      continue;
+    }
+    const ReadResult source = read_bytes(path);
+    if (!source.ok) {
+      errors += source.error + "\n";
+      continue;
+    }
+
+    std::string changed_text = source.bytes;
+    const auto ids = ids_by_file.find(name);
+    if (ids != ids_by_file.end()) {
+      const UpdateResult changed =
+          apply_filesnap_id_updates(changed_text, ids->second);
+      if (!changed.ok) {
+        errors += name + ": " + changed.error + "\n";
+        continue;
+      }
+      changed_text = changed.text;
+    }
+
+    auto inline_updates = inline_by_file[name];
+    // UUID insertion changes only columns later on that same source line.
+    if (ids != ids_by_file.end()) {
+      for (Update &update : inline_updates) {
+        for (const Update &id : ids->second) {
+          if (id.line == update.line && id.column < update.column)
+            update.column += static_cast<unsigned>(id.new_value.size());
+        }
+      }
+    }
+    if (!inline_updates.empty()) {
+      const UpdateResult changed = apply_updates(changed_text, inline_updates);
+      if (!changed.ok) {
+        errors += name + ": " + changed.error + "\n";
+        continue;
+      }
+      changed_text = changed.text;
+    }
+    writes.push_back({path, std::move(changed_text), {}});
+  }
+  if (!errors.empty()) {
+    updates().clear();
     return errors;
+  }
+
+  // Stage every target before replacing any of them.
+  for (std::size_t i = 0; i < writes.size(); ++i) {
+    std::error_code ec;
+    std::filesystem::create_directories(writes[i].target.parent_path(), ec);
+    if (ec) {
+      errors += "cannot create " + writes[i].target.parent_path().string() +
+                ": " + ec.message() + "\n";
+      break;
+    }
+    writes[i].temp = writes[i].target;
+    writes[i].temp +=
+        ".tmp." + std::to_string(::getpid()) + "." + std::to_string(i);
+    std::ofstream out(writes[i].temp, std::ios::binary | std::ios::trunc);
+    if (!out ||
+        !(out.write(writes[i].bytes.data(),
+                    static_cast<std::streamsize>(writes[i].bytes.size())))) {
+      errors += "cannot stage " + writes[i].target.string() + "\n";
+      break;
+    }
+  }
+  if (!errors.empty()) {
+    for (const Write &write : writes)
+      if (!write.temp.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(write.temp, ec);
+      }
+    updates().clear();
+    return errors;
+  }
+
+  std::size_t committed = 0;
+  for (Write &write : writes) {
+    std::error_code ec;
+    std::filesystem::rename(write.temp, write.target, ec);
+    if (ec) {
+      errors += std::format(
+          "commit failed for {} after {}/{} targets were replaced: {}\n",
+          write.target.string(), committed, writes.size(), ec.message());
+      break;
+    }
+    ++committed;
+  }
+  for (Write &write : writes)
+    if (!write.temp.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(write.temp, ec);
+    }
+  if (errors.empty())
+    std::fprintf(stderr, "snapshot: updated %zu target(s)\n", writes.size());
+  updates().clear();
+  return errors;
 }
 
-}  // namespace snapshot_testing
+} // namespace snapshot_testing

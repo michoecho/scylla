@@ -251,6 +251,38 @@ struct Snapshot {
     bool forced = false;
 };
 
+struct FileSnapshotLiteral {
+    std::string_view id;
+    bool forced = false;
+
+    [[nodiscard]] constexpr FileSnapshotLiteral update() const {
+        FileSnapshotLiteral copy = *this;
+        copy.forced = true;
+        return copy;
+    }
+};
+
+constexpr FileSnapshotLiteral operator""_filesnap(const char* text, std::size_t size) {
+    return FileSnapshotLiteral{.id = {text, size}};
+}
+
+struct FileSnapshot {
+    std::string_view id;
+    std::source_location location;
+
+    FileSnapshot(FileSnapshotLiteral literal,
+                 std::source_location location = std::source_location::current())
+        : id(literal.id), location(location), forced(literal.forced) {}
+
+    [[nodiscard]] FileSnapshot update() const {
+        FileSnapshot copy = *this;
+        copy.forced = true;
+        return copy;
+    }
+
+    bool forced = false;
+};
+
 // What compare() found. Exactly one of these holds.
 //
 // An enum rather than a set of flags because the states are mutually exclusive
@@ -309,6 +341,7 @@ enum class Comparison {
 // accepted by CI without anyone seeing it. Update mode is a tool for the author,
 // and the failing run is the notification that it did something.
 Comparison compare(std::string_view got, const Snapshot& expected);
+Comparison compare(std::string_view got, const FileSnapshot& expected);
 
 // Render a mismatch: the two values whole, one after the other.
 //
@@ -317,6 +350,7 @@ Comparison compare(std::string_view got, const Snapshot& expected);
 // against each other is the only way that reads -- an assertion framework would
 // show it as one escaped line.
 std::string render_mismatch(std::string_view got, const Snapshot& expected);
+std::string render_mismatch(std::string_view got, const FileSnapshot& expected);
 
 // Whether update mode is on. Read once from the environment, on first use.
 bool update_mode();
@@ -324,11 +358,16 @@ bool update_mode();
 // A recorded difference: what the file says now, what it should say, and
 // where. The updater consumes these.
 struct PendingUpdate {
+    enum class Kind { Inline, File };
+    Kind kind = Kind::Inline;
     std::string file;
     unsigned line = 0;
     unsigned column = 0;
     std::string old_value;
     std::string new_value;
+    std::string id;
+    bool initialize = false;
+    bool existed = false;
 };
 
 // Everything `compare` has recorded this run.
@@ -349,5 +388,6 @@ std::string flush_updates();
 }  // namespace snapshot_testing
 
 using snapshot_testing::operator""_snap;
+using snapshot_testing::operator""_filesnap;
 
 #endif  // SNAPSHOT_SNAPSHOT_H

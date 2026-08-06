@@ -515,4 +515,68 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
     return result;
 }
 
+UpdateResult apply_filesnap_id_updates(std::string_view source,
+                                       std::vector<Update> updates) {
+    UpdateResult result;
+    if (!valid_utf8(source)) {
+        result.error = "source file is not valid UTF-8";
+        return result;
+    }
+    const std::vector<std::size_t> lines = line_offsets(source);
+    struct Resolved {
+        std::size_t begin;
+        std::size_t end;
+        const Update* update;
+    };
+    std::vector<Resolved> resolved;
+    for (const Update& update : updates) {
+        const std::string at = "line " + std::to_string(update.line) + " column " +
+                               std::to_string(update.column);
+        if (update.line == 0 || update.line >= lines.size()) {
+            result.error = "no such line in source file: line " + std::to_string(update.line);
+            return result;
+        }
+        const std::size_t line_start = lines[update.line];
+        const std::size_t line_end =
+            update.line + 1 < lines.size() ? lines[update.line + 1] : source.size();
+        if (update.column == 0 || line_start + update.column - 1 >= line_end) {
+            result.error = "no such column in source file: " + at;
+            return result;
+        }
+        const std::size_t begin = line_start + update.column - 1;
+        if (source[begin] != '"') {
+            result.error = "no file snapshot literal at " + at +
+                           "; the file has changed since the test ran";
+            return result;
+        }
+        const std::size_t quote = source.find('"', begin + 1);
+        if (quote == std::string_view::npos ||
+            source.compare(quote + 1, 9, "_filesnap") != 0 ||
+            !suffix_ends_at(source, quote + 10)) {
+            result.error = "no canonical file snapshot literal at " + at;
+            return result;
+        }
+        const std::string_view current = source.substr(begin + 1, quote - begin - 1);
+        if (current != update.old_value) {
+            result.error = "the file snapshot at " + at +
+                           " no longer holds the recorded id; the file has changed since the test ran";
+            return result;
+        }
+        if (std::any_of(resolved.begin(), resolved.end(),
+                        [begin](const Resolved& item) { return item.begin == begin; })) {
+            result.error = "two updates resolve to the same file snapshot at " + at;
+            return result;
+        }
+        resolved.push_back({begin + 1, quote, &update});
+    }
+    std::sort(resolved.begin(), resolved.end(),
+              [](const Resolved& a, const Resolved& b) { return a.begin > b.begin; });
+    std::string text(source);
+    for (const Resolved& item : resolved)
+        text.replace(item.begin, item.end - item.begin, item.update->new_value);
+    result.ok = true;
+    result.text = std::move(text);
+    return result;
+}
+
 }  // namespace snapshot_testing

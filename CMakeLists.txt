@@ -166,6 +166,13 @@ include(doctest)
 include(${PROJECT_SOURCE_DIR}/cmake/Module.cmake)
 add_subdirectory(modules)
 
+# Repository-wide integrity check for file-backed snapshots. This complements
+# the per-process duplicate guard in the C++ runtime.
+add_test(NAME snapshot_files.validate
+    COMMAND python3 "${PROJECT_SOURCE_DIR}/tools/snapshot-files"
+            --root "${PROJECT_SOURCE_DIR}")
+set_tests_properties(snapshot_files.validate PROPERTIES LABELS "snapshot")
+
 # The program: main() and nothing else. Every source it is built from lives in
 # the `main` module, so this target exists only to turn that library into a
 # runnable binary -- and to hold the one TU that may define
@@ -230,6 +237,7 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # keeps the build dir independent of which shell ran cmake.
 set(PYTHON_TOOL_TESTS
     tools/tests/test_pt_trace.py
+    tools/tests/test_snapshot_files.py
 )
 
 # The setup half of the fixture: build every binary the python tests drive, in

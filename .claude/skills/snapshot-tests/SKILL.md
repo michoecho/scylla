@@ -46,6 +46,34 @@ git diff                                              # review what it wrote
 The update run **still fails** — by design. A run that rewrote sources must not
 come back green.
 
+## File-backed snapshots
+
+Use `_filesnap` when the expected value is large, binary, or should remain
+stable while the test source moves. Start with an empty ID:
+
+```cpp
+using snapshot_testing::operator""_filesnap;
+check_snapshot(render_document(), ""_filesnap);
+```
+
+An explicit update generates a UUID in the source and stores the exact bytes
+under `.snapshots/<first-two-hex-digits>/<uuid>.snap`. The snapshot root is an
+absolute source-tree path configured by CMake, so the test may run from any
+working directory. `_filesnap.update()` and `SNAPSHOT_UPDATE=1` behave exactly
+like their inline counterparts, including the deliberately failing update run
+and stale-marker check.
+
+File snapshots compare bytes exactly. Do not copy an initialized `_filesnap`
+literal: the UUID has one owning assertion. To audit the whole repository run:
+
+```sh
+tools/snapshot-files                 # dry-run validation (default)
+tools/snapshot-files --cleanup       # remove orphans, but only if nothing else is wrong
+```
+
+The validator reports duplicate or malformed literals, missing snapshot files,
+malformed storage paths, and orphans. CTest runs the dry-run validator too.
+
 ## No macros — and why it matters
 
 `check_snapshot()` is an ordinary function, and `_snap` first produces an
@@ -195,7 +223,7 @@ one test.
 
 | File | What |
 |---|---|
-| `include/snapshot/snapshot.h` | `_snap`, `Snapshot`, `compare` → `Comparison`, `render_mismatch` — no doctest dependency |
+| `include/snapshot/snapshot.h` | `_snap` / `_filesnap`, their value types, comparison and diagnostics — no doctest dependency |
 | `include/snapshot/check.h` | `check_snapshot()` — the assertion; include this from tests |
 | `include/snapshot/updater.h` | `apply_updates` — pure `(source, diffs) -> text \| error` |
 | `updater.cc` | the rewriter: anchoring, literal parsing, UTF-8 checks, bottom-up edits |

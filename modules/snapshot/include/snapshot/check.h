@@ -86,6 +86,37 @@ inline void check_snapshot(std::string_view got, const Snapshot& expected) {
     }
 }
 
+inline void check_snapshot(std::string_view got, const FileSnapshot& expected) {
+    const Comparison result = compare(got, expected);
+    if (result == Comparison::Matched) return;
+
+    const char* const file = expected.location.file_name();
+    const auto line = static_cast<int>(expected.location.line());
+    switch (result) {
+        case Comparison::Matched: return;
+        case Comparison::Mismatched: {
+            const std::string message =
+                render_mismatch(got, expected) +
+                "\n\nRe-run with SNAPSHOT_UPDATE=1, or add .update() to this "
+                "snapshot, to rewrite it.";
+            ADD_FAIL_CHECK_AT(file, line, message);
+            return;
+        }
+        case Comparison::MismatchedAndRecorded: {
+            const std::string message =
+                render_mismatch(got, expected) +
+                "\n\nFile snapshot update recorded -- rebuild and review the diff.";
+            ADD_FAIL_CHECK_AT(file, line, message);
+            return;
+        }
+        case Comparison::StaleUpdateMarker:
+            ADD_FAIL_CHECK_AT(file, line,
+                              "this file snapshot matches but still has .update() on it. "
+                              "Remove it.");
+            return;
+    }
+}
+
 }  // namespace snapshot_testing
 
 #endif  // SNAPSHOT_CHECK_H

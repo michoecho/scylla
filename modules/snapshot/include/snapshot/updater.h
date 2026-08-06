@@ -93,6 +93,11 @@ struct UpdateResult {
 // new string and only a wholly successful pass produces one.
 UpdateResult apply_updates(std::string_view source, std::vector<Update> updates);
 
+// Rewrite canonical quoted _filesnap identifiers at exact source locations.
+// Used to turn an empty literal into its generated UUID during first update.
+UpdateResult apply_filesnap_id_updates(std::string_view source,
+                                       std::vector<Update> updates);
+
 // Render `value` as the source text of a snapshot's literals, with any
 // continuation lines indented by `indent` columns.
 //
