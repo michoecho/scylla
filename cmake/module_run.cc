@@ -41,14 +41,13 @@ int execute(const char* argv0,
     doctest::Context context;
     context.setAsDefaultForAssertsOutOfTestCases();
 
-    // Benchmarks and fuzz targets are registered skip()'d, so that an ordinary
-    // test run neither benchmarks nor starts a fuzzer. --no-skip re-enables
-    // them and --test-suite scopes the run to that suite alone; user filters
-    // passed after the subcommand still apply on top, because they are appended
-    // after these.
+    // Benchmarks are ordinary tests whose bodies select a minimal smoke run
+    // unless BENCHMARK is set. The bench subcommand only scopes the run to that
+    // suite. Fuzz targets remain skip()'d, so fuzz both re-enables and scopes
+    // them. User filters passed after the subcommand still apply on top.
     std::vector<std::string> scoped;
     if (command.kind == Command::Kind::Bench)
-        scoped = {"--no-skip", "--test-suite=" BENCH_SUITE};
+        scoped = {"--test-suite=" BENCH_SUITE};
     else if (command.kind == Command::Kind::Fuzz)
         scoped = {"--no-skip", "--test-suite=" FUZZ_SUITE};
 

@@ -8,8 +8,9 @@
 #include "main/bench.h"
 
 // Placeholder benchmark: lookup cost of std::map (balanced tree) vs
-// std::unordered_map (hash table) over the same set of keys. Skipped by a
-// normal test run; invoke with `cpp_template bench`.
+// std::unordered_map (hash table) over the same set of keys. A normal test run
+// performs one iteration to catch bitrot; the Benchmark preset performs the
+// full measurement.
 BENCHMARK("map vs unordered_map lookup") {
     constexpr std::uint64_t n = 1000;
 
@@ -20,7 +21,7 @@ BENCHMARK("map vs unordered_map lookup") {
         unordered[i] = i;
     }
 
-    ankerl::nanobench::Bench bench;
+    benchmark::Bench bench;
     bench.title("map vs unordered_map lookup");
 
     std::uint64_t key = 0;

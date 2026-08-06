@@ -123,6 +123,46 @@ A test binary defaults to only its own module's cases — the runner filters on
 `--source-file=*<module dir>/*`. `--all` opts out. Benchmarks and fuzz targets
 run from it too: `module_x_test bench`, `module_x_test fuzz`.
 
+## Benchmarks
+
+Benchmarks are regular doctest cases in the `bench` suite. They are deliberately
+included in normal test discovery and execution so their functionality cannot
+silently bitrot. Include `main/bench.h` and declare one with `BENCHMARK()`:
+
+```cpp
+#include "main/bench.h"
+
+BENCHMARK("module_x operation") {
+    benchmark::Bench bench;
+    bench.title("module_x operation");
+
+    bench.run("operation", [&] {
+        // Exercise the same functionality in smoke and measurement modes.
+    });
+}
+```
+
+The convention is:
+
+- `BENCHMARK` unset: `benchmark::Bench` does not construct nanobench. Configuration
+  methods are ignored and each `run()` invokes its operation directly once, so
+  the functionality is still exercised without nanobench's OS setup overhead.
+- `BENCHMARK` set (any value): `benchmark::Bench` forwards to nanobench for the
+  full measurement.
+
+Use the wrapper rather than `ankerl::nanobench::Bench` directly. It intentionally
+exposes only nanobench methods already needed by this repository; add another
+forwarding method when a benchmark starts using it.
+
+Use `ctest --preset Benchmark` for full runs; that preset sets `BENCHMARK=1`.
+The `bench` subcommand selects only the benchmark suite but does not itself
+enable a full run, so set the variable when invoking a binary directly:
+
+```sh
+BENCHMARK=1 out/build/Release/cpp_template bench
+BENCHMARK=1 out/build/Release/modules/module_x/module_x_test bench
+```
+
 ## Force a re-run
 
 Stamps are cached by mtime:
