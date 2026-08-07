@@ -122,7 +122,10 @@
             "name": "DebugTest",
             "description": "",
             "displayName": "",
-            "configurePreset": "Debug"
+            "configurePreset": "Debug",
+            "environment": {
+                "TEST_RNG": "random"
+            }
         },
         {
             "name": "CoverageTest",

@@ -79,7 +79,9 @@ namespace {
 // mishandle. Picking a midpoint instead would be no more likely to find
 // anything and would cost a division.
 class SmokeRng final : public TestRng {
-    std::uint64_t raw(std::uint64_t, Distribution) override { return 0; }
+    std::uint64_t raw(const char*, std::uint64_t, Distribution) override {
+        return 0;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -101,7 +103,8 @@ public:
     explicit ExhaustiveRng(exhaustigen::Gen& gen) : gen_(gen) {}
 
 private:
-    std::uint64_t raw(std::uint64_t inclusive_max, Distribution) override {
+    std::uint64_t raw(const char*, std::uint64_t inclusive_max,
+                      Distribution) override {
         if (inclusive_max > std::numeric_limits<std::size_t>::max())
             throw std::runtime_error(
                 "test_rng: exhaustive backend cannot enumerate a domain of " +
@@ -132,10 +135,19 @@ public:
     explicit HegelRng(hegel::TestCase& tc) : tc_(tc) {}
 
 private:
-    std::uint64_t raw(std::uint64_t inclusive_max, Distribution) override {
+    // The one backend with somewhere to put a name. Hegel's own draw() takes
+    // one and replays it in the shrunk counterexample as `auto <name> = <value>`,
+    // so a TEST_RNG_DRAW here reports exactly as a HEGEL_DRAW would have.
+    // A draw made through the unnamed overload has no name to give, and
+    // Hegel's nameless draw() is what that maps to -- the value still appears
+    // in the report, just without an identifier beside it.
+    std::uint64_t raw(const char* name, std::uint64_t inclusive_max,
+                      Distribution) override {
         namespace gs = hegel::generators;
-        return tc_.draw(gs::integers<std::uint64_t>(
-            {.min_value = 0, .max_value = inclusive_max}));
+        const auto generator = gs::integers<std::uint64_t>(
+            {.min_value = 0, .max_value = inclusive_max});
+        return name != nullptr ? tc_.draw(name, generator)
+                               : tc_.draw(generator);
     }
 
     hegel::TestCase& tc_;
@@ -168,7 +180,8 @@ public:
     explicit AflRng(std::span<const std::byte> input) : input_(input) {}
 
 private:
-    std::uint64_t raw(std::uint64_t inclusive_max, Distribution) override {
+    std::uint64_t raw(const char*, std::uint64_t inclusive_max,
+                      Distribution) override {
         if (inclusive_max == 0)
             return 0;
 
@@ -393,11 +406,21 @@ RunReport TestRngProvider::dispatch(const std::function<void(TestRng&)>& body) {
             settings.test_cases = max_invocations != 0
                                       ? max_invocations
                                       : kDefaultRandomInvocations;
-            // Quiet and deterministic for the same reason as everywhere else in
-            // this suite: a search that prints a failure report on a *passing*
-            // run is noise, and a seed that varies per run is a flake waiting
-            // to happen.
-            settings.verbosity = hegel::Verbosity::Quiet;
+            // Normal verbosity so a failure prints Hegel's own report: the
+            // shrunk counterexample, with each drawn value beside the name
+            // TEST_RNG_DRAW recorded for it. That report is the reason the name
+            // is threaded through `raw` at all, and nothing else reproduces it
+            // -- what reaches RunReport::failure_message is the body's what(),
+            // which says the property broke but not on which inputs.
+            //
+            // The cost is that this prints on a *failing* run only, which is
+            // exactly when the noise is worth paying for. A search that reports
+            // on a passing run would be noise; Hegel does not do that.
+            settings.verbosity = hegel::Verbosity::Normal;
+
+            // Derandomized because a seed that varies per run is a flake
+            // waiting to happen: a property that fails one run in fifty should
+            // fail every run or none.
             settings.derandomize = true;
             settings.print_blob = false;
 

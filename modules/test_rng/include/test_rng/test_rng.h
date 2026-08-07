@@ -111,8 +111,20 @@ public:
     // only ever sees an unsigned width. An empty domain (min > max) is a bug in
     // the caller, not a case to generate for, so it throws rather than
     // silently picking min.
+    //
+    // `name` is what the parameter is called at the call site -- see
+    // TEST_RNG_DRAW below, which is how a test normally supplies it. Nothing
+    // about the search depends on it; it exists so a backend that reports a
+    // counterexample can name the values in it rather than list them
+    // positionally. A backend with no such report ignores it, which is why this
+    // is a plain overload rather than a second virtual.
     template <std::integral T>
     T integer(IntegerDomain<T> domain = {}) {
+        return integer<T>(nullptr, domain);
+    }
+
+    template <std::integral T>
+    T integer(const char* name, IntegerDomain<T> domain) {
         if (domain.min > domain.max)
             throw_empty_domain();
 
@@ -126,7 +138,8 @@ public:
         const U span = static_cast<U>(static_cast<U>(domain.max) -
                                       static_cast<U>(domain.min));
 
-        const std::uint64_t offset = raw(static_cast<std::uint64_t>(span), domain.dist);
+        const std::uint64_t offset =
+            raw(name, static_cast<std::uint64_t>(span), domain.dist);
 
         // Back to T through the unsigned type: adding the offset to min in T
         // itself would be signed overflow for a domain in the upper half of the
@@ -137,18 +150,20 @@ public:
     }
 
     // Convenience for the commonest domain of all: a coin flip.
-    bool boolean() { return integer<std::uint8_t>({.min = 0, .max = 1}) != 0; }
+    bool boolean(const char* name = nullptr) {
+        return integer<std::uint8_t>(name, {.min = 0, .max = 1}) != 0;
+    }
 
     // A value in [0, n) -- an index into a container of size `n`.
     //
     // Edge-biased by default: the first and last elements are where indexing
     // bugs live. Requires n > 0; there is no index into an empty container, and
     // returning 0 for one would hand the caller an out-of-bounds subscript.
-    std::size_t index(std::size_t n) {
+    std::size_t index(std::size_t n, const char* name = nullptr) {
         if (n == 0)
             throw_empty_domain();
         return integer<std::size_t>(
-            {.min = 0, .max = n - 1, .dist = Distribution::EdgeBiased});
+            name, {.min = 0, .max = n - 1, .dist = Distribution::EdgeBiased});
     }
 
 protected:
@@ -158,8 +173,12 @@ protected:
     //
     // Inclusive rather than a count, so that a full 64-bit domain (whose count
     // is 2^64) is expressible. `dist` is the hint from the domain, which a
-    // backend is free to ignore.
-    virtual std::uint64_t raw(std::uint64_t inclusive_max, Distribution dist) = 0;
+    // backend is free to ignore, and `name` is the call site's name for this
+    // parameter -- null when it was drawn through the unnamed overload, and
+    // ignorable by any backend that has nothing to report it in.
+    virtual std::uint64_t raw(const char* name,
+                              std::uint64_t inclusive_max,
+                              Distribution dist) = 0;
 
 private:
     // Out of line, and out of the template above, so that <stdexcept> and the
@@ -308,3 +327,27 @@ private:
 };
 
 }  // namespace test_rng
+
+// Declare a variable and draw its value in one step, recording the name.
+//
+//     TEST_RNG_DRAW(rng, exponent_bits,
+//                   test_rng::IntegerDomain<unsigned>{.min = 0, .max = 64});
+//
+// This is the form a randomized test should prefer over a bare
+// `rng.integer<T>(...)`. The two draw identically; what the macro adds is that
+// the variable's own name travels with the draw, so a backend that reports a
+// counterexample can print `exponent_bits = 64` rather than leaving the reader
+// to match values against draws by position. Getting that wrong is easy and
+// silent -- reordering two draws renames every value after them -- and the
+// stringified identifier cannot drift from the variable it names.
+//
+// Only the random backend acts on it today; the others take the name and
+// discard it. That is the same bargain as Distribution: a hint every backend
+// accepts and each honours as far as it can.
+//
+// The domain must be written as a whole object rather than as a braced
+// initializer, because a comma inside braces is a comma between macro
+// arguments. __VA_ARGS__ collects the pieces back together, so
+// `IntegerDomain<T>{.min = 0, .max = 9}` works while a bare `{.min = 0, .max =
+// 9}` would not have -- the type is deduced from the object either way.
+#define TEST_RNG_DRAW(rng, var, ...) auto var = (rng).integer(#var, __VA_ARGS__)

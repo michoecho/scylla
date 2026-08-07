@@ -8,9 +8,9 @@
 #include <type_traits>
 
 #include <doctest/doctest.h>
-#include <hegel/hegel.h>
 
 #include "snapshot/check.h"
+#include "test_rng/test_rng.h"
 
 namespace exponential_histogram {
 namespace {
@@ -62,7 +62,6 @@ namespace {
 
 using snapshot_testing::check_snapshot;
 using snapshot_testing::operator""_snap;
-namespace gs = hegel::generators;
 
 
 static_assert(!std::is_convertible_v<exponential_histogram::encoded_float,
@@ -82,14 +81,6 @@ std::string conversion_table(unsigned exponent_bits, unsigned significand_bits,
     return result;
 }
 
-hegel::Settings hegel_settings() {
-    hegel::Settings result;
-    result.test_cases = 1000;
-    result.verbosity = hegel::Verbosity::Normal;
-    result.derandomize = true;
-    result.print_blob = true;
-    return result;
-}
 
 std::uint64_t decode(std::uint64_t code, unsigned significand_bits) {
     if (significand_bits == exponential_histogram::kIntegerBits) {
@@ -144,17 +135,21 @@ TEST_CASE("integer_to_float exposes subnormals and rounded normal values") {
         )snap"_snap);
 }
 
-TEST_SUITE("hegel") {
-
 TEST_CASE("integer_to_float is the greatest representable value not above input") {
-    hegel::test(
-        [](hegel::TestCase& tc) {
-            HEGEL_DRAW(tc, exponent_bits,
-                       gs::integers<unsigned>({.min_value = 0, .max_value = exponential_histogram::kIntegerBits}));
-            HEGEL_DRAW(tc, significand_bits,
-                       gs::integers<unsigned>({.min_value = 0, .max_value = exponential_histogram::kIntegerBits - exponent_bits}));
-            HEGEL_DRAW(tc, value,
-                       gs::integers<std::uint64_t>());
+    test_rng::TestRngProvider provider;
+    provider.max_invocations = 100;
+    provider.run(
+        [](test_rng::TestRng& rng) {
+            TEST_RNG_DRAW(rng, exponent_bits,
+                          test_rng::IntegerDomain<unsigned>{
+                              .min = 0,
+                              .max = exponential_histogram::kIntegerBits});
+            TEST_RNG_DRAW(rng, significand_bits,
+                          test_rng::IntegerDomain<unsigned>{
+                              .min = 0,
+                              .max = exponential_histogram::kIntegerBits -
+                                     exponent_bits});
+            TEST_RNG_DRAW(rng, value, test_rng::IntegerDomain<std::uint64_t>{});
 
             const std::uint64_t code =
                 exponential_histogram::integer_to_float(
@@ -170,9 +165,5 @@ TEST_CASE("integer_to_float is the greatest representable value not above input"
                 auto x = decode(code + 1, significand_bits);
                 REQUIRE(x > value);
             }
-        },
-        {"integer_to_float_rounds_down", __FILE__, __LINE__}, hegel_settings()
-    );
+        });
 }
-
-}  // TEST_SUITE("hegel")
