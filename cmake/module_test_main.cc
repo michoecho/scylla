@@ -45,10 +45,12 @@ int main(int argc, char** argv) {
             forwarded.push_back(argv[i]);
     }
 
-    // The same test/bench/fuzz dispatch the shipping executable uses, so a
-    // module's benchmarks and fuzz targets are runnable from its own test
-    // binary -- and so afl-fuzz can use that binary as its target, which is
-    // what the AFL self-test does with its own executable path.
+    // The same test/bench dispatch the shipping executable uses, so a module's
+    // benchmarks behave identically wherever they are run from -- and so
+    // afl-fuzz can use this binary as its target, which is what the AFL
+    // self-test does with its own executable path. A fuzzed case needs no
+    // subcommand: it is an ordinary test case selected by --test-case, with
+    // TEST_RNG=afl choosing the engine.
     //
     // default_to_test: unlike the shipping executable, a test runner invoked
     // with no subcommand (as CTest does, with bare doctest flags) means `test`.

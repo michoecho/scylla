@@ -17,9 +17,6 @@ Command classify(int argc, char* const argv[], bool default_to_test) {
         } else if (std::strcmp(argv[1], "bench") == 0) {
             command.kind = Command::Kind::Bench;
             first_arg = 2;
-        } else if (std::strcmp(argv[1], "fuzz") == 0) {
-            command.kind = Command::Kind::Fuzz;
-            first_arg = 2;
         }
     }
 
@@ -43,13 +40,13 @@ int execute(const char* argv0,
 
     // Benchmarks are ordinary tests whose bodies select a minimal smoke run
     // unless BENCHMARK is set. The bench subcommand only scopes the run to that
-    // suite. Fuzz targets remain skip()'d, so fuzz both re-enables and scopes
-    // them. User filters passed after the subcommand still apply on top.
+    // suite. User filters passed after the subcommand still apply on top.
+    //
+    // Randomized tests need no equivalent: they are ordinary test cases, and
+    // which engine drives them is TEST_RNG's business, not a subcommand's.
     std::vector<std::string> scoped;
     if (command.kind == Command::Kind::Bench)
         scoped = {"--test-suite=" BENCH_SUITE};
-    else if (command.kind == Command::Kind::Fuzz)
-        scoped = {"--no-skip", "--test-suite=" FUZZ_SUITE};
 
     // c_str() pointers below must outlive the run; the source vectors do.
     //

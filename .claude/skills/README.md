@@ -1,6 +1,6 @@
 # Skills
 
-Project skills for Claude Code: `modules`, `pt-trace`, `afl-fuzz`,
+Project skills for Claude Code: `modules`, `pt-trace`,
 `snapshot-tests`. Each is a directory with a `SKILL.md` holding the procedure
 and the frontmatter (`name`, `description`) Claude matches against a request.
 

@@ -10,21 +10,12 @@
 add_module(main
     SOURCES
         bench.cc
-        # The AFL driver behind FUZZ_TARGET (persistent loop in a fuzz build,
-        # stdin replay otherwise), plus the worked example target and the
-        # self-test that runs AFL++ against it. Both of the latter are inert
-        # outside the Fuzz preset: the target is compiled but not registered,
-        # the test is skip()'d.
-        fuzz.cc
         # The `test-locations` reporter that CMake test discovery lists source
         # locations with, so the IDE can jump to a test. Inert unless selected.
         test_locations_reporter.cc
         # Property-based tests: the worked example that proves Hegel finds a
         # planted bug in a toy function.
-        hegel_test.cc
-    # The AFL self-test's 10s cap, set by the top-level BUILD_FUZZERS block.
-    # Empty in a non-fuzzing build, where nothing here needs a timeout.
-    TEST_PROPERTIES ${FUZZ_TEST_PROPERTIES})
+        hegel_test.cc)
 
 # None of these are modules, so they are linked with plain CMake.
 target_link_libraries(main PUBLIC
@@ -42,13 +33,3 @@ target_compile_options(main PRIVATE
     -Wextra
     -Wno-gnu-statement-expression
 )
-
-# See the BUILD_FUZZERS block in the top-level CMakeLists for why this is a
-# compile definition and not just a CMake variable. Applied here because the
-# sources that key off it (include/main/fuzz.h, the AFL self-test in fuzz.cc)
-# now live in this module.
-if(BUILD_FUZZERS)
-    target_compile_definitions(main PRIVATE BUILD_FUZZERS)
-    target_compile_options(main PRIVATE -fsanitize=address)
-    target_link_options(main PUBLIC -fsanitize=address)
-endif()

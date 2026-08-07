@@ -109,22 +109,26 @@ find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 # so the executable itself is created down there, below add_subdirectory.
 
 # Fuzzing build. Off by default. The `Fuzz` preset turns this on AND sets the
-# compiler to afl-clang-fast++, so the whole cpp_template binary gets AFL's
-# coverage instrumentation. Fuzz targets are doctest cases in the `fuzz` suite
-# (see modules/main/include/main/fuzz.h), so you fuzz one with:
+# compiler to afl-clang-fast++, so the whole binary gets AFL's coverage
+# instrumentation.
 #
-#     afl-fuzz -i corpus -o out -- ./cpp_template fuzz --test-case=<name>
+# There is no such thing as a "fuzz target" here. A fuzzed test is an ordinary
+# randomized test -- a TEST_CASE driving a TestRngProvider -- and AFL is simply
+# the backend TEST_RNG selects, with the persistent loop owned by the provider
+# (see modules/test_rng). So you fuzz one by name:
 #
-# Because the fuzz entry point lives in the one binary (the `fuzz` subcommand),
-# there is no separate target — the cost is just that this preset rebuilds the
-# whole program with instrumentation + ASAN. See skills/afl-fuzz.
+#     afl-fuzz -i corpus -o out -- \
+#         env TEST_RNG=afl ./test_rng_test --test-case='<name>'
+#
+# There is no separate build target — the cost is just that this preset rebuilds
+# the program with instrumentation + ASAN.
 #
 # The `FuzzCmplog` preset builds these same sources a second time as the CmpLog
 # (redqueen) binary. It differs from `Fuzz` in two ways, both set in the preset
 # itself: AFL_LLVM_CMPLOG=1 in the compiler's environment (an env-only knob, with
 # no compile flag of its own) swaps in the CmpLog instrumentation, and
 # -DCMPLOG_BUILD tells the source it is that binary, so the AFL self-test
-# compiles out of it — see modules/main/fuzz.cc.
+# compiles out of it — see modules/test_rng/backend_demo_test.cc.
 #
 # afl-fuzz never fuzzes the CmpLog binary. It runs the normal Fuzz binary and
 # consults this one to learn the operands of each comparison, then writes those
@@ -134,27 +138,22 @@ find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 #     cmake --preset Fuzz       && cmake --build --preset Fuzz
 #     cmake --preset FuzzCmplog && cmake --build --preset FuzzCmplog
 #     afl-fuzz -i corpus -o out \
-#         -c out/build/FuzzCmplog/cpp_template \
-#         -- out/build/Fuzz/cpp_template fuzz --test-case=<name>
+#         -c out/build/FuzzCmplog/<binary> \
+#         -- env TEST_RNG=afl out/build/Fuzz/<binary> --test-case='<name>'
 #
 # Deliberately not wired into the AFL self-test: that test proves the fuzzing
 # machinery works, and it does so from the Fuzz preset alone. Making it depend on
 # a second build directory would mean two build modes had to be in sync before a
 # single test could run.
 #
-# The instrumentation itself is applied to the `main` module, which is where
-# the sources keying off BUILD_FUZZERS now live; see modules/main/CMakeLists.txt.
+# Both halves of the instrumentation are set by the preset, not here and not per
+# module: afl-clang-fast++ supplies the coverage instrumentation, and the
+# preset's build-type flags carry ASAN. ASAN has to be uniform across the whole
+# binary -- sanitized and unsanitized objects do not link together -- so a
+# per-module opt-in would be a link error waiting for the first module that
+# forgot it. This option only tells the sources they are in a fuzzing build;
+# test_rng is the one that reads it.
 option(BUILD_FUZZERS "Instrument cpp_template for AFL++ fuzzing (needs afl-clang-fast++)" OFF)
-if(BUILD_FUZZERS)
-    # The AFL self-test runs afl-fuzz until it finds the planted bug, with no
-    # internal timeout by design: if the infrastructure is broken (no
-    # instrumentation, target never invoked) AFL searches forever, and this
-    # external timeout is what turns that into a test failure. Applied to every
-    # discovered test rather than by name, because doctest_discover_tests
-    # creates them at build time — they don't exist yet for set_tests_properties.
-    # The other tests here are microseconds long, so a shared 10s cap is free.
-    set(FUZZ_TEST_PROPERTIES TIMEOUT 10)
-endif()
 
 enable_testing()
 # doctestConfig.cmake puts its lib/cmake/doctest on CMAKE_MODULE_PATH, so this
@@ -185,10 +184,9 @@ add_executable(cpp_template src/main.cc ${MODULE_RUN})
 target_include_directories(cpp_template PRIVATE ${MODULE_RUN_INCLUDE_DIR})
 
 # Whole-archived for the same reason a module test executable is: a doctest
-# case (and a FUZZ_TARGET, and a bench) is registered by a static initializer
-# that nothing in the program references, so a plain link drops the archive
-# members holding them and the `test`, `bench` and `fuzz` subcommands all come
-# up empty. MODULE_WHOLE_ARCHIVE_LIBS is the closure add_module computed for
+# case (and a bench) is registered by a static initializer that nothing in the
+# program references, so a plain link drops the archive members holding them and
+# the `test` and `bench` subcommands both come up empty. MODULE_WHOLE_ARCHIVE_LIBS is the closure add_module computed for
 # exactly this; it is empty for a SHARED module, whose initializers run at load
 # time, so the ordinary link below covers that case.
 get_target_property(main_whole_archive main MODULE_WHOLE_ARCHIVE_LIBS)

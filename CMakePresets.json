@@ -63,11 +63,12 @@
         },
         {
             "name": "Fuzz",
-            "description": "AFL++ instrumented build of cpp_template for `fuzz <target>`.",
+            "description": "AFL++ instrumented build, for running randomized tests under `TEST_RNG=afl`. Run them with the FuzzTest preset. -O0 is chosen because it prevents merging of CFG edges, which makes the fuzzer's job easier.",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_COMPILER": "afl-clang-fast++",
-                "BUILD_FUZZERS": "ON"
+                "BUILD_FUZZERS": "ON",
+                "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fsanitize=address"
             },
             "inherits": [
                 "Base"
@@ -127,6 +128,14 @@
             "name": "CoverageTest",
             "description": "Run the LLVM-instrumented Coverage build.",
             "configurePreset": "Coverage"
+        },
+        {
+            "name": "FuzzTest",
+            "description": "Run the AFL++ instrumented build, including the end-to-end AFL self-test.",
+            "configurePreset": "Fuzz",
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1:symbolize=0"
+            }
         },
         {
             "name": "SanitizeTest",

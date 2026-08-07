@@ -73,15 +73,15 @@ option(BUILD_SHARED_LIBS "Build module libraries as shared libraries by default"
 set(MODULE_TEST_MAIN "${CMAKE_CURRENT_LIST_DIR}/module_test_main.cc"
     CACHE INTERNAL "Test runner main() shared by all module test executables")
 
-# The test/bench/fuzz subcommand dispatch, shared by the module test runners
-# above and by the shipping executable (src/main.cc). One implementation, so a
-# fuzz target behaves the same whichever binary afl-fuzz is pointed at -- see
-# the AFL self-test, which fuzzes its own executable.
+# The test/bench subcommand dispatch, shared by the module test runners above
+# and by the shipping executable (src/main.cc). One implementation, so a test
+# behaves the same whichever binary it is run from -- including under afl-fuzz,
+# which the AFL self-test points at its own executable.
 set(MODULE_RUN "${CMAKE_CURRENT_LIST_DIR}/module_run.cc"
     CACHE INTERNAL "Subcommand dispatch shared by every runner")
 
 # Where module_run.h lives, for the runners and for any module whose headers
-# use the BENCH_SUITE / FUZZ_SUITE names it defines.
+# use the BENCH_SUITE name it defines.
 set(MODULE_RUN_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}"
     CACHE INTERNAL "Include directory holding module_run.h")
 
@@ -138,8 +138,8 @@ function(add_module name)
     # PRIVATE on the module's own directory keeps its internal headers off that
     # public path while its own sources reach them unprefixed.
     # MODULE_RUN_INCLUDE_DIR is PUBLIC because a module's own public headers may
-    # use the suite names from module_run.h (bench.h and fuzz.h do), so anything
-    # including them needs it on its path too.
+    # use the suite name from module_run.h (bench.h does), so anything including
+    # them needs it on its path too.
     target_include_directories(${name}
         PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${MODULE_RUN_INCLUDE_DIR}

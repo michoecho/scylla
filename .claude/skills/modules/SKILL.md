@@ -120,8 +120,9 @@ ctest --preset DebugTest -R "module_x:::"                   # by name prefix
 ```
 
 A test binary defaults to only its own module's cases — the runner filters on
-`--source-file=*<module dir>/*`. `--all` opts out. Benchmarks and fuzz targets
-run from it too: `module_x_test bench`, `module_x_test fuzz`.
+`--source-file=*<module dir>/*`. `--all` opts out. Benchmarks run from it too:
+`module_x_test bench`. Randomized tests need no subcommand — they are ordinary
+cases whose engine is picked by `TEST_RNG` (see `modules/test_rng`).
 
 ## Benchmarks
 

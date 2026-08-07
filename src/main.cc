@@ -21,30 +21,20 @@ int main(int argc, char* argv[]) {
     // Same passthrough as `test`; we just scope doctest to the bench suite below.
     bench->prefix_command();
 
-    // `fuzz` lists and runs the FUZZ_TARGETs, which are doctest cases in the
-    // fuzz suite (see fuzz.h). Same passthrough as `test`/`bench`, so:
-    //
-    //     cpp_template fuzz --list-test-cases     # list the targets
-    //     cpp_template fuzz --test-case=<name>    # run one under AFL
-    //
-    // afl-fuzz execs the latter form. In a non-AFL build a target instead
-    // replays one stdin testcase, so it doubles as a crash reproducer.
-    CLI::App* fuzz = app.add_subcommand("fuzz", "List or run the AFL++ fuzz targets");
-    fuzz->prefix_command();
-
     CLI11_PARSE(app, argc, argv);
 
     // CLI11 is kept for the parse (and for `--help`, which lists the
     // subcommands and their descriptions), but what each one *does* lives in
     // run::execute, shared with the module test runners. The suite scoping that
-    // bench and fuzz need is applied there, so it cannot drift between the two
-    // entry points -- which is what broke the AFL self-test when it started
-    // running from main_test as well as from here.
+    // bench needs is applied there, so it cannot drift between the two entry
+    // points.
+    //
+    // There is deliberately no `fuzz` subcommand. A randomized test is an
+    // ordinary test case whose engine is chosen by TEST_RNG, so fuzzing one is
+    // `TEST_RNG=afl cpp_template test --test-case=<name>` under afl-fuzz.
     run::Command command;
     if (*test)
         command = {run::Command::Kind::Test, test->remaining()};
-    else if (*fuzz)
-        command = {run::Command::Kind::Fuzz, fuzz->remaining()};
     else if (*bench)
         command = {run::Command::Kind::Bench, bench->remaining()};
 
