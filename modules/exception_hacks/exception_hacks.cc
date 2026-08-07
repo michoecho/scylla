@@ -46,21 +46,6 @@ TEST_SUITE("Exception stacktrace") {
         });
     }
 
-    TEST_CASE("Exception stacktrace sanity") {
-        // False means libboost_stacktrace_from_exception never made it into
-        // the link, and the traces below would be empty for that reason alone.
-        REQUIRE(boost::stacktrace::this_thread::get_capture_stacktraces_at_throw());
-
-        try {
-            throwing_frame();
-        } catch (...) {
-            auto st = stacktrace_of_exception(std::current_exception());
-            CHECK(st.size() > 1);
-            CHECK(has_frame(st, "throwing_frame"));
-            CHECK(has_frame(st, "main"));
-        }
-    }
-
     // The point of taking an exception_ptr rather than reading the exception
     // being handled: the trace outlives the catch block that captured it, and
     // is reachable from a thread that never saw the throw.

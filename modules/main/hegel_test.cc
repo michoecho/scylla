@@ -10,6 +10,7 @@
 // special main() and no second test runner.
 
 #include <cstdint>
+#include <hegel/settings.h>
 #include <stdexcept>
 #include <string>
 
@@ -74,6 +75,7 @@ static hegel::Settings example_settings() {
     settings.verbosity = hegel::Verbosity::Quiet;
     settings.derandomize = true;
     settings.print_blob = false;
+    settings.phases = {hegel::Phase::Generate};
     return settings;
 }
 

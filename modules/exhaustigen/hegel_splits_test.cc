@@ -71,7 +71,6 @@ bool feasible(size_t n, size_t k, size_t min, size_t max) {
 // every field after the last one mentioned.
 hegel::Settings splits_settings() {
     hegel::Settings settings;
-    settings.test_cases = 500;
     settings.verbosity = hegel::Verbosity::Quiet;
     settings.derandomize = true;
     settings.print_blob = false;

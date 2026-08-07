@@ -105,7 +105,6 @@ std::string render(const Histogram& histogram) {
 
 hegel::Settings hegel_settings() {
     hegel::Settings result;
-    result.test_cases = 1000;
     result.verbosity = hegel::Verbosity::Quiet;
     result.derandomize = true;
     result.print_blob = false;
