@@ -117,8 +117,8 @@ find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 # the backend TEST_RNG selects, with the persistent loop owned by the provider
 # (see modules/test_rng). So you fuzz one by name:
 #
-#     afl-fuzz -i corpus -o out -- \
-#         env TEST_RNG=afl ./test_rng_test --test-case='<name>'
+#     TEST_RNG=afl afl-fuzz -i corpus -o out -- \
+#         ./test_rng_test --test-case='<name>'
 #
 # There is no separate build target — the cost is just that this preset rebuilds
 # the program with instrumentation + ASAN.
@@ -137,14 +137,19 @@ find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 #
 #     cmake --preset Fuzz       && cmake --build --preset Fuzz
 #     cmake --preset FuzzCmplog && cmake --build --preset FuzzCmplog
-#     afl-fuzz -i corpus -o out \
+#     TEST_RNG=afl afl-fuzz -i corpus -o out \
 #         -c out/build/FuzzCmplog/<binary> \
-#         -- env TEST_RNG=afl out/build/Fuzz/<binary> --test-case='<name>'
+#         -- out/build/Fuzz/<binary> --test-case='<name>'
 #
-# Deliberately not wired into the AFL self-test: that test proves the fuzzing
-# machinery works, and it does so from the Fuzz preset alone. Making it depend on
-# a second build directory would mean two build modes had to be in sync before a
-# single test could run.
+# TEST_RNG is set on afl-fuzz rather than as an `env TEST_RNG=afl ...` prefix on
+# the target: AFL inspects argv[0] for instrumentation, so a wrapper makes it
+# examine `env` and abort with "No instrumentation detected".
+#
+# tools/fuzz automates exactly the above, taking a ctest filter instead of a
+# binary path and a test name. tools/tests/test_fuzz.py drives that tool against
+# the planted magic-bytes case, and is what proves the machinery works; it skips
+# itself unless both presets are configured, so the two build directories only
+# have to be in sync for the fuzzing presets rather than for every ctest run.
 #
 # Both halves of the instrumentation are set by the preset, not here and not per
 # module: afl-clang-fast++ supplies the coverage instrumentation, and the
@@ -233,7 +238,14 @@ target_link_options(cpp_template PRIVATE -no-pie)
 # Those differ here: the devshell's python3 is the one carrying pytest, and a
 # build directory may well have been configured outside it. Resolving late
 # keeps the build dir independent of which shell ran cmake.
+# test_fuzz.py is the exception to the "drive built binaries" description above:
+# it drives tools/fuzz, which does its own building via the Fuzz and FuzzCmplog
+# presets rather than through this build directory. So it needs neither the
+# fixture below nor a $<TARGET_FILE:...>, and it skips itself wholesale in a
+# tree where those presets are not configured -- which is every non-fuzzing
+# preset, including the Debug one most runs use.
 set(PYTHON_TOOL_TESTS
+    tools/tests/test_fuzz.py
     tools/tests/test_pt_trace.py
     tools/tests/test_snapshot_files.py
 )

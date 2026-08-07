@@ -15,11 +15,13 @@
 //   domain
 //
 // The AFL column is the one that cannot be checked in an ordinary test run:
-// that backend needs a live afl-fuzz around the process. Its "yes" is the pair
-// at the bottom of this file -- a test case that runs the same
-// magic_bytes_are_unguessable body under the afl backend, and a second test
-// that re-executes this binary under afl-fuzz pointed at the first. Both are
-// inert outside the Fuzz preset.
+// that backend needs a live afl-fuzz around the process, which is a thing no
+// test case can be while also being the target. So it is split in two. The
+// target is here -- "afl guesses the magic bytes", the same
+// magic_bytes_are_unguessable body under the afl backend, inert unless
+// something is fuzzing it. What points afl-fuzz at it lives outside the suite,
+// in tools/fuzz, and tools/tests/test_fuzz.py is the test that claims the
+// column: it drives that tool and checks AFL comes back with the five bytes.
 //
 // A note on how these tests are written. The bodies below signal a bug by
 // throwing, and are run with TestRngProvider::search(), which reports the
@@ -34,10 +36,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -311,7 +310,7 @@ TEST_CASE("the afl backend refuses to run when it cannot fuzz") {
     //
     // Outside a live fuzzing run -- which is every ordinary ctest run,
     // instrumented or not -- constructing the provider therefore throws. Under
-    // afl-fuzz it succeeds, which is what the self-test at the bottom exercises.
+    // afl-fuzz it succeeds, which is what tools/tests/test_fuzz.py exercises.
     //
     // The extra parentheses keep this an expression: without them
     // `TestRngProvider(Backend::Afl)` parses as a declaration of a variable
@@ -338,10 +337,11 @@ TEST_CASE("the afl backend refuses to run when it cannot fuzz") {
 // It is skipped unless something is actually fuzzing us, since the provider
 // refuses the backend otherwise -- and afl-fuzz reaches it by name:
 //
-//     afl-fuzz -i in -o out -- env TEST_RNG=afl <binary> \
+//     TEST_RNG=afl afl-fuzz -i in -o out -- <binary> \
 //         --test-case='afl guesses the magic bytes'
 //
-// The self-test below is what issues exactly that command.
+// tools/fuzz is what issues that command, locating this case through ctest
+// rather than hardcoding either the binary or the name.
 TEST_CASE("afl guesses the magic bytes") {
     if (std::getenv("__AFL_SHM_FUZZ_ID") == nullptr &&
         std::getenv("__AFL_SHM_ID") == nullptr)
@@ -465,106 +465,6 @@ TEST_CASE("the same body runs under every available backend") {
         CHECK_FALSE(report.found_failure);
         CHECK(report.invocations > 0);
     }
-}
-
-// The claim this whole file is built to support, for the one backend that
-// cannot be demonstrated in-process: AFL, and only AFL, guesses the five
-// bytes.
-//
-// Runs afl-fuzz against the "afl guesses the magic bytes" case above and checks
-// a crash was saved. Skipped outside the Fuzz preset, where there is no
-// instrumentation for the backend to use, and in the CmpLog build, which is
-// afl-fuzz's `-c` input rather than a fuzzing target.
-//
-// This is the only end-to-end exercise of the AFL backend: it is the one
-// backend whose schedule is owned by an external process, so nothing short of a
-// real fuzzing run tests it -- including the persistent loop that now lives in
-// TestRngProvider.
-//
-// There is deliberately no internal timeout: if the backend is broken, AFL
-// searches forever and the external ctest TIMEOUT is what turns that into a
-// failure.
-TEST_CASE("AFL guesses the magic bytes the other backends cannot" * doctest::skip(
-#if defined(BUILD_FUZZERS) && !defined(CMPLOG_BUILD)
-              false
-#else
-              true
-#endif
-              )) {
-    const std::filesystem::path work =
-        std::filesystem::temp_directory_path() /
-        ("test_rng_afl_" + std::to_string(::getpid()));
-    std::filesystem::remove_all(work);
-    std::filesystem::create_directories(work / "in");
-    std::filesystem::create_directories(work / "tmp");
-
-    {
-        // Five bytes of seed: the right *length* for the five draws, and
-        // uniformly wrong in content. AFL needs somewhere to start; coverage
-        // feedback does the rest. Measured at ~465ms from this exact seed.
-        std::ofstream seed(work / "in" / "seed", std::ios::binary);
-        seed << "aaaaa";
-    }
-
-    const std::string self =
-        std::filesystem::read_symlink("/proc/self/exe").string();
-
-    const std::string cmd =
-        "AFL_BENCH_UNTIL_CRASH=1 "
-        "AFL_NO_UI=1 "
-        "AFL_SKIP_CPUFREQ=1 "
-        "AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 "
-        // AFL pins itself to a core by default and forks thousands of times a
-        // second. On a desktop that is felt as UI stalls even though CPU and
-        // memory sit low -- the cost is scheduler and fork pressure, not
-        // throughput. Letting the scheduler place the run, and nice'ing it
-        // behind interactive work, keeps a test suite from freezing the machine
-        // it runs on. The search takes well under a second either way.
-        "AFL_NO_AFFINITY=1 "
-        // Keep AFL's per-execution scratch file (.cur_input) off the user's
-        // disk. The output directory below is already under the system temp
-        // directory, which is tmpfs on this project's target systems.
-        "AFL_TMPDIR='" + (work / "tmp").string() + "' " +
-        "AFL_CRASH_EXITCODE=" + std::to_string(kMagicCrashExitCode) + " " +
-        // TEST_RNG is set on afl-fuzz itself so the target inherits it. It must
-        // NOT be an `env TEST_RNG=afl ...` prefix on the target command: AFL
-        // checks argv[0] for instrumentation, so a wrapper makes it inspect
-        // `env` and abort with "No instrumentation detected".
-        "TEST_RNG=afl " +
-        "nice -n 19 " +
-        "afl-fuzz -i '" + (work / "in").string() + "'" +
-        " -o '" + (work / "out").string() + "'" +
-        // No subcommand and no fuzz suite: the target is a plain test case, and
-        // TEST_RNG above is what selects the engine driving it. That is the
-        // entire interface a fuzzed test has.
-        " -- '" + self + "'" +
-        " '--test-case=afl guesses the magic bytes'";
-
-    std::string output;
-    {
-        std::FILE* pipe = ::popen((cmd + " 2>&1").c_str(), "r");
-        REQUIRE(pipe != nullptr);
-        char chunk[4096];
-        while (std::fgets(chunk, sizeof(chunk), pipe) != nullptr)
-            output += chunk;
-        ::pclose(pipe);
-    }
-    INFO("afl-fuzz output:\n", output);
-
-    // Instrumentation and the persistent loop are working. A failure here is a
-    // far more useful message than "no crash found".
-    CHECK(output.find("Persistent mode binary detected") != std::string::npos);
-
-    const std::filesystem::path crashes = work / "out" / "default" / "crashes";
-    REQUIRE(std::filesystem::exists(crashes));
-    int saved = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(crashes))
-        if (entry.path().filename().string().starts_with("id:"))
-            ++saved;
-    CHECK(saved > 0);
-
-    if (saved > 0)
-        std::filesystem::remove_all(work);
 }
 
 }  // TEST_SUITE

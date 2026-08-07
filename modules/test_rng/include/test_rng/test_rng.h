@@ -22,8 +22,7 @@
 //
 //     ctest                                          # smoke, one pass
 //     TEST_RNG=random ./module_test                  # Hegel, with shrinking
-//     afl-fuzz -i in -o out -- \
-//         env TEST_RNG=afl ./module_test --test-case='my property'
+//     tools/fuzz 'my property'                       # AFL, via ctest by name
 //
 // The provider owns the AFL persistent loop, so a test never writes one. This
 // is the whole reason there is no separate "fuzz target" concept: a fuzz target
@@ -219,8 +218,15 @@ enum class Backend {
     // is missing, since a fuzzing backend that is not being fuzzed tests
     // nothing. A test is therefore run under it like this:
     //
-    //     afl-fuzz -i corpus -o out -- \
-    //         env TEST_RNG=afl ./module_test --test-case='my property'
+    //     tools/fuzz 'my property'
+    //
+    // which builds the instrumented binaries and resolves the name through
+    // ctest. By hand, the part that matters is that TEST_RNG is set on
+    // afl-fuzz itself: an `env TEST_RNG=afl ...` prefix on the target makes AFL
+    // inspect `env` for instrumentation and abort.
+    //
+    //     TEST_RNG=afl afl-fuzz -i corpus -o out -- \
+    //         ./module_test --test-case='my property'
     Afl,
 
     // "smoke" -- no search at all. One invocation, every parameter taking a

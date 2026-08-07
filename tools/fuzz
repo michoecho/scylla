@@ -11,10 +11,23 @@ This script is the automation of the recipe that comment spells out by hand:
     cmake --build --preset Fuzz       && cmake --build --preset FuzzCmplog
     afl-fuzz -i in -o out -c <cmplog binary> -- <fuzz binary> --test-case=<name>
 
-with the test located through ctest rather than named twice. The end-to-end
-self-test in modules/test_rng/backend_demo_test.cc issues essentially this same
-command from inside the suite; the environment below is kept in step with it,
-and the comments there are the long-form reasons for each variable.
+with the test located through ctest rather than named twice.
+
+Usable both ways. As a command:
+
+    tools/fuzz 'afl guesses the magic bytes$' --until-crash
+
+and as a library, which is how tools/tests/test_fuzz.py drives it without
+starting a second interpreter:
+
+    fuzz = ...  # imported by path; see that test for the importlib incantation
+    result = fuzz.fuzz("afl guesses the magic bytes$", until_crash=True)
+    assert result.crashes
+
+The split is that `fuzz()` raises FuzzError and returns a result, while `main()`
+turns those into messages and exit codes. Nothing below `main()` calls sys.exit
+or prints to stdout, so an importing test gets exceptions and values rather than
+a dead interpreter.
 """
 
 import argparse
@@ -23,8 +36,9 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NoReturn
+from typing import Optional, Sequence
 
 # The two presets, which must both exist and be configured. Fuzz is what runs;
 # FuzzCmplog is the CmpLog (redqueen) build afl-fuzz consults through -c to
@@ -41,9 +55,40 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "out" / "build"
 
 
-def fail(message: str) -> NoReturn:
-    print(f"tools/fuzz: {message}", file=sys.stderr)
-    sys.exit(1)
+DEFAULT_SEED = b"aaaaa"
+
+# The value the fuzzed test _exit()s with to signal a find. Paired with
+# kMagicCrashExitCode in modules/test_rng/backend_demo_test.cc: what matters is
+# only that the two agree.
+DEFAULT_CRASH_EXITCODE = 87
+
+
+class FuzzError(Exception):
+    """A misconfiguration or failed build, raised rather than exited on.
+
+    This is what makes the module importable: every "cannot proceed" below
+    raises, so a caller in-process gets an exception to assert on. main() is the
+    only thing that turns one into a message and a status.
+    """
+
+
+@dataclass
+class Result:
+    """The outcome of one afl-fuzz run."""
+
+    #: The ctest test that was fuzzed, e.g. "test_rng:::afl guesses the magic
+    #: bytes".
+    name: str
+    #: Directory holding in/, out/ and tmp/ for this run.
+    work: Path
+    #: Contents of each saved crash input. Empty means the search came up
+    #: empty, which for a test expecting a find is the failure.
+    crashes: list[bytes] = field(default_factory=list)
+    #: afl-fuzz's own exit status.
+    returncode: int = 0
+    #: Everything afl-fuzz wrote, when captured; None when it was left to
+    #: stream to the terminal, as the CLI does.
+    output: Optional[str] = None
 
 
 def find_test(pattern: str) -> dict:
@@ -60,8 +105,9 @@ def find_test(pattern: str) -> dict:
     if result.returncode != 0:
         # Overwhelmingly this is "the Fuzz preset is not configured", since
         # --show-only does not build or run anything else that can go wrong.
-        fail(f"ctest failed -- is the {FUZZ_PRESET} preset configured?\n"
-             f"  cmake --preset {FUZZ_PRESET}\n\n{result.stderr.strip()}")
+        raise FuzzError(
+            f"ctest failed -- is the {FUZZ_PRESET} preset configured?\n"
+            f"  cmake --preset {FUZZ_PRESET}\n\n{result.stderr.strip()}")
 
     # The shape, cut down to the parts used here -- ctest reports a good deal
     # more per test (LABELS, TIMEOUT, WORKING_DIRECTORY, DEF_SOURCE_LINE, ...)
@@ -80,14 +126,25 @@ def find_test(pattern: str) -> dict:
     # matched nothing.
     tests = json.loads(result.stdout)["tests"]
     if not tests:
-        fail(f"no test matches {pattern!r}")
+        raise FuzzError(f"no test matches {pattern!r}")
     if len(tests) > 1:
         names = "\n".join(f"  {test['name']}" for test in tests)
-        fail(f"{len(tests)} tests match {pattern!r}, need exactly one:\n{names}")
+        raise FuzzError(
+            f"{len(tests)} tests match {pattern!r}, need exactly one:\n{names}")
     return tests[0]
 
 
-def build(preset: str, binary: Path) -> None:
+def configured(preset: str) -> bool:
+    """Whether `preset` has been configured into a usable build directory.
+
+    Exposed because it is also the question a caller asks *before* deciding to
+    fuzz at all: the pytest suite skips on this rather than failing, since a
+    tree configured only for Debug is not a broken tree.
+    """
+    return (BUILD / preset / "CMakeCache.txt").exists()
+
+
+def build(preset: str, binary: Path, quiet: bool = False) -> None:
     """Build just `binary` under `preset`.
 
     The target is named by output path rather than by CMake target name: the
@@ -96,22 +153,25 @@ def build(preset: str, binary: Path) -> None:
     that -- not the absolute path -- is what is passed through.
 
     Fails fast and loudly, as the caller cannot do anything useful with a
-    half-built tree. The output is not captured -- compiler errors belong on the
-    terminal in real time, not in a traceback at the end.
+    half-built tree. Compiler output is left to stream to the terminal rather
+    than captured, since errors belong there in real time rather than in a
+    traceback at the end; `quiet` only silences this function's own progress
+    line, which an importing caller has no use for.
     """
-    if not (BUILD / preset / "CMakeCache.txt").exists():
-        fail(f"the {preset} preset is not configured:\n"
-             f"  cmake --preset {preset}")
+    if not configured(preset):
+        raise FuzzError(f"the {preset} preset is not configured:\n"
+                        f"  cmake --preset {preset}")
 
-    print(f"tools/fuzz: building {binary.name} ({preset})", file=sys.stderr)
+    if not quiet:
+        print(f"tools/fuzz: building {binary.name} ({preset})", file=sys.stderr)
     target = binary.relative_to(BUILD / preset)
     result = subprocess.run(
         ["cmake", "--build", "--preset", preset, "--target", str(target)],
-        cwd=ROOT)
+        cwd=ROOT, capture_output=quiet)
     if result.returncode != 0:
-        fail(f"the {preset} build failed")
+        raise FuzzError(f"the {preset} build failed")
     if not binary.exists():
-        fail(f"the {preset} build succeeded but produced no {binary}")
+        raise FuzzError(f"the {preset} build succeeded but produced no {binary}")
 
 
 def cmplog_binary(fuzz_binary: Path) -> Path:
@@ -126,36 +186,31 @@ def cmplog_binary(fuzz_binary: Path) -> Path:
     return BUILD / CMPLOG_PRESET / relative
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument(
-        "filter",
-        help="ctest -R regex; must match exactly one test")
-    parser.add_argument(
-        "--output", type=Path,
-        help="afl-fuzz output directory (default: a temp dir per test)")
-    parser.add_argument(
-        "--seed", default="aaaaa",
-        help="contents of the single initial corpus entry (default: %(default)s)")
-    parser.add_argument(
-        "--crash-exitcode", type=int, default=87,
-        help="AFL_CRASH_EXITCODE; the value the test exits with on a find "
-             "(default: %(default)s)")
-    parser.add_argument(
-        "--until-crash", action="store_true",
-        help="stop at the first crash, rather than fuzzing until interrupted")
-    parser.add_argument(
-        "--timeout", type=int,
-        help="seconds to fuzz before stopping (default: no limit)")
-    args = parser.parse_args()
+def fuzz(pattern: str,
+         work: Optional[Path] = None,
+         seed: bytes = DEFAULT_SEED,
+         crash_exitcode: int = DEFAULT_CRASH_EXITCODE,
+         until_crash: bool = False,
+         timeout: Optional[int] = None,
+         extra_args: Sequence[str] = (),
+         capture: bool = False,
+         quiet: bool = False) -> Result:
+    """Build the two binaries and fuzz the single test matching `pattern`.
 
+    This is the whole tool; main() only supplies arguments and formats what
+    comes back. Raises FuzzError for anything that makes the run impossible --
+    an ambiguous filter, an unconfigured preset, a failed build -- and otherwise
+    returns a Result even when the search found nothing, since "no crash" is an
+    outcome to assert on rather than an error.
+
+    `capture` buffers afl-fuzz's output into the Result instead of letting it
+    stream; a test wants the text to assert on, a terminal wants the UI.
+    """
     for tool in ("afl-fuzz", "cmake", "ctest"):
         if shutil.which(tool) is None:
-            fail(f"{tool} is not on PATH")
+            raise FuzzError(f"{tool} is not on PATH")
 
-    test = find_test(args.filter)
+    test = find_test(pattern)
     # As ctest reports it, e.g.
     #     ["/.../out/build/Fuzz/modules/test_rng/test_rng_test",
     #      "--test-case=afl guesses the magic bytes"]
@@ -163,17 +218,17 @@ def main() -> int:
     fuzz_binary = Path(command[0])
     # Everything after the binary is the test's own argv -- in practice the
     # --test-case selector -- and is passed through untouched.
-    target_args = command[1:]
-    print(f"tools/fuzz: {test['name']}", file=sys.stderr)
+    target_args = list(command[1:]) + list(extra_args)
+    if not quiet:
+        print(f"tools/fuzz: {test['name']}", file=sys.stderr)
 
     cmplog = cmplog_binary(fuzz_binary)
-    build(FUZZ_PRESET, fuzz_binary)
-    build(CMPLOG_PRESET, cmplog)
+    build(FUZZ_PRESET, fuzz_binary, quiet=quiet)
+    build(CMPLOG_PRESET, cmplog, quiet=quiet)
 
-    work = args.output
     if work is None:
         work = Path(os.environ.get("TMPDIR", "/tmp")) / f"fuzz-{os.getpid()}"
-    work = work.resolve()
+    work = Path(work).resolve()
     corpus, output, scratch = work / "in", work / "out", work / "tmp"
     for directory in (corpus, output, scratch):
         directory.mkdir(parents=True, exist_ok=True)
@@ -181,7 +236,7 @@ def main() -> int:
     # rest; the seed's length matters more than its content, since it is the
     # number of bytes the first draws are carved from.
     if not any(corpus.iterdir()):
-        (corpus / "seed").write_bytes(args.seed.encode())
+        (corpus / "seed").write_bytes(seed)
 
     environment = dict(os.environ)
     environment.update({
@@ -194,7 +249,7 @@ def main() -> int:
         # crashing, which keeps the kernel's core_pattern handler out of a run
         # that produces thousands of them. AFL only records it as a crash if it
         # is told which code means one.
-        "AFL_CRASH_EXITCODE": str(args.crash_exitcode),
+        "AFL_CRASH_EXITCODE": str(crash_exitcode),
         # ... and with no fatal signal involved, AFL's check for a usable
         # core_pattern is asking about something this run does not depend on.
         "AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES": "1",
@@ -211,43 +266,99 @@ def main() -> int:
         # The Fuzz preset builds with ASAN. Leak detection at every persistent
         # iteration is noise, and a report must abort so AFL sees the failure.
         "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1:symbolize=0",
+        # This process may itself be running under a coverage-instrumented
+        # ctest, whose LLVM_PROFILE_FILE would then be inherited by every one of
+        # the thousands of forks below. Left alone that is a profraw per exec.
+        "LLVM_PROFILE_FILE": str(work / "afl-%p.profraw"),
     })
-    if args.until_crash:
+    if until_crash:
         environment["AFL_BENCH_UNTIL_CRASH"] = "1"
 
     afl = ["afl-fuzz", "-i", str(corpus), "-o", str(output),
            # The CmpLog binary is consulted for comparison operands; it is never
            # itself fuzzed.
            "-c", str(cmplog)]
-    if args.timeout is not None:
-        afl += ["-V", str(args.timeout)]
+    if timeout is not None:
+        afl += ["-V", str(timeout)]
     # `nice` for the same reason as AFL_NO_AFFINITY: this should lose to
     # interactive work, and it costs the search almost nothing.
     afl = ["nice", "-n", "19"] + afl + ["--", str(fuzz_binary)] + target_args
 
-    print(f"tools/fuzz: {work}", file=sys.stderr)
-    print("tools/fuzz: " + " ".join(afl), file=sys.stderr)
+    if not quiet:
+        print(f"tools/fuzz: {work}", file=sys.stderr)
+        print("tools/fuzz: " + " ".join(afl), file=sys.stderr)
     # Ctrl-C is how an open-ended run ends, and it is AFL's to handle: it
-    # catches SIGINT to write out its state before exiting.
+    # catches SIGINT to write out its state before exiting. Treated as a normal
+    # end rather than an error, so the crash report below still happens.
     try:
-        completed = subprocess.run(afl, cwd=ROOT, env=environment)
+        completed = subprocess.run(afl, cwd=ROOT, env=environment,
+                                   text=True, capture_output=capture)
     except KeyboardInterrupt:
-        completed = subprocess.CompletedProcess(afl, 0)
+        completed = subprocess.CompletedProcess(afl, 0, "", "")
 
+    # AFL names every saved input "id:...", alongside its own README.txt, so the
+    # prefix is what distinguishes a finding from bookkeeping.
     crashes = output / "default" / "crashes"
     saved = sorted(entry for entry in crashes.iterdir()
                    if entry.name.startswith("id:")) if crashes.is_dir() else []
-    if saved:
-        print(f"\ntools/fuzz: {len(saved)} crash(es) in {crashes}",
-              file=sys.stderr)
-        for entry in saved:
-            print(f"  {entry.name}: {entry.read_bytes()!r}", file=sys.stderr)
+    return Result(
+        name=test["name"],
+        work=work,
+        crashes=[entry.read_bytes() for entry in saved],
+        returncode=completed.returncode,
+        output=((completed.stdout or "") + (completed.stderr or "")
+                if capture else None),
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "filter",
+        help="ctest -R regex; must match exactly one test")
+    parser.add_argument(
+        "--output", type=Path,
+        help="afl-fuzz output directory (default: a temp dir per test)")
+    parser.add_argument(
+        "--seed", default=DEFAULT_SEED.decode(),
+        help="contents of the single initial corpus entry (default: %(default)s)")
+    parser.add_argument(
+        "--crash-exitcode", type=int, default=DEFAULT_CRASH_EXITCODE,
+        help="AFL_CRASH_EXITCODE; the value the test exits with on a find "
+             "(default: %(default)s)")
+    parser.add_argument(
+        "--until-crash", action="store_true",
+        help="stop at the first crash, rather than fuzzing until interrupted")
+    parser.add_argument(
+        "--timeout", type=int,
+        help="seconds to fuzz before stopping (default: no limit)")
+    args = parser.parse_args()
+
+    try:
+        result = fuzz(args.filter,
+                      work=args.output,
+                      seed=args.seed.encode(),
+                      crash_exitcode=args.crash_exitcode,
+                      until_crash=args.until_crash,
+                      timeout=args.timeout)
+    except FuzzError as error:
+        print(f"tools/fuzz: {error}", file=sys.stderr)
+        return 1
+
+    if result.crashes:
+        print(f"\ntools/fuzz: {len(result.crashes)} crash(es) in "
+              f"{result.work / 'out' / 'default' / 'crashes'}", file=sys.stderr)
+        for crash in result.crashes:
+            print(f"  {crash!r}", file=sys.stderr)
         # A find is the successful outcome of a fuzzing run, but it is also a
         # failing test, so it is reported as a nonzero status.
         return 1
 
-    print(f"\ntools/fuzz: no crashes found ({output})", file=sys.stderr)
-    return completed.returncode
+    print(f"\ntools/fuzz: no crashes found ({result.work / 'out'})",
+          file=sys.stderr)
+    return result.returncode
 
 
 if __name__ == "__main__":
