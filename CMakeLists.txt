@@ -68,6 +68,8 @@ target_include_directories(nanobench_header INTERFACE ${NANOBENCH_INCLUDE_DIR})
 
 find_package(CLI11 REQUIRED)
 
+find_package(absl REQUIRED CONFIG)
+
 # The Vulkan stack behind the `vulkan` module (modules/vulkan/): the loader and
 # headers, SDL3 for windowing and surface creation, vk-bootstrap for
 # instance/device selection and swapchain building, and VMA for allocation.

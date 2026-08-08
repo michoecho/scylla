@@ -173,10 +173,20 @@
               zstd
               lz4
 
-              # Test runner for the Python tools under tools/. CMake only
+              # Test runner for the Python tools under tools/, plus the
+              # scientific stack the map-lookup cost study analyses its sweep
+              # with (modules/playground/map_lookup_report.ipynb). CMake only
               # locates an interpreter (find_package(Python3)); the packages
               # come from here, so no build step ever installs anything.
-              (python3.withPackages (ps: [ ps.pytest ]))
+              (python3.withPackages (ps: [
+                ps.pytest
+                ps.numpy
+                ps.pandas
+                ps.scipy
+                ps.matplotlib
+                ps.jupyter
+                ps.nbconvert
+              ]))
 
               # Property-based testing; see src/hegel_test.cc. hegel-cpp
               # propagates reflect-cpp, and its CMake config finds the engine
