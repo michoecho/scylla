@@ -2,6 +2,7 @@
 
 import argparse
 import glob
+import json
 import logging
 import os
 import re
@@ -51,6 +52,105 @@ def run_command(cmd):
     logging.info(" ".join(map(str, cmd)))
     subprocess.run(cmd, check=True)
 
+def read_profile_manifests(profile_dir):
+    """Maps profile-file id -> CTest test name.
+
+    Test discovery writes one `<id> <ctest name>` record per line, in a
+    `*.manifest` file per discovered runner (see
+    nix/patches/doctest-discover-tests.patch, plus python.manifest from the root
+    CMakeLists). Split on the first space only: the id is a fixed-width hash and
+    the name is an arbitrary user string that may contain spaces.
+    """
+    manifest = {}
+    for path in sorted(Path(profile_dir).glob("*.manifest")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            profile_id, _, test_name = line.partition(" ")
+            if test_name:
+                manifest[profile_id] = test_name
+    return manifest
+
+# A per-test .profraw is `<id>.<pid><merge-pool>.profraw`, with the id a hash of
+# the CTest test name. The suffix is what llvm's %p%m expands to, so stripping it
+# groups every process a single test spawned back onto that test.
+per_test_profraw_regex = re.compile(r"([0-9a-fA-F]{32})\.[^.]*\.profraw")
+
+def export_per_test_lcov(profile_dir, manifest, buildid_dir):
+    """Writes coverage/per-test/<id>.lcov, one per test that produced profiles.
+
+    Runs after the total report, so it can reuse the .build-id symlink farm the
+    total pass builds: --debug-file-directory is how llvm-cov finds the binaries
+    a profile came from, and every binary in the suite is already registered
+    there. That also means a per-test export needs no build-id lookup of its own
+    -- one llvm-cov invocation per test covers whichever binaries that test ran,
+    including a python test that spawned several.
+    """
+    groups = {}
+    for path in Path(profile_dir).glob("*.profraw"):
+        match = per_test_profraw_regex.fullmatch(path.name)
+        if match:
+            groups.setdefault(match.group(1), []).append(str(path))
+
+    if not groups:
+        logging.warning(
+            f"--per-test: no per-test .profraw files in {profile_dir}. "
+            "Was the suite run with an ENABLE_TEST_COVERAGE build?"
+        )
+        return
+
+    out_dir = Path("coverage/per-test")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    exported = {}
+    for profile_id, profraws in sorted(groups.items()):
+        test_name = manifest.get(profile_id)
+        if test_name is None:
+            # A profile whose test is not in any manifest: most likely left over
+            # from a test that has since been renamed or deleted. Reporting it
+            # under its hash would attribute coverage to a test the extension
+            # cannot resolve, so skip it and say so.
+            logging.warning(
+                f"--per-test: no manifest entry for {profile_id}, skipping "
+                "(stale profile from a renamed or deleted test?)"
+            )
+            continue
+
+        profdata = str(out_dir / f"{profile_id}.profdata")
+        run_command(
+            ["llvm-profdata", "merge", "-sparse", "-o", profdata] + sorted(profraws)
+        )
+        lcov_path = out_dir / f"{profile_id}.lcov"
+        with open(lcov_path, "w") as lcov_file:
+            logging.info(f"llvm-cov export -> {lcov_path}")
+            subprocess.run(
+                [
+                    "llvm-cov", "export",
+                    "--format=lcov",
+                    "--check-binary-ids",
+                    "--debug-file-directory", buildid_dir,
+                    f"-instr-profile={profdata}",
+                ],
+                stdout=lcov_file,
+                check=True,
+            )
+        exported[profile_id] = test_name
+
+    # The manifest the reader actually consumes: only the tests that have an
+    # .lcov beside it, so a consumer never has to handle a named test with no
+    # report. JSON because its consumer is the VS Code extension, not CMake.
+    manifest_path = out_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {"tests": [{"id": i, "test": n, "lcov": f"{i}.lcov"}
+                       for i, n in sorted(exported.items(), key=lambda kv: kv[1])]},
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    logging.info(f"Wrote {manifest_path} ({len(exported)} tests)")
+
 def main():
     """Main function to parse arguments and run coverage merging."""
     parser = argparse.ArgumentParser(
@@ -65,13 +165,30 @@ def main():
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging."
     )
+    parser.add_argument(
+        "--per-test",
+        action="store_true",
+        help="Also export one LCOV file per CTest test into coverage/per-test/.",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        help="Directory holding the per-test .profraw files and the id->test-name "
+             "manifests written by test discovery. Required with --per-test.",
+    )
     args = parser.parse_args()
+
+    if args.per_test and not args.profile_dir:
+        parser.error("--per-test requires --profile-dir")
 
     # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
         level=log_level, format="%(levelname)s: %(message)s", datefmt="%H:%M:%S"
     )
+
+    # Resolved before the chdir below, which would otherwise reinterpret a
+    # relative --profile-dir against the target directory.
+    profile_dir = Path(args.profile_dir).resolve() if args.profile_dir else None
 
     # Immediately change working directory to the target directory.
     try:
@@ -115,6 +232,13 @@ def main():
         "--show-line-counts-or-regions",
     ]
 
+    # The id -> CTest name mapping, read once and shared by the HTML grouping
+    # below and the LCOV export at the end. Read even without --per-test,
+    # because the HTML report names its directories from it: profile files are
+    # named by hash now, so without this every directory here would be an opaque
+    # 32-character string.
+    profile_manifest = read_profile_manifests(profile_dir) if profile_dir else {}
+
     # 2. Generate coverage reports for each test executable group.
     logging.info("\n--- Generating per-test coverage reports ---")
     for base, ps in groups.items():
@@ -123,6 +247,17 @@ def main():
         cmd = ["llvm-profdata", "merge", "-sparse", "-o", profdata_file] + ps
         run_command(cmd)
 
+        # The directory this group's HTML report goes under. A per-test profile
+        # is named by hash, so prefer the test name the manifest gives back;
+        # sanitized, because it is a directory component and a doctest case name
+        # may contain slashes and worse. Anything not in the manifest (a profile
+        # written by something other than a discovered test) keeps the old
+        # filename-stem behaviour.
+        group_name = Path(base).name
+        test_name = profile_manifest.get(group_name)
+        if test_name is not None:
+            group_name = re.sub(r"[^-.\w]+", "_", test_name)
+
         # Get build-ids of all binaries involved in this test run.
         binary_build_ids = get_profdata_build_ids(profdata_file)
         for build_id in binary_build_ids:
@@ -130,7 +265,7 @@ def main():
                 binary_path = build_id_map[build_id]
                 # Sanitize binary name for use in directory path.
                 binary_name_sanitized = Path(binary_path.name).stem
-                output_dir = f"coverage/{Path(base).name}/{binary_name_sanitized}"
+                output_dir = f"coverage/{group_name}/{binary_name_sanitized}"
                 # Generate coverage for this specific binary.
                 cmd = [
                     *common_llvm_cov_show_opts,
@@ -192,6 +327,16 @@ def main():
         ]
         run_command(cmd)
 
+        # After the total pass, which is what populates the .build-id symlink
+        # farm that per-test export resolves its binaries through.
+        if args.per_test:
+            logging.info("\n--- Exporting per-test LCOV ---")
+            if not profile_manifest:
+                logging.warning(
+                    f"--per-test: no *.manifest files in {profile_dir}; "
+                    "nothing can be attributed to a test name."
+                )
+            export_per_test_lcov(profile_dir, profile_manifest, buildid_dir)
 
     logging.info("\n--- Done ---")
 

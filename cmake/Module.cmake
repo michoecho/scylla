@@ -280,18 +280,33 @@ function(add_module name)
     # properties on its own discovered tests (a timeout, an environment) without
     # this function having to know what they are.
     #
-    # LLVM_PROFILE_FILE names a per-process .profraw next to the test binary, so
-    # a coverage build (ENABLE_TEST_COVERAGE) collects the module suites too --
-    # %p%m keeps concurrent `ctest -j` runs from overwriting each other's file.
+    # PROFILE_DIR opts these cases into per-test coverage: discovery gives each
+    # one its own LLVM_PROFILE_FILE under COVERAGE_PROFILE_DIR, named by a hash
+    # of the CTest test name, and writes a sidecar manifest mapping that hash
+    # back to the name. So a coverage build (ENABLE_TEST_COVERAGE) collects the
+    # module suites *and* records which test produced each .profraw, which is
+    # what tools/merge-coverage needs to emit per-test LCOV.
+    #
+    # It is the discovery script rather than PROPERTIES below that sets the
+    # variable, because the filename has to vary per case and nothing here knows
+    # the case names -- this one call covers every test in the module.
+    # Correspondingly, a module must not set LLVM_PROFILE_FILE in
+    # TEST_PROPERTIES: CTest keeps the last ENVIRONMENT_MODIFICATION for a
+    # variable, so doing so would silently replace the per-test path.
+    #
     # Harmless without coverage instrumentation: nothing writes the file.
+    # Empty when per-test coverage is off, which makes discovery fall back to
+    # setting no LLVM_PROFILE_FILE at all.
     doctest_discover_tests(${name}_test
         TEST_PREFIX "${name}:::"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        PROFILE_DIR "${COVERAGE_PROFILE_DIR}"
+        # Last of the keyword arguments before PROPERTIES: ADD_LABELS is a
+        # multi-value keyword, so anything following it is consumed as another
+        # of its values rather than read as its own keyword.
         ADD_LABELS ON
         PROPERTIES
             LABELS "module.${name}"
-            ENVIRONMENT_MODIFICATION
-                LLVM_PROFILE_FILE=set:$<TARGET_FILE:${name}_test>.%p%m.profraw
             ${M_TEST_PROPERTIES})
 endfunction()
 

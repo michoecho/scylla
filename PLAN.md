@@ -1,5 +1,11 @@
 # Per-test coverage in the VS Code test explorer
 
+> **Status.** Steps 1 and 2 are done: a `Coverage`-preset run now writes one
+> LCOV per test plus a manifest naming them, under
+> `<build>/coverage/per-test/`. Steps 3 and 4 — the extension work — have not
+> been started. See "Suggested order" at the end for how to reproduce the
+> current state.
+
 ## The goal
 
 Right-click a line of C++ and find out **which tests in the suite covered it**.
@@ -102,84 +108,131 @@ changing anything.
 ### The decisive fact
 
 Every doctest case is registered with CTest as its **own test**, running the
-binary with `--test-case=<name>` in its own process, and
-`LLVM_PROFILE_FILE` is **already set per test**:
+binary with `--test-case=<name>` in its own process. So test-level process
+isolation was already there; the profile filename identified the *binary* and
+the *PID*, not the test.
 
-```cmake
-LLVM_PROFILE_FILE=set:$<TARGET_FILE:${name}_test>.%p%m.profraw
-```
-
-So test-level process isolation is already there. The profile filename just
-identifies the *binary* and the *PID* — not the test. That is the one thing
-missing, and it is the smallest change in this plan.
+That was the one thing missing, and closing it was the smallest change in this
+plan — step 1 below, now done. The filename now identifies the test.
 
 ---
 
 ## What needs to change
 
-### 1. Make the profile filename identify the test
+### 1. Make the profile filename identify the test — **DONE**
 
 **What:** each `.profraw` must be attributable to the CTest test that produced
 it, without relying on PID.
 
-The filename is set in `cmake/Module.cmake` in the `doctest_discover_tests`
-`PROPERTIES` block. The problem: that one line is shared by every discovered
-test in the module, and at that point CMake has no per-test name to interpolate.
+Done in **`nix/patches/doctest-discover-tests.patch`**, alongside the existing
+`DEF_SOURCE_LINE` injection. `doctest_discover_tests` gained a `PROFILE_DIR`
+parameter; when set, each discovered case gets its own `LLVM_PROFILE_FILE`:
 
-The natural place to fix it is **`nix/patches/doctest-discover-tests.patch`**,
-which is already the mechanism for per-test property injection — it is where
-`DEF_SOURCE_LINE` is computed per case and appended to
-`add_command(set_tests_properties ...)`. The test name is in scope there as
-`${test}` / `${test_name}`, and the full CTest name as `${prefix}${test}${suffix}`.
+```
+<PROFILE_DIR>/<md5 of "${prefix}${test}${suffix}">.%p%m.profraw
+```
 
-Add a per-test `LLVM_PROFILE_FILE` (or a new opt-in parameter carrying a
-directory) so each case writes to a path derived from its own CTest name.
+**The id is a hash, and a sidecar manifest carries the real name.** Of the two
+options weighed here, the manifest won — but the filename is not a sanitized
+name, it is an MD5 of the full CTest name. That makes the encoding question
+disappear rather than be answered: no escaping scheme for spaces, slashes,
+quotes and the module `:::` prefix that both writer and reader must agree on,
+and no way for two names to collide once sanitized. The name is recoverable
+only through the manifest, which is the point.
 
-Design constraints to respect:
+`%p%m` is kept after the id: the id identifies the *test*, `%p%m` keeps the
+individual writers *within* that test unique (a test spawning subprocesses has
+several).
 
-- **Sanitize the name for the filesystem.** doctest case names are arbitrary user
-  strings — spaces, slashes, quotes, `:::` from the module `TEST_PREFIX`. Pick an
-  encoding that round-trips, or emit a **sidecar manifest** mapping filename →
-  CTest test name. A manifest is the more robust option and avoids a lossy
-  escaping scheme; it also survives names that collide after sanitization.
-- **Keep `%p%m`** in addition to the test name. A single test may spawn
-  subprocesses, and `%m` is what keeps concurrent writers apart. The name
-  identifies the test; `%p%m` keeps files unique.
-- **Don't break the non-coverage build.** Nothing writes the file without
-  instrumentation, which is why the current line is harmless — preserve that.
-- **The Python tests** in the root `CMakeLists.txt` set their own
-  `LLVM_PROFILE_FILE` anchored to the build dir. Decide whether they participate;
-  they can reasonably be left as-is at first.
+The manifest is one `<id> <ctest name>` record per line — name last, so it may
+contain spaces unquoted; id fixed-width, so the reader splits on the first
+space. Written per discovered runner as `<ctest-script-name>.manifest` in
+`PROFILE_DIR`, so two runners cannot overwrite each other; the reader
+concatenates every `*.manifest` it finds.
 
-### 2. Emit per-test LCOV, not just a merged one
+Where the files land: `<build>/coverage-profraw/`, set by
+`COVERAGE_PROFILE_DIR` in the root `CMakeLists.txt`. One directory rather than
+"next to the test binary", because the filename now names a test and not a
+binary — and because the manifests need to be somewhere findable without
+walking the build tree.
+
+Two things worth knowing before touching this again:
+
+- **`cmake/Module.cmake` must not also set `LLVM_PROFILE_FILE`.** CTest keeps
+  only the *last* `ENVIRONMENT_MODIFICATION` for a given variable, so the old
+  per-module line would silently replace the per-test path. It was removed, and
+  a module must likewise not set it via `TEST_PROPERTIES`.
+- **`PROFILE_DIR` must precede `ADD_LABELS` in the call.** `ADD_LABELS` is a
+  multi-value keyword, so anything following it is eaten as one of its values.
+  This fails loudly at build time, but the message names `if()`, not the call.
+
+**The Python tests participate.** The root `CMakeLists.txt` computes the same
+MD5 over `python.<name>` and writes `python.manifest` in the same format. A
+python test spawning several binaries is fine and is why its profile path was
+never anchored to one target: all its profiles share its id and merge into one
+per-test report spanning both executables.
+
+Non-coverage builds are unaffected: `COVERAGE_PROFILE_DIR` is only set under
+`ENABLE_TEST_COVERAGE`, and without instrumentation nothing writes the file.
+
+### 2. Emit per-test LCOV, not just a merged one — **DONE**
 
 **What:** `coverage-export` must produce one LCOV per test, in addition to the
 existing `total.lcov`.
 
-`tools/merge-coverage` already groups `.profraw` files by filename stem and runs
-`llvm-profdata merge` per group — the grouping loop is most of the work. What it
-currently emits per group is an HTML report; it needs to also emit LCOV
-(`llvm-cov export --format=lcov`, as `cmake/Coverage.cmake` already does for the
-total).
+`tools/merge-coverage` gained `--per-test` and `--profile-dir`. It groups the
+per-test `.profraw` files back onto their id (by stripping the `%p%m` suffix),
+merges each group, and exports `coverage/per-test/<id>.lcov`.
 
-Requirements:
+**The output the extension reads** is `coverage/per-test/manifest.json`:
 
-- Output to a predictable layout, e.g. `coverage/per-test/<id>.lcov`, plus the
-  manifest from step 1 mapping each file to its CTest test name.
-- Keep `total.lcov` exactly as-is. The existing whole-suite view must not
-  regress.
-- Note the existing build-id resolution and `.build-id` symlink farm — per-test
-  export needs the same `--debug-file-directory` treatment to resolve binaries.
-- Watch the cost. This is N invocations of `llvm-profdata` + `llvm-cov` instead
-  of one. Consider making per-test export opt-in via a CMake option or an env
-  var so ordinary coverage runs stay fast.
+```json
+{ "tests": [ { "id": "<md5>", "test": "<ctest name>", "lcov": "<md5>.lcov" } ] }
+```
 
-### 3. The per-test coverage cmake tools extension
+JSON here, unlike the flat `*.manifest` of step 1, because its consumer is the
+extension rather than CMake. It lists only tests that actually have an `.lcov`
+beside them, so a consumer never has to handle a named test with no report.
+
+- **Binary resolution** reuses the `.build-id` symlink farm the total pass
+  already builds, via `--debug-file-directory`. That is why per-test export runs
+  *after* the total report and needs no build-id lookup of its own — and it is
+  what lets one invocation per test cover whichever binaries that test ran,
+  including a python test that spawned several.
+- **`total.lcov` is unchanged** — verified byte-identical with the option ON and
+  OFF.
+- **Cost** is handled by making export opt-in: `ENABLE_PER_TEST_COVERAGE`,
+  default OFF, ON in the `Coverage` preset. It gates only the *export*; the
+  per-test `.profraw` files are always collected under `ENABLE_TEST_COVERAGE`,
+  since the profiles are written either way. So turning the option on does not
+  require re-running the suite. Measured cost on the current suite: 88 tests,
+  a few seconds — not enough to justify anything cleverer.
+- **`coverage-clean` removes `coverage/per-test/`.** Stale reports here are
+  worse than untidy: a renamed or deleted test would keep a report and the
+  extension would attribute coverage to a test that no longer exists.
+
+One incidental fix: `merge-coverage`'s existing HTML report loop grouped by
+filename stem, which under hashed profile names would have produced one
+directory per test named by an opaque hash. It now resolves the name through
+the manifest and sanitizes it for use as a directory component.
+
+### 3. The per-test coverage cmake tools extension — **NOT STARTED**
 
 **What:** Extend the CMake Tools extension so that it is able to match lcov
 files to test cases, and so that it uses this to feed the native testing APIs.
 
-### 4. The line -> tests query command
+Everything it needs is now on disk after a `Coverage`-preset run:
+`coverage/per-test/manifest.json` maps each CTest test name to its `.lcov`.
+The remaining work is entirely on the extension side — `includesTests` on the
+`FileCoverage` constructor, and `loadDetailedCoverageForTest`.
+
+Note when wiring this up: three of the four `python.*` tests pass without
+running any coverage-instrumented binary (`test_fuzz` drives the Fuzz build,
+`test_snapshot_files` works on source files), so they legitimately have no
+entry in the manifest. The extension must tolerate a CTest test with no report
+rather than assume every test has one.
+
+### 4. The line -> tests query command — **NOT STARTED**
 
 - **The per-line command**: contributed to `editor/context`, reading the cursor
   line, querying the index, and showing the covering tests in a quick-pick.
@@ -187,33 +240,62 @@ files to test cases, and so that it uses this to feed the native testing APIs.
 
 ## Suggested order
 
-1. Per-test `LLVM_PROFILE_FILE` + manifest (patch + `Module.cmake`). Verify by
-   inspecting the `.profraw` files after a `Coverage`-preset ctest run.
-2. Per-test LCOV export (`tools/merge-coverage`, `cmake/Coverage.cmake`). Verify
-   the files exist and that `total.lcov` is unchanged.
-3. Extension: the native coverage API surface (`includesTests` +
+1. ~~Per-test `LLVM_PROFILE_FILE` + manifest (patch + `Module.cmake`).~~ **Done.**
+2. ~~Per-test LCOV export (`tools/merge-coverage`, `cmake/Coverage.cmake`).~~
+   **Done.** Both verified from a clean tree: 90 tests across the discovery
+   manifests, 88 per-test `.lcov` files, attribution spot-checked (an
+   `exponential_histogram` case's executed lines concentrate in
+   `exponential_histogram.cc`), and `total.lcov` byte-identical with the option
+   ON and OFF.
+3. **Next.** Extension: the native coverage API surface (`includesTests` +
    `loadDetailedCoverageForTest`). Verify `testing.hasPerTestCoverage` flips —
    the "Filter Coverage by Test" entry appearing in the command palette is the
    observable signal.
 4. The line->tests query extension.
 
-Steps 1 and 2 are testable from the command line with no extension at all, and
-steps 3 and 4 are independent of each other. Don't build the extension first.
+Steps 3 and 4 are independent of each other.
+
+**Reproducing the current state:**
+
+```sh
+cmake --preset Coverage
+cmake --build --preset Coverage
+cmake --build --preset Coverage --target coverage-clean
+(cd out/build/Coverage && ctest -j8)
+cmake --build --preset Coverage --target coverage-export
+# -> out/build/Coverage/coverage/per-test/{manifest.json,<id>.lcov}
+```
+
+The `coverage-clean` matters: without it, profiles from an earlier run merge
+into this one and execution counts accumulate.
 
 ---
 
-## Open questions for whoever picks this up
+## Open questions — resolved by steps 1 and 2
 
-- **Name encoding vs. manifest.** Recommended above as a manifest, but if a
-  reversible encoding is preferred, decide it once and apply it in both the patch
+- ~~**Name encoding vs. manifest.**~~ Manifest, with an MD5 id rather than a
+  sanitized name, so there is no encoding to agree on. Applied in both the patch
   and `tools/merge-coverage`.
-- **Cost of per-test export** on the full suite is unmeasured. Measure before
-  deciding whether it is on by default.
-- **The `python.*` CTest tests** spawn multiple binaries under one test. They fit
-  the model (one CTest test, one profile path) but their coverage spans several
-  executables; confirm the build-id mapping handles that as expected — it
-  currently anchors their profile to the build dir for exactly this reason.
-- **`ctest -j`.** Because every doctest case is its own CTest test and its own
-  process, parallel runs are fine as long as the filename carries the test name
-  *and* `%p%m`. This project does not have the batching problem that would
-  otherwise make parallel per-test coverage hard.
+- ~~**Cost of per-test export.**~~ Measured: seconds for 88 tests. Made opt-in
+  anyway (`ENABLE_PER_TEST_COVERAGE`), since the cost is linear in the suite
+  size and nothing but the extension needs the output.
+- ~~**The `python.*` CTest tests.**~~ They participate, and the build-id mapping
+  handles the multi-binary case as expected — one invocation per test resolves
+  every binary it ran through the `.build-id` farm. Caveat found while
+  verifying: only `python.test_pt_trace` actually runs an instrumented binary,
+  so the other three have no per-test report at all.
+- ~~**`ctest -j`.**~~ Confirmed: the whole suite was verified under `ctest -j8`.
+  The filename carries both the test id and `%p%m`, so parallel runs do not
+  collide.
+
+## Still open, for step 3
+
+- **What the extension keys on.** The manifest records the full CTest test name
+  (`module:::case name`). The extension must match that against its `TestItem`s
+  — and `codeCoverageDecorations.ts` asserts that every test named in
+  `includesTests` exists in the controller, so an unmatched name is a throw, not
+  a silent miss.
+- **Where the extension finds the manifest.** It currently has to be derived
+  from the build directory (`<build>/coverage/per-test/manifest.json`). If that
+  proves awkward from the extension side, the path could be surfaced some other
+  way, but nothing has been built to do so yet.

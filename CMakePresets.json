@@ -32,9 +32,10 @@
         },
         {
             "name": "Coverage",
-            "description": "Debug build with LLVM source-based coverage instrumentation.",
+            "description": "Debug build with LLVM source-based coverage instrumentation, exporting one LCOV per test as well as the merged total.",
             "cacheVariables": {
-                "ENABLE_TEST_COVERAGE": "ON"
+                "ENABLE_TEST_COVERAGE": "ON",
+                "ENABLE_PER_TEST_COVERAGE": "ON"
             },
             "inherits": [
                 "Debug"

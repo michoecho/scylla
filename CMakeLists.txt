@@ -18,6 +18,30 @@ if(ENABLE_TEST_COVERAGE)
 
     find_program(LLVM_COV llvm-cov REQUIRED)
 
+    # Where every test's .profraw lands. One directory rather than "next to the
+    # test binary" because the filename now identifies the *test* rather than
+    # the binary, so there is no binary to sit next to -- and because the
+    # manifests that map those filenames back to CTest test names have to be
+    # somewhere the reader can find without walking the build tree.
+    #
+    # Created at configure time: discovery writes its manifest here, and that
+    # happens at build time in a directory nothing else would have made yet.
+    set(COVERAGE_PROFILE_DIR "${CMAKE_BINARY_DIR}/coverage-profraw")
+    file(MAKE_DIRECTORY "${COVERAGE_PROFILE_DIR}")
+
+    # Per-test LCOV is one llvm-profdata + llvm-cov invocation per test instead
+    # of one for the whole suite, so it is opt-in: an ordinary coverage run that
+    # only wants total.lcov should not pay for N of them. The Coverage preset
+    # turns it on, because the per-test test-explorer view is the reason that
+    # preset exists.
+    #
+    # This gates only the *export*. The per-test .profraw files are always
+    # collected when coverage is on -- they cost nothing extra, since the same
+    # profiles have to be written either way, and having them means turning this
+    # option on does not require re-running the suite.
+    option(ENABLE_PER_TEST_COVERAGE
+        "Export one LCOV file per test, in addition to total.lcov" OFF)
+
     # VS Code's CMake Tools coverage profile builds these targets immediately
     # before and after running the selected CTest tests. Keep the orchestration
     # in a CMake script so cleanup is recursive and llvm-cov's stdout can be
@@ -26,6 +50,7 @@ if(ENABLE_TEST_COVERAGE)
         COMMAND ${CMAKE_COMMAND}
             -DACTION=CLEAN
             -DBINARY_DIR=${CMAKE_BINARY_DIR}
+            -DPROFILE_DIR=${COVERAGE_PROFILE_DIR}
             -P ${PROJECT_SOURCE_DIR}/cmake/Coverage.cmake
         COMMENT "Removing old LLVM coverage profiles"
         VERBATIM
@@ -35,6 +60,8 @@ if(ENABLE_TEST_COVERAGE)
         COMMAND ${CMAKE_COMMAND}
             -DACTION=EXPORT
             -DBINARY_DIR=${CMAKE_BINARY_DIR}
+            -DPROFILE_DIR=${COVERAGE_PROFILE_DIR}
+            -DPER_TEST=$<BOOL:${ENABLE_PER_TEST_COVERAGE}>
             -DMERGE_COVERAGE=${PROJECT_SOURCE_DIR}/tools/merge-coverage
             -DLLVM_COV=${LLVM_COV}
             -P ${PROJECT_SOURCE_DIR}/cmake/Coverage.cmake
@@ -274,8 +301,15 @@ set_tests_properties("python.build_test_binaries" PROPERTIES
     TIMEOUT 600
 )
 
+set(PYTHON_PROFILE_MANIFEST "")
 foreach(test_file IN LISTS PYTHON_TOOL_TESTS)
     cmake_path(GET test_file STEM test_name)
+    # Same id scheme as doctest discovery: MD5 of the full CTest test name. Kept
+    # identical on purpose -- one manifest format, one thing for the reader to
+    # know, and no way for a python test and a doctest case to be told apart by
+    # anything but their recorded names.
+    string(MD5 python_profile_id "python.${test_name}")
+    string(APPEND PYTHON_PROFILE_MANIFEST "${python_profile_id} python.${test_name}\n")
     add_test(
         NAME "python.${test_name}"
         COMMAND python3 -m pytest
@@ -294,14 +328,22 @@ foreach(test_file IN LISTS PYTHON_TOOL_TESTS)
         # label builds the binaries first even from a freshly configured tree.
         FIXTURES_REQUIRED build_python_test_bins
         # Mirror the coverage variable used for the doctest tests, so binaries
-        # these spawn contribute their .profraw to the report. A python test may
-        # spawn more than one of them (cpp_template, pt_test), so this is
-        # anchored to the build directory rather than to one target's path --
-        # naming it after cpp_template would file pt_test's profile under the
-        # wrong binary. %p%m still keeps concurrent writers apart, and
-        # tools/merge-coverage maps each .profraw back by build-id regardless of
-        # where it sits.
+        # these spawn contribute their .profraw to the report -- and, like them,
+        # name the file after the CTest test rather than after a binary, so the
+        # per-test export can attribute it. A python test may spawn more than one
+        # binary (cpp_template, pt_test); that is fine and is in fact why the
+        # path was never anchored to a target's location. All of that test's
+        # profiles share its id and merge into one per-test report spanning both
+        # executables, which tools/merge-coverage resolves by build-id as usual.
+        # %p%m still keeps concurrent writers apart.
         ENVIRONMENT_MODIFICATION
-            "CPP_TEMPLATE_BIN=set:$<TARGET_FILE:cpp_template>;PT_TEST_BIN=set:$<TARGET_FILE:pt_test>;LLVM_PROFILE_FILE=set:${CMAKE_BINARY_DIR}/python-${test_name}.%p%m.profraw"
+            "CPP_TEMPLATE_BIN=set:$<TARGET_FILE:cpp_template>;PT_TEST_BIN=set:$<TARGET_FILE:pt_test>;LLVM_PROFILE_FILE=set:${COVERAGE_PROFILE_DIR}/${python_profile_id}.%p%m.profraw"
     )
 endforeach()
+
+# The python tests' half of the id -> CTest name manifest that doctest discovery
+# writes for its own cases. Same format and same directory, as a separate file so
+# the two writers never race; the reader concatenates every *.manifest it finds.
+if(ENABLE_TEST_COVERAGE)
+    file(WRITE "${COVERAGE_PROFILE_DIR}/python.manifest" "${PYTHON_PROFILE_MANIFEST}")
+endif()
