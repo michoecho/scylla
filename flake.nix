@@ -50,12 +50,21 @@
       # `nix run .#code` behaves the same way outside the sandbox.
       vscodeFor = pkgs-unstable:
         let
-          withExts = pkgs-unstable.vscode-with-extensions.override {
-            vscode = pkgs-unstable.vscode;
-            vscodeExtensions = (with pkgs-unstable.vscode-extensions; [
+          # Bound separately so the wrapper below can seed a writable copy of
+          # exactly this set. `vscode-with-extensions` keeps them in their own
+          # derivation and only references it, so there is no extensions
+          # directory inside `withExts` itself to read.
+          extensions = (with pkgs-unstable.vscode-extensions; [
               anthropic.claude-code
               eamodio.gitlens
               ms-vscode.cpptools
+              # Upstream CMake Tools, and the default until the fork in
+              # tools/vscode-cmake-tools (which adds per-test coverage) is
+              # installed over it by that directory's build-and-install. The
+              # fork is deliberately *not* built here: its dependencies come
+              # from yarn at dev time rather than from Nix, so baking it in
+              # would make `nix build .#code` need network access. The wrapper
+              # below is what makes overriding it possible at all.
               ms-vscode.cmake-tools
               ms-python.python
               ms-python.vscode-pylance
@@ -72,6 +81,18 @@
                 sha256 = "0ql0a58b69j2806s5m85gc21v5ksxibxvks5yf7q462s3mwflihd";
               }
             ];
+
+          withExts = pkgs-unstable.vscode-with-extensions.override {
+            vscode = pkgs-unstable.vscode;
+            vscodeExtensions = extensions;
+          };
+
+          # The same extensions as one directory, which is what the wrapper
+          # copies from. Built here rather than dug out of `withExts` so the
+          # path is a Nix reference and not a guess at its internal layout.
+          extensionsDir = pkgs-unstable.symlinkJoin {
+            name = "vscode-extensions-dir";
+            paths = extensions;
           };
         in
         pkgs-unstable.symlinkJoin {
@@ -79,17 +100,43 @@
           paths = [ withExts ];
           nativeBuildInputs = [ pkgs-unstable.makeWrapper ];
           # Rewrite the `code` entrypoint so it injects a project-local
-          # --user-data-dir computed at launch time. Users can still override
-          # it explicitly; VS Code honours the last --user-data-dir given, and
-          # ours is prepended, so a user-supplied one wins.
+          # --user-data-dir and --extensions-dir computed at launch time. Users
+          # can still override either explicitly; VS Code honours the last one
+          # given, and ours are prepended, so a user-supplied one wins.
+          #
+          # The extensions directory has to be writable, and the one baked into
+          # `withExts` is a read-only store path. Making it project-local is
+          # what lets a locally built extension override a packaged one -- in
+          # particular the CMake Tools fork in tools/vscode-cmake-tools, which
+          # shares upstream's identity and so replaces it once installed here.
+          # Without this the fork would sit on disk unused, since the store
+          # path always wins.
+          #
+          # Seeding copies rather than symlinks is deliberate: VS Code writes
+          # inside extension directories, and the store is read-only. Each
+          # extension is copied once and then left alone, so an installed
+          # override is never clobbered on a later launch.
           postBuild = ''
             rm "$out/bin/code"
             makeWrapper "${withExts}/bin/code" "$out/bin/code" \
               --run '
                 root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
                 udd="$root/.local/vscode"
-                mkdir -p "$udd"
-                set -- --user-data-dir "$udd" "$@"
+                extdir="$udd/extensions"
+                mkdir -p "$extdir"
+                for ext in ${extensionsDir}/share/vscode/extensions/*/; do
+                  name="$(basename "$ext")"
+                  # Any directory whose name starts with the extension id
+                  # counts as present: `--install-extension` appends a version
+                  # suffix (ms-vscode.cmake-tools-1.13.0), and copying the
+                  # packaged one back in would shadow the installed override.
+                  # The glob is matched with `set --` in a subshell rather than
+                  # compgen, which this non-interactive bash does not provide.
+                  if ! ( set -- "$extdir/$name" "$extdir/$name"-*; [ -e "$1" ] || [ -e "$2" ] ); then
+                    cp -r --no-preserve=mode "$ext" "$extdir/$name"
+                  fi
+                done
+                set -- --user-data-dir "$udd" --extensions-dir "$extdir" "$@"
               '
           '';
         };
@@ -197,6 +244,17 @@
               pkgs-unstable.claude-code
               code
               pkgs-unstable.codex
+
+              # Toolchain for building the forked CMake Tools extension in
+              # tools/vscode-cmake-tools (see tools/vscode-cmake-tools/README).
+              # Unlike everything else here, its dependencies are *not*
+              # vendored through Nix: the fork's build runs `yarn install`
+              # against the network into a gitignored node_modules. That is a
+              # deliberate exception -- packaging a large TypeScript
+              # dependency tree reproducibly is a project of its own, and the
+              # extension is a developer tool rather than part of the build.
+              nodejs
+              yarn
 
               shader-slang
               vulkan-loader

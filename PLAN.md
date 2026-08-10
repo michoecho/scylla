@@ -216,21 +216,54 @@ filename stem, which under hashed profile names would have produced one
 directory per test named by an opaque hash. It now resolves the name through
 the manifest and sanitizes it for use as a directory component.
 
-### 3. The per-test coverage cmake tools extension — **NOT STARTED**
+### 3. The per-test coverage cmake tools extension — **DONE**
 
 **What:** Extend the CMake Tools extension so that it is able to match lcov
 files to test cases, and so that it uses this to feed the native testing APIs.
 
-Everything it needs is now on disk after a `Coverage`-preset run:
-`coverage/per-test/manifest.json` maps each CTest test name to its `.lcov`.
-The remaining work is entirely on the extension side — `includesTests` on the
-`FileCoverage` constructor, and `loadDetailedCoverageForTest`.
+Upstream v1.23.52 — the version nixpkgs packages — is forked into
+**`tools/vscode-cmake-tools/`**; see its `README.md` for the full account. The
+three changes that matter:
 
-Note when wiring this up: three of the four `python.*` tests pass without
-running any coverage-instrumented binary (`test_fuzz` drives the Fuzz build,
-`test_snapshot_files` works on source files), so they legitimately have no
-entry in the manifest. The extension must tolerate a CTest test with no report
-rather than assume every test has one.
+- **`src/perTestCoverage.ts`** (new) indexes
+  `coverage/per-test/manifest.json` and its LCOVs into *file → test →
+  executed statements*. It keeps only lines with `hit > 0`: an LCOV section
+  lists every instrumented line in the file, so keeping the zeroes would make
+  every test look like it covered every file it was merely linked against.
+- **`src/coverage.ts`** now passes the fifth `FileCoverage` argument,
+  `includesTests`.
+- **`src/ctest.ts`** registers `loadDetailedCoverageForTest`.
+
+**The name matching resolved cleanly.** CMake Tools gives each discovered test
+a `TestItem` whose *id* is the full CTest name — only the *label* is shortened
+to the last `:::` segment — so matching the manifest against it is an exact
+string comparison, with nothing to parse or escape. Verified against a real
+run: all 88 manifest names resolve.
+
+**The one real obstacle was the type definitions.** `@types/vscode` was pinned
+at 1.88, and both APIs are absent from the published `index.d.ts` through
+**1.95**; 1.96 is the first release containing them. The pin and the
+`engines.vscode` floor moved to 1.96 (the installed editor is 1.130). That bump
+also broke upstream's test fakes, which needed a
+`languageModelAccessInformation` stub.
+
+Three of the four `python.*` tests run no instrumented binary, so they have no
+manifest entry; the extension treats a reportless test as "no coverage" rather
+than an error, and a test asserts that this case still occurs in real data.
+
+**Verification.** Non-interactive: `tsc --noEmit` is clean across `src/`, and
+`ctest -R per_test_coverage_manifest` (new,
+`tools/tests/test_per_test_coverage_manifest.py`) checks every manifest name
+against `ctest --show-only=json-v1` — the invariant that matters, since
+`codeCoverageDecorations.ts` *asserts* on unknown names rather than ignoring
+them. The suite is 93/93. What remains is interactive and needs a human: that
+"Test: Filter Coverage by Test" appears and the gutter actually narrows.
+
+Build and install with `tools/vscode-cmake-tools/build-and-install`. The fork
+shares upstream's identity, so it shadows the nixpkgs copy in the
+project-local editor. Note that `--extensions-dir` *replaces* the extension set
+rather than adding to it, so the script seeds the writable directory from the
+Nix set first — otherwise clangd, Python and LLDB silently vanish.
 
 ### 4. The line -> tests query command — **NOT STARTED**
 
@@ -247,11 +280,15 @@ rather than assume every test has one.
    `exponential_histogram` case's executed lines concentrate in
    `exponential_histogram.cc`), and `total.lcov` byte-identical with the option
    ON and OFF.
-3. **Next.** Extension: the native coverage API surface (`includesTests` +
-   `loadDetailedCoverageForTest`). Verify `testing.hasPerTestCoverage` flips —
-   the "Filter Coverage by Test" entry appearing in the command palette is the
-   observable signal.
-4. The line->tests query extension.
+3. ~~Extension: the native coverage API surface (`includesTests` +
+   `loadDetailedCoverageForTest`).~~ **Done**, as a fork of upstream v1.23.52
+   in `tools/vscode-cmake-tools/`. Typechecks clean, name matching verified
+   against a real run by a new ctest test, suite 93/93. The remaining check is
+   interactive: that `testing.hasPerTestCoverage` flips, observable as
+   "Filter Coverage by Test" appearing in the command palette.
+4. **Next.** The line->tests query extension. It can build directly on
+   `PerTestCoverageIndex`, which already holds *file → test → lines*; a
+   reverse lookup is a scan of that index at one line.
 
 Steps 3 and 4 are independent of each other.
 
@@ -288,14 +325,21 @@ into this one and execution counts accumulate.
   The filename carries both the test id and `%p%m`, so parallel runs do not
   collide.
 
-## Still open, for step 3
+## Open questions — resolved by step 3
 
-- **What the extension keys on.** The manifest records the full CTest test name
-  (`module:::case name`). The extension must match that against its `TestItem`s
-  — and `codeCoverageDecorations.ts` asserts that every test named in
-  `includesTests` exists in the controller, so an unmatched name is a throw, not
-  a silent miss.
-- **Where the extension finds the manifest.** It currently has to be derived
-  from the build directory (`<build>/coverage/per-test/manifest.json`). If that
-  proves awkward from the extension side, the path could be surfaced some other
-  way, but nothing has been built to do so yet.
+- ~~**What the extension keys on.**~~ The `TestItem` *id* is the full CTest
+  name (the *label* is the shortened last segment), so it is an exact string
+  match with nothing to parse. Checked against a real run by
+  `tools/tests/test_per_test_coverage_manifest.py`, which exists precisely
+  because `codeCoverageDecorations.ts` throws on an unknown name.
+- ~~**Where the extension finds the manifest.**~~ Derived from the directory of
+  the configured coverage info file rather than from the build directory:
+  `per-test/` beside whatever `cmake.coverageInfoFiles` points at. No second
+  setting to keep in sync, and nothing new to surface.
+
+## Still open
+
+- **Fork maintenance.** The fork pins upstream v1.23.52 to match nixpkgs, and
+  its dependencies come from `yarn` over the network rather than from Nix —
+  the one place this repo departs from reproducible builds. Both are revisited
+  whenever the nixpkgs extension version moves.

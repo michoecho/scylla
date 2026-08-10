@@ -347,3 +347,27 @@ endforeach()
 if(ENABLE_TEST_COVERAGE)
     file(WRITE "${COVERAGE_PROFILE_DIR}/python.manifest" "${PYTHON_PROFILE_MANIFEST}")
 endif()
+
+# Checks the per-test coverage manifest against the tests CTest reports, which is
+# what the VS Code extension matches on to fill FileCoverage.includesTests. Kept
+# out of PYTHON_TOOL_TESTS above because it is a different kind of test: it drives
+# no binaries, so it wants neither the build fixture nor a $<TARGET_FILE:...>, and
+# it reads a *finished* coverage run rather than producing one.
+#
+# Consequently it is not part of a coverage run's own results -- it skips itself
+# unless reports are already on disk, and is meant to be run after
+# coverage-export. It also deliberately gets no LLVM_PROFILE_FILE: it would
+# otherwise write profiles into the very directory it is inspecting.
+add_test(
+    NAME "python.test_per_test_coverage_manifest"
+    COMMAND python3 -m pytest
+            "${PROJECT_SOURCE_DIR}/tools/tests/test_per_test_coverage_manifest.py"
+            -q --no-header
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+set_tests_properties("python.test_per_test_coverage_manifest" PROPERTIES
+    LABELS "python"
+    SKIP_RETURN_CODE 5
+    TIMEOUT 300
+    ENVIRONMENT_MODIFICATION "COVERAGE_BUILD_DIR=set:${CMAKE_BINARY_DIR}"
+)
