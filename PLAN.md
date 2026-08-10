@@ -1,10 +1,12 @@
 # Per-test coverage in the VS Code test explorer
 
-> **Status.** Steps 1 and 2 are done: a `Coverage`-preset run now writes one
-> LCOV per test plus a manifest naming them, under
-> `<build>/coverage/per-test/`. Steps 3 and 4 — the extension work — have not
-> been started. See "Suggested order" at the end for how to reproduce the
-> current state.
+> **Status.** All four steps are done. A `Coverage`-preset run writes one LCOV
+> per test plus a manifest naming them under `<build>/coverage/per-test/`
+> (steps 1–2), and the forked CMake Tools in `tools/vscode-cmake-tools/` feeds
+> that to the editor's per-test coverage filter (step 3) and to a
+> right-click **"Show Tests Covering This Line"** command (step 4). What is
+> left is interactive confirmation in a running editor; see "Verifying" in the
+> fork's `README.md`. "Suggested order" at the end reproduces the data.
 
 ## The goal
 
@@ -265,11 +267,61 @@ project-local editor. Note that `--extensions-dir` *replaces* the extension set
 rather than adding to it, so the script seeds the writable directory from the
 Nix set first — otherwise clangd, Python and LLDB silently vanish.
 
-### 4. The line -> tests query command — **NOT STARTED**
+### 4. The line -> tests query command — **DONE**
 
-- **The per-line command**: contributed to `editor/context`, reading the cursor
-  line, querying the index, and showing the covering tests in a quick-pick.
-  Selecting one should reveal it in the Test Explorer.
+**What:** right-click a line, get the tests that executed it.
+
+Contributed as `cmake.showTestsCoveringLine` — **"Show Tests Covering This
+Line"** — to `editor/context` and to the command palette. Three pieces:
+
+- **`PerTestCoverageIndex.testsForLine`** inverts the existing *file → test →
+  lines* index into *line → tests*, lazily on first query per file and then
+  kept. Cheap because the "keep only `hit > 0`" rule of step 3 already did the
+  work: "absent from a test's report" and "present with zero hits" were
+  collapsed at load, so the inversion is a plain scan.
+- **`CTestDriver.testsCoveringLine`** answers the query, and
+  **`src/testsCoveringLine.ts`** is the quick-pick over the answer.
+
+Three decisions that shaped it:
+
+- **The query reads the reports off disk**, not only the index a coverage run
+  left in memory. The normal way to use this command is in a freshly opened
+  window over an existing build directory; demanding a run in the same session
+  first would make it useless most of the time. A session run still wins, and
+  the disk copy is cached against the manifest's *mtime*, so regenerating with
+  `coverage-export` from the terminal — how this project actually produces them
+  — invalidates rather than being ignored.
+- **It never configures, builds, or prompts.** Deliberately not routed through
+  `runCMakeCommand`/`preTest`, which would demand a kit or preset. Asking "what
+  covers this line" is a lookup in files that already exist.
+- **"No per-test reports" and "no test covers this line" are distinct
+  answers**, with distinct messages. Collapsing them would report a missing
+  export as a coverage gap, which is the most misleading thing this command
+  could say.
+- **The menu entry is not gated on language.** Nothing in the lookup is
+  language-aware: the index is keyed by whatever path an LCOV `SF:` record
+  names. An earlier `resourceLangId == cpp || == c` clause was copied from
+  `cmake.compileFile`, which genuinely needs a C/C++ file because it consults
+  the compilation database; this command does not. The clause is
+  `editorTextFocus && resourceScheme == file`, excluding only where the
+  question is meaningless (output panels, virtual diff sides, untitled buffers,
+  the SCM input). The honest gate — "this file has coverage data" — is not
+  expressible in a static `when`, and computing it into a context key would
+  mean loading the index on every editor switch, giving up the laziness above
+  to save a menu entry.
+
+An undiscovered test — one named in reports from an older build — is shown
+greyed out rather than dropped. This is the one place the treatment differs from
+`includesTests`: nothing here reaches the editor's coverage model, so there is
+no assertion to satisfy, and the fact is worth surfacing.
+
+**Verification.** `tsc --noEmit` clean, webpack build clean, suite 93/93. Four
+new cases in `tools/tests/test_per_test_coverage_manifest.py` check the
+inversion against real reports: that it has answers at all, that it
+*discriminates* (some line resolves to exactly one test — if every covered line
+named every test, which is what keeping the `hit == 0` lines would produce, the
+answer would carry no information), and that every name it would show is a real
+CTest test. What remains interactive: the context-menu entry and the reveal.
 
 ## Suggested order
 
@@ -286,9 +338,11 @@ Nix set first — otherwise clangd, Python and LLDB silently vanish.
    against a real run by a new ctest test, suite 93/93. The remaining check is
    interactive: that `testing.hasPerTestCoverage` flips, observable as
    "Filter Coverage by Test" appearing in the command palette.
-4. **Next.** The line->tests query extension. It can build directly on
-   `PerTestCoverageIndex`, which already holds *file → test → lines*; a
-   reverse lookup is a scan of that index at one line.
+4. ~~The line->tests query command.~~ **Done**, in the same fork:
+   `testsForLine` inverts `PerTestCoverageIndex`, `src/testsCoveringLine.ts` is
+   the quick-pick, and the command is contributed to `editor/context`. Four new
+   cases in `tools/tests/test_per_test_coverage_manifest.py` check the
+   inversion against real reports; suite 93/93.
 
 Steps 3 and 4 are independent of each other.
 
