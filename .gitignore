@@ -16,3 +16,5 @@
 # runs are ad-hoc and their corpora are throwaway, so the whole directory is
 # ignored; the fuzz targets themselves live in src/.
 /fuzz
+
+/tools/vscode-cmake-tools
