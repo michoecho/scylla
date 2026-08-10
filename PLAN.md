@@ -174,55 +174,16 @@ Requirements:
   of one. Consider making per-test export opt-in via a CMake option or an env
   var so ordinary coverage runs stay fast.
 
-### 3. The extension
+### 3. The per-test coverage cmake tools extension
 
-**What:** a VS Code extension that reads the artifacts from step 2 and feeds the
-API from the background section.
+**What:** Extend the CMake Tools extension so that it is able to match lcov
+files to test cases, and so that it uses this to feed the native testing APIs.
 
-Decide first between two hosting options:
+### 4. The line -> tests query command
 
-- **Extend CMake Tools upstream.** Correct long-term, but requires negotiating
-  the design of a per-test mode with maintainers (their post-run-target model
-  assumes a single merged dataset), and doesn't help this repo this week.
-- **A separate local extension.** Recommended to start. Register your own
-  `TestController` with a single `TestRunProfileKind.Coverage` profile.
-
-Note the cost of the separate-extension route: a run profile can only be created
-via `controller.createRunProfile`, so it always belongs to a controller you
-created — there is no way to attach a profile to CMake Tools' controller. That
-means a **duplicate test tree** in the explorer. This is cosmetic; mitigate with
-a distinct controller label.
-
-The extension needs:
-
-- **Test discovery**, to build `TestItem`s whose IDs match the CTest test names
-  in the manifest. Use `ctest --show-only=json-v1` against the configured build
-  directory — this is what CMake Tools does, and it reads `CTestTestfile.cmake`
-  without needing the binaries to have been run. IDs must match the manifest
-  exactly, or the `codeCoverageDecorations.ts` assertion fires.
-- **When to discover:** on activation from a cached tree (don't shell out on the
-  activation path); a `refreshHandler` for the manual, always-correct path; and a
-  debounced `FileSystemWatcher` on the build directory as a build signal. The
-  build directory is `out/build/<presetName>` per `CMakePresets.json` — the
-  `Coverage` preset is the relevant one.
-- **An index**: `file → line → set<test id>`, built from the per-test LCOV files.
-  This single structure serves both halves of the goal.
-- **Coverage reporting**: one `FileCoverage` per file with `includesTests`
-  populated (merge across tests — do not emit one `FileCoverage` per file *per
-  test*), plus `loadDetailedCoverage` and `loadDetailedCoverageForTest`.
 - **The per-line command**: contributed to `editor/context`, reading the cursor
   line, querying the index, and showing the covering tests in a quick-pick.
   Selecting one should reveal it in the Test Explorer.
-
-An important simplification available here: the extension does **not** need to
-run the build or the tests to be useful. It can ingest LCOV files produced by an
-ordinary `cmake --build --target coverage-export`. Consider making ingestion the
-first milestone and test *execution* a later one — it gets the interesting
-feature working with far less machinery. When creating a run for
-already-existing files, note `createTestRun`'s `persist` parameter, which the API
-docs specifically describe for coverage data read from disk.
-
----
 
 ## Suggested order
 
@@ -230,13 +191,11 @@ docs specifically describe for coverage data read from disk.
    inspecting the `.profraw` files after a `Coverage`-preset ctest run.
 2. Per-test LCOV export (`tools/merge-coverage`, `cmake/Coverage.cmake`). Verify
    the files exist and that `total.lcov` is unchanged.
-3. Extension: ingest + index + the per-line command. This is the payoff and is
-   independently useful.
-4. Extension: the native coverage API surface (`includesTests` +
+3. Extension: the native coverage API surface (`includesTests` +
    `loadDetailedCoverageForTest`). Verify `testing.hasPerTestCoverage` flips —
    the "Filter Coverage by Test" entry appearing in the command palette is the
    observable signal.
-5. Only then consider test discovery/execution ownership, or upstreaming.
+4. The line->tests query extension.
 
 Steps 1 and 2 are testable from the command line with no extension at all, and
 steps 3 and 4 are independent of each other. Don't build the extension first.
