@@ -7,15 +7,16 @@ index 3f8234c..3f0bc7d 100644
      ""
      ""
 -    "TEST_PREFIX;TEST_SUFFIX;WORKING_DIRECTORY;TEST_LIST;JUNIT_OUTPUT_DIR"
-+    "TEST_PREFIX;TEST_SUFFIX;TEST_SUBCOMMAND;WORKING_DIRECTORY;TEST_LIST;JUNIT_OUTPUT_DIR"
++    "TEST_PREFIX;TEST_SUFFIX;TEST_SUBCOMMAND;PROFILE_DIR;WORKING_DIRECTORY;TEST_LIST;JUNIT_OUTPUT_DIR"
      "TEST_SPEC;EXTRA_ARGS;PROPERTIES;ADD_LABELS"
      ${ARGN}
    )
-@@ -146,6 +146,7 @@ function(doctest_discover_tests TARGET)
+@@ -146,6 +146,8 @@ function(doctest_discover_tests TARGET)
              -D "TEST_ADD_LABELS=${_ADD_LABELS}"
              -D "TEST_PREFIX=${_TEST_PREFIX}"
              -D "TEST_SUFFIX=${_TEST_SUFFIX}"
 +            -D "TEST_SUBCOMMAND=${_TEST_SUBCOMMAND}"
++            -D "TEST_PROFILE_DIR=${_PROFILE_DIR}"
              -D "TEST_LIST=${_TEST_LIST}"
              -D "TEST_JUNIT_OUTPUT_DIR=${_JUNIT_OUTPUT_DIR}"
              -D "CTEST_FILE=${ctest_tests_file}"
@@ -23,15 +24,17 @@ diff --git a/scripts/cmake/doctestAddTests.cmake b/scripts/cmake/doctestAddTests
 index e559893..96d9dd2 100644
 --- a/scripts/cmake/doctestAddTests.cmake
 +++ b/scripts/cmake/doctestAddTests.cmake
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,9 @@
  
  set(prefix "${TEST_PREFIX}")
  set(suffix "${TEST_SUFFIX}")
 +set(subcommand ${TEST_SUBCOMMAND})
++set(profile_dir "${TEST_PROFILE_DIR}")
++set(profile_manifest "")
  set(spec ${TEST_SPEC})
  set(extra_args ${TEST_EXTRA_ARGS})
  set(properties ${TEST_PROPERTIES})
-@@ -36,7 +37,7 @@ if("${spec}" MATCHES .)
+@@ -36,7 +39,7 @@ if("${spec}" MATCHES .)
  endif()
  
  execute_process(
@@ -40,7 +43,7 @@ index e559893..96d9dd2 100644
    OUTPUT_VARIABLE output
    RESULT_VARIABLE result
    WORKING_DIRECTORY "${TEST_WORKING_DIR}"
-@@ -51,6 +52,36 @@ endif()
+@@ -51,6 +54,36 @@ endif()
  
  string(REPLACE "\n" ";" output "${output}")
  
@@ -77,7 +80,7 @@ index e559893..96d9dd2 100644
  # Parse output
  foreach(line ${output})
    if("${line}" STREQUAL "===============================================================================" OR "${line}" MATCHES [==[^\[doctest\] ]==])
-@@ -61,7 +92,7 @@ foreach(line ${output})
+@@ -61,7 +94,7 @@ foreach(line ${output})
    if(${add_labels})
      # get test suite that test belongs to
      execute_process(
@@ -86,7 +89,7 @@ index e559893..96d9dd2 100644
        OUTPUT_VARIABLE labeloutput
        RESULT_VARIABLE labelresult
        WORKING_DIRECTORY "${TEST_WORKING_DIR}"
-@@ -97,14 +128,31 @@ foreach(line ${output})
+@@ -97,14 +130,62 @@ foreach(line ${output})
      "${prefix}${test}${suffix}"
      ${TEST_EXECUTOR}
      "${TEST_EXECUTABLE}"
@@ -110,11 +113,60 @@ index e559893..96d9dd2 100644
 +    set(def_source_line DEF_SOURCE_LINE "${CMAKE_MATCH_1}")
 +  endif()
 +
++  # PROFILE_DIR opts this runner's cases into per-test coverage: each one gets
++  # its own LLVM_PROFILE_FILE, so the .profraw files it produces name the CTest
++  # test that produced them rather than only the binary and the PID.
++  #
++  # The filename is a hash of the full CTest name, not the name itself. Case
++  # names are arbitrary user strings -- spaces, slashes, quotes, and the `:::`
++  # this project's TEST_PREFIX adds -- so any direct spelling needs an escaping
++  # scheme that both this file and tools/merge-coverage agree on, and that still
++  # loses to names colliding once sanitized. A hash sidesteps the encoding
++  # question entirely; the id is opaque and the manifest written below is what
++  # carries the real name back to the reader.
++  #
++  # MD5 because it is what CMake offers here and this is a filename, not a
++  # security boundary.
++  #
++  # %p%m is kept after the id. The id identifies the test; %p%m is what keeps
++  # writers unique -- a test that spawns subprocesses has several of them, and
++  # each needs its own file. tools/merge-coverage groups back to the id by
++  # stripping exactly that suffix.
++  set(profile_property "")
++  if(profile_dir)
++    string(MD5 profile_id "${prefix}${test}${suffix}")
++    set(profile_property ENVIRONMENT_MODIFICATION
++      "LLVM_PROFILE_FILE=set:${profile_dir}/${profile_id}.%p%m.profraw")
++    # One `<id> <ctest name>` record per line. The name is last so that it may
++    # contain spaces without needing to be quoted; the id is a fixed-width hash,
++    # so a reader splits on the first space and takes the rest verbatim.
++    string(APPEND profile_manifest "${profile_id} ${prefix}${test}${suffix}\n")
++  endif()
++
    add_command(set_tests_properties
      "${prefix}${test}${suffix}"
      PROPERTIES
      WORKING_DIRECTORY "${TEST_WORKING_DIR}"
 +    ${def_source_line}
++    ${profile_property}
      ${properties}
      LABELS ${labels}
    )
+@@ -118,3 +198,17 @@ add_command(set ${TEST_LIST} ${tests})
+ 
+ # Write CTest script
+ file(WRITE "${CTEST_FILE}" "${script}")
++
++# The sidecar mapping profile-file id -> CTest test name, for whoever reads the
++# .profraw files back (tools/merge-coverage). Written per discovered runner,
++# named after the CTest script so that two runners discovered into the same
++# PROFILE_DIR cannot overwrite each other's manifest; the reader concatenates
++# every *.manifest it finds.
++#
++# Written unconditionally when PROFILE_DIR is set, including when it would be
++# empty, so that a stale manifest from a previous configure -- listing tests
++# that no longer exist -- is truncated rather than left behind.
++if(profile_dir)
++  get_filename_component(manifest_name "${CTEST_FILE}" NAME_WE)
++  file(WRITE "${profile_dir}/${manifest_name}.manifest" "${profile_manifest}")
++endif()
