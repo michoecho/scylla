@@ -131,7 +131,10 @@
         {
             "name": "CoverageTest",
             "description": "Run the LLVM-instrumented Coverage build.",
-            "configurePreset": "Coverage"
+            "configurePreset": "Coverage",
+            "environment": {
+                "TEST_RNG": "random"
+            }
         },
         {
             "name": "FuzzTest",
