@@ -7,17 +7,22 @@ description = "LibAFL's in-process fuzzer behind a C ABI, for the test_rng libaf
 
 [lib]
 # Cargo prefixes a cdylib with `lib` unconditionally, so this stem produces
-# liblibafl_c.so in the build tree. nix/libafl-c.nix installs it as
-# libafl_c.so, which is the name the SONAME patched there and the consumer's
-# `-lafl_c` both expect -- see the note beside that install step.
+# liblibafl_c.so in the build tree. Nothing renames it: CMake links the file by
+# path out of the cargo target directory (see ../CMakeLists.txt), so the doubled
+# name never has to be spelled by a consumer.
 name = "libafl_c"
-# cdylib only. The C++ side links this as a shared library exactly the way it
-# links libhegel (see nix/libhegel.nix), so there is no consumer for an rlib.
+# cdylib only. The C++ side links this as a shared library, so there is no
+# consumer for an rlib.
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pinned to the LibAFL release the nix package fetches; nix/libafl-c.nix asserts
-# the two agree, the same guard nix/hegel-cpp.nix uses for libhegel.
+# The three LibAFL crates, from crates.io and pinned by Cargo.lock. Nix vendors
+# them into a local registry from that lockfile and CMake builds this crate
+# against it offline -- so the dependency set is as reproducible as a derivation
+# would make it, while this file stays editable in the build tree.
+#
+# Bumping any of these is `cargo update` + rebuild; the vendor dir is derived
+# from the lockfile, so the flake follows automatically.
 libafl = { version = "0.15.4", default-features = false, features = ["std"] }
 
 # `serdeany_autoreg` is not optional in practice. LibAFL's metadata maps are
@@ -46,5 +51,5 @@ libafl_targets = { version = "0.15.4", default-features = false, features = [
 
 [profile.release]
 # Debug info so a profile or a backtrace through the fuzzer names its Rust
-# frames, matching how nix/libhegel.nix treats the Hegel engine.
+# frames rather than showing bare addresses.
 debug = true

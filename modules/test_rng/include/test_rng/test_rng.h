@@ -287,7 +287,7 @@ std::string_view backend_name(Backend backend);
 
 // Whether Backend::LibAfl can actually run in this process.
 //
-// True only in a build that links libafl-c *and* carries working
+// True only in a build that links modules/libafl *and* carries working
 // SanitizerCoverage instrumentation -- which is the LibAfl preset. Constructing
 // a provider for the backend throws when this is false, so a test that wants to
 // be skipped rather than fail asks here first.

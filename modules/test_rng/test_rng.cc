@@ -25,12 +25,11 @@
 
 #include "exhaustigen/exhaustigen.h"
 
-// The libafl backend's engine. Guarded because the header lives in the
-// libafl-c prefix, which only the LibAfl preset puts on the include path; every
-// other build refuses the backend at runtime instead (see
-// libafl_unusable_reason).
+// The libafl backend's engine (modules/libafl). Guarded because that module is
+// only built by the LibAfl preset; every other build refuses the backend at
+// runtime instead (see libafl_unusable_reason).
 #ifdef BUILD_LIBAFL
-#include <libafl_c.h>
+#include "libafl/libafl_c.h"
 #endif
 
 // AFL's instrumentation defines these macros in an afl-clang-fast build; the
@@ -273,7 +272,7 @@ std::string afl_unusable_reason() {
 // built without -fsanitize-coverage=trace-pc-guard, or -- much nastier -- built
 // with it but linked against clang's own sanitizer runtime, whose weak stub for
 // __sanitizer_cov_trace_pc_guard silently wins over LibAFL's and counts
-// nothing. See the block comment in tools/libafl-c/include/libafl_c.h.
+// nothing. See the block comment in modules/libafl/include/libafl/libafl_c.h.
 //
 // Both cases are caught by asking the library how many edges SanCov registered.
 // When _init never ran, libafl_c_edge_count() reports the *map size* rather
@@ -297,7 +296,7 @@ std::string libafl_unusable_reason() {
 }
 #else
 std::string libafl_unusable_reason() {
-    return "this build does not link libafl-c (configure with the LibAfl "
+    return "this build does not link modules/libafl (configure with the LibAfl "
            "preset, which sets BUILD_LIBAFL=ON)";
 }
 #endif
@@ -573,7 +572,7 @@ RunReport TestRngProvider::dispatch(const std::function<void(TestRng&)>& body) {
             // Inverted control flow relative to every other backend: LibAFL
             // owns the loop, so this hands it a callback and blocks until the
             // search is over, rather than driving the body itself. See the
-            // block comment in tools/libafl-c/include/libafl_c.h.
+            // block comment in modules/libafl/include/libafl/libafl_c.h.
             //
             // A capturing lambda cannot convert to a C function pointer, so
             // what crosses the boundary is a stateless trampoline plus a

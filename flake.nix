@@ -157,10 +157,22 @@
           # cdylib, a CMake library, and the C++ binding that consumes both.
           inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
 
-          # LibAFL's in-process fuzzer behind a C ABI, backing TEST_RNG=libafl.
-          # The other Rust engine in this tree, packaged the same way as
-          # libhegel: build the cdylib from source and ship it with its header.
-          libafl-c = pkgs.callPackage ./nix/libafl-c.nix { };
+          # The crates modules/libafl's Rust wrapper depends on, vendored into a
+          # local registry from its Cargo.lock.
+          #
+          # Note what this is *not*: it is not a build of that wrapper. The
+          # wrapper is our code and is built by CMake, in the build tree, like
+          # every other module here -- see modules/libafl/CMakeLists.txt. Only
+          # its third-party dependencies come from Nix, because those are the
+          # part that is fetched rather than edited.
+          #
+          # That split is the whole point. A Nix derivation around our own
+          # source would mean any change to the C ABI -- a new function, a
+          # changed signature -- is a derivation rebuild before C++ can see it,
+          # which is a barrier in exactly the place iteration happens.
+          libafl-cargo-deps = pkgs.rustPlatform.importCargoLock {
+            lockFile = ./modules/libafl/rust/Cargo.lock;
+          };
         });
 
       devShells = forAllSystems (system:
@@ -246,11 +258,16 @@
               # entry is needed for find_package(hegel) to work.
               (hegelPackagesFor pkgs).hegel-cpp
 
-              # LibAFL behind a C ABI, for TEST_RNG=libafl. Unlike hegel-cpp
-              # there is no CMake config to find: the LibAfl preset locates the
-              # library and header from this prefix directly, which is all a
-              # single .so and one header need.
-              (pkgs.callPackage ./nix/libafl-c.nix { })
+              # Rust, for modules/libafl -- the wrapper that puts LibAFL's
+              # in-process fuzzer behind a C ABI for TEST_RNG=libafl. The crate
+              # is built by CMake from this tree rather than by a derivation, so
+              # the toolchain has to be in the shell; its dependencies are
+              # vendored separately (see CARGO_VENDOR_DIR below).
+              cargo
+              rustc
+              # Stamps a SONAME onto the cdylib cargo produces, which cargo
+              # itself does not do -- see modules/libafl/CMakeLists.txt.
+              patchelf
 
               pkgs-unstable.claude-code
               code
@@ -304,6 +321,20 @@
             # starts, hence shellHook rather than a plain attribute.
             shellHook = ''
               export PYTHONPYCACHEPREFIX="''${PYTHONPYCACHEPREFIX:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")/.cache/pycache}"
+
+              # Where Nix vendored modules/libafl's crate dependencies. CMake
+              # reads this to point cargo at a local registry, so the Rust build
+              # runs --offline and fetches nothing: the dependency set stays
+              # pinned by Cargo.lock and Nix hashes even though the crate itself
+              # is built here rather than by a derivation.
+              #
+              # Exported rather than looked up in CMake because only Nix can
+              # evaluate it, and a build outside this shell should fail loudly
+              # (modules/libafl/CMakeLists.txt errors when it is unset) rather
+              # than silently reaching for the network.
+              export LIBAFL_CARGO_VENDOR_DIR="${pkgs.rustPlatform.importCargoLock {
+                lockFile = ./modules/libafl/rust/Cargo.lock;
+              }}"
             '';
 
             hardeningDisable = [ "all" ];

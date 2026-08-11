@@ -41,11 +41,17 @@ if(BUILD_FUZZERS)
     target_compile_definitions(test_rng PRIVATE BUILD_FUZZERS)
 endif()
 
-# The libafl backend needs the engine's header to compile the LibAfl arm of the
-# dispatch. The *library* is not linked here: SanCov instruments every target in
-# the build, so its runtime has to be available to all of them and is linked
-# globally by the top-level CMakeLists instead. See the block there.
+# The libafl backend. The header comes from the modules/libafl imported target;
+# the *library* is not linked here, because SanCov instruments every target in
+# the build and its runtime therefore has to reach all of them -- the top-level
+# CMakeLists does that with link_libraries(). See the block there.
+#
+# The dependency on libafl_rust is what orders cargo's build before this
+# module's compile. Linking alone would not: an imported target carries no build
+# rule, so without this Ninja is free to compile test_rng.cc (and link
+# test_rng_test against a .so that does not exist yet) before cargo has run.
 if(BUILD_LIBAFL)
     target_compile_definitions(test_rng PRIVATE BUILD_LIBAFL)
-    target_include_directories(test_rng PRIVATE ${LIBAFL_C_INCLUDE_DIR})
+    target_link_libraries(test_rng PRIVATE libafl)
+    add_dependencies(test_rng libafl_rust)
 endif()
