@@ -152,8 +152,8 @@ find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 # invocations depending on the seed. Comparable exec counts, and the wall-clock
 # difference is the fork per testcase that this backend does not pay.
 #
-# The library itself is defined by modules/libafl (a cargo build behind an
-# imported target), which add_subdirectory(modules) reaches below. What has to
+# The library itself is defined by modules/libafl (a cargo build imported by
+# Corrosion), which add_subdirectory(modules) reaches below. What has to
 # happen *here* is the linking, and it is directory-wide on purpose -- the
 # obvious per-module version does not link.
 #
@@ -173,7 +173,7 @@ find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 # target below; the imported target does not exist yet, so the name is used and
 # resolved at generate time.
 if(BUILD_LIBAFL)
-    link_libraries(libafl)
+    link_libraries(libafl_c)
 endif()
 
 # Everything the program is made of lives in the `main` module

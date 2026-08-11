@@ -4,8 +4,8 @@
 # the shared test infrastructure first, its consumers after.
 add_subdirectory(snapshot)
 add_subdirectory(exhaustigen)
-# Not an add_module(): a cargo build behind an imported target, and a no-op
-# unless BUILD_LIBAFL is on. Before test_rng, which links it.
+# Not an add_module(): a cargo build imported by Corrosion, and a no-op unless
+# BUILD_LIBAFL is on. Before test_rng, which links it.
 add_subdirectory(libafl)
 add_subdirectory(test_rng)
 

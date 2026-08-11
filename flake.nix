@@ -265,9 +265,11 @@
               # vendored separately (see CARGO_VENDOR_DIR below).
               cargo
               rustc
-              # Stamps a SONAME onto the cdylib cargo produces, which cargo
-              # itself does not do -- see modules/libafl/CMakeLists.txt.
-              patchelf
+              # Drives that cargo build from CMake: find_package(Corrosion) in
+              # modules/libafl turns the crate into a real imported target with
+              # a build rule behind it. See the comments there for what it
+              # replaces.
+              corrosion
 
               pkgs-unstable.claude-code
               code

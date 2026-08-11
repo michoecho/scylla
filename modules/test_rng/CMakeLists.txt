@@ -41,17 +41,16 @@ if(BUILD_FUZZERS)
     target_compile_definitions(test_rng PRIVATE BUILD_FUZZERS)
 endif()
 
-# The libafl backend. The header comes from the modules/libafl imported target;
-# the *library* is not linked here, because SanCov instruments every target in
-# the build and its runtime therefore has to reach all of them -- the top-level
-# CMakeLists does that with link_libraries(). See the block there.
+# The libafl backend. Linking Corrosion's libafl_c target is all this needs: it
+# carries the header search path, the library, and -- unlike a hand-rolled
+# imported target -- a build rule, so Ninja orders cargo before this module's
+# compile without an explicit add_dependencies().
 #
-# The dependency on libafl_rust is what orders cargo's build before this
-# module's compile. Linking alone would not: an imported target carries no build
-# rule, so without this Ninja is free to compile test_rng.cc (and link
-# test_rng_test against a .so that does not exist yet) before cargo has run.
+# Linking it *here* is redundant with the top-level link_libraries() (SanCov
+# instruments every target in the build, so the runtime has to reach all of
+# them; see the block there), but it is what makes this module's own use of the
+# header a declared dependency rather than one inherited by accident.
 if(BUILD_LIBAFL)
     target_compile_definitions(test_rng PRIVATE BUILD_LIBAFL)
-    target_link_libraries(test_rng PRIVATE libafl)
-    add_dependencies(test_rng libafl_rust)
+    target_link_libraries(test_rng PRIVATE libafl_c)
 endif()
