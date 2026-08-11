@@ -25,6 +25,14 @@
 
 #include "exhaustigen/exhaustigen.h"
 
+// The libafl backend's engine. Guarded because the header lives in the
+// libafl-c prefix, which only the LibAfl preset puts on the include path; every
+// other build refuses the backend at runtime instead (see
+// libafl_unusable_reason).
+#ifdef BUILD_LIBAFL
+#include <libafl_c.h>
+#endif
+
 // AFL's instrumentation defines these macros in an afl-clang-fast build; the
 // guard lets this file build under a plain compiler too, where the AFL backend
 // is refused at runtime instead.
@@ -51,6 +59,8 @@ std::optional<Backend> parse_backend(std::string_view name) {
         return Backend::Random;
     if (name == "afl")
         return Backend::Afl;
+    if (name == "libafl")
+        return Backend::LibAfl;
     if (name == "smoke")
         return Backend::Smoke;
     return std::nullopt;
@@ -61,6 +71,7 @@ std::string_view backend_name(Backend backend) {
         case Backend::Exhaustive: return "exhaustive";
         case Backend::Random:     return "random";
         case Backend::Afl:        return "afl";
+        case Backend::LibAfl:     return "libafl";
         case Backend::Smoke:      return "smoke";
     }
     return "?";
@@ -175,6 +186,13 @@ private:
 //
 // One AflRng is constructed per testcase, inside the persistent loop below, so
 // each iteration starts drawing from byte zero of a fresh input.
+//
+// Shared with the libafl backend, which carves parameters out of its testcases
+// exactly the same way. That sharing is deliberate rather than incidental: the
+// two backends are the same *strategy* (coverage-guided mutation of a byte
+// string) driven by two different fuzzers, so giving them one byte-carving rule
+// means a difference in what they find is a difference between the fuzzers
+// rather than between two spellings of this class.
 class AflRng final : public TestRng {
 public:
     explicit AflRng(std::span<const std::byte> input) : input_(input) {}
@@ -240,6 +258,50 @@ std::string afl_unusable_reason() {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// LibAFL: the same byte-carving, driven by an in-process fuzzer.
+// ---------------------------------------------------------------------------
+
+// Why the `libafl` backend cannot run here, or empty if it can.
+//
+// The analogue of afl_unusable_reason above, and it exists for the same reason:
+// a coverage-guided search with no coverage is a slow random search that
+// reports exactly like a passing one, so it must be refused rather than run.
+//
+// The runtime half of the check is subtler than AFL's, because there is no
+// fuzzer process to detect. What can go wrong instead is that the binary was
+// built without -fsanitize-coverage=trace-pc-guard, or -- much nastier -- built
+// with it but linked against clang's own sanitizer runtime, whose weak stub for
+// __sanitizer_cov_trace_pc_guard silently wins over LibAFL's and counts
+// nothing. See the block comment in tools/libafl-c/include/libafl_c.h.
+//
+// Both cases are caught by asking the library how many edges SanCov registered.
+// When _init never ran, libafl_c_edge_count() reports the *map size* rather
+// than a real count, so an implausibly large answer means "the instrumentation
+// is not wired up" just as surely as zero does.
+#ifdef BUILD_LIBAFL
+std::string libafl_unusable_reason() {
+    const std::size_t edges = libafl_c_edge_count();
+    if (edges == 0)
+        return "the binary has no SanitizerCoverage instrumentation (configure "
+               "with the LibAfl preset)";
+    // The map libafl_targets allocates is 2^21 entries. A real program has far
+    // fewer edges than that, so a count at the cap means _init never ran and
+    // this is the uninitialized map size being reported.
+    if (edges >= (1u << 21))
+        return "SanitizerCoverage did not initialise, which usually means "
+               "clang's own sanitizer runtime was linked and its inert "
+               "__sanitizer_cov_trace_pc_guard shadowed LibAFL's (build with "
+               "-fno-sanitize-link-runtime)";
+    return {};
+}
+#else
+std::string libafl_unusable_reason() {
+    return "this build does not link libafl-c (configure with the LibAfl "
+           "preset, which sets BUILD_LIBAFL=ON)";
+}
+#endif
+
 // Default invocation budgets, used when max_invocations is left at zero. The
 // exhaustive walk gets the largest because it stops on its own as soon as the
 // space is covered -- the cap is only there so a body with an accidentally huge
@@ -250,6 +312,22 @@ constexpr std::uint64_t kDefaultRandomInvocations = 1'000;
 // Testcases one forked child serves before AFL recycles it, when
 // max_invocations is left at zero. AFL's own conventional value.
 constexpr std::uint64_t kDefaultAflIterations = 10'000;
+
+// Testcases the libafl backend runs when max_invocations is left at zero.
+//
+// Larger than the random backend's budget by three orders of magnitude, because
+// the two are not comparable units: a coverage-guided testcase is a single
+// mutation whose value comes from feedback accumulated over many, while a Hegel
+// test case is an independent draw. Invocations here are also very cheap --
+// roughly a million per second for the magic-bytes body, since there is no fork
+// per testcase.
+constexpr std::uint64_t kDefaultLibAflInvocations = 2'000'000;
+
+// The libafl backend's RNG seed, fixed for the same reason the Hegel backend
+// sets derandomize: a property that fails one run in fifty should fail every
+// run or none. A varying seed would make this backend a flake generator in a
+// suite that runs it on every build.
+constexpr std::uint64_t kLibAflSeed = 0x5eed;
 
 // Hand `body` a tightly-sized heap copy of the testcase.
 //
@@ -268,6 +346,10 @@ void draw_from_testcase(const std::byte* data,
 }
 
 }  // namespace
+
+bool libafl_available() {
+    return libafl_unusable_reason().empty();
+}
 
 }  // namespace test_rng
 
@@ -326,6 +408,18 @@ TestRngProvider::TestRngProvider(Backend backend) : backend_(backend) {
                 "test_rng: the afl backend was requested but cannot run: " +
                 reason);
     }
+
+    // Same bargain for libafl, and the silent-degradation risk is worse there:
+    // an uninstrumented afl run cannot start at all, whereas an uninstrumented
+    // libafl run happily executes millions of testcases against an all-zero
+    // coverage map and reports a clean pass.
+    if (backend_ == Backend::LibAfl) {
+        const std::string reason = libafl_unusable_reason();
+        if (!reason.empty())
+            throw std::runtime_error(
+                "test_rng: the libafl backend was requested but cannot run: " +
+                reason);
+    }
 }
 
 TestRngProvider::TestRngProvider()
@@ -338,7 +432,7 @@ TestRngProvider::TestRngProvider()
               throw std::runtime_error(
                   "test_rng: TEST_RNG=\"" + std::string(env) +
                   "\" is not a known backend (expected one of: exhaustive, "
-                  "random, afl, smoke)");
+                  "random, afl, libafl, smoke)");
           return *parsed;
       }()) {}
 
@@ -471,6 +565,89 @@ RunReport TestRngProvider::dispatch(const std::function<void(TestRng&)>& body) {
                                        });
                 },
                 iterations);
+            break;
+        }
+
+        case Backend::LibAfl: {
+#ifdef BUILD_LIBAFL
+            // Inverted control flow relative to every other backend: LibAFL
+            // owns the loop, so this hands it a callback and blocks until the
+            // search is over, rather than driving the body itself. See the
+            // block comment in tools/libafl-c/include/libafl_c.h.
+            //
+            // A capturing lambda cannot convert to a C function pointer, so
+            // what crosses the boundary is a stateless trampoline plus a
+            // context pointer that everything is recovered from.
+            const std::uint64_t budget = max_invocations != 0
+                                             ? max_invocations
+                                             : kDefaultLibAflInvocations;
+
+            // Only `invoke` is needed on the far side: it wraps the body,
+            // records the first failure and honours stop_on_failure, exactly as
+            // it does for the smoke, exhaustive and afl walks.
+            //
+            // Non-const because the C ABI takes a void*, and `invoke` is a
+            // const lambda object here; the trampoline only calls it.
+            auto invoke_fn = invoke;
+            void* context = &invoke_fn;
+
+            const auto trampoline = [](const std::uint8_t* data,
+                                       std::size_t len,
+                                       void* ctx) -> LibAflHarnessResult {
+                auto& run = *static_cast<decltype(invoke)*>(ctx);
+
+                // Nothing may escape into Rust: an exception unwinding through
+                // the fuzzer's frames is undefined behaviour. `invoke` already
+                // catches std::exception and records it, so a throw reaching
+                // here is a non-std exception -- still a failed property, and
+                // reporting it as one beats corrupting the stack to say so.
+                try {
+                    // The same tightly-sized copy the afl backend makes, and
+                    // for the same ASAN reason: LibAFL's input buffer has slack
+                    // after the testcase, so an over-read would land in valid
+                    // memory and go unnoticed.
+                    bool keep_going = true;
+                    draw_from_testcase(
+                        reinterpret_cast<const std::byte*>(data), len,
+                        [&](TestRng& rng) { keep_going = run(rng); });
+
+                    // `keep_going` is false exactly when the body failed *and*
+                    // stop_on_failure is set, which is the only case where the
+                    // fuzzer should be told to stop. A failure with
+                    // stop_on_failure off is deliberately reported as OK: the
+                    // RunReport has already recorded it (that is `invoke`'s
+                    // job), and saying FAILED here would end a search the
+                    // caller explicitly asked to run to completion.
+                    return keep_going ? LIBAFL_HARNESS_OK
+                                      : LIBAFL_HARNESS_FAILED;
+                } catch (...) {
+                    return LIBAFL_HARNESS_FAILED;
+                }
+            };
+
+            // The engine fills in a report of its own, which is deliberately
+            // *not* copied into `report`: `invoke` has already counted the
+            // invocations it saw and recorded the first failure, and those are
+            // the numbers every other backend reports. Taking the engine's
+            // instead would make this one backend's RunReport mean something
+            // subtly different. It is still passed (the ABI wants somewhere to
+            // write) and is useful when debugging a disagreement between the
+            // two counts.
+            LibAflRunReport native{};
+            const std::int32_t rc =
+                libafl_c_run(trampoline, context, budget, kLibAflSeed, &native);
+
+            // A non-zero return is the fuzzer failing to *run*, not a property
+            // failing -- a broken build, or a panic inside LibAFL. That is a
+            // configuration error and is thrown rather than folded into the
+            // report, which would report a failed search as a failed property.
+            if (rc != 0) {
+                const char* detail = libafl_c_last_error();
+                throw std::runtime_error(
+                    std::string("test_rng: the libafl backend failed to run: ") +
+                    (detail != nullptr ? detail : "unknown error"));
+            }
+#endif
             break;
         }
     }

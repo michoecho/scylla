@@ -76,6 +76,19 @@
             ]
         },
         {
+            "name": "LibAfl",
+            "description": "SanitizerCoverage-instrumented build, for running randomized tests under `TEST_RNG=libafl`. Run them with the LibAflTest preset. Needs no special compiler -- the instrumentation is stock clang's, and the fuzzer consuming it is the libafl-c shared library linked into the binary. -O0 for the same reason the Fuzz preset uses it: it prevents the tail-merging of failure paths that would flatten a coverage gradient.",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_LIBAFL": "ON",
+                "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fsanitize-coverage=trace-pc-guard -fno-sanitize-link-runtime"
+            },
+            "inherits": [
+                "Base",
+                "clang"
+            ]
+        },
+        {
             "name": "FuzzCmplog",
             "description": "CmpLog (redqueen) build of the same sources, passed to afl-fuzz as `-c`. Not a fuzzing target itself: afl-fuzz runs the Fuzz binary and consults this one to learn comparison operands.",
             "cacheVariables": {
@@ -116,6 +129,10 @@
             "environment": {
                 "AFL_LLVM_CMPLOG": "1"
             }
+        },
+        {
+            "name": "LibAfl",
+            "configurePreset": "LibAfl"
         }
     ],
     "testPresets": [
@@ -142,6 +159,14 @@
             "configurePreset": "Fuzz",
             "environment": {
                 "ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1:symbolize=0"
+            }
+        },
+        {
+            "name": "LibAflTest",
+            "description": "Run the SanitizerCoverage-instrumented build under the in-process LibAFL backend. Unlike FuzzTest this needs no external fuzzer process: TEST_RNG=libafl drives the whole search inside each test case.",
+            "configurePreset": "LibAfl",
+            "environment": {
+                "TEST_RNG": "libafl"
             }
         },
         {

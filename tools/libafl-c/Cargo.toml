@@ -1,0 +1,50 @@
+[package]
+name = "libafl-c"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "LibAFL's in-process fuzzer behind a C ABI, for the test_rng libafl backend"
+
+[lib]
+# Cargo prefixes a cdylib with `lib` unconditionally, so this stem produces
+# liblibafl_c.so in the build tree. nix/libafl-c.nix installs it as
+# libafl_c.so, which is the name the SONAME patched there and the consumer's
+# `-lafl_c` both expect -- see the note beside that install step.
+name = "libafl_c"
+# cdylib only. The C++ side links this as a shared library exactly the way it
+# links libhegel (see nix/libhegel.nix), so there is no consumer for an rlib.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pinned to the LibAFL release the nix package fetches; nix/libafl-c.nix asserts
+# the two agree, the same guard nix/hegel-cpp.nix uses for libhegel.
+libafl = { version = "0.15.4", default-features = false, features = ["std"] }
+
+# `serdeany_autoreg` is not optional in practice. LibAFL's metadata maps are
+# serde-erased trait objects looked up through a global type registry, and that
+# registry is populated by inventory-style autoregistration. Without this
+# feature the registry is empty and the *first* metadata insertion panics with
+# "Empty types registry" -- at runtime, from inside StdState::new, not at
+# compile time. The alternative upstream offers is registering every metadata
+# type by hand, which means naming LibAFL's internal types from here.
+libafl_bolts = { version = "0.15.4", default-features = false, features = [
+    "std",
+    "serdeany_autoreg",
+] }
+
+# The SanCov runtime. `sancov_pcguard` is what defines
+# __sanitizer_cov_trace_pc_guard and its _init, so linking this crate is what
+# gives the instrumented C++ binary something to call.
+#
+# Default features are off deliberately: the default set pulls `forkserver` and
+# `cmplog`, and the forkserver is precisely the thing this backend exists to not
+# need. What is left is the pcguard runtime and the C coverage map it indexes.
+libafl_targets = { version = "0.15.4", default-features = false, features = [
+    "std",
+    "sancov_pcguard",
+] }
+
+[profile.release]
+# Debug info so a profile or a backtrace through the fuzzer names its Rust
+# frames, matching how nix/libhegel.nix treats the Hegel engine.
+debug = true

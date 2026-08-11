@@ -156,6 +156,11 @@
           # Three packages because they are three separate builds: a Rust
           # cdylib, a CMake library, and the C++ binding that consumes both.
           inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
+
+          # LibAFL's in-process fuzzer behind a C ABI, backing TEST_RNG=libafl.
+          # The other Rust engine in this tree, packaged the same way as
+          # libhegel: build the cdylib from source and ship it with its header.
+          libafl-c = pkgs.callPackage ./nix/libafl-c.nix { };
         });
 
       devShells = forAllSystems (system:
@@ -240,6 +245,12 @@
               # shared library shipped inside its own prefix, so only this one
               # entry is needed for find_package(hegel) to work.
               (hegelPackagesFor pkgs).hegel-cpp
+
+              # LibAFL behind a C ABI, for TEST_RNG=libafl. Unlike hegel-cpp
+              # there is no CMake config to find: the LibAfl preset locates the
+              # library and header from this prefix directly, which is all a
+              # single .so and one header need.
+              (pkgs.callPackage ./nix/libafl-c.nix { })
 
               pkgs-unstable.claude-code
               code

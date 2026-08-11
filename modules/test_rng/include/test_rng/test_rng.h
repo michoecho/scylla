@@ -23,11 +23,17 @@
 //     ctest                                          # smoke, one pass
 //     TEST_RNG=random ./module_test                  # Hegel, with shrinking
 //     tools/fuzz 'my property'                       # AFL, via ctest by name
+//     ctest --preset LibAflTest                      # LibAFL, in-process
 //
 // The provider owns the AFL persistent loop, so a test never writes one. This
 // is the whole reason there is no separate "fuzz target" concept: a fuzz target
 // was only ever a randomized test whose loop happened to live outside it, and
 // splitting the two meant a property had to be written twice to get both.
+//
+// The libafl backend is the same bargain taken one step further. AFL needs an
+// external fuzzer process around this one, which is why its column is claimed
+// by a tool rather than by a test case; LibAFL runs the search in-process, so
+// a coverage-guided run is just another test case in the suite.
 //
 // Why one interface rather than three test-writing styles: the strategies find
 // different bugs, and which one suits a given property is rarely obvious in
@@ -229,6 +235,40 @@ enum class Backend {
     //         ./module_test --test-case='my property'
     Afl,
 
+    // "libafl" -- LibAFL, running the test body in an *in-process* executor.
+    //
+    // The same idea as Afl above -- parameters carved out of a fuzzer's
+    // testcase, mutations steered by coverage feedback -- with the process
+    // boundary removed. That difference is the point of having both.
+    //
+    // AFL fuzzes a *program*: it launches the binary, talks to a fork server,
+    // and each testcase runs in a fresh forked child. Nothing in that model
+    // knows what a test case is, which is why driving one test under AFL means
+    // pointing afl-fuzz at the binary and selecting the case by name from
+    // outside (tools/fuzz). LibAFL is a library rather than a program, so its
+    // InProcessExecutor calls the body as an ordinary function in this process:
+    // no fork server, no re-exec, and the search is a plain function call that
+    // returns a verdict. A randomized test can therefore run it inline, the way
+    // it runs the exhaustive and random backends.
+    //
+    // Two consequences worth knowing before writing a body for it:
+    //
+    //   - A failure is signalled by *throwing*, like every other in-process
+    //     backend. Do not _exit() the way the afl case does -- there is no
+    //     forked child to kill, so that would take the fuzzer down with it.
+    //   - The coverage map is process-wide, so it includes doctest and anything
+    //     else running here, not only the body. That costs some feedback
+    //     precision and is the price of not forking.
+    //
+    // Requires a build instrumented with SanitizerCoverage; the LibAfl preset
+    // is that build. As with afl, the provider refuses rather than degrading
+    // when the instrumentation is absent, because a coverage-guided search with
+    // no coverage is a slow random search that looks like a passing one.
+    //
+    //     cmake --preset LibAfl && cmake --build --preset LibAfl
+    //     ctest --preset LibAflTest
+    LibAfl,
+
     // "smoke" -- no search at all. One invocation, every parameter taking a
     // fixed representative value from its domain. This is the default when
     // TEST_RNG is unset, so an ordinary `ctest` run executes every randomized
@@ -238,12 +278,25 @@ enum class Backend {
     Smoke,
 };
 
-// Parses a backend name ("exhaustive", "random", "afl", "smoke").
+// Parses a backend name ("exhaustive", "random", "afl", "libafl", "smoke").
 // Returns nullopt for anything else, so the caller can report the bad value.
 std::optional<Backend> parse_backend(std::string_view name);
 
 // The name `parse_backend` accepts for `backend`.
 std::string_view backend_name(Backend backend);
+
+// Whether Backend::LibAfl can actually run in this process.
+//
+// True only in a build that links libafl-c *and* carries working
+// SanitizerCoverage instrumentation -- which is the LibAfl preset. Constructing
+// a provider for the backend throws when this is false, so a test that wants to
+// be skipped rather than fail asks here first.
+//
+// Exposed because "is this build instrumented" is not something a test can
+// discover for itself: the afl backend's equivalent question is answerable from
+// the environment (afl-fuzz sets shared-memory variables), while this one is a
+// property of how the binary was linked.
+bool libafl_available();
 
 // How a run ended. Returned by TestRngProvider::run so a test can assert on the
 // search itself -- the demonstration tests below check that a given backend

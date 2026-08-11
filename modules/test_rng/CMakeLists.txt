@@ -40,3 +40,12 @@ target_compile_options(test_rng PRIVATE -Wall -Wextra)
 if(BUILD_FUZZERS)
     target_compile_definitions(test_rng PRIVATE BUILD_FUZZERS)
 endif()
+
+# The libafl backend needs the engine's header to compile the LibAfl arm of the
+# dispatch. The *library* is not linked here: SanCov instruments every target in
+# the build, so its runtime has to be available to all of them and is linked
+# globally by the top-level CMakeLists instead. See the block there.
+if(BUILD_LIBAFL)
+    target_compile_definitions(test_rng PRIVATE BUILD_LIBAFL)
+    target_include_directories(test_rng PRIVATE ${LIBAFL_C_INCLUDE_DIR})
+endif()

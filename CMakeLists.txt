@@ -133,6 +133,44 @@ find_package(Boost REQUIRED CONFIG COMPONENTS stacktrace_from_exception)
 find_path(BACKTRACE_INCLUDE_DIR backtrace.h REQUIRED)
 find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 
+# LibAFL's in-process fuzzer, behind a C ABI (tools/libafl-c). Off by default;
+# the LibAfl preset turns this on AND adds -fsanitize-coverage=trace-pc-guard,
+# so the whole binary carries SanitizerCoverage instrumentation.
+#
+# This is the second coverage-guided backend, and it exists because of what the
+# AFL one costs. AFL fuzzes a *program*: driving a single test case under it
+# means building with afl-clang-fast++, starting afl-fuzz, and selecting the
+# case by name from outside (tools/fuzz). LibAFL is a library with an
+# in-process executor, so the same search is a function call inside an ordinary
+# test case -- no fork server, no second process, no re-exec:
+#
+#     cmake --preset LibAfl && cmake --build --preset LibAfl
+#     ctest --preset LibAflTest
+#
+# Measured on the same planted bug (five magic bytes, modules/test_rng): AFL
+# finds it in ~180-280ms / 17-29k execs, LibAFL in ~30ms-750ms / 26k-750k
+# invocations depending on the seed. Comparable exec counts, and the wall-clock
+# difference is the fork per testcase that this backend does not pay.
+#
+# Both halves are directory-wide on purpose, and it is worth being explicit
+# about why, because the obvious per-module version does not link. SanCov
+# instruments *every* translation unit in the build, and each one emits calls to
+# __sanitizer_cov_trace_pc_guard. That symbol is defined by libafl-c, so every
+# executable here -- vulkan_test as much as test_rng_test -- needs the library
+# on its link line, not just the module that calls the fuzzer.
+#
+# -fno-sanitize-link-runtime is the other half, set in the preset beside the
+# instrumentation flag. Without it clang links its own sanitizer runtime, whose
+# weak, inert definition of __sanitizer_cov_trace_pc_guard wins over libafl-c's
+# (a static archive outranks a shared library), and the coverage map stays
+# all-zero while the fuzzer runs happily and finds nothing. The backend detects
+# that at runtime and refuses, but the flag is what prevents it.
+if(BUILD_LIBAFL)
+    find_path(LIBAFL_C_INCLUDE_DIR libafl_c.h REQUIRED)
+    find_library(LIBAFL_C_LIBRARY afl_c REQUIRED)
+    link_libraries(${LIBAFL_C_LIBRARY})
+endif()
+
 # Everything the program is made of lives in the `main` module
 # (modules/main/), which is defined after this file includes Module.cmake --
 # so the executable itself is created down there, below add_subdirectory.

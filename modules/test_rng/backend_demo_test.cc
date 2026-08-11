@@ -8,11 +8,20 @@
 // property written against TestRng gets three genuinely different attempts at
 // falsifying it for the price of one test body.
 //
-//                       exhaustive   random    afl     smoke
-//   semiprime factor        yes        no       no       no
-//   magic 5 bytes            no        no      yes       no
-//   boundary in a wide       no       yes       no       no
+//                       exhaustive   random    afl    libafl   smoke
+//   semiprime factor        yes        no       no      no       no
+//   magic 5 bytes            no        no      yes     yes       no
+//   boundary in a wide       no       yes       no      no        no
 //   domain
+//
+// afl and libafl share a column of results because they are the same strategy
+// -- coverage-guided mutation of a byte string, carved into parameters by the
+// same rule -- run by two different engines. What differs is not what they find
+// but what it costs to run them: AFL needs a fork server and an external
+// afl-fuzz process, so its column is claimed from outside the suite (see
+// below), while LibAFL runs in this process and can therefore be an ordinary
+// test case. That is the entire reason the libafl backend exists, and the two
+// tests below are the evidence: same body, same find, no external fuzzer.
 //
 // The AFL column is the one that cannot be checked in an ordinary test run:
 // that backend needs a live afl-fuzz around the process, which is a thing no
@@ -368,6 +377,72 @@ TEST_CASE("afl guesses the magic bytes") {
     });
 }
 
+// The positive half of bug 2 again, in-process this time.
+//
+// This is the test the libafl backend was added for. It is the *same* body the
+// AFL case above fuzzes and the same one the exhaustive and random backends
+// fail on, driven through the same provider -- but it is an ordinary test case
+// with no external fuzzer, no fork server and no self-re-exec, because
+// LibAFL's executor calls the body as a function in this process.
+//
+// Skipped unless the binary is instrumented, since the provider refuses the
+// backend otherwise. That is the LibAfl preset:
+//
+//     cmake --preset LibAfl && cmake --build --preset LibAfl
+//     ctest --preset LibAflTest
+//
+// The budget is worth explaining, because the obvious small number is wrong and
+// the measurements say why. Across seeds the cost of this search varies by more
+// than an order of magnitude: 26k, 55k, 63k, 99k, 101k invocations on five
+// seeds, but 567k and 753k on two others. Every one of them finds it -- none
+// ran out of gradient -- so the spread is how long a mutation-driven search
+// takes to stumble onto the first correct byte, not whether it can.
+//
+// That is the honest character of this backend and the reason the budget is
+// 2M rather than the 400k an early version used: at 400k the two unlucky seeds
+// above report "not found", which would have made this test a coin flip
+// disguised as an assertion. Invocations are cheap enough (~1M/s, no fork per
+// testcase) that 2M costs well under a second even in the worst case measured.
+//
+// The seed itself is fixed in the provider, so this test is deterministic; the
+// spread matters only because a *future* change to the body or the engine would
+// land somewhere else in that distribution.
+// Named "in-process" rather than the obvious "libafl guesses the magic bytes",
+// and the reason is a trap worth leaving signposted: ctest's -R takes an
+// unanchored regex, so a case called "libafl guesses..." is also matched by the
+// pattern tools/fuzz uses to find "afl guesses the magic bytes$". That tool
+// insists on exactly one match -- correctly, since it is about to point a
+// fuzzer at whatever it finds -- so the near-duplicate name breaks it.
+TEST_CASE("libafl guesses the magic bytes in-process") {
+    if (!test_rng::libafl_available())
+        return;
+
+    test_rng::TestRngProvider provider(Backend::LibAfl);
+    provider.max_invocations = 2'000'000;
+
+    // search() rather than run(), so the *find* is the assertion -- the same
+    // inversion every other demonstration here uses.
+    const RunReport report = provider.search(magic_bytes_are_unguessable);
+    REQUIRE(report.found_failure);
+    CHECK(report.failure_message == "guessed the magic bytes");
+}
+
+TEST_CASE("the libafl backend refuses to run without coverage") {
+    // The same promise the afl backend makes, and it matters more here. An
+    // uninstrumented afl run cannot start at all; an uninstrumented libafl run
+    // would happily execute its whole budget against an all-zero coverage map
+    // and report a clean pass, which is indistinguishable from a property that
+    // is actually true. So the provider checks and throws.
+    if (!test_rng::libafl_available())
+        CHECK_THROWS_AS((test_rng::TestRngProvider(Backend::LibAfl)),
+                        std::runtime_error);
+
+    // And it is a legal name either way, so TEST_RNG=libafl is a request the
+    // parser understands rather than an unknown-backend error.
+    CHECK(test_rng::parse_backend("libafl") == Backend::LibAfl);
+    CHECK(test_rng::backend_name(Backend::LibAfl) == "libafl");
+}
+
 // --- Bug 3 -----------------------------------------------------------------
 
 TEST_CASE("random finds the boundary in a 2^32 domain") {
@@ -440,6 +515,15 @@ TEST_CASE("TEST_RNG selects the backend") {
         set("afl");
         CHECK_THROWS_AS(test_rng::TestRngProvider(), std::runtime_error);
     }
+
+    // Same for libafl, whose availability is a property of the build rather
+    // than of the environment: selectable when the binary is instrumented, and
+    // a reported error rather than a silent fallback when it is not.
+    set("libafl");
+    if (test_rng::libafl_available())
+        CHECK(test_rng::TestRngProvider().backend() == Backend::LibAfl);
+    else
+        CHECK_THROWS_AS(test_rng::TestRngProvider(), std::runtime_error);
 
     set(had_original ? original.c_str() : nullptr);
 }
