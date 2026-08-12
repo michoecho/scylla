@@ -14,6 +14,18 @@
 
 namespace alternator {
 
+// Exposed for tests: feeds `chunks` to the response compressor one by one
+// (the code path used for chunked responses), closes the stream, and passes
+// every produced output buffer to `write`.
+future<> compress_chunks_for_test(bool gzip, int compression_level,
+        std::vector<std::string> chunks,
+        noncopyable_function<future<>(temporary_buffer<char>&&)> write);
+
+// Exposed for tests: compresses `message` in a single compress(..., is_last_chunk=true)
+// call, exactly like the non-chunked response path does.
+future<> compress_message_for_test(bool gzip, int compression_level, std::string message,
+        noncopyable_function<future<>(temporary_buffer<char>&&)> write);
+
 class response_compressor {
 public:
     enum class compression_type {
