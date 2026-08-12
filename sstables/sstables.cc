@@ -1786,7 +1786,7 @@ future<file> sstable::open_file(component_type type, open_flags flags, file_open
 }
 
 future<> sstable::open_or_create_data(open_flags oflags, file_open_options options) noexcept {
-    utils::small_vector<future<>, 4> futures;
+    utils::small_vector<future<>, 5> futures;
   if (has_component(component_type::Index)) {
     futures.push_back(open_file(component_type::Index, oflags, options).then([this] (file f) { _index_file = std::move(f); }));
   }
@@ -1799,6 +1799,12 @@ future<> sstable::open_or_create_data(open_flags oflags, file_open_options optio
     }
     if (has_component(component_type::Rows)) {
         futures.push_back(open_file(component_type::Rows, oflags, options).then([this] (file f) { _rows_file = std::move(f); }));
+    }
+    // CompressionInfo.db is not written through this handle -- it is opened, written, and closed
+    // by write_compression().
+    // We only open it here when the sstable is being opened for reading.
+    if (has_component(component_type::CompressionInfo) && (oflags & open_flags::create) == open_flags{}) {
+        futures.push_back(open_file(component_type::CompressionInfo, oflags, options).then([this] (file f) { _compression_info_file = std::move(f); }));
     }
     return when_all_succeed(futures.begin(), futures.end()).discard_result();
 }
@@ -2198,6 +2204,9 @@ future<> sstable::load(sstables::foreign_sstable_open_info info) noexcept {
     if (info.rows) {
         _rows_file = make_checked_file(_read_error_handler, info.rows->to_file());
     }
+    if (info.compression_info) {
+        _compression_info_file = make_checked_file(_read_error_handler, info.compression_info->to_file());
+    }
     _shards = std::move(info.owners);
     _metadata_size_on_disk = info.metadata_size_on_disk;
     validate_min_max_metadata();
@@ -2217,6 +2226,7 @@ future<foreign_sstable_open_info> sstable::get_open_info() & {
             .index = _index_file ? std::optional<seastar::file_handle>(_index_file.dup()) : std::nullopt,
             .partitions = _partitions_file ? std::optional<seastar::file_handle>(_partitions_file.dup()) : std::nullopt,
             .rows = _rows_file ? std::optional<seastar::file_handle>(_rows_file.dup()) : std::nullopt,
+            .compression_info = _compression_info_file ? std::optional<seastar::file_handle>(_compression_info_file.dup()) : std::nullopt,
             .generation = _generation,
             .version = _version,
             .format = _format,
@@ -3653,6 +3663,12 @@ future<> sstable::close_files() {
     if (_rows_file) {
         close_futures.push_back(_rows_file.close().handle_exception([me = shared_from_this()] (auto ep) {
             sstlog.warn("sstable close rows_db failed: {}", ep);
+            general_disk_error();
+        }));
+    }
+    if (_compression_info_file) {
+        close_futures.push_back(_compression_info_file.close().handle_exception([me = shared_from_this()] (auto ep) {
+            sstlog.warn("sstable close compression_info_file failed: {}", ep);
             general_disk_error();
         }));
     }

@@ -393,6 +393,11 @@ public:
     file& index_file() {
         return _index_file;
     }
+    // Handle to the CompressionInfo.db component.
+    // Only valid for compressed sstables which are open for reading.
+    file& compression_info_file() {
+        return _compression_info_file;
+    }
     file uncached_index_file();
     file uncached_partitions_file();
     file uncached_rows_file();
@@ -566,6 +571,10 @@ private:
     std::set<generation_type> _compaction_ancestors;
     file _index_file;
     seastar::shared_ptr<cached_file> _cached_index_file;
+    // CompressionInfo.db
+    // Only set for compressed sstables opened for reading.
+    // Unset for uncompressed sstables, and for compressed sstables while they are still being written.
+    file _compression_info_file;
     file _data_file;
     file _partitions_file;
     seastar::shared_ptr<cached_file> _cached_partitions_file;
