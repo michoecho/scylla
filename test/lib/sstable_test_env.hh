@@ -100,6 +100,8 @@ struct test_env_config {
     db::corrupt_data_handler* corrupt_data_handler = nullptr;
     data_dictionary::storage_options storage; // will be local by default
     size_t available_memory = memory::stats().total_memory();
+    // See db::config::compressioninfo_is_evictable.
+    bool compressioninfo_is_evictable = true;
 };
 
 data_dictionary::storage_options make_test_object_storage_options(std::string_view type);

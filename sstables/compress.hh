@@ -266,6 +266,14 @@ struct compression {
             return _size;
         }
 
+        // Frees the memory holding the offsets. The container stays usable (it keeps
+        // the layout it was init()ed with), but it becomes empty.
+        void clear() noexcept {
+            _storage = std::deque<bucket>();
+            _size = 0;
+            _last_written_offset = 0;
+        }
+
         const_iterator begin() const {
             return const_iterator(*this);
         }
@@ -319,7 +327,26 @@ private:
     // The number of chunk offsets stored in CompressionInfo.db. Recorded separately
     // from `offsets.size()` because `offsets` can be empty, if evicted.
     uint64_t _chunk_count = 0;
+    // If true, `offsets` is not meant to hold the chunk offsets -- they are read from
+    // CompressionInfo.db on demand instead, and cached by compression_info_cache.
+    // See db::config::compressioninfo_is_evictable.
+    bool _offsets_evictable = false;
 public:
+    bool offsets_evictable() const noexcept {
+        return _offsets_evictable;
+    }
+
+    // Must be set before parse(), which skips populating `offsets` if it is set.
+    void set_offsets_evictable(bool v) noexcept {
+        _offsets_evictable = v;
+    }
+
+    // Frees the in-memory copy of the chunk offsets. Only legal once the offsets are
+    // known to be servable from CompressionInfo.db instead.
+    void discard_offsets() noexcept {
+        offsets.clear();
+    }
+
     uint64_t offsets_start_pos() const noexcept {
         return _offsets_start_pos;
     }

@@ -57,13 +57,15 @@ row_cache::create_underlying_reader(read_context& ctx, mutation_source& src, con
 
 static thread_local mutation_application_stats dummy_app_stats;
 static thread_local utils::updateable_value<double> dummy_index_cache_fraction(1.0);
+static thread_local utils::updateable_value<double> dummy_compressioninfo_cache_fraction(1.0);
 
 cache_tracker::cache_tracker()
-    : cache_tracker(dummy_index_cache_fraction, dummy_app_stats, register_metrics::no)
+    : cache_tracker(dummy_index_cache_fraction, dummy_compressioninfo_cache_fraction, dummy_app_stats, register_metrics::no)
 {}
 
-cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fraction, register_metrics with_metrics)
-    : cache_tracker(std::move(index_cache_fraction), dummy_app_stats, with_metrics)
+cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fraction,
+        utils::updateable_value<double> compressioninfo_cache_fraction, register_metrics with_metrics)
+    : cache_tracker(std::move(index_cache_fraction), std::move(compressioninfo_cache_fraction), dummy_app_stats, with_metrics)
 {}
 
 static thread_local cache_tracker* current_tracker;
@@ -72,11 +74,14 @@ cache_tracker* get_current_cache_tracker() noexcept {
     return current_tracker;
 }
 
-cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fraction, mutation_application_stats& app_stats, register_metrics with_metrics)
+cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fraction,
+        utils::updateable_value<double> compressioninfo_cache_fraction,
+        mutation_application_stats& app_stats, register_metrics with_metrics)
     : _garbage(_region, this, app_stats)
     , _memtable_cleaner(_region, nullptr, app_stats)
     , _app_stats(app_stats)
     , _index_cache_fraction(std::move(index_cache_fraction))
+    , _compressioninfo_cache_fraction(std::move(compressioninfo_cache_fraction))
 {
     if (with_metrics) {
         setup_metrics();
@@ -93,6 +98,29 @@ cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fractio
                 return memory::reclaiming_result::reclaimed_something;
             }
             current_tracker = this;
+
+            // The cached compression info (the chunk offsets of compressed Data.db files)
+            // shares memory with the cache, but has an LRU of its own, and a replacement
+            // policy of its own:
+            //
+            // if compression info occupies more than compressioninfo_cache_fraction of shard memory:
+            //     evict the least recently used compression info bucket
+            //
+            // Unlike index entries, compression info entries aren't evicted at all while
+            // they are within their allowance. Rereading them from disk is comparatively
+            // expensive (a read of compression info is on the critical path of every read
+            // of the data it describes), and their total size is bounded by a small
+            // fraction of the size of the data, so keeping them resident is usually the
+            // right call. The fraction is of the total shard memory, rather than of the
+            // memory of the cache region, because the point of the limit is to bound the
+            // footprint of compression info in the shard, not to arbitrate between
+            // compression info and cached data.
+            if (_compression_info_cache_stats.used_bytes >
+                    memory::stats().total_memory() * _compressioninfo_cache_fraction.get()) {
+                if (_compression_info_lru.evict() == memory::reclaiming_result::reclaimed_something) {
+                    return memory::reclaiming_result::reclaimed_something;
+                }
+            }
 
             // Cache replacement algorithm:
             //
@@ -121,7 +149,13 @@ cache_tracker::cache_tracker(utils::updateable_value<double> index_cache_fractio
             size_t index_cache_space = _partition_index_cache_stats.used_bytes + _index_cached_file_stats.cached_bytes;
             bool should_evict_index = index_cache_space > total_cache_space * _index_cache_fraction.get();
 
-            return _lru.evict(should_evict_index);
+            auto res = _lru.evict(should_evict_index);
+            if (res == memory::reclaiming_result::reclaimed_nothing) {
+                // There is nothing else left to reclaim in the region, so the compression
+                // info has to give up its allowance rather than let the allocation fail.
+                res = _compression_info_lru.evict();
+            }
+            return res;
         });
     });
 }
@@ -145,6 +179,7 @@ void cache_tracker::set_compaction_scheduling_group(seastar::scheduling_group sg
 namespace sstables {
 void register_index_page_cache_metrics(seastar::metrics::metric_groups&, cached_file_stats&);
 void register_index_page_metrics(seastar::metrics::metric_groups&, partition_index_cache_stats&);
+void register_compression_info_metrics(seastar::metrics::metric_groups&, compression_info_cache_stats&);
 };
 
 void
@@ -196,6 +231,7 @@ cache_tracker::setup_metrics() {
     });
     sstables::register_index_page_cache_metrics(_metrics, _index_cached_file_stats);
     sstables::register_index_page_metrics(_metrics, _partition_index_cache_stats);
+    sstables::register_compression_info_metrics(_metrics, _compression_info_cache_stats);
 }
 
 void cache_tracker::clear() {

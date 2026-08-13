@@ -24,6 +24,7 @@
 #include "sstables/open_info.hh"
 #include "sstables/version.hh"
 #include "test/lib/exception_utils.hh"
+#include "test/lib/mutation_reader_assertions.hh"
 #include "test/lib/random_schema.hh"
 #include "test/lib/sstable_utils.hh"
 #include "test/lib/random_utils.hh"
@@ -184,7 +185,10 @@ static future<std::pair<sstables::generation_type, sstables::generation_type>> w
                                     generation = std::move(generation), &ret] (test_env& env) {
         auto [sst1, sst2] = do_write_sst(env, std::move(schema), std::move(load_dir), std::move(write_dir), std::move(generation)).get();
         ret = std::make_pair(sst1->generation(), sst2->generation());
-    });
+    // sstables::test::store() writes the components of an already loaded sstable back
+    // out, which for CompressionInfo.db requires the in-memory copy of the chunk
+    // offsets -- the copy which the evictable cache does away with.
+    }, {.compressioninfo_is_evictable = false});
     co_return ret;
 }
 
@@ -207,7 +211,8 @@ write_and_validate_sst(schema_ptr s, sstring dir, sstables::generation_type load
     return test_env::do_with_async([s = std::move(s), dir = std::move(dir), load_gen, func = std::move(func)] (test_env& env) mutable {
         auto [sst1, sst2] = do_write_sst(env, s, dir, env.tempdir().path().native(), load_gen).get();
         func(std::move(sst1), std::move(sst2));
-    });
+    // See the comment in write_sst_info().
+    }, {.compressioninfo_is_evictable = false});
 }
 
 SEASTAR_TEST_CASE(check_summary_func) {
@@ -1238,6 +1243,7 @@ SEASTAR_TEST_CASE(test_compression_info_cache_reads_offsets_from_file) {
         c2.set_compressed_file_length(c.compressed_file_length());
         c2.set_offsets_start_pos(c.offsets_start_pos());
         c2.set_chunk_count(chunk_count);
+        c2.set_offsets_evictable(true);
 
         auto f = open_file_dma(path, open_flags::ro).get();
         auto close_f = deferred_close(f);
@@ -1319,4 +1325,81 @@ SEASTAR_TEST_CASE(test_compression_info_cache_reads_offsets_from_file) {
         }
         BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
     });
+}
+
+// Reads the chunk offsets of the given sstable straight out of its CompressionInfo.db,
+// bypassing sstables::compression and compression_info_cache. The reference the tests
+// of the cache check themselves against.
+static std::vector<uint64_t> read_chunk_offsets_from_file(const shared_sstable& sst) {
+    const auto& c = sst->get_compression();
+    auto f = open_file_dma(sst->get_filename(component_type::CompressionInfo).format(), open_flags::ro).get();
+    auto close_f = deferred_close(f);
+    auto buf = f.dma_read_exactly<char>(c.offsets_start_pos(), c.chunk_count() * sizeof(uint64_t)).get();
+    BOOST_REQUIRE_EQUAL(buf.size(), c.chunk_count() * sizeof(uint64_t));
+    std::vector<uint64_t> offsets;
+    for (uint64_t i = 0; i < c.chunk_count(); ++i) {
+        offsets.push_back(net::ntoh(read_unaligned<uint64_t>(buf.get() + i * sizeof(uint64_t))));
+    }
+    return offsets;
+}
+
+// Checks that a compressed sstable loaded from disk serves the chunk offsets which are
+// in its CompressionInfo.db, both when it serves them out of the evictable cache and
+// when compressioninfo_is_evictable is off and they are served from memory.
+static future<> test_compression_info_cache_of_loaded_sstable(bool evictable) {
+    return test_env::do_with_async([evictable] (test_env& env) {
+        schema_builder builder(1, "ks", "cf");
+        builder.with_column("pk", utf8_type, column_kind::partition_key);
+        builder.with_column("ck", utf8_type, column_kind::clustering_key);
+        builder.with_column("v", utf8_type);
+        builder.set_compressor_params(compression_parameters({
+            {compression_parameters::SSTABLE_COMPRESSION, "LZ4Compressor"},
+            {compression_parameters::CHUNK_LENGTH_KB, "1"},
+        }));
+        auto s = builder.build();
+
+        // Enough data to span several chunks.
+        utils::chunked_vector<mutation> muts;
+        mutation m(s, partition_key::from_exploded(*s, {to_bytes("pk")}));
+        for (int i = 0; i < 512; ++i) {
+            auto ck = clustering_key::from_exploded(*s, {to_bytes(format("ck{:04d}", i))});
+            m.set_clustered_cell(ck, "v", data_value(tests::random::get_sstring(256)), api::new_timestamp());
+        }
+        muts.push_back(std::move(m));
+
+        auto written = make_sstable_containing(env.make_sstable(s), muts).get();
+        auto sst = env.reusable_sst(s, written).get();
+
+        auto& cache = sst->get_compression_info_cache();
+        const auto& c = sst->get_compression();
+        BOOST_REQUIRE_EQUAL(cache.paged(), evictable);
+        BOOST_REQUIRE_GT(c.chunk_count(), 1u);
+        // With the evictable cache, the offsets aren't parsed into memory at all.
+        BOOST_REQUIRE_EQUAL(c.offsets.size(), evictable ? 0 : c.chunk_count());
+
+        auto reference = read_chunk_offsets_from_file(sst);
+        sstables::compression_info_accessor acc(cache);
+        for (uint64_t i = 0; i < c.chunk_count(); ++i) {
+            const uint64_t expected_start = reference[i];
+            const uint64_t expected_end = (i + 1 < c.chunk_count())
+                    ? reference[i + 1]
+                    : c.compressed_file_length();
+            auto chunk = acc.get_chunk_by_index(i).get();
+            BOOST_REQUIRE_EQUAL(chunk.chunk_start, expected_start);
+            BOOST_REQUIRE_EQUAL(chunk.chunk_len, expected_end - expected_start);
+        }
+
+        // The data reads back correctly through the same offsets.
+        assert_that(sst->as_mutation_source().make_mutation_reader(s, env.make_reader_permit()))
+                .produces(muts[0])
+                .produces_end_of_stream();
+    }, {.compressioninfo_is_evictable = evictable});
+}
+
+SEASTAR_TEST_CASE(test_compression_info_cache_of_loaded_sstable_evictable) {
+    return test_compression_info_cache_of_loaded_sstable(true);
+}
+
+SEASTAR_TEST_CASE(test_compression_info_cache_of_loaded_sstable_not_evictable) {
+    return test_compression_info_cache_of_loaded_sstable(false);
 }

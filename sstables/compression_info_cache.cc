@@ -183,7 +183,7 @@ compression_info_cache::compression_info_cache(bucket_reader_fn read_bucket, con
     // A CompressionInfo.db which was never parsed or written through this process
     // (which happens in some tests) has no recorded position of its offsets, so it
     // can't be read from either.
-    , _paged(bool(_read_bucket) && c.chunk_count() > 0 && c.offsets_start_pos() > 0)
+    , _paged(c.offsets_evictable() && bool(_read_bucket) && c.chunk_count() > 0 && c.offsets_start_pos() > 0)
     , _layout(compression_info_bucket_layout::for_chunk_size(c.uncompressed_chunk_length()))
     , _bucket_size_in_allocator(sizeof(entry) + _layout.storage_size)
 {

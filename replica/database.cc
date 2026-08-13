@@ -388,6 +388,7 @@ static auto configure_sstables_manager(const db::config& cfg, const database_con
         .large_data_records_per_sstable = cfg.compaction_large_data_records_per_sstable,
         .ignore_component_digest_mismatch = cfg.ignore_component_digest_mismatch(),
         .enable_dangerous_direct_import_of_cassandra_counters = cfg.enable_dangerous_direct_import_of_cassandra_counters(),
+        .compressioninfo_is_evictable = cfg.compressioninfo_is_evictable(),
     };
 }
 
@@ -452,7 +453,9 @@ database::database(const db::config& cfg, database_config dbcfg, service::migrat
             utils::updateable_value(0.0f),
             _cfg.reader_concurrency_semaphore_shared_pool_fraction,
             "view_update")
-    , _row_cache_tracker(_cfg.index_cache_fraction.operator utils::updateable_value<double>(), cache_tracker::register_metrics::yes)
+    , _row_cache_tracker(_cfg.index_cache_fraction.operator utils::updateable_value<double>(),
+            _cfg.compressioninfo_cache_fraction.operator utils::updateable_value<double>(),
+            cache_tracker::register_metrics::yes)
     , _apply_stage("db_apply", &database::do_apply)
     , _version(empty_version)
     , _compaction_manager(cm)

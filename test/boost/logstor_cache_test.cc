@@ -27,7 +27,7 @@ struct shared_logstor_cache {
     replica::logstor::cache_tracker logstor_tracker;
 
     shared_logstor_cache()
-        : shared_tracker(utils::updateable_value<double>(1.0), ::cache_tracker::register_metrics::no)
+        : shared_tracker(utils::updateable_value<double>(1.0), utils::updateable_value<double>(1.0), ::cache_tracker::register_metrics::no)
         , logstor_tracker(shared_tracker) {
     }
 };

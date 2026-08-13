@@ -877,15 +877,29 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     // can read the offsets from the file on demand.
     c.set_offsets_start_pos(in.offset());
     c.set_chunk_count(len);
-    auto eoarr = [&c, &len] { return c.offsets.size() == len; };
 
-    while (!eoarr()) {
-        auto now = std::min(len - c.offsets.size(), 100000 / sizeof(uint64_t));
+    if (c.offsets.size() > 0) {
+        // Already parsed.
+        // This path is entered when opening an sstable for reading after sealing.
+        co_return;
+    }
+
+    // If the offsets are read from the file on demand, we don't keep a copy of them
+    // in memory. We still have to read through them, though -- the caller might be
+    // computing the digest of the component as we read it.
+    const bool keep = !c.offsets_evictable();
+
+    size_t parsed = 0;
+    while (parsed != len) {
+        auto now = std::min<size_t>(len - parsed, 100000 / sizeof(uint64_t));
         auto buf = co_await in.read_exactly(now * sizeof(uint64_t));
-        for (size_t i = 0; i < now; ++i) {
-            uint64_t value = read_unaligned<uint64_t>(buf.get() + i * sizeof(uint64_t));
-            offsets.push_back(net::ntoh(value));
+        if (keep) {
+            for (size_t i = 0; i < now; ++i) {
+                uint64_t value = read_unaligned<uint64_t>(buf.get() + i * sizeof(uint64_t));
+                offsets.push_back(net::ntoh(value));
+            }
         }
+        parsed += now;
     }
 }
 
@@ -1259,6 +1273,10 @@ future<> sstable::read_compression() {
         co_return;
     }
 
+    // With an evictable compression info cache, parse() doesn't build the in-memory
+    // copy of the chunk offsets at all -- they are read from CompressionInfo.db on
+    // demand instead. This must be decided before the component is parsed.
+    _components->compression.set_offsets_evictable(manager().get_config().compressioninfo_is_evictable);
     co_await read_simple_and_verify_digest<component_type::CompressionInfo>(_components->compression);
     auto compressor = co_await manager().get_compressor_factory().make_compressor_for_reading(_components->compression);
     _components->compression.set_compressor(std::move(compressor));
@@ -4028,6 +4046,24 @@ void register_index_page_metrics(seastar::metrics::metric_groups& metrics, parti
         sm::make_gauge("index_page_used_bytes", [&m] { return m.used_bytes; },
             sm::description("Amount of bytes used by index pages in memory")),
 
+    });
+}
+
+void register_compression_info_metrics(seastar::metrics::metric_groups& metrics, compression_info_cache_stats& m) {
+    namespace sm = seastar::metrics;
+    metrics.add_group("sstables", {
+        sm::make_counter("compression_info_hits", [&m] { return m.hits; },
+            sm::description("Compression info bucket requests which could be satisfied without waiting")),
+        sm::make_counter("compression_info_misses", [&m] { return m.misses; },
+            sm::description("Compression info bucket requests which initiated a read from disk")),
+        sm::make_counter("compression_info_blocks", [&m] { return m.blocks; },
+            sm::description("Compression info bucket requests which needed to wait due to the bucket not being loaded yet")),
+        sm::make_counter("compression_info_evictions", [&m] { return m.evictions; },
+            sm::description("Compression info buckets which got evicted from memory")),
+        sm::make_counter("compression_info_populations", [&m] { return m.populations; },
+            sm::description("Compression info buckets which got populated into memory")),
+        sm::make_gauge("compression_info_used_bytes", [&m] { return m.used_bytes; },
+            sm::description("Amount of bytes used by compression info buckets in memory")),
     });
 }
 

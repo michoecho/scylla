@@ -99,12 +99,13 @@ private:
     mutation_cleaner _memtable_cleaner;
     mutation_application_stats& _app_stats;
     utils::updateable_value<double> _index_cache_fraction;
+    utils::updateable_value<double> _compressioninfo_cache_fraction;
 private:
     void setup_metrics();
 public:
     using register_metrics = bool_class<class register_metrics_tag>;
-    cache_tracker(utils::updateable_value<double> index_cache_fraction, mutation_application_stats&, register_metrics);
-    cache_tracker(utils::updateable_value<double> index_cache_fraction, register_metrics);
+    cache_tracker(utils::updateable_value<double> index_cache_fraction, utils::updateable_value<double> compressioninfo_cache_fraction, mutation_application_stats&, register_metrics);
+    cache_tracker(utils::updateable_value<double> index_cache_fraction, utils::updateable_value<double> compressioninfo_cache_fraction, register_metrics);
     cache_tracker();
     ~cache_tracker();
     void clear();

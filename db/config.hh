@@ -559,6 +559,8 @@ public:
 
     named_value<bool> cache_index_pages;
     named_value<double> index_cache_fraction;
+    named_value<double> compressioninfo_cache_fraction;
+    named_value<bool> compressioninfo_is_evictable;
 
     named_value<bool> consistent_cluster_management;
     named_value<bool> force_gossip_topology_changes;

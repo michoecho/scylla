@@ -126,6 +126,11 @@ public:
         utils::updateable_value<uint32_t> large_data_records_per_sstable = utils::updateable_value<uint32_t>(10);
         bool ignore_component_digest_mismatch = false;
         bool enable_dangerous_direct_import_of_cassandra_counters = false;
+        // If true, the chunk offsets of compressed sstables are read from
+        // CompressionInfo.db on demand and cached evictably, instead of being kept
+        // in memory in their entirety for as long as the sstable is open.
+        // See db::config::compressioninfo_is_evictable.
+        bool compressioninfo_is_evictable = true;
     };
 
 private:
