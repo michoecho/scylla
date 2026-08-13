@@ -148,10 +148,11 @@ struct reversed_context {
 template <typename DataConsumeRowsContext>
 inline reversed_context<DataConsumeRowsContext> data_consume_reversed_partition(
         const schema& s, shared_sstable sst, abstract_index_reader& ir,
-        typename DataConsumeRowsContext::consumer& consumer, sstable::disk_read_range toread) {
+        typename DataConsumeRowsContext::consumer& consumer, sstable::disk_read_range toread,
+        use_caching caching) {
     auto reversing_data_source = sstables::mx::make_partition_reversing_data_source(
             s, sst, ir, toread.start, toread.end - toread.start,
-            consumer.permit(), consumer.trace_state());
+            consumer.permit(), consumer.trace_state(), caching);
     return reversed_context<DataConsumeRowsContext> {
         .the_context = std::make_unique<DataConsumeRowsContext>(
                 s, std::move(sst), consumer, input_stream<char>(std::move(reversing_data_source.the_source)),

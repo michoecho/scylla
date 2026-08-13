@@ -34,6 +34,7 @@ struct partition_reversing_data_source {
 // `pos` is where the partition starts.
 // `len` is the length of the partition.
 // `ir` provides access to an index over the sstable.
+// `caching` controls whether compression-info buckets read by the source are cached.
 //
 // `ir.data_file_positions().end` may decrease below `current_position_in_sstable`,
 // informing us that the user wants us to skip the sequence of rows between `ir.data_file_positions().end` and `current_position_in_sstable`.
@@ -45,7 +46,7 @@ struct partition_reversing_data_source {
 // The source must be closed before destruction unless `get()` was never called.
 partition_reversing_data_source make_partition_reversing_data_source(
     const schema& s, shared_sstable sst, abstract_index_reader& ir, uint64_t pos, size_t len,
-    reader_permit permit, tracing::trace_state_ptr trace_state);
+    reader_permit permit, tracing::trace_state_ptr trace_state, use_caching caching);
 
 }
 }

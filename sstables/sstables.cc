@@ -3295,8 +3295,9 @@ future<input_stream<char>> sstable::data_stream(uint64_t pos, size_t len,
     co_return co_await stream_creator(pos, len, std::move(options));
 }
 
-future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, reader_permit permit) {
-    auto stream = co_await data_stream(pos, len, std::move(permit), tracing::trace_state_ptr(), {});
+future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, reader_permit permit, use_caching caching) {
+    auto stream = co_await data_stream(pos, len, std::move(permit), tracing::trace_state_ptr(), {},
+            raw_stream::no, integrity_check::no, throwing_integrity_error_handler, caching);
     auto buff = co_await stream.read_exactly(len);
     co_await stream.close();
     co_return buff;

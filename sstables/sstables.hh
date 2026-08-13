@@ -872,7 +872,9 @@ public:
     // determined using the index file).
     // This function is intended (and optimized for) random access, not
     // for iteration through all the rows.
-    future<temporary_buffer<char>> data_read(uint64_t pos, size_t len, reader_permit permit);
+    // `caching` controls whether compression info read by this operation is cached.
+    future<temporary_buffer<char>> data_read(uint64_t pos, size_t len, reader_permit permit,
+            use_caching caching = use_caching::yes);
 
 private:
     future<summary_entry&> read_summary_entry(size_t i);

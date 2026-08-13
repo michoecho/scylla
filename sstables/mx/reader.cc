@@ -1589,7 +1589,7 @@ private:
                     on_internal_error(sstlog, "mx reader: integrity checking not supported for single-partition reversed reads");
                 }
                 auto reversed_context = data_consume_reversed_partition<DataConsumeRowsContext>(
-                        *_schema, _sst, *_index_reader, _consumer, { begin, *end });
+                        *_schema, _sst, *_index_reader, _consumer, { begin, *end }, caching);
                 _context = std::move(reversed_context.the_context);
                 _reversed_read_sstable_position = &reversed_context.current_position_in_sstable;
             } else {

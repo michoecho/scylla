@@ -1378,21 +1378,50 @@ static future<> test_compression_info_cache_of_loaded_sstable(bool evictable) {
         BOOST_REQUIRE_EQUAL(c.offsets.size(), evictable ? 0 : c.chunk_count());
 
         auto reference = read_chunk_offsets_from_file(sst);
-        sstables::compression_info_accessor acc(cache);
-        for (uint64_t i = 0; i < c.chunk_count(); ++i) {
-            const uint64_t expected_start = reference[i];
-            const uint64_t expected_end = (i + 1 < c.chunk_count())
-                    ? reference[i + 1]
-                    : c.compressed_file_length();
-            auto chunk = acc.get_chunk_by_index(i).get();
-            BOOST_REQUIRE_EQUAL(chunk.chunk_start, expected_start);
-            BOOST_REQUIRE_EQUAL(chunk.chunk_len, expected_end - expected_start);
+        {
+            sstables::compression_info_accessor acc(cache);
+            for (uint64_t i = 0; i < c.chunk_count(); ++i) {
+                const uint64_t expected_start = reference[i];
+                const uint64_t expected_end = (i + 1 < c.chunk_count())
+                        ? reference[i + 1]
+                        : c.compressed_file_length();
+                auto chunk = acc.get_chunk_by_index(i).get();
+                BOOST_REQUIRE_EQUAL(chunk.chunk_start, expected_start);
+                BOOST_REQUIRE_EQUAL(chunk.chunk_len, expected_end - expected_start);
+            }
         }
 
         // The data reads back correctly through the same offsets.
         assert_that(sst->as_mutation_source().make_mutation_reader(s, env.make_reader_permit()))
                 .produces(muts[0])
                 .produces_end_of_stream();
+
+        if (evictable) {
+            auto& tracker = env.manager().get_cache_tracker();
+            auto& stats = tracker.get_compression_info_cache_stats();
+            tracker.get_compression_info_lru().evict_all();
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+            const auto stats_before_bypass = stats;
+
+            auto reversed_schema = s->make_reversed();
+            auto slice = partition_slice_builder(*reversed_schema, reversed_schema->full_slice())
+                    .with_option<query::partition_slice::option::reversed>()
+                    .with_option<query::partition_slice::option::bypass_cache>()
+                    .build();
+            auto range = dht::partition_range::make_singular(muts[0].decorated_key());
+            auto rd = sst->make_reader(reversed_schema, env.make_reader_permit(), range, slice);
+            auto close_rd = deferred_close(rd);
+            size_t fragments = 0;
+            while (rd().get()) {
+                ++fragments;
+            }
+            BOOST_REQUIRE_GT(fragments, 0u);
+
+            // Reversed BYPASS CACHE reads use private compression-info buckets.
+            BOOST_REQUIRE_EQUAL(stats.hits, stats_before_bypass.hits);
+            BOOST_REQUIRE_EQUAL(stats.populations, stats_before_bypass.populations);
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+        }
     }, {.compressioninfo_is_evictable = evictable});
 }
 
