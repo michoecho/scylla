@@ -1,0 +1,6 @@
+cxx_binary(
+    name = "zstd_hello",
+    srcs = ["zstd_hello.cc"],
+    deps = ["root//:zstd"],
+    visibility = ["PUBLIC"],
+)

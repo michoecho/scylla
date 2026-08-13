@@ -4,9 +4,11 @@
   inputs = {
     nixpkgs-stable.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nativelink.url = "github:TraceMachina/nativelink";
+    nativelink.inputs.nixpkgs.follows = "nixpkgs-stable";
   };
 
-  outputs = { self, nixpkgs-stable, nixpkgs-unstable }:
+  outputs = { self, nixpkgs-stable, nixpkgs-unstable, ... }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs-stable.lib.genAttrs supportedSystems (system: f system);

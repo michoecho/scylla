@@ -1,0 +1,11 @@
+# The flake itself, as a source directory. flake.package(path = ...) takes an
+# artifact rather than a path string, so the flake files have to be a target;
+# listing both means a change to either one re-runs the nix build.
+filegroup(
+    name = "flake",
+    srcs = [
+        "flake.lock",
+        "flake.nix",
+    ],
+    visibility = ["PUBLIC"],
+)

@@ -1,0 +1,53 @@
+[cells]
+  root = .
+  prelude = prelude
+  toolchains = toolchains
+  none = none
+  nix = none
+
+[cell_aliases]
+  config = prelude
+  ovr_config = prelude
+  fbcode = none
+  fbsource = none
+  fbcode_macros = none
+  buck = none
+
+# The prelude ships inside the buck2 binary, so there is nothing vendored in
+# this tree. `nix` is the buck2.nix cell, fetched by buck2 itself at the pinned
+# commit below -- that is what provides @nix//flake.bzl and the toolchain rules.
+[external_cells]
+  prelude = bundled
+  nix = git
+
+[external_cell_nix]
+  git_origin = https://github.com/tweag/buck2.nix.git
+  commit_hash = 038b031b84846101030b9d081445003e82e3be5c
+
+[parser]
+  target_platform_detector_spec = target:root//...->prelude//platforms:default
+
+[project]
+  ignore = .git, tmp, buck-out
+
+# Points buck2 at the local nativelink instance from `nix run nativelink
+# ./basic_cas.json5 --inputs-from .`. All three services are served by the one
+# process on port 50051, and `main` is one of the instance names the config
+# declares (it also serves ""), so these addresses are all the same endpoint.
+#
+# This alone does not send anything remote: it only says where the service is.
+# Caching is requested per-invocation with --remote-cache, see README.md.
+[buck2_re_client]
+  engine_address = grpc://localhost:50051
+  action_cache_address = grpc://localhost:50051
+  cas_address = grpc://localhost:50051
+  instance_name = main
+  tls = false
+
+# root//platforms:default, not the prelude's, because the prelude's sets
+# remote_enabled = False and would keep buck2 from ever querying the cache.
+[build]
+  execution_platforms = root//platforms:default
+
+[buck2]
+  materializations = deferred
