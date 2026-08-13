@@ -1,4 +1,0 @@
-# Shared build machinery. Not a module: nothing here is a library that other
-# code links against by name -- module.bzl is loaded, and module_test_main.cc
-# is compiled into each generated runner.
-exports_files(["module_test_main.cc"])
