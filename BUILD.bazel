@@ -1,0 +1,21 @@
+# Root package. Deliberately holds no targets: the code lives under modules/,
+# and src/ is not ported yet.
+#
+# flake.lock is exported because the Nix files the Bazel build evaluates read
+# the nixpkgs revision out of it, and rules_nixpkgs needs it declared as a
+# dependency of those evaluations -- that is what makes a flake bump invalidate
+# the fetched repositories instead of silently reusing them.
+exports_files(["flake.lock"])
+
+# The file-snapshot store: the recorded value of every file snapshot, as
+# ordinary files under a two-character shard directory.
+#
+# It lives at the repository root rather than inside modules/snapshot because
+# it holds the snapshots of *every* module, keyed only by uuid -- the module
+# that recorded one is not part of its identity. A test that reads it declares
+# this filegroup in its data, which is what puts the store in its runfiles.
+filegroup(
+    name = "snapshots",
+    srcs = glob([".snapshots/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

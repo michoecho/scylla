@@ -1,0 +1,3 @@
+# nixpkgs.nix is not built by Bazel -- it is read by rules_nixpkgs' repository
+# rule, which needs it addressable as a label. Exported for that reason alone.
+exports_files(["nixpkgs.nix"])

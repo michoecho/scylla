@@ -1,0 +1,48 @@
+# The second dependency provider: dependencies that Nix has *already* placed in
+# the build sandbox, described to Bazel without invoking Nix.
+#
+# This is what //third_party's aliases point at when --//third_party:provider is
+# set to "sandbox". The other provider (//third_party/nix, via rules_nixpkgs)
+# calls nix-build to realise each package; that cannot work inside a nixpkgs
+# derivation, which builds with no network and no access to the Nix daemon. This
+# one can, because it asks Nix for nothing.
+#
+# --- why these targets are empty --------------------------------------------
+#
+# The trick is that there is no trick: when Nix builds a derivation, the cc
+# wrapper in its stdenv reads buildInputs and injects
+#
+#     -isystem /nix/store/<hash>-doctest-2.5.0/include
+#
+# into every compiler invocation, via NIX_CFLAGS_COMPILE, plus the matching -L
+# and -rpath into every link via NIX_LDFLAGS. The include path is therefore
+# already correct before Bazel says anything, and a target that tried to name
+# the store path would be duplicating -- and pinning -- something the
+# environment supplies more accurately.
+#
+# So a header-only dependency needs a target that contributes *nothing but its
+# name*. That is not a degenerate case to apologise for; it is the point. The
+# dependency edge in the Bazel graph stays real -- strict deps still enforces
+# that only declared users may include the headers -- while the question of
+# where the files live is answered by whoever set up the sandbox.
+#
+# A dependency with a library to link adds `linkopts = ["-lfoo"]` and nothing
+# else: -L is already on the command line, so the bare -l resolves.
+#
+# --- what this costs ---------------------------------------------------------
+#
+# Hermeticity, in Bazel's sense. These targets do not name their inputs, so
+# Bazel cannot hash them, and its cache cannot tell two different doctests
+# apart. That is a bad trade in a dev loop and the correct one inside a nixpkgs
+# derivation, where Nix has already pinned every input by hash and the build
+# runs exactly once in a sandbox it fully controls. Two different jobs; the
+# --//third_party:provider flag is which one you are doing.
+
+package(default_visibility = ["//visibility:public"])
+
+# doctest. Header-only as used here: consumers define DOCTEST_CONFIG_IMPLEMENT
+# and compile the implementation themselves, so there is nothing to link and
+# not even a linkopt is needed.
+cc_library(
+    name = "doctest",
+)

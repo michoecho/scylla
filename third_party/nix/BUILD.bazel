@@ -1,0 +1,5 @@
+# The *.BUILD.bazel files here are not build files of this package -- they are
+# data, handed to rules_nixpkgs to install as the BUILD file of a generated
+# external repository. They need to be addressable as labels from
+# MODULE.bazel, which is all this file does.
+exports_files(glob(["*.BUILD.bazel"]))

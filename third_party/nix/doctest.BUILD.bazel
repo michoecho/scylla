@@ -1,0 +1,16 @@
+# BUILD file for the @nixpkgs_doctest external repository: the nixpkgs doctest
+# output, described to Bazel.
+#
+# rules_nixpkgs realises the derivation and symlinks its store path in as the
+# repository root, so `include/...` here is the package's own include
+# directory. Nix has already done the building; this only says what is there.
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "doctest",
+    hdrs = glob(["include/doctest/**/*.h"]),
+    # Consumers write #include <doctest/doctest.h>, matching the CMake build
+    # and doctest's own convention.
+    includes = ["include"],
+)

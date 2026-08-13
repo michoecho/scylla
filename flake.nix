@@ -222,6 +222,18 @@
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
             packages = with pkgs; [
               aflplusplus
+              # The second build system, running in parallel with CMake -- see
+              # MODULE.bazel and the BUILD.bazel files under modules/. Only
+              # Bazel itself comes from here: the toolchain and every C++
+              # dependency the Bazel build uses are provisioned by
+              # rules_nixpkgs, which calls Nix on its own rather than reading
+              # this shell.
+              #
+              # bazel_7 rather than bazelisk, which would download a launcher
+              # and then a Bazel release over the network, defeating the point
+              # of pinning it here. .bazelversion records what this is, so a
+              # bazelisk user outside the shell converges on the same version.
+              bazel_7
               cli11
               cmake
               doctest

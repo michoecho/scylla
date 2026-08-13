@@ -1,0 +1,75 @@
+load("//build:module.bzl", "cc_module")
+
+# Snapshot ("expect") tests: assertions whose expected value is rewritten into
+# the source by the test runner. See include/snapshot/snapshot.h.
+#
+# The bottom of the module graph -- this is infrastructure any module may use,
+# so it depends on no other module. That is also why it is the first module
+# ported to Bazel: nothing had to be ported before it.
+cc_module(
+    name = "snapshot",
+    srcs = [
+        "snapshot.cc",
+        "updater.cc",
+        # Applies recorded updates once the run has finished. A doctest
+        # listener, so linking this module is all it takes to get the
+        # behaviour -- no change to the shared runner.
+        "flush_reporter.cc",
+    ],
+    test_srcs = [
+        # Ordinary unit tests, not snapshot tests -- a snapshot test of the
+        # updater or of compare() would rewrite its own assertions when that
+        # code broke. See the comment at the top of each file.
+        "updater_test.cc",
+        "compare_test.cc",
+        "filesnap_test.cc",
+        # The worked example, which is also what a reader should copy from.
+        "example_test.cc",
+    ],
+    # Files the tests read at run time. A sandboxed test sees only what is
+    # declared, which makes both of these explicit in a way the CMake build
+    # never had to be -- CTest runs in the source tree, so everything is simply
+    # there.
+    test_data = [
+        # The file-snapshot store. Read through SNAPSHOT_ROOT below.
+        "//:snapshots",
+        # compare_test.cc reads *its own source* to assert what the updater
+        # would rewrite (see source_character_at). doctest reports __FILE__ as
+        # the execroot-relative path, which is also this file's runfiles path,
+        # so the open succeeds without the test knowing it is in a sandbox.
+        "compare_test.cc",
+        # Likewise updater_test.cc, which rewrites copies of literals it locates
+        # by source location.
+        "updater_test.cc",
+    ],
+    local_defines = [
+        # Where file snapshots live. Deliberately a *relative* path, which is
+        # the interesting part.
+        #
+        # The CMake build passes an absolute ${PROJECT_SOURCE_DIR}/.snapshots,
+        # because on the update path this module rewrites values back into files
+        # a human then reviews and commits. Bazel has no equivalent of
+        # PROJECT_SOURCE_DIR at compile time, by design: baking a checkout
+        # location into an object file makes the artifact non-relocatable and
+        # poisons a shared cache. So that path is not available here, and
+        # pretending otherwise would be the wrong fix.
+        #
+        # A runfiles-relative path is available, and it splits the two uses
+        # exactly where they should be split:
+        #
+        #   * reading works -- snapshot_path() joins this with the id and opens
+        #     it relative to the runfiles directory, which is the test's cwd;
+        #   * writing refuses -- flush_updates() checks is_absolute() first and
+        #     returns an error instead of writing, so a `bazel test` that tries
+        #     to record a snapshot says so, rather than silently writing into a
+        #     sandbox that is deleted moments later.
+        #
+        # Refusing to record under `bazel test` is correct, not a limitation: a
+        # sandboxed action must not be writing into the source tree. Recording
+        # new values stays the CMake build's job (SNAPSHOT_UPDATE=1) until a
+        # `bazel run` updater target exists, which is where that belongs --
+        # `bazel run` has BUILD_WORKSPACE_DIRECTORY and so can honestly produce
+        # the source path this needs.
+        r'SNAPSHOT_ROOT=\".snapshots\"',
+    ],
+)

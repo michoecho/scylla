@@ -19,3 +19,8 @@
 
 /tools/vscode-cmake-tools
 /nuke
+
+# Bazel's convenience symlinks into the output base. .bazelrc sets
+# --symlink_prefix=.bazel/ so they land in one directory rather than as half a
+# dozen bazel-* entries at the root.
+/.bazel
