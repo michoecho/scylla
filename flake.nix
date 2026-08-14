@@ -289,6 +289,14 @@
               nodejs
               yarn
 
+              # Language server and formatter behind the nix-ide extension
+              # baked into `code` above. Referenced by name from
+              # .vscode/settings.json, so they are found on PATH -- which means
+              # Nix language support works in an editor launched from this
+              # shell, and degrades to syntax highlighting in one that isn't.
+              nixd
+              nixfmt
+
               shader-slang
               vulkan-loader
               vulkan-headers
