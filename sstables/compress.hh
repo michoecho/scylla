@@ -285,6 +285,20 @@ struct compression {
         const_iterator cend() const {
             return const_iterator(*this, const_iterator::end_tag{});
         }
+
+        // The base offset and the packed storage of every bucket, in order.
+        // Exposed so that tests can checksum the in-memory encoding itself,
+        // rather than just the values it decodes to. Note that only the bits
+        // which were actually written are meaningful: a bucket is allocated
+        // whole, so the tail of its storage is uninitialized.
+        std::vector<std::pair<uint64_t, const char*>> encoded_buckets() const {
+            std::vector<std::pair<uint64_t, const char*>> ret;
+            ret.reserve(_storage.size());
+            for (const auto& b : _storage) {
+                ret.emplace_back(b.base_offset, b.storage.get());
+            }
+            return ret;
+        }
     };
 
     disk_string<uint16_t> name;
