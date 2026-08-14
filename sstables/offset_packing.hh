@@ -14,6 +14,8 @@
 #include <seastar/core/byteorder.hh>
 #include <seastar/core/format.hh>
 
+#include "utils/assert.hh"
+
 namespace sstables {
 
 namespace bit_packing {
@@ -23,9 +25,9 @@ enum class mask_type : uint8_t {
     clear
 };
 
-// size_bits cannot be >= 64
+// size_bits cannot be >= 64, and size_bits + offset cannot be > 64.
 inline uint64_t make_mask(uint8_t size_bits, uint8_t offset, mask_type t) noexcept {
-    const uint64_t mask = ((1 << size_bits) - 1) << offset;
+    const uint64_t mask = ((uint64_t(1) << size_bits) - 1) << offset;
     return t == mask_type::set ? mask : ~mask;
 }
 
@@ -63,10 +65,16 @@ inline bit_displacement displacement_for(uint64_t prefix_bits, uint8_t size_bits
 
 } // namespace bit_packing
 
+// The greatest width of a bit field read_bits()/write_bits() can access. A field
+// starts at an arbitrary bit of the 8-byte read they do, so it can be preceded by
+// up to 7 bits of the previous field within them.
+constexpr uint8_t max_field_bits = 64 - 7;
+
 // Reads the `size_bits`-wide bit field which starts at bit `offset_bits` of `storage`.
 //
 // Touches the 8 bytes at `storage + offset_bits / 8`, so `storage` has to have that
-// many bytes past the first byte of the field.
+// many bytes past the first byte of the field. For the same reason, `size_bits` must
+// not be greater than max_field_bits: a wider field could extend past those 8 bytes.
 inline uint64_t read_bits(const char* storage, uint64_t offset_bits, uint64_t size_bits) {
     const uint64_t offset_byte = offset_bits / 8;
     uint64_t value = seastar::read_le<uint64_t>(storage + offset_byte);
@@ -133,7 +141,10 @@ public:
         , _relative_bits(relative_bits)
         , _grouped_offsets(grouped_offsets)
         , _segment_bits(base_bits + (grouped_offsets - 1) * relative_bits)
-    { }
+    {
+        SCYLLA_ASSERT(grouped_offsets >= 1);
+        SCYLLA_ASSERT(base_bits <= max_field_bits && relative_bits <= max_field_bits);
+    }
 
     uint8_t base_bits() const noexcept { return _base_bits; }
     uint8_t relative_bits() const noexcept { return _relative_bits; }
