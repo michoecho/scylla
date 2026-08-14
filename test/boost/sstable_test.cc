@@ -1327,17 +1327,18 @@ SEASTAR_TEST_CASE(test_compression_info_cache_reads_offsets_from_file) {
     });
 }
 
-// Reads the chunk offsets of the given sstable straight out of its CompressionInfo.db,
-// bypassing sstables::compression and compression_info_cache. The reference the tests
-// of the cache check themselves against.
-static std::vector<uint64_t> read_chunk_offsets_from_file(const shared_sstable& sst) {
+// Reads the first `count` chunk offsets of the given sstable straight out of its
+// CompressionInfo.db, bypassing sstables::compression and compression_info_cache. The
+// reference the tests of the cache check themselves against. Only a prefix, so that it
+// can also be used on a CompressionInfo.db which was deliberately truncated.
+static std::vector<uint64_t> read_chunk_offsets_from_file(const shared_sstable& sst, uint64_t count) {
     const auto& c = sst->get_compression();
     auto f = open_file_dma(sst->get_filename(component_type::CompressionInfo).format(), open_flags::ro).get();
     auto close_f = deferred_close(f);
-    auto buf = f.dma_read_exactly<char>(c.offsets_start_pos(), c.chunk_count() * sizeof(uint64_t)).get();
-    BOOST_REQUIRE_EQUAL(buf.size(), c.chunk_count() * sizeof(uint64_t));
+    auto buf = f.dma_read_exactly<char>(c.offsets_start_pos(), count * sizeof(uint64_t)).get();
+    BOOST_REQUIRE_EQUAL(buf.size(), count * sizeof(uint64_t));
     std::vector<uint64_t> offsets;
-    for (uint64_t i = 0; i < c.chunk_count(); ++i) {
+    for (uint64_t i = 0; i < count; ++i) {
         offsets.push_back(net::ntoh(read_unaligned<uint64_t>(buf.get() + i * sizeof(uint64_t))));
     }
     return offsets;
@@ -1377,7 +1378,7 @@ static future<> test_compression_info_cache_of_loaded_sstable(bool evictable) {
         // With the evictable cache, the offsets aren't parsed into memory at all.
         BOOST_REQUIRE_EQUAL(c.offsets.size(), evictable ? 0 : c.chunk_count());
 
-        auto reference = read_chunk_offsets_from_file(sst);
+        auto reference = read_chunk_offsets_from_file(sst, c.chunk_count());
         {
             sstables::compression_info_accessor acc(cache);
             for (uint64_t i = 0; i < c.chunk_count(); ++i) {
@@ -1431,4 +1432,161 @@ SEASTAR_TEST_CASE(test_compression_info_cache_of_loaded_sstable_evictable) {
 
 SEASTAR_TEST_CASE(test_compression_info_cache_of_loaded_sstable_not_evictable) {
     return test_compression_info_cache_of_loaded_sstable(false);
+}
+
+// The schema the tests of a truncated CompressionInfo.db write their sstable with.
+// One kibibyte chunks, so that a moderate amount of data spans several buckets of
+// chunk offsets.
+static schema_ptr make_compressed_schema_for_truncation_test() {
+    schema_builder builder(1, "ks", "cf");
+    builder.with_column("pk", utf8_type, column_kind::partition_key);
+    builder.with_column("ck", utf8_type, column_kind::clustering_key);
+    builder.with_column("v", utf8_type);
+    builder.set_compressor_params(compression_parameters({
+        {compression_parameters::SSTABLE_COMPRESSION, "LZ4Compressor"},
+        {compression_parameters::CHUNK_LENGTH_KB, "1"},
+    }));
+    return builder.build();
+}
+
+// Writes a compressed sstable whose chunk offsets span several buckets. The values
+// are random, so they don't compress, and the data is about as long as the sum of
+// the cell sizes.
+static shared_sstable make_sstable_with_several_offset_buckets(test_env& env, schema_ptr s, uint64_t min_chunks) {
+    constexpr size_t value_size = 1024;
+    utils::chunked_vector<mutation> muts;
+    mutation m(s, partition_key::from_exploded(*s, {to_bytes("pk")}));
+    for (uint64_t i = 0; i < min_chunks + 64; ++i) {
+        auto ck = clustering_key::from_exploded(*s, {to_bytes(format("ck{:06d}", i))});
+        m.set_clustered_cell(ck, "v", data_value(tests::random::get_sstring(value_size)), api::new_timestamp());
+    }
+    muts.push_back(std::move(m));
+    return make_sstable_containing(env.make_sstable(s), muts).get();
+}
+
+// Truncates the array of chunk offsets in the sstable's CompressionInfo.db to
+// `offsets_kept` whole offsets plus `extra_bytes` bytes of the one that follows.
+static void truncate_compression_info_offsets(const shared_sstable& sst, uint64_t offsets_start_pos,
+        uint64_t offsets_kept, uint64_t extra_bytes) {
+    auto path = sstables::test(sst).filename(component_type::CompressionInfo).native();
+    auto f = open_file_dma(path, open_flags::rw).get();
+    auto close_f = deferred_close(f);
+    f.truncate(offsets_start_pos + offsets_kept * sizeof(uint64_t) + extra_bytes).get();
+}
+
+// Truncating CompressionInfo.db is caught at open time, by the digest of the
+// component -- the offsets are read through (and fed to the digest) even when they
+// are evictable and thus not kept. This is what makes the on-demand read path below
+// reachable only for sstables whose digest isn't checked (foreign sstables, or a
+// file corrupted after it was opened), but it's worth pinning down, since it is the
+// first line of defence.
+SEASTAR_TEST_CASE(test_compression_info_truncated_file_fails_digest_check) {
+    return test_env::do_with_async([] (test_env& env) {
+        sstables::scoped_no_abort_on_malformed_sstable_error no_abort;
+
+        auto s = make_compressed_schema_for_truncation_test();
+        auto written = make_sstable_with_several_offset_buckets(env, s,
+                2 * sstables::compression_info_bucket_layout::offsets_per_bucket);
+        const uint64_t offsets_start_pos = env.reusable_sst(s, written).get()->get_compression().offsets_start_pos();
+
+        truncate_compression_info_offsets(written, offsets_start_pos,
+                sstables::compression_info_bucket_layout::offsets_per_bucket, 0);
+
+        BOOST_REQUIRE_THROW(env.reusable_sst(s, written).get(), malformed_sstable_exception);
+    }, {.compressioninfo_is_evictable = true});
+}
+
+// Writes a compressed sstable with enough chunks for several buckets of chunk
+// offsets, opens it, and only then truncates its CompressionInfo.db
+// `offsets_kept * 8 + extra_bytes` bytes into the array of offsets. (Truncating it
+// before the sstable is opened is caught at open time, by the test above.)
+//
+// The offsets aren't kept in memory when they are evictable, so the open sstable
+// reads them from the file it holds open -- and reading a bucket which reaches past
+// the new end of the file fails. That must be reported as a malformed sstable,
+// rather than as a bare I/O error or, worse, by handing populate() a buffer shorter
+// than the number of offsets it is told to read out of it.
+static future<> test_compression_info_cache_truncated_file(uint64_t offsets_kept, uint64_t extra_bytes) {
+    return test_env::do_with_async([offsets_kept, extra_bytes] (test_env& env) {
+        sstables::scoped_no_abort_on_malformed_sstable_error no_abort;
+
+        constexpr uint32_t chunk_length = 1024;
+        const auto layout = sstables::compression_info_bucket_layout::for_chunk_size(chunk_length);
+
+        auto s = make_compressed_schema_for_truncation_test();
+        auto written = make_sstable_with_several_offset_buckets(env, s, offsets_kept + 1);
+        auto sst = env.reusable_sst(s, written).get();
+
+        const uint64_t chunk_count = sst->get_compression().chunk_count();
+        // The truncation has to cut the array of offsets short, not extend it.
+        BOOST_REQUIRE_GT(chunk_count, offsets_kept);
+
+        auto reference = read_chunk_offsets_from_file(sst, offsets_kept);
+        truncate_compression_info_offsets(sst, sst->get_compression().offsets_start_pos(), offsets_kept, extra_bytes);
+
+        auto& cache = sst->get_compression_info_cache();
+        BOOST_REQUIRE(cache.paged());
+        // Opening the sstable read its first and last partition, which cached a few
+        // buckets. Drop them, so that every lookup below goes to the file.
+        env.manager().get_cache_tracker().get_compression_info_lru().evict_all();
+
+        // A bucket is readable only if all of its offsets survived the truncation.
+        const uint64_t first_bad_bucket = offsets_kept / layout.offsets_per_bucket;
+        const uint64_t first_bad_chunk = first_bad_bucket * layout.offsets_per_bucket;
+
+        auto& stats = env.manager().get_cache_tracker().get_compression_info_cache_stats();
+        {
+            sstables::compression_info_accessor acc(cache);
+            // Everything whose bucket survived the truncation is served as usual...
+            for (uint64_t i = 0; i + 1 < first_bad_chunk; ++i) {
+                BOOST_REQUIRE_EQUAL(acc.get_chunk_by_index(i).get().chunk_start, reference[i]);
+            }
+            // ... except for the very last chunk of the last surviving bucket, which
+            // ends where the first chunk of the truncated one starts.
+            if (first_bad_chunk > 0) {
+                BOOST_REQUIRE_THROW(acc.get_chunk_by_index(first_bad_chunk - 1).get(), malformed_sstable_exception);
+            }
+
+            const auto stats_before = stats;
+            BOOST_REQUIRE_THROW(acc.get_chunk_by_index(first_bad_chunk).get(), malformed_sstable_exception);
+            // The failed load populates nothing and accounts for nothing.
+            BOOST_REQUIRE_EQUAL(stats.misses, stats_before.misses + 1);
+            BOOST_REQUIRE_EQUAL(stats.populations, stats_before.populations);
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, stats_before.used_bytes);
+
+            // The entry was detached, so a retry re-reads the file and fails again,
+            // rather than serving a half-filled bucket.
+            BOOST_REQUIRE_THROW(acc.get_chunk_by_index(first_bad_chunk).get(), malformed_sstable_exception);
+            BOOST_REQUIRE_EQUAL(stats.misses, stats_before.misses + 2);
+            BOOST_REQUIRE_EQUAL(stats.populations, stats_before.populations);
+        }
+
+        // And the read path reports it, instead of decompressing garbage.
+        {
+            auto rd = sst->as_mutation_source().make_mutation_reader(s, env.make_reader_permit());
+            auto close_rd = deferred_close(rd);
+            BOOST_REQUIRE_THROW(({ while (rd().get()) { } }), malformed_sstable_exception);
+        }
+
+        env.manager().get_cache_tracker().get_compression_info_lru().evict_all();
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+    }, {.compressioninfo_is_evictable = true});
+}
+
+// Truncated right after the header: not even the first bucket can be read.
+SEASTAR_TEST_CASE(test_compression_info_cache_truncated_to_header) {
+    return test_compression_info_cache_truncated_file(0, 0);
+}
+
+// Truncated in the middle of a bucket: the buckets before it are still readable.
+SEASTAR_TEST_CASE(test_compression_info_cache_truncated_mid_bucket) {
+    return test_compression_info_cache_truncated_file(
+            sstables::compression_info_bucket_layout::offsets_per_bucket + 5, 0);
+}
+
+// Truncated in the middle of an offset, so that the file doesn't even hold a whole
+// number of them.
+SEASTAR_TEST_CASE(test_compression_info_cache_truncated_mid_offset) {
+    return test_compression_info_cache_truncated_file(
+            sstables::compression_info_bucket_layout::offsets_per_bucket, 3);
 }
