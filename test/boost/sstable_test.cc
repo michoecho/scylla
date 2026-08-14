@@ -1327,6 +1327,106 @@ SEASTAR_TEST_CASE(test_compression_info_cache_reads_offsets_from_file) {
     });
 }
 
+// evict_gently() drops every cached bucket which isn't pinned by a live handle, and
+// leaves the pinned ones to the LRU, which gets them when their last handle dies.
+SEASTAR_TEST_CASE(test_compression_info_cache_evict_gently) {
+    return seastar::async([] {
+        constexpr uint32_t chunk_length = 4096;
+
+        tmpdir tmp;
+        auto path = (tmp.path() / "CompressionInfo.db").string();
+
+        const auto layout = sstables::compression_info_bucket_layout::for_chunk_size(chunk_length);
+        const uint64_t bucket_count = 4;
+        const uint64_t chunk_count = bucket_count * layout.offsets_per_bucket;
+
+        // Chunks of a fixed compressed length, so that the offset of a chunk is just
+        // its index times that length.
+        sstables::compression c;
+        c.set_compressor(make_lz4_sstable_compressor_for_tests());
+        c.set_uncompressed_chunk_length(chunk_length);
+        auto writer = c.offsets.get_writer();
+        for (uint64_t i = 0; i < chunk_count; ++i) {
+            writer.push_back(i * chunk_length);
+        }
+        c.set_uncompressed_file_length(chunk_count * chunk_length);
+        c.set_compressed_file_length(chunk_count * chunk_length);
+
+        {
+            auto f = open_file_dma(path, open_flags::create | open_flags::wo).get();
+            auto fw = sstables::file_writer(make_file_output_stream(std::move(f)).get());
+            sstables::write(sstable_version_types::me, fw, c);
+            fw.close();
+        }
+
+        // Without the in-memory copy of the offsets, so that everything is served
+        // through the cached buckets.
+        sstables::compression c2;
+        c2.set_compressor(make_lz4_sstable_compressor_for_tests());
+        c2.set_uncompressed_chunk_length(chunk_length);
+        c2.set_uncompressed_file_length(c.uncompressed_file_length());
+        c2.set_compressed_file_length(c.compressed_file_length());
+        c2.set_offsets_start_pos(c.offsets_start_pos());
+        c2.set_chunk_count(chunk_count);
+        c2.set_offsets_evictable(true);
+
+        auto f = open_file_dma(path, open_flags::ro).get();
+        auto close_f = deferred_close(f);
+
+        lru cache_lru;
+        logalloc::region region;
+        compression_info_cache_stats stats;
+        sstables::compression_info_cache cache(f, c2, cache_lru, region, stats);
+        BOOST_REQUIRE(cache.paged());
+
+        // The first chunk of every bucket, which brings all the buckets into the cache.
+        auto read_all_buckets = [&] {
+            sstables::compression_info_accessor acc(cache);
+            for (uint64_t b = 0; b < bucket_count; ++b) {
+                const uint64_t chunk_index = b * layout.offsets_per_bucket;
+                auto chunk = acc.get_chunk_by_index(chunk_index).get();
+                BOOST_REQUIRE_EQUAL(chunk.chunk_start, chunk_index * chunk_length);
+            }
+        };
+
+        read_all_buckets();
+        BOOST_REQUIRE_EQUAL(stats.populations, bucket_count);
+        const size_t used_per_bucket = stats.used_bytes / bucket_count;
+        BOOST_REQUIRE_GT(used_per_bucket, 0u);
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, bucket_count * used_per_bucket);
+
+        {
+            // A reader pinning the first bucket keeps it, everything else goes away.
+            sstables::compression_info_accessor acc(cache);
+            acc.get_chunk_by_index(0).get();
+            cache.evict_gently().get();
+            BOOST_REQUIRE_EQUAL(stats.evictions, bucket_count - 1);
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, used_per_bucket);
+
+            // The pinned bucket is still there, and is still served without a read.
+            const auto misses_before = stats.misses;
+            BOOST_REQUIRE_EQUAL(acc.get_chunk_by_index(0).get().chunk_start, 0u);
+            BOOST_REQUIRE_EQUAL(stats.misses, misses_before);
+        }
+
+        // With the handle gone, the bucket it pinned can be evicted as well.
+        cache.evict_gently().get();
+        BOOST_REQUIRE_EQUAL(stats.evictions, bucket_count);
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+        // Evicting an empty cache does nothing.
+        cache.evict_gently().get();
+        BOOST_REQUIRE_EQUAL(stats.evictions, bucket_count);
+
+        // The evicted buckets are read from the file again, and serve the same offsets.
+        read_all_buckets();
+        BOOST_REQUIRE_EQUAL(stats.populations, 2 * bucket_count);
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, bucket_count * used_per_bucket);
+        cache.evict_gently().get();
+        BOOST_REQUIRE_EQUAL(stats.evictions, 2 * bucket_count);
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+    });
+}
+
 // Reads the first `count` chunk offsets of the given sstable straight out of its
 // CompressionInfo.db, bypassing sstables::compression and compression_info_cache. The
 // reference the tests of the cache check themselves against. Only a prefix, so that it
@@ -1589,4 +1689,160 @@ SEASTAR_TEST_CASE(test_compression_info_cache_truncated_mid_bucket) {
 SEASTAR_TEST_CASE(test_compression_info_cache_truncated_mid_offset) {
     return test_compression_info_cache_truncated_file(
             sstables::compression_info_bucket_layout::offsets_per_bucket, 3);
+}
+
+// Overwrites the `index`-th chunk offset in the sstable's CompressionInfo.db with
+// `value`, leaving the rest of the file -- including its by now stale digest --
+// alone.
+static void patch_compression_info_offset(const shared_sstable& sst, uint64_t offsets_start_pos,
+        uint64_t index, uint64_t value) {
+    auto path = sstables::test(sst).filename(component_type::CompressionInfo).native();
+    const auto size = seastar::file_size(path).get();
+    auto f = open_file_dma(path, open_flags::rw).get();
+    auto close_f = deferred_close(f);
+    const uint64_t mem_align = f.memory_dma_alignment();
+    const uint64_t dma_align = f.disk_write_dma_alignment();
+
+    const uint64_t pos = offsets_start_pos + index * sizeof(uint64_t);
+    BOOST_REQUIRE_LE(pos + sizeof(uint64_t), size);
+    // The offsets aren't aligned within the file, so the one being patched can
+    // straddle a block boundary. Rewrite every block it touches.
+    const uint64_t block_start = align_down(pos, dma_align);
+    const size_t block_size = align_up(pos + sizeof(uint64_t), dma_align) - block_start;
+    auto buf = seastar::temporary_buffer<char>::aligned(mem_align, block_size);
+    f.dma_read(block_start, buf.get_write(), block_size).get();
+    write_unaligned<uint64_t>(buf.get_write() + (pos - block_start), net::hton(value));
+    f.dma_write(block_start, buf.get(), block_size).get();
+    // Writing a whole block can have padded the file past its original end.
+    f.truncate(size).get();
+}
+
+// How a chunk offset in the middle of CompressionInfo.db is corrupted.
+enum class corrupt_offset_kind {
+    // A value so far from the base offset of its bucket that the delta doesn't fit
+    // in the bits the packing of the bucket gives it -- i.e. a chunk longer than
+    // any compressor could have produced.
+    too_large,
+    // A value below the base offset of its bucket, so that the subtraction which
+    // makes it relative to the base underflows into a huge value, and fails the
+    // same check.
+    non_monotonic,
+};
+
+// Corrupts a single chunk offset in the middle of the CompressionInfo.db of an
+// already open sstable, and checks that it is reported as a malformed sstable when
+// the bucket holding it is read -- and only then.
+//
+// This is the behaviour change the evictable cache brings: the offsets used to be
+// validated in bulk by parse(), at open time, so a corrupt CompressionInfo.db made
+// the sstable fail to open. Now they are validated by populate(), one bucket at a
+// time, on the first read which needs that bucket, so the rest of the sstable stays
+// readable and the failure surfaces on a read.
+//
+// As with a truncated file, corrupting the file *before* the sstable is opened
+// doesn't reach that path: the digest of CompressionInfo.db is computed over the
+// offsets even when they aren't kept in memory, so the open fails first. That is
+// asserted at the end, together with the report from validate_checksums_and_digests().
+static future<> test_compression_info_cache_corrupt_offset(corrupt_offset_kind kind) {
+    return test_env::do_with_async([kind] (test_env& env) {
+        sstables::scoped_no_abort_on_malformed_sstable_error no_abort;
+
+        constexpr uint64_t offsets_per_bucket = sstables::compression_info_bucket_layout::offsets_per_bucket;
+        // The corrupted offset goes in the middle of the second bucket, so that there
+        // is a whole bucket before it and at least a partial one after it.
+        constexpr uint64_t bad_bucket = 1;
+        constexpr uint64_t bad_chunk = bad_bucket * offsets_per_bucket + offsets_per_bucket / 2;
+
+        auto s = make_compressed_schema_for_truncation_test();
+        auto written = make_sstable_with_several_offset_buckets(env, s, 2 * offsets_per_bucket);
+        auto sst = env.reusable_sst(s, written).get();
+
+        const uint64_t chunk_count = sst->get_compression().chunk_count();
+        BOOST_REQUIRE_GT(chunk_count, (bad_bucket + 1) * offsets_per_bucket);
+
+        auto reference = read_chunk_offsets_from_file(sst, chunk_count);
+        const uint64_t bucket_base = reference[bad_bucket * offsets_per_bucket];
+        BOOST_REQUIRE_GT(bucket_base, 0u);
+        const uint64_t bad_value = kind == corrupt_offset_kind::too_large
+                // Farther from the base offset of the bucket than a bucket of chunks
+                // of the maximum length could ever reach.
+                ? reference[bad_chunk] + (uint64_t(1) << 50)
+                // Just below the base offset of the bucket. Note that a backwards step
+                // which stays above the base of its segment is *not* detected: the
+                // packing only ever sees the deltas, and a delta which fits is stored
+                // and served as it is.
+                : bucket_base - 1;
+        patch_compression_info_offset(sst, sst->get_compression().offsets_start_pos(), bad_chunk, bad_value);
+
+        auto& cache = sst->get_compression_info_cache();
+        BOOST_REQUIRE(cache.paged());
+        auto& tracker = env.manager().get_cache_tracker();
+        auto& stats = tracker.get_compression_info_cache_stats();
+        // Opening the sstable read its first and last partition, which cached a few
+        // buckets. Drop them, so that every lookup below goes to the file.
+        tracker.get_compression_info_lru().evict_all();
+
+        {
+            sstables::compression_info_accessor acc(cache);
+            // Every bucket but the corrupt one is served as usual...
+            for (uint64_t i = 0; i + 1 < bad_bucket * offsets_per_bucket; ++i) {
+                BOOST_REQUIRE_EQUAL(acc.get_chunk_by_index(i).get().chunk_start, reference[i]);
+            }
+            for (uint64_t i = (bad_bucket + 1) * offsets_per_bucket; i < chunk_count; ++i) {
+                BOOST_REQUIRE_EQUAL(acc.get_chunk_by_index(i).get().chunk_start, reference[i]);
+            }
+            // ... except for the last chunk of the bucket before it, which ends where
+            // the first chunk of the corrupt bucket starts.
+            BOOST_REQUIRE_THROW(acc.get_chunk_by_index(bad_bucket * offsets_per_bucket - 1).get(),
+                    malformed_sstable_exception);
+
+            const auto stats_before = stats;
+            BOOST_REQUIRE_EXCEPTION(acc.get_chunk_by_index(bad_chunk).get(), malformed_sstable_exception,
+                    exception_predicate::message_contains(format(
+                            "the chunk offsets of bucket {} are not monotonically growing", bad_bucket)));
+            // The failed load populates nothing and accounts for nothing.
+            BOOST_REQUIRE_EQUAL(stats.misses, stats_before.misses + 1);
+            BOOST_REQUIRE_EQUAL(stats.populations, stats_before.populations);
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, stats_before.used_bytes);
+
+            // The entry was detached, so a retry re-reads the file and fails again,
+            // rather than serving a half-filled bucket.
+            BOOST_REQUIRE_THROW(acc.get_chunk_by_index(bad_chunk).get(), malformed_sstable_exception);
+            BOOST_REQUIRE_EQUAL(stats.misses, stats_before.misses + 2);
+            BOOST_REQUIRE_EQUAL(stats.populations, stats_before.populations);
+
+            // The whole bucket is unpacked at once, so the chunks around the corrupt
+            // offset fail with it, rather than being served from a partial bucket.
+            BOOST_REQUIRE_THROW(acc.get_chunk_by_index(bad_bucket * offsets_per_bucket).get(),
+                    malformed_sstable_exception);
+            BOOST_REQUIRE_THROW(acc.get_chunk_by_index((bad_bucket + 1) * offsets_per_bucket - 1).get(),
+                    malformed_sstable_exception);
+        }
+
+        // And the read path reports it, instead of decompressing garbage.
+        {
+            auto rd = sst->as_mutation_source().make_mutation_reader(s, env.make_reader_permit());
+            auto close_rd = deferred_close(rd);
+            BOOST_REQUIRE_THROW(({ while (rd().get()) { } }), malformed_sstable_exception);
+        }
+
+        // A corrupt offset is a corrupt component, and validation says so.
+        BOOST_REQUIRE(sstables::validate_checksums_and_digests(sst, env.make_reader_permit()).get().status
+                == validate_checksums_status::invalid);
+        // Which is also why an sstable corrupted this way can't be opened again: the
+        // lazy validation above is only reachable for a file corrupted after it was
+        // opened, or for one whose digest isn't checked.
+        BOOST_REQUIRE_THROW(env.reusable_sst(s, written).get(), malformed_sstable_exception);
+
+        tracker.get_compression_info_lru().evict_all();
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+    }, {.compressioninfo_is_evictable = true});
+}
+
+SEASTAR_TEST_CASE(test_compression_info_cache_corrupt_offset_too_large) {
+    return test_compression_info_cache_corrupt_offset(corrupt_offset_kind::too_large);
+}
+
+SEASTAR_TEST_CASE(test_compression_info_cache_corrupt_offset_non_monotonic) {
+    return test_compression_info_cache_corrupt_offset(corrupt_offset_kind::non_monotonic);
 }
