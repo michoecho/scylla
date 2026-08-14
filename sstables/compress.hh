@@ -46,6 +46,7 @@
 
 #include "types/types.hh"
 #include "sstables/types.hh"
+#include "sstables/offset_packing.hh"
 #include "checksum_utils.hh"
 
 class reader_permit;
@@ -60,10 +61,8 @@ struct compression {
     // together into segments, where each segment stores a base absolute offset
     // into the file, the other offsets in the segments being relative offsets
     // (and thus of reduced size). Also offsets are allocated only just enough
-    // bits to store their maximum value. The offsets are thus packed in a
-    // buffer like so:
-    //      arrrarrrarrr...
-    // where n is 4, a is an absolute offset and r are offsets relative to a.
+    // bits to store their maximum value. See offset_packing, which implements
+    // this packing.
     // Segments are stored in buckets, where each bucket has its own base offset.
     // Segments in a buckets are optimized to address as large of a chunk of the
     // data as possible for a given chunk size and bucket size.
@@ -125,19 +124,13 @@ struct compression {
         };
 
         uint32_t _chunk_size{0};
-        uint8_t _segment_base_offset_size_bits{0};
-        uint8_t _segmented_offset_size_bits{0};
-        uint16_t _segment_size_bits{0};
+        offset_packing _packing;
         uint32_t _segments_per_bucket{0};
-        uint8_t _grouped_offsets{0};
 
         uint64_t _last_written_offset{0};
 
         std::size_t _size{0};
         std::deque<bucket> _storage;
-
-        uint64_t read(uint64_t bucket_index, uint64_t offset_bits, uint64_t size_bits) const;
-        void write(uint64_t bucket_index, uint64_t offset_bits, uint64_t size_bits, uint64_t value);
 
         uint64_t at(std::size_t i, state& s) const;
         void push_back(uint64_t offset, state& s);

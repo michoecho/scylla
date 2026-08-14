@@ -29,49 +29,6 @@ namespace sstables {
 
 extern logging::logger sstlog;
 
-enum class mask_type : uint8_t {
-    set,
-    clear
-};
-
-// size_bits cannot be >= 64
-static inline uint64_t make_mask(uint8_t size_bits, uint8_t offset, mask_type t) noexcept {
-    const uint64_t mask = ((1 << size_bits) - 1) << offset;
-    return t == mask_type::set ? mask : ~mask;
-}
-
-/*
- * ----> memory addresses
- * MSB           LSB
- * | | | | |3|2|1|0| CPU integer (big or little endian byte order)
- *          -------
- *             |
- *       +-----+ << shift = prefix bits
- *       |
- *    -------
- *  7 6 5 4 3 2 1 0  index*
- * | |3|2|1|0| | | | raw storage (unaligned, little endian byte order)
- *  = ------- =====
- *  |           |
- *  |           +-> prefix bits
- *  +-> suffix bits
- *
- * |0|1|1|1|1|0|0|0| read/write mask
- *
- * * On big endian systems the indices in storage are reversed and
- *   run left to right: 0 1 .. 6 7. To avoid differences in the
- *   encoding logic on machines with different native byte orders
- *   reads and writes to storage must be explicitly little endian.
- */
-struct bit_displacement {
-    uint64_t shift;
-    uint64_t mask;
-};
-
-inline bit_displacement displacement_for(uint64_t prefix_bits, uint8_t size_bits, mask_type t) {
-    return {prefix_bits, make_mask(size_bits, prefix_bits, t)};
-}
-
 std::pair<bucket_info, segment_info> params_for_chunk_size(uint32_t chunk_size) {
     const uint8_t chunk_size_log2 = log2ceil(chunk_size);
 
@@ -93,37 +50,6 @@ std::pair<bucket_info, segment_info> params_for_chunk_size(uint32_t chunk_size) 
     });
 
     return {std::move(b), std::move(s)};
-}
-
-uint64_t compression::segmented_offsets::read(uint64_t bucket_index, uint64_t offset_bits, uint64_t size_bits) const {
-    const uint64_t offset_byte = offset_bits / 8;
-    uint64_t value = seastar::read_le<uint64_t>(_storage[bucket_index].storage.get() + offset_byte);
-
-    const auto displacement = displacement_for(offset_bits % 8, size_bits, mask_type::set);
-
-    value &= displacement.mask;
-    value >>= displacement.shift;
-
-    return value;
-}
-
-void compression::segmented_offsets::write(uint64_t bucket_index, uint64_t offset_bits, uint64_t size_bits, uint64_t value) {
-    const uint64_t offset_byte = offset_bits / 8;
-
-    uint64_t old_value = seastar::read_le<uint64_t>(_storage[bucket_index].storage.get() + offset_byte);
-
-    const auto displacement = displacement_for(offset_bits % 8, size_bits, mask_type::clear);
-
-    value <<= displacement.shift;
-
-    if ((~displacement.mask | value) != ~displacement.mask) {
-        throw std::invalid_argument(format("{}: to-be-written value would overflow the allocated bits", __FUNCTION__));
-    }
-
-    old_value &= displacement.mask;
-    value |= old_value;
-
-    seastar::write_le(_storage[bucket_index].storage.get() + offset_byte, value);
 }
 
 void compression::segmented_offsets::state::update_position_trackers(std::size_t index, uint16_t segment_size_bits,
@@ -171,10 +97,10 @@ void compression::segmented_offsets::init(uint32_t chunk_size) {
             __FUNCTION__,
             static_cast<int>(params.first.chunk_size_log2));
 
-    _grouped_offsets = params.second.grouped_offsets;
-    _segment_base_offset_size_bits = params.second.data_size_log2;
-    _segmented_offset_size_bits = static_cast<uint64_t>(log2ceil((_chunk_size + 64) * (_grouped_offsets - 1)));
-    _segment_size_bits = _segment_base_offset_size_bits + (_grouped_offsets - 1) * _segmented_offset_size_bits;
+    const uint8_t grouped_offsets = params.second.grouped_offsets;
+    const uint8_t segment_base_offset_size_bits = params.second.data_size_log2;
+    const uint8_t segmented_offset_size_bits = static_cast<uint64_t>(log2ceil((_chunk_size + 64) * (grouped_offsets - 1)));
+    _packing = offset_packing(segment_base_offset_size_bits, segmented_offset_size_bits, grouped_offsets);
     _segments_per_bucket = params.first.segments_per_bucket;
 }
 
@@ -183,36 +109,34 @@ uint64_t compression::segmented_offsets::at(std::size_t i, compression::segmente
         throw std::out_of_range(format("{}: index {} is out of range", __FUNCTION__, i));
     }
 
-    s.update_position_trackers(i, _segment_size_bits, _segments_per_bucket, _grouped_offsets);
+    s.update_position_trackers(i, _packing.segment_bits(), _segments_per_bucket, _packing.grouped_offsets());
+    const char* storage = _storage[s._current_bucket_index].storage.get();
     const uint64_t bucket_base_offset = _storage[s._current_bucket_index].base_offset;
-    const uint64_t segment_base_offset = bucket_base_offset + read(s._current_bucket_index, s._current_segment_offset_bits, _segment_base_offset_size_bits);
+    const uint64_t segment_base_offset = bucket_base_offset + _packing.read_base(storage, s._current_segment_offset_bits);
 
     if (s._current_segment_relative_index == 0) {
         return segment_base_offset;
     }
 
     return segment_base_offset
-        + read(s._current_bucket_index,
-                s._current_segment_offset_bits + _segment_base_offset_size_bits + (s._current_segment_relative_index - 1) * _segmented_offset_size_bits,
-                _segmented_offset_size_bits);
+        + _packing.read_relative(storage, s._current_segment_offset_bits, s._current_segment_relative_index);
 }
 
 void compression::segmented_offsets::push_back(uint64_t offset, compression::segmented_offsets::state& s) {
-    s.update_position_trackers(_size, _segment_size_bits, _segments_per_bucket, _grouped_offsets);
+    s.update_position_trackers(_size, _packing.segment_bits(), _segments_per_bucket, _packing.grouped_offsets());
 
     if (s._current_bucket_index == _storage.size()) {
         _storage.push_back(bucket{_last_written_offset, std::unique_ptr<char[]>(new char[bucket_size])});
     }
 
+    char* storage = _storage[s._current_bucket_index].storage.get();
     const uint64_t bucket_base_offset = _storage[s._current_bucket_index].base_offset;
 
     if (s._current_segment_relative_index == 0) {
-        write(s._current_bucket_index, s._current_segment_offset_bits, _segment_base_offset_size_bits, offset - bucket_base_offset);
+        _packing.write_base(storage, s._current_segment_offset_bits, offset - bucket_base_offset);
     } else {
-        const uint64_t segment_base_offset = bucket_base_offset + read(s._current_bucket_index, s._current_segment_offset_bits, _segment_base_offset_size_bits);
-        write(s._current_bucket_index,
-                s._current_segment_offset_bits + _segment_base_offset_size_bits + (s._current_segment_relative_index - 1) * _segmented_offset_size_bits,
-                _segmented_offset_size_bits,
+        const uint64_t segment_base_offset = bucket_base_offset + _packing.read_base(storage, s._current_segment_offset_bits);
+        _packing.write_relative(storage, s._current_segment_offset_bits, s._current_segment_relative_index,
                 offset - segment_base_offset);
     }
     _last_written_offset = offset;
