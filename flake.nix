@@ -69,6 +69,9 @@
               ms-python.python
               ms-python.vscode-pylance
               ms-python.debugpy
+              # Nix language support: syntax, formatting, and (once nixd or
+              # nil is on PATH) an LSP for this flake and nix/*.nix.
+              jnoortheen.nix-ide
               llvm-vs-code-extensions.vscode-clangd
               vadimcn.vscode-lldb
             ])
