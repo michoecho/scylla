@@ -19,3 +19,4 @@
 
 /tools/vscode-cmake-tools
 /nuke
+buck-out/
