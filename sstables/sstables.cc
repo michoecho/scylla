@@ -72,6 +72,7 @@
 #include "sstables/random_access_reader.hh"
 #include "sstables/sstables_manager.hh"
 #include "sstables/partition_index_cache.hh"
+#include "sstables/compression_info_cache.hh"
 #include "utils/UUID_gen.hh"
 #include "sstables_manager.hh"
 #include "tracing/traced_file.hh"
@@ -1856,6 +1857,12 @@ future<> sstable::update_info_for_opened_data(sstable_open_config cfg) {
 
     if (this->has_component(component_type::CompressionInfo)) {
         _components->compression.update(st.st_size);
+        parse_assert(!_compression_info_cache, get_filename());
+        _compression_info_cache = std::make_unique<compression_info_cache>(_compression_info_file, _components->compression,
+                _manager.get_cache_tracker().get_compression_info_lru(),
+                _manager.get_cache_tracker().region(),
+                _manager.get_cache_tracker().get_compression_info_cache_stats(),
+                component_name(*this, component_type::CompressionInfo).format());
     }
     _data_file_size = st.st_size;
     _data_file_write_time = db_clock::from_time_t(st.st_mtime);
@@ -1931,6 +1938,8 @@ future<> sstable::drop_caches() {
         co_await _cached_rows_file->evict_gently();
     }
     co_await _index_cache->evict_gently();
+    // We deliberately don't drop the compression info cache here.
+    // Maybe we should.
 }
 
 // Return the filter format for the given sstable version
@@ -4184,6 +4193,9 @@ future<> sstable::destroy() {
     co_await _index_cache->evict_gently();
     if (_cached_index_file) {
         co_await _cached_index_file->evict_gently();
+    }
+    if (_compression_info_cache) {
+        co_await _compression_info_cache->evict_gently();
     }
     co_await _storage->destroy(*this);
 

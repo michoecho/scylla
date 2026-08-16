@@ -16,6 +16,7 @@
 #include "sstables/sstable_directory.hh"
 #include "sstables/sstables_registry.hh"
 #include "sstables/partition_index_cache.hh"
+#include "sstables/compression_info_cache.hh"
 #include "sstables/sstables.hh"
 #include "object_storage_client.hh"
 #include "db/config.hh"

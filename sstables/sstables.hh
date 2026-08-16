@@ -108,6 +108,7 @@ class data_consume_context;
 
 class index_reader;
 class partition_index_cache;
+class compression_info_cache;
 
 extern size_t summary_byte_cost(double summary_ratio);
 
@@ -614,6 +615,9 @@ private:
 
     filter_tracker _filter_tracker;
     std::unique_ptr<partition_index_cache> _index_cache;
+    // Serves the contents of CompressionInfo.db to the readers of Data.db.
+    // Only set for compressed sstables which are open for reading.
+    std::unique_ptr<compression_info_cache> _compression_info_cache;
 
     enum class mark_for_deletion {
         implicit = -1,
@@ -1073,6 +1077,12 @@ public:
 
     const sstables::compression& get_compression() const {
         return _components->compression;
+    }
+
+    // Serves the contents of CompressionInfo.db to the readers of Data.db.
+    // Only valid for compressed sstables which are open for reading.
+    compression_info_cache& get_compression_info_cache() {
+        return *_compression_info_cache;
     }
 
     void mutate_sstable_level(uint32_t);
