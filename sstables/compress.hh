@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <iterator>
 #include <deque>
+#include <memory>
 
 #include <seastar/core/file.hh>
 #include <seastar/core/seastar.hh>
@@ -55,6 +56,8 @@ class compression_parameters;
 class compressor;
 
 namespace sstables {
+
+class compression_info_accessor;
 
 struct compression {
     // To reduce the memory footpring of compression-info, n offsets are grouped
@@ -308,7 +311,33 @@ private:
     uint32_t chunk_len = 0;
     uint32_t _full_checksum = 0;
     compressor_ptr _compressor;
+    // Position of the first chunk offset in CompressionInfo.db.
+    // (Alternatively: the size of the file's header).
+    // Recorded by parse() and by write(), so that compression_info_cache
+    // can later find a given offset by its index.
+    uint64_t _offsets_start_pos = 0;
+    // The number of chunk offsets stored in CompressionInfo.db. Recorded separately
+    // from `offsets.size()` because `offsets` can be empty, if evicted.
+    uint64_t _chunk_count = 0;
 public:
+    uint64_t offsets_start_pos() const noexcept {
+        return _offsets_start_pos;
+    }
+
+    void set_offsets_start_pos(uint64_t pos) noexcept {
+        _offsets_start_pos = pos;
+    }
+
+    // The number of chunks the Data.db is split into, which is also the number of
+    // offsets in CompressionInfo.db.
+    uint64_t chunk_count() const noexcept {
+        return _chunk_count;
+    }
+
+    void set_chunk_count(uint64_t n) noexcept {
+        _chunk_count = n;
+    }
+
     // Set the compressor algorithm, please check the definition of enum compressor.
     void set_compressor(compressor_ptr c);
     compressor& get_compressor() const;

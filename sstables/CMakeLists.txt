@@ -2,6 +2,7 @@ add_library(sstables STATIC)
 target_sources(sstables
   PRIVATE
     compress.cc
+    compression_info_cache.cc
     compressor.cc
     checksummed_data_source.cc
     integrity_checked_file_impl.cc

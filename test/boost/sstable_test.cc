@@ -17,6 +17,7 @@
 #include <seastar/util/closeable.hh>
 
 #include "sstables/checksum_utils.hh"
+#include "sstables/compression_info_cache.hh"
 #include "sstables/generation_type.hh"
 #include "sstables/sstables.hh"
 #include "sstables/key.hh"
@@ -38,6 +39,8 @@
 #include "sstables/sstable_mutation_reader.hh"
 #include "sstables/binary_search.hh"
 #include "sstables/exceptions.hh"
+#include "sstables/file_writer.hh"
+#include "sstables/writer.hh"
 
 #include <boost/range/combine.hpp>
 
@@ -1100,4 +1103,212 @@ SEASTAR_TEST_CASE(test_digest_validation_toc) {
 
 SEASTAR_TEST_CASE(test_digest_validation_scylla) {
     return test_component_digest_validation(component_type::Scylla, sstable::version_types::me, "Scylla digest mismatch");
+}
+
+// Checks that the bit widths compression_info_bucket_layout picks for a chunk size
+// are wide enough for every offset a bucket of chunks of the greatest length the
+// layout allows (max_compressed_chunk_length()) can hold.
+//
+// Note that this only checks the layout against max_compressed_chunk_length(), not
+// max_compressed_chunk_length() against the compressors; the bounds of those are
+// documented next to it.
+BOOST_AUTO_TEST_CASE(test_compression_info_bucket_layout_bit_widths) {
+    auto test_chunk_size = [] (uint32_t chunk_size) {
+        BOOST_TEST_CONTEXT("chunk_size=" << chunk_size) {
+            const auto layout = sstables::compression_info_bucket_layout::for_chunk_size(chunk_size);
+            const auto& packing = layout.packing;
+            const uint64_t max_chunk_length = sstables::max_compressed_chunk_length(chunk_size);
+            const uint32_t offsets_per_bucket = layout.offsets_per_bucket;
+            const uint32_t grouped_offsets = packing.grouped_offsets();
+
+            BOOST_REQUIRE_GE(grouped_offsets, 1u);
+            BOOST_REQUIRE_LE(unsigned(packing.base_bits()), unsigned(sstables::max_field_bits));
+            BOOST_REQUIRE_LE(unsigned(packing.relative_bits()), unsigned(sstables::max_field_bits));
+            BOOST_REQUIRE_EQUAL(layout.segments_per_bucket,
+                    (offsets_per_bucket + grouped_offsets - 1) / grouped_offsets);
+
+            // The widest value a base offset field can be asked to hold is the
+            // distance from the first offset of a bucket to the first offset of the
+            // last segment of that bucket.
+            const uint64_t max_base = uint64_t(((offsets_per_bucket - 1) / grouped_offsets) * grouped_offsets)
+                    * max_chunk_length;
+            BOOST_REQUIRE_EQUAL(max_base >> packing.base_bits(), 0u);
+            // The widest value a relative offset field can be asked to hold is the
+            // distance from the base offset of a segment to its last offset.
+            if (grouped_offsets > 1) {
+                const uint64_t max_relative = uint64_t(grouped_offsets - 1) * max_chunk_length;
+                BOOST_REQUIRE_EQUAL(max_relative >> packing.relative_bits(), 0u);
+            }
+
+            // A whole bucket of maximally long chunks packs into storage_size bytes
+            // and reads back exactly. Goes through the same functions
+            // compression_info_cache::entry uses on the offsets it reads from the
+            // file, so that the encoding under test is the one which ships.
+            auto offset_of = [&] (uint32_t i) { return uint64_t(i) * max_chunk_length; };
+            std::vector<char> raw_offsets(offsets_per_bucket * sizeof(uint64_t));
+            for (uint32_t i = 0; i < offsets_per_bucket; ++i) {
+                write_unaligned<uint64_t>(raw_offsets.data() + i * sizeof(uint64_t), net::hton(offset_of(i)));
+            }
+
+            constexpr size_t guard_size = 64;
+            std::vector<char> storage(layout.storage_size + guard_size, 0);
+            const uint64_t base = sstables::pack_bucket_offsets(layout, storage.data(), raw_offsets.data(),
+                    offsets_per_bucket, 0);
+            BOOST_REQUIRE_EQUAL(base, offset_of(0));
+            // Nothing was written past the storage the layout asks for, including
+            // through the unaligned 64-bit words the fields are written with.
+            BOOST_REQUIRE(std::all_of(storage.begin() + layout.storage_size, storage.end(),
+                    [] (char c) { return c == 0; }));
+            for (uint32_t i = 0; i < offsets_per_bucket; ++i) {
+                BOOST_REQUIRE_EQUAL(sstables::unpack_bucket_offset(layout, storage.data(), base, i), offset_of(i));
+            }
+        }
+    };
+
+    // Every chunk size which can be configured (a power of two, capped at 128 kiB by
+    // compression_parameters::validate()), ...
+    for (uint32_t chunk_size = 1024; chunk_size <= 128 * 1024; chunk_size *= 2) {
+        test_chunk_size(chunk_size);
+    }
+    // ... and sizes which can only come from a foreign or corrupt CompressionInfo.db.
+    for (uint32_t chunk_size : {1u, 2u, 3u, 100u, 4095u, 4097u, 1u << 20, 1u << 31,
+                                std::numeric_limits<uint32_t>::max()}) {
+        test_chunk_size(chunk_size);
+    }
+}
+
+// Writes a synthetic CompressionInfo.db with `chunk_count` chunk offsets, and checks
+// that compression_info_cache serves all of them by reading them back from the file,
+// without any help from the in-memory copy in sstables::compression.
+SEASTAR_TEST_CASE(test_compression_info_cache_reads_offsets_from_file) {
+    return seastar::async([] {
+        constexpr uint32_t chunk_length = 4096;
+
+        tmpdir tmp;
+        auto path = (tmp.path() / "CompressionInfo.db").string();
+
+        sstables::compression c;
+        c.set_compressor(make_lz4_sstable_compressor_for_tests());
+        c.set_uncompressed_chunk_length(chunk_length);
+
+        const auto layout = sstables::compression_info_bucket_layout::for_chunk_size(chunk_length);
+        // Enough chunks for a few full buckets plus a partial last one.
+        const uint64_t chunk_count = 3 * layout.offsets_per_bucket + 17;
+
+        // Chunk lengths are arbitrary, they only have to stay within the bound the
+        // packing of the offsets assumes.
+        std::vector<uint64_t> offsets;
+        auto writer = c.offsets.get_writer();
+        uint64_t pos = 0;
+        for (uint64_t i = 0; i < chunk_count; ++i) {
+            offsets.push_back(pos);
+            writer.push_back(pos);
+            pos += tests::random::get_int<uint32_t>(1, chunk_length + 64);
+        }
+        c.set_uncompressed_file_length(chunk_count * chunk_length);
+        c.set_compressed_file_length(pos);
+
+        {
+            auto f = open_file_dma(path, open_flags::create | open_flags::wo).get();
+            auto fw = sstables::file_writer(make_file_output_stream(std::move(f)).get());
+            sstables::write(sstable_version_types::me, fw, c);
+            fw.close();
+        }
+
+        // The offsets are the last thing in the file, so this pins down the position
+        // write() recorded.
+        BOOST_REQUIRE_EQUAL(c.chunk_count(), chunk_count);
+        BOOST_REQUIRE_EQUAL(c.offsets_start_pos() + chunk_count * sizeof(uint64_t),
+                seastar::file_size(path).get());
+
+        // A compression without the in-memory copy of the offsets, so that a lookup
+        // which doesn't go to the file can't accidentally return the right answer.
+        sstables::compression c2;
+        c2.set_compressor(make_lz4_sstable_compressor_for_tests());
+        c2.set_uncompressed_chunk_length(chunk_length);
+        c2.set_uncompressed_file_length(c.uncompressed_file_length());
+        c2.set_compressed_file_length(c.compressed_file_length());
+        c2.set_offsets_start_pos(c.offsets_start_pos());
+        c2.set_chunk_count(chunk_count);
+
+        auto f = open_file_dma(path, open_flags::ro).get();
+        auto close_f = deferred_close(f);
+
+        lru cache_lru;
+        logalloc::region region;
+        compression_info_cache_stats stats;
+        {
+            sstables::compression_info_cache cache(f, c2, cache_lru, region, stats);
+            BOOST_REQUIRE(cache.paged());
+
+            const uint64_t bucket_count = (chunk_count + layout.offsets_per_bucket - 1) / layout.offsets_per_bucket;
+
+            auto verify = [&] (std::vector<uint64_t> order, use_caching caching) {
+                sstables::compression_info_accessor acc(cache, caching);
+                BOOST_REQUIRE_EQUAL(acc.chunk_count(), chunk_count);
+                for (uint64_t i : order) {
+                    const uint64_t expected_start = offsets[i];
+                    const uint64_t expected_end = (i + 1 < chunk_count) ? offsets[i + 1] : c.compressed_file_length();
+
+                    auto chunk = acc.get_chunk_by_index(i).get();
+                    BOOST_REQUIRE_EQUAL(chunk.chunk_start, expected_start);
+                    BOOST_REQUIRE_EQUAL(chunk.chunk_len, expected_end - expected_start);
+                    BOOST_REQUIRE_EQUAL(chunk.offset, 0u);
+
+                    const unsigned offset_in_chunk = (i * 7) % chunk_length;
+                    auto located = acc.locate(i * chunk_length + offset_in_chunk).get();
+                    BOOST_REQUIRE_EQUAL(located.chunk_start, expected_start);
+                    BOOST_REQUIRE_EQUAL(located.chunk_len, expected_end - expected_start);
+                    BOOST_REQUIRE_EQUAL(located.offset, offset_in_chunk);
+                }
+            };
+
+            std::vector<uint64_t> forward;
+            for (uint64_t i = 0; i < chunk_count; ++i) {
+                forward.push_back(i);
+            }
+
+            // A sequential scan reads every bucket exactly once.
+            verify(forward, use_caching::yes);
+            BOOST_REQUIRE_EQUAL(stats.misses, bucket_count);
+            BOOST_REQUIRE_EQUAL(stats.populations, bucket_count);
+            BOOST_REQUIRE_EQUAL(stats.evictions, 0u);
+            BOOST_REQUIRE_GT(stats.used_bytes, 0u);
+            // Every bucket is accounted for with the same size.
+            BOOST_REQUIRE_EQUAL(stats.used_bytes % bucket_count, 0u);
+
+            // Now every bucket is cached, so a second pass (in a random order, and
+            // backwards) doesn't read anything.
+            auto backward = forward;
+            std::ranges::reverse(backward);
+            auto shuffled = forward;
+            std::shuffle(shuffled.begin(), shuffled.end(), tests::random::gen());
+            const auto misses_after_first_pass = stats.misses;
+            verify(backward, use_caching::yes);
+            verify(shuffled, use_caching::yes);
+            BOOST_REQUIRE_EQUAL(stats.misses, misses_after_first_pass);
+
+            // Evicted buckets are read again, and the accounting is balanced.
+            cache_lru.evict_all();
+            BOOST_REQUIRE_EQUAL(stats.evictions, bucket_count);
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+            verify(forward, use_caching::yes);
+            BOOST_REQUIRE_EQUAL(stats.misses, 2 * bucket_count);
+
+            // A BYPASS CACHE read gets private buckets: it neither hits nor
+            // populates the shared cache.
+            const auto stats_before_bypass = stats;
+            cache_lru.evict_all();
+            verify(forward, use_caching::no);
+            BOOST_REQUIRE_EQUAL(stats.hits, stats_before_bypass.hits);
+            BOOST_REQUIRE_EQUAL(stats.populations, stats_before_bypass.populations);
+            BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+
+            {
+                sstables::compression_info_accessor acc(cache, use_caching::yes);
+                BOOST_REQUIRE_THROW(acc.get_chunk_by_index(chunk_count).get(), std::out_of_range);
+            }
+        }
+        BOOST_REQUIRE_EQUAL(stats.used_bytes, 0u);
+    });
 }

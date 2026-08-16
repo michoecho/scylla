@@ -15,6 +15,7 @@
 #include "mutation/mutation_cleaner.hh"
 #include "utils/cached_file_stats.hh"
 #include "sstables/partition_index_cache_stats.hh"
+#include "sstables/compression_info_cache_stats.hh"
 
 #include <seastar/core/metrics_registration.hh>
 
@@ -82,9 +83,18 @@ private:
     stats _stats{};
     cached_file_stats _index_cached_file_stats{};
     partition_index_cache_stats _partition_index_cache_stats{};
+    compression_info_cache_stats _compression_info_cache_stats{};
     seastar::metrics::metric_groups _metrics;
     logalloc::region _region;
     lru _lru;
+    // This list holds cached pieces of CompressionInfo.db,
+    // in isolation from index caches and data caches.
+    // Before making CompressionInfo.db pageable, it used to fully reside in memory.
+    // Making it evictable is a potential performance regression.
+    // We don't want to make it even more unpredictable by mixing it with other types of caches.
+    // So we give the compression info cache its own space limit,
+    // and we only evict it when it crosses that limit.
+    lru _compression_info_lru;
     mutation_cleaner _garbage;
     mutation_cleaner _memtable_cleaner;
     mutation_application_stats& _app_stats;
@@ -141,6 +151,8 @@ public:
     lru& get_lru() { return _lru; }
     cached_file_stats& get_index_cached_file_stats() { return _index_cached_file_stats; }
     partition_index_cache_stats& get_partition_index_cache_stats() { return _partition_index_cache_stats; }
+    lru& get_compression_info_lru() { return _compression_info_lru; }
+    compression_info_cache_stats& get_compression_info_cache_stats() { return _compression_info_cache_stats; }
     seastar::memory::reclaiming_result evict_from_lru_shallow() noexcept;
 };
 
