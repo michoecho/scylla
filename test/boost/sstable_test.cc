@@ -704,12 +704,20 @@ SEASTAR_TEST_CASE(test_skipping_in_compressed_stream) {
         auto compressed_size = seastar::file_size(file_path).get();
         c.update(compressed_size);
 
+        lru compression_info_lru;
+        logalloc::region compression_info_region;
+        compression_info_cache_stats compression_info_stats;
+        // The offsets are all in memory, in `c`, so the cache never touches the file.
+        sstables::compression_info_cache compression_info(file(), c, compression_info_lru, compression_info_region, compression_info_stats);
+
         auto make_is = [&] {
             f = open_file_dma(file_path, open_flags::ro).get();
             auto stream_creator = [f](uint64_t pos, uint64_t len, file_input_stream_options options)->future<input_stream<char>> {
                 co_return input_stream<char>(make_file_data_source(std::move(f), pos, len, std::move(options)));
             };
-            return make_compressed_file_m_format_input_stream(stream_creator, &c, 0, uncompressed_size, opts, semaphore.make_permit(), std::nullopt);
+            return make_compressed_file_m_format_input_stream(stream_creator,
+                    std::make_unique<sstables::compression_info_accessor>(compression_info),
+                    0, uncompressed_size, opts, semaphore.make_permit(), std::nullopt);
         };
 
         auto expect = [] (input_stream<char>& in, const temporary_buffer<char>& buf) {

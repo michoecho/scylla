@@ -348,20 +348,16 @@ public:
     operator bool() const {
         return !name.value.empty();
     }
-    // locate() locates in the compressed file the given byte position of
-    // the uncompressed data:
-    //   1. The byte range containing the appropriate compressed chunk, and
-    //   2. the offset into the uncompressed chunk.
-    // Note that the last 4 bytes of the returned chunk are not the actual
-    // compressed data, but rather the checksum of the compressed data.
-    // locate() throws an out-of-range exception if the position is beyond
-    // the last chunk.
+    // The location in the compressed file of a byte position of the uncompressed
+    // data: the byte range containing the appropriate compressed chunk, and the
+    // offset into the uncompressed chunk. See compression_info_cache::locate().
+    // Note that the last 4 bytes of the chunk are not the actual compressed data,
+    // but rather the checksum of the compressed data.
     struct chunk_and_offset {
         uint64_t chunk_start;
         uint64_t chunk_len; // variable size of compressed chunk
         unsigned offset; // offset into chunk after uncompressing it
     };
-    chunk_and_offset locate(uint64_t position, const compression::segmented_offsets::accessor& accessor);
 
     unsigned uncompressed_chunk_length() const noexcept {
         return chunk_len;
@@ -401,24 +397,27 @@ public:
 
 using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uint64_t, file_input_stream_options)>;
 
-// Note: compression_metadata is passed by reference; The caller is
-// responsible for keeping the compression_metadata alive as long as there
-// are open streams on it. This should happen naturally on a higher level -
-// as long as we have *sstables* work in progress, we need to keep the whole
-// sstable alive, and the compression metadata is only a part of it.
+// Note: the compression info is accessed only through the passed-in accessor,
+// which holds the lookup state of this particular stream and is therefore owned
+// by it. The accessor keeps a reference to the sstable's compression_info_cache,
+// so the caller is responsible for keeping that cache alive as long as there are
+// open streams on it. This should happen naturally on a higher level - as long as
+// we have *sstables* work in progress, we need to keep the whole sstable alive,
+// and the compression info cache is only a part of it.
 input_stream<char> make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
-                sstables::compression* cm, uint64_t offset, size_t len,
+                std::unique_ptr<compression_info_accessor> ca, uint64_t offset, size_t len,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
 input_stream<char> make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
-                sstables::compression* cm, uint64_t offset, size_t len,
+                std::unique_ptr<compression_info_accessor> ca, uint64_t offset, size_t len,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
 // Raw compressed data stream function that return compressed chunks without decompression
 // while still calculating digests and verifying checksums. Compatible with SSTables version 3.x and later.
-input_stream<char> make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator, sstables::compression *cm,
+input_stream<char> make_compressed_raw_file_input_stream(sstables::stream_creator_fn stream_creator,
+        std::unique_ptr<compression_info_accessor> ca,
         file_input_stream_options options, reader_permit permit, std::optional<uint32_t> digest);
 
 output_stream<char> make_compressed_file_m_format_output_stream(output_stream<char> out,

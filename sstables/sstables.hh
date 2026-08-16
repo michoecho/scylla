@@ -851,16 +851,20 @@ public:
         yes,
         compressed_chunks
     };
+    // `caching` says whether the compression info read by the returned stream should
+    // be cached. (BYPASS CACHE reads pass use_caching::no).
     future<input_stream<char>> data_stream(uint64_t pos, size_t len,
             reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
             raw_stream raw = raw_stream::no, integrity_check integrity = integrity_check::no,
-            integrity_error_handler error_handler = throwing_integrity_error_handler);
+            integrity_error_handler error_handler = throwing_integrity_error_handler,
+            use_caching caching = use_caching::yes);
 
     future<input_stream<char>> data_stream(uint64_t pos, size_t len,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
         raw_stream raw = raw_stream::no, integrity_check integrity = integrity_check::no,
-        integrity_error_handler error_handler = throwing_integrity_error_handler);
+        integrity_error_handler error_handler = throwing_integrity_error_handler,
+        use_caching caching = use_caching::yes);
 
     // Read exactly the specific byte range from the data file (after
     // uncompression, if the file is compressed). This can be used to read
@@ -1200,10 +1204,10 @@ public:
     friend class sstables_manager;
     template <typename DataConsumeRowsContext>
     friend future<std::unique_ptr<DataConsumeRowsContext>>
-    data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t, integrity_check);
+    data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, uint64_t, integrity_check, use_caching);
     template <typename DataConsumeRowsContext>
     friend future<std::unique_ptr<DataConsumeRowsContext>>
-    data_consume_single_partition(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, integrity_check);
+    data_consume_single_partition(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, integrity_check, use_caching);
     template <typename DataConsumeRowsContext>
     friend future<std::unique_ptr<DataConsumeRowsContext>>
     data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, integrity_check);

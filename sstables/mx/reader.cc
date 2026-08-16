@@ -1580,6 +1580,8 @@ private:
             }
         }
 
+        // BYPASS CACHE reads shouldn't populate the compression info cache either.
+        auto caching = use_caching(!_slice.options.contains(query::partition_slice::option::bypass_cache));
         if (_single_partition_read) {
             _read_enabled = (begin != *end);
             if (reversed()) {
@@ -1591,13 +1593,13 @@ private:
                 _context = std::move(reversed_context.the_context);
                 _reversed_read_sstable_position = &reversed_context.current_position_in_sstable;
             } else {
-                _context = co_await data_consume_single_partition<DataConsumeRowsContext>(*_schema, _sst, _consumer, { begin, *end }, _integrity);
+                _context = co_await data_consume_single_partition<DataConsumeRowsContext>(*_schema, _sst, _consumer, { begin, *end }, _integrity, caching);
             }
         } else {
             sstable::disk_read_range drr{begin, *end};
             auto last_end = _fwd_mr ? _sst->data_size() : drr.end;
             _read_enabled = bool(drr);
-            _context = co_await data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end, _integrity);
+            _context = co_await data_consume_rows<DataConsumeRowsContext>(*_schema, _sst, _consumer, std::move(drr), last_end, _integrity, caching);
         }
 
         _monitor.on_read_started(_context->reader_position());

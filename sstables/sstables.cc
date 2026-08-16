@@ -3220,23 +3220,23 @@ component_type sstable::component_from_sstring(version_types v, const sstring &s
 
 future<input_stream<char>> sstable::data_stream(uint64_t pos, size_t len,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history, raw_stream raw,
-        integrity_check integrity, integrity_error_handler error_handler) {
+        integrity_check integrity, integrity_error_handler error_handler, use_caching caching) {
     file_input_stream_options options;
     options.buffer_size = sstable_buffer_size;
     options.read_ahead = 4;
     options.dynamic_adjustments = std::move(history);
-    return data_stream(pos, len, permit, std::move(trace_state), history, std::move(options), raw, integrity, std::move(error_handler));
+    return data_stream(pos, len, permit, std::move(trace_state), history, std::move(options), raw, integrity, std::move(error_handler), caching);
 }
 
 future<input_stream<char>> sstable::data_stream(uint64_t pos, size_t len,
         reader_permit permit, tracing::trace_state_ptr trace_state, lw_shared_ptr<file_input_stream_history> history,
         file_input_stream_options options,
         raw_stream raw, integrity_check integrity,
-        integrity_error_handler error_handler) {
+        integrity_error_handler error_handler, use_caching caching) {
 
     file f = make_tracked_file(_data_file, permit);
     if (trace_state) {
-        f = tracing::make_traced_file(std::move(f), std::move(trace_state), format("{}:", get_filename()));
+        f = tracing::make_traced_file(std::move(f), trace_state, format("{}:", get_filename()));
     }
 
     std::optional<uint32_t> digest;
@@ -3247,17 +3247,20 @@ future<input_stream<char>> sstable::data_stream(uint64_t pos, size_t len,
         co_return input_stream<char>(co_await _storage->make_data_or_index_source(*this, component_type::Data, std::move(f), pos, len, std::move(options)));
     };
     if (_components->compression && raw == raw_stream::no) {
+        auto ca = std::make_unique<compression_info_accessor>(get_compression_info_cache(), caching, trace_state);
         if (_version >= sstable_version_types::mc) {
-            co_return make_compressed_file_m_format_input_stream(stream_creator, &_components->compression,
+            co_return make_compressed_file_m_format_input_stream(stream_creator, std::move(ca),
                pos, len, std::move(options), permit, digest);
         } else {
-            co_return make_compressed_file_k_l_format_input_stream(stream_creator, &_components->compression,
+            co_return make_compressed_file_k_l_format_input_stream(stream_creator, std::move(ca),
                 pos, len, std::move(options), permit, digest);
         }
     }
 
     if (_components->compression && raw == raw_stream::compressed_chunks && _version >= sstable_version_types::mc) {
-        co_return make_compressed_raw_file_input_stream(stream_creator, &_components->compression, std::move(options), permit, digest);
+        co_return make_compressed_raw_file_input_stream(stream_creator,
+                std::make_unique<compression_info_accessor>(get_compression_info_cache(), caching, trace_state),
+                std::move(options), permit, digest);
     }
 
     if (_components->checksum && integrity == integrity_check::yes) {
@@ -3282,16 +3285,13 @@ future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, read
 }
 
 template <typename ChecksumType>
-static future<bool> do_validate_compressed(input_stream<char>& stream, const sstables::compression& c, bool checksum_all, std::optional<uint32_t> expected_digest) {
+static future<bool> do_validate_compressed(input_stream<char>& stream, compression_info_accessor& ca, bool checksum_all, std::optional<uint32_t> expected_digest) {
     bool valid = true;
     uint64_t offset = 0;
     uint32_t actual_full_checksum = ChecksumType::init_checksum();
 
-    auto accessor = c.offsets.get_accessor();
-    for (size_t i = 0; i < c.offsets.size(); ++i) {
-        auto current_pos = accessor.at(i);
-        auto next_pos = i + 1 == c.offsets.size() ? c.compressed_file_length() : accessor.at(i + 1);
-        auto chunk_len = next_pos - current_pos;
+    for (size_t i = 0; i < ca.chunk_count(); ++i) {
+        auto chunk_len = (co_await ca.get_chunk_by_index(i)).chunk_len;
         auto buf = co_await stream.read_exactly(chunk_len);
 
         if (!chunk_len) {
@@ -3522,10 +3522,11 @@ future<validate_checksums_result> validate_checksums_and_digests(shared_sstable 
 
     try {
         if (sst->get_compression()) {
+            compression_info_accessor ca(sst->get_compression_info_cache());
             if (sst->get_version() >= sstable_version_types::mc) {
-                valid = co_await do_validate_compressed<crc32_utils>(data_stream, sst->get_compression(), true, digest);
+                valid = co_await do_validate_compressed<crc32_utils>(data_stream, ca, true, digest);
             } else {
-                valid = co_await do_validate_compressed<adler32_utils>(data_stream, sst->get_compression(), false, digest);
+                valid = co_await do_validate_compressed<adler32_utils>(data_stream, ca, false, digest);
             }
         } else {
             valid = co_await do_validate_uncompressed(data_stream, checksum->checksums.size(), checksum->chunk_size);
