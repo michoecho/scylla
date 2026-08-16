@@ -1,0 +1,32 @@
+load("@nix//toolchains:cxx.bzl", "nix_cxx_toolchain")
+load("@nix//toolchains:python.bzl", "nix_python_bootstrap_toolchain")
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+
+nix_cxx_toolchain(
+    name = "cxx",
+    c_flags = ["-g"],
+    cxx_flags = [
+        "-g",
+        "-std=gnu++23",
+    ],
+    link_style = "static",
+    nix_cc = "root//:nix_cc",
+    visibility = ["PUBLIC"],
+)
+
+nix_python_bootstrap_toolchain(
+    name = "python_bootstrap",
+    python = "root//:python",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)

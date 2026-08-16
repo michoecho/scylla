@@ -4,9 +4,14 @@
   inputs = {
     nixpkgs-stable.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # buck2.nix's toolchain rules track the Buck2 prelude from this revision.
+    # Newer Buck2 releases require additional C++ toolchain fields.
+    nixpkgs-buck2.url = "github:NixOS/nixpkgs/292fa7d4f6519c074f0a50394dbbe69859bb6043";
+    nativelink.url = "github:TraceMachina/nativelink";
+    nativelink.inputs.nixpkgs.follows = "nixpkgs-stable";
   };
 
-  outputs = { self, nixpkgs-stable, nixpkgs-unstable }:
+  outputs = { self, nixpkgs-buck2, nixpkgs-stable, nixpkgs-unstable, ... }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs-stable.lib.genAttrs supportedSystems (system: f system);
@@ -19,6 +24,7 @@
         inherit system;
         config.allowUnfree = true;
       };
+      pkgsBuck2For = system: import nixpkgs-buck2 { inherit system; };
 
       # The Hegel stack, built entirely from source. Upstream's own CMake and
       # flake fetch a prebuilt libhegel from a GitHub release at configure
@@ -37,6 +43,16 @@
           inherit libhegel reflectcpp;
         };
       };
+
+      # Store paths consumed by the folder-local Buck2 build in
+      # modules/exception_hacks.  buck2.nix turns these flake outputs into
+      # Buck artifacts, so the Buck graph does not depend on ambient compiler
+      # flags or packages from the developer shell.
+      exceptionHacksBuckPackagesFor = pkgs:
+        import ./modules/exception_hacks/nix/buck2-packages.nix {
+          inherit pkgs;
+          boostPatch = ./nix/patches/boost-stacktrace-from-exception-ptr.patch;
+        };
 
       # VS Code pre-loaded with the extensions this project needs, built from
       # Nix so it's reproducible and identical inside and outside the sandbox.
@@ -150,6 +166,7 @@
       packages = forAllSystems (system:
         let pkgs = pkgsStableFor system;
         in {
+          buck2 = (pkgsBuck2For system).buck2;
           code = vscodeFor (pkgsUnstableFor system);
           perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
 
@@ -159,6 +176,14 @@
           # Three packages because they are three separate builds: a Rust
           # cdylib, a CMake library, and the C++ binding that consumes both.
           inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
+          inherit (exceptionHacksBuckPackagesFor pkgs)
+            buck2-backtrace
+            buck2-backtrace-headers
+            buck2-boost-headers
+            buck2-boost-stacktrace-from-exception
+            buck2-cxx
+            buck2-doctest-headers
+            buck2-python;
 
           # The crates modules/libafl's Rust wrapper depends on, vendored into a
           # local registry from its Cargo.lock.
@@ -181,6 +206,7 @@
       devShells = forAllSystems (system:
         let
           pkgs = pkgsStableFor system;
+          pkgsBuck2 = pkgsBuck2For system;
           pkgs-unstable = pkgsUnstableFor system;
           code = vscodeFor pkgs-unstable;
           llvmPkgs = pkgs.llvmPackages_22;
@@ -227,6 +253,7 @@
               aflplusplus
               cli11
               cmake
+              pkgsBuck2.buck2
               doctest
               nanobench
               ninja

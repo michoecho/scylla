@@ -1,0 +1,106 @@
+load("@nix//:flake.bzl", "flake")
+load(":module.bzl", "add_module")
+
+_FLAKE = "nix"
+
+flake.package(
+    name = "nix_cc",
+    binaries = [
+        "ar",
+        "cc",
+        "c++",
+        "nm",
+        "objcopy",
+        "ranlib",
+        "strip",
+    ],
+    package = "buck2-cxx",
+    path = _FLAKE,
+    visibility = ["PUBLIC"],
+)
+
+flake.package(
+    name = "python",
+    binary = "python3",
+    package = "buck2-python",
+    path = _FLAKE,
+    visibility = ["PUBLIC"],
+)
+
+flake.package(
+    name = "doctest_headers",
+    package = "buck2-doctest-headers",
+    path = _FLAKE,
+)
+
+flake.package(
+    name = "boost_headers",
+    package = "buck2-boost-headers",
+    path = _FLAKE,
+)
+
+flake.package(
+    name = "boost_stacktrace_from_exception_lib",
+    package = "buck2-boost-stacktrace-from-exception",
+    path = _FLAKE,
+)
+
+flake.package(
+    name = "backtrace_headers",
+    package = "buck2-backtrace-headers",
+    path = _FLAKE,
+)
+
+flake.package(
+    name = "backtrace_lib",
+    package = "buck2-backtrace",
+    path = _FLAKE,
+)
+
+prebuilt_cxx_library(
+    name = "doctest",
+    header_dirs = [":doctest_headers"],
+    header_only = True,
+)
+
+prebuilt_cxx_library(
+    name = "backtrace",
+    header_dirs = [":backtrace_headers"],
+    shared_lib = ":backtrace_lib",
+    soname = "libbacktrace.so",
+    supports_shared_library_interface = False,
+)
+
+prebuilt_cxx_library(
+    name = "boost_stacktrace_from_exception",
+    exported_deps = [":backtrace"],
+    header_dirs = [":boost_headers"],
+    shared_lib = ":boost_stacktrace_from_exception_lib",
+    soname = "libboost_stacktrace_from_exception.so",
+    supports_shared_library_interface = False,
+)
+
+add_module(
+    name = "exception_hacks",
+    srcs = ["exception_hacks.cc"],
+    exported_headers = {
+        "exception_hacks/exception_hacks.h": "include/exception_hacks/exception_hacks.h",
+    },
+    compiler_flags = [
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+    ],
+    deps = [
+        ":boost_stacktrace_from_exception",
+        ":doctest",
+    ],
+    exported_linker_flags = [
+        "-ldl",
+        "-pthread",
+    ],
+    exported_preprocessor_flags = [
+        "-DBOOST_STACKTRACE_USE_BACKTRACE",
+        "-DDOCTEST_CONFIG_IMPLEMENTATION_IN_DLL",
+    ],
+)
