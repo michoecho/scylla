@@ -252,6 +252,7 @@ def main():
         "--ro-bind", "/run/wrappers/bin", "/run/wrappers/bin",
         "--ro-bind", "/run/current-system/sw/bin", "/run/current-system/sw/bin",
         "--ro-bind", f"{home}/.nix-profile/bin", f"{home}/.nix-profile/bin",
+        "--ro-bind", f"{home}/repos", f"{home}/repos",
     ]
 
     # Claude installation (read-only)
