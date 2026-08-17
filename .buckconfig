@@ -3,7 +3,6 @@
   prelude = prelude
   toolchains = toolchains
   none = none
-  nix = toolchains/buck2.nix
 
 [cell_aliases]
   config = prelude
@@ -25,3 +24,8 @@
 
 [build]
   execution_platforms = prelude//platforms:default
+
+[project]
+  # Nested buck-out directories contain materialized external cells, whose BUCK files
+  # would otherwise be picked up by target patterns such as `//...`.
+  ignore = .git, **/buck-out

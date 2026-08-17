@@ -1,6 +1,6 @@
-load("@nix//flake.bzl", "flake")
-load("@nix//toolchains:cxx.bzl", "nix_cxx_toolchain")
-load("@nix//toolchains:python.bzl", "nix_python_bootstrap_toolchain")
+load("@root//buck:flake.bzl", "flake")
+load("@root//buck:cxx.bzl", "nix_cxx_toolchain")
+load("@root//buck:python.bzl", "nix_python_bootstrap_toolchain")
 
 # use the `cxx` flake package output from `./nix` to provide the compiler tools
 flake.package(
