@@ -1,0 +1,39 @@
+load("@nix//flake.bzl", "flake")
+load("@nix//toolchains:cxx.bzl", "nix_cxx_toolchain")
+load("@nix//toolchains:python.bzl", "nix_python_bootstrap_toolchain")
+
+# use the `cxx` flake package output from `./nix` to provide the compiler tools
+flake.package(
+    name = "nix_cc",
+    binaries = [
+        "ar",
+        "cc",
+        "c++",
+        "nm",
+        "objcopy",
+        "ranlib",
+        "strip",
+    ],
+    package = "cxx",
+    path = "root//:flake",
+)
+
+# provide the `cxx` toolchain using the `:nix_cc` target
+nix_cxx_toolchain(
+    name = "cxx",
+    nix_cc = ":nix_cc",
+    visibility = ["PUBLIC"],
+)
+
+flake.package(
+    name = "python",
+    binary = "python3",
+    package = "python3",
+    path = "root//:flake",
+)
+
+nix_python_bootstrap_toolchain(
+    name = "python_bootstrap",
+    python = ":python",
+    visibility = ["PUBLIC"],
+)

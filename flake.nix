@@ -178,10 +178,57 @@
           libafl-cargo-deps = pkgs.rustPlatform.importCargoLock {
             lockFile = ./modules/libafl/rust/Cargo.lock;
           };
+
+          doctest = pkgs.doctest.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
+          });
+
+          inherit (pkgs) python3;
+
+          cxx = pkgs.stdenv.mkDerivation {
+            name = "buck2-cxx";
+            dontUnpack = true;
+            dontCheck = true;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            buildPhase = ''
+              function capture_env() {
+                  # variables to export, all variables with names beginning with one of these are exported
+                  local -ar vars=(
+                      NIX_CC_WRAPPER_TARGET_HOST_
+                      NIX_CFLAGS_COMPILE
+                      NIX_DONT_SET_RPATH
+                      NIX_ENFORCE_NO_NATIVE
+                      NIX_HARDENING_ENABLE
+                      NIX_IGNORE_LD_THROUGH_GCC
+                      NIX_LDFLAGS
+                      NIX_NO_SELF_RPATH
+                  )
+                  for prefix in "''${vars[@]}"; do
+                      for v in $( eval 'echo "''${!'"$prefix"'@}"' ); do
+                          echo "--set"
+                          echo "$v"
+                          echo "''${!v}"
+                      done
+                  done
+              }
+
+              mkdir -p "$out/bin"
+
+              for tool in ar nm objcopy ranlib strip; do
+                  ln -st "$out/bin" "$NIX_CC/bin/$tool"
+              done
+
+              mapfile -t < <(capture_env)
+
+              makeWrapper "$NIX_CC/bin/$CC" "$out/bin/cc" "''${MAPFILE[@]}"
+              makeWrapper "$NIX_CC/bin/$CXX" "$out/bin/c++" "''${MAPFILE[@]}"
+            '';
+          };
         });
 
       devShells = forAllSystems (system:
         let
+          my_packages = self.packages.${system};
           pkgs = pkgsStableFor system;
           pkgs-unstable = pkgsUnstableFor system;
           code = vscodeFor pkgs-unstable;
@@ -194,9 +241,7 @@
           # VS Code test explorer reads to make "go to test" work. Upstream
           # ships the patched scripts/cmake/*.cmake into lib/cmake/doctest, so
           # CMakeLists picks the change up via find_package(doctest).
-          doctest = pkgs.doctest.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
-          });
+          doctest = my_packages.doctest;
 
           # nixpkgs' nanobench with our patch making the perf counters ask for
           # real CPU cycles (PERF_COUNT_HW_CPU_CYCLES) rather than preferring
