@@ -183,11 +183,11 @@
             patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
           });
 
-          # Used by buck2's `flake.prebuilt_cmake_library`, which configures a
-          # throwaway CMake project to discover a package's include dirs and
-          # libraries. Comes from the flake rather than from PATH so the buck
-          # build depends on the same cmake whether or not it runs in the shell.
-          inherit (pkgs) cmake python3;
+          # Used by buck2's `flake.prebuilt_pkgconfig_library`, which reads a
+          # package's `.pc` file to discover its include dirs and libraries.
+          # Comes from the flake rather than from PATH so the buck build depends
+          # on the same pkg-config whether or not it runs in the shell.
+          inherit (pkgs) pkg-config python3;
 
           cxx = pkgs.stdenv.mkDerivation {
             name = "buck2-cxx";
@@ -371,6 +371,8 @@
               vk-bootstrap
 
               pkgs-unstable.buck2
+              spdlog
+              fmt
             ];
 
             # For Vulkan on wayland

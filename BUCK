@@ -10,7 +10,7 @@ filegroup(
 
 load("//buck:flake.bzl", "flake")
 
-flake.prebuilt_cmake_library(
+flake.prebuilt_pkgconfig_library(
     name = "doctest",
     path = flake.store(
         package = "doctest",
@@ -29,3 +29,5 @@ cxx_binary(
     ':doctest',
   ],
 )
+
+
