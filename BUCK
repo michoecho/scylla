@@ -10,19 +10,12 @@ filegroup(
 
 load("//buck:flake.bzl", "flake")
 
-flake.package(
-    name = "doctest_pkg",
-    files = {"include": "include"},
-    package = "doctest",
-    path = "root//:flake",
-)
-
-# doctest is header-only, so it only needs to contribute its include directory
-prebuilt_cxx_library(
+flake.prebuilt_cmake_library(
     name = "doctest",
-    header_dirs = [":doctest_pkg[include]"],
-    header_only = True,
-    visibility = ["PUBLIC"],
+    path = flake.store(
+        package = "doctest",
+        path = "root//:flake",
+    ),
 )
 
 cxx_binary(

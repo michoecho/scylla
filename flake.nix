@@ -183,7 +183,11 @@
             patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
           });
 
-          inherit (pkgs) python3;
+          # Used by buck2's `flake.prebuilt_cmake_library`, which configures a
+          # throwaway CMake project to discover a package's include dirs and
+          # libraries. Comes from the flake rather than from PATH so the buck
+          # build depends on the same cmake whether or not it runs in the shell.
+          inherit (pkgs) cmake python3;
 
           cxx = pkgs.stdenv.mkDerivation {
             name = "buck2-cxx";
