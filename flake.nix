@@ -320,6 +320,8 @@
               # derivation; it ships a CMake config, hence
               # find_package(vk-bootstrap).
               vk-bootstrap
+
+              pkgs-unstable.buck2
             ];
 
             # For Vulkan on wayland
