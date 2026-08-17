@@ -1,5 +1,3 @@
-# Vendored from https://github.com/tweag/buck2.nix (see buck/README.md).
-#
 # HOW TO USE THIS MODULE:
 #
 #    load("//buck:flake.bzl", "flake")
@@ -227,39 +225,6 @@ __flake_package = rule(
     """,
 )
 
-__flake_legacyPackage = rule(
-    impl = lambda ctx: __flake_package_impl(
-        ctx,
-        ctx.attrs.path,
-        "legacyPackages",
-        ctx.attrs.package or ctx.label.name,
-        ctx.attrs.output,
-        ctx.attrs.binary,
-        ctx.attrs.binaries,
-        ctx.attrs._target_os_type[OsLookup],
-    ),
-    attrs = __common_attrs,
-    doc = """
-    A `flake.legacyPackage()` rule builds a nix package of a given flake.
-
-    ## Examples
-
-    ```starlark
-    flake.legacyPackage(
-        name = "curl",
-        path = ":nixpkgs",
-        output = "bin",
-        binary = "curl",
-    )
-    ```
-
-    This creates a target called `curl` from the nix flake in `./nix`, building `path:nix#legacyPackages.<system>.curl.bin`.
-    """,
-)
-
-## ---------------------------------------------------------------------------------------------------------------------
-
 flake = struct(
-    legacyPackage = __flake_legacyPackage,
     package = __flake_package,
 )
