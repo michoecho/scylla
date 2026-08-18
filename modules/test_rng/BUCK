@@ -14,12 +14,10 @@ add_module(
         "//modules/libafl:libafl_c",
         "//:hegel",
     ],
-    compiler_flags = ["-DBUILD_LIBAFL"] + select({
-        "//:libafl": [
-            "-fsanitize-coverage=trace-pc-guard",
-            "-fno-sanitize-link-runtime",
-        ],
-        "DEFAULT": [],
+    compiler_flags = ["-DBUILD_LIBAFL"],
+    exported_needs_coverage_instrumentation = select({
+        "//:libafl": True,
+        "DEFAULT": False,
     }),
     exported_linker_flags = select({
         "//:libafl": ["-fno-sanitize-link-runtime"],

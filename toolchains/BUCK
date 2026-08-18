@@ -39,6 +39,12 @@ nix_cxx_toolchain(
             "-g",
         ],
         "root//:build_mode[release]": ["-O3"],
+    }) + select({
+        "root//:libafl": [
+            "-fsanitize-coverage=trace-pc-guard",
+            "-fno-sanitize-link-runtime",
+        ],
+        "DEFAULT": [],
     }),
     visibility = ["PUBLIC"],
 )
