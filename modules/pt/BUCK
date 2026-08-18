@@ -1,0 +1,21 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "pt",
+    srcs = [
+        "pt_control.cc",
+        "pt_control_test.cc",
+    ],
+    exported_headers = {
+        "pt/pt_control.h": "include/pt/pt_control.h",
+    },
+    deps = [
+        "//:doctest",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+    ],
+    module_source_dir = "modules/pt",
+)
