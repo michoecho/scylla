@@ -23,7 +23,7 @@ crate-type = ["cdylib"]
 #
 # Bumping any of these is `cargo update` + rebuild; the vendor dir is derived
 # from the lockfile, so the flake follows automatically.
-libafl = { version = "0.15.4", default-features = false, features = ["std"] }
+libafl = { version = "0.15.4", default-features = true, features = [] }
 
 # `serdeany_autoreg` is not optional in practice. LibAFL's metadata maps are
 # serde-erased trait objects looked up through a global type registry, and that
@@ -44,9 +44,9 @@ libafl_bolts = { version = "0.15.4", default-features = false, features = [
 # Default features are off deliberately: the default set pulls `forkserver` and
 # `cmplog`, and the forkserver is precisely the thing this backend exists to not
 # need. What is left is the pcguard runtime and the C coverage map it indexes.
-libafl_targets = { version = "0.15.4", default-features = false, features = [
-    "std",
+libafl_targets = { version = "0.15.4", default-features = true, features = [
     "sancov_pcguard",
+    "sancov_cmplog",
 ] }
 
 [profile.release]

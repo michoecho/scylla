@@ -1,4 +1,9 @@
 [buildscript.build.env]
 OPT_LEVEL = "3"
+
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true
+
 [buildscript.run.env]
 OPT_LEVEL = "3"
