@@ -103,6 +103,26 @@ stdenv.mkDerivation rec {
     (lib.cmakeBool "HEGEL_BUILD_DOCS" false)
   ];
 
+  # Buck's prebuilt_pkgconfig_library consumes pkg-config metadata rather than
+  # naming files inside this package. Upstream installs a CMake package but no
+  # .pc file, so provide the equivalent metadata here. The engine is shipped
+  # beside the C++ archive, while reflect-cpp is a propagated header-only
+  # dependency and therefore contributes its include directory to Cflags.
+  postInstall = ''
+    mkdir -p "$out/lib/pkgconfig"
+    cat > "$out/lib/pkgconfig/hegel-cpp.pc" <<EOF
+prefix=$out
+includedir=$out/include
+libdir=$out/lib
+
+Name: hegel-cpp
+Description: Property-based testing for C++
+Version: ${version}
+Cflags: -I$out/include -I${reflectcpp}/include
+Libs: -L$out/lib -lhegel -lhegel_c
+EOF
+  '';
+
   meta = {
     description = "Property-based testing for C++, based on Hypothesis";
     homepage = "https://hegel.dev/cpp";

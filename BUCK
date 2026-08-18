@@ -15,6 +15,13 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
 )
 
+flake.prebuilt_pkgconfig_library(
+  name = 'hegel',
+  package = 'hegel-cpp',
+  path = 'root//:flake',
+  static = True,
+)
+
 cxx_library(
   name = 'tests',
   srcs = [
@@ -22,6 +29,7 @@ cxx_library(
   ],
   deps = [
     ':doctest',
+    ':hegel',
   ],
   preferred_linkage = 'static',
   link_whole = True,
