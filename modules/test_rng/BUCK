@@ -14,12 +14,7 @@ add_module(
         "//modules/libafl:libafl_c",
         "//:hegel",
     ],
-    compiler_flags = [
-        "-std=c++23",
-        "-Wall",
-        "-Wextra",
-        "-DBUILD_LIBAFL",
-    ] + select({
+    compiler_flags = ["-DBUILD_LIBAFL"] + select({
         "//:libafl": [
             "-O0",
             "-g",

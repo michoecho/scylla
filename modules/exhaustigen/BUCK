@@ -13,10 +13,5 @@ add_module(
         "//modules/snapshot:snapshot",
         "//:hegel",
     ],
-    compiler_flags = [
-        "-std=c++23",
-        "-Wall",
-        "-Wextra",
-    ],
     module_source_dir = "modules/exhaustigen",
 )

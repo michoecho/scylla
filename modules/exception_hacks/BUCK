@@ -13,11 +13,6 @@ add_module(
         "//:boost_stacktrace",
         "//:backtrace",
     ],
-    compiler_flags = [
-        "-std=c++23",
-        "-Wall",
-        "-Wextra",
-    ],
     exported_preprocessor_flags = [
         "-DBOOST_STACKTRACE_USE_BACKTRACE",
     ],

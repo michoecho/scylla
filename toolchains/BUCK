@@ -29,6 +29,11 @@ flake.package(
 nix_cxx_toolchain(
     name = "cxx",
     nix_cc = ":nix_cc",
+    cxx_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+    ],
     visibility = ["PUBLIC"],
 )
 

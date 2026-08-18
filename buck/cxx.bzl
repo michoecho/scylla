@@ -24,6 +24,8 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
 
     compiler = nix_cc["cc"][RunInfo]
     cxx_compiler = nix_cc["c++"][RunInfo]
+    compiler_with_flags = RunInfo(args = [compiler] + ctx.attrs.c_flags)
+    cxx_compiler_with_flags = RunInfo(args = [cxx_compiler] + ctx.attrs.cxx_flags)
 
     compiler_type = "clang" if host_info().os.is_macos else "g++"
     archiver = nix_cc["ar"][RunInfo]
@@ -104,13 +106,13 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
                 bolt_msdk = None,
             ),
             cxx_compiler_info = CxxCompilerInfo(
-                compiler = RunInfo(args = [cxx_compiler]),
+                compiler = cxx_compiler_with_flags,
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.cxx_flags,
                 compiler_type = compiler_type,
             ),
             c_compiler_info = CCompilerInfo(
-                compiler = RunInfo(args = [compiler]),
+                compiler = compiler_with_flags,
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.c_flags,
                 compiler_type = compiler_type,

@@ -12,10 +12,5 @@ add_module(
     deps = [
         "//:doctest",
     ],
-    compiler_flags = [
-        "-std=c++23",
-        "-Wall",
-        "-Wextra",
-    ],
     module_source_dir = "modules/pt",
 )

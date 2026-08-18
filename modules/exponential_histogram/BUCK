@@ -14,10 +14,5 @@ add_module(
         "//modules/snapshot:snapshot",
         "//modules/test_rng:test_rng",
     ],
-    compiler_flags = [
-        "-std=c++23",
-        "-Wall",
-        "-Wextra",
-    ],
     module_source_dir = "modules/exponential_histogram",
 )
