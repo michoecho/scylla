@@ -15,6 +15,18 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
 )
 
+cxx_library(
+  name = 'tests',
+  srcs = [
+    'src/b.cc',
+  ],
+  deps = [
+    ':doctest',
+  ],
+  preferred_linkage = 'static',
+  link_whole = True,
+)
+
 cxx_binary(
   name = 'hello',
   srcs = [
@@ -24,8 +36,6 @@ cxx_binary(
   ],
   deps = [
     ':doctest',
+    ':tests',
   ],
 )
-
-
-
