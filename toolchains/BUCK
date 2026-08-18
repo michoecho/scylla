@@ -2,6 +2,7 @@ load("@root//buck:flake.bzl", "flake")
 load("@root//buck:cxx.bzl", "nix_cxx_toolchain")
 load("@root//buck:python.bzl", "nix_python_bootstrap_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load(
     "@prelude//toolchains:remote_test_execution.bzl",
     "remote_test_execution_toolchain",
@@ -50,5 +51,10 @@ noop_test_toolchain(
 
 remote_test_execution_toolchain(
     name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)
+
+system_genrule_toolchain(
+    name = "genrule",
     visibility = ["PUBLIC"],
 )

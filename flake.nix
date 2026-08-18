@@ -183,7 +183,14 @@
             patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
           });
 
-          inherit (pkgs) python3;
+          inherit (pkgs)
+            python3
+            sdl3
+            vulkan-loader
+            vulkan-headers
+            vulkan-memory-allocator
+            vk-bootstrap
+            shader-slang;
 
           cxx = pkgs.stdenv.mkDerivation {
             name = "buck2-cxx";
@@ -403,6 +410,7 @@
 
             hardeningDisable = [ "all" ];
           };
+
         }
         # A shell per package, which is how buck2's
         # `flake.prebuilt_pkgconfig_library` asks a package where its headers

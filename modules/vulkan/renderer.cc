@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <system_error>
 
@@ -294,7 +295,12 @@ void Renderer::init_pipeline() {
     );
 
     // Compiled by CMake next to the test binary; see the module's CMakeLists.
-    VkShaderModule shader = load_shader_module(executable_directory() / "shaders/gradient.slang.spv", device_.device);
+    std::filesystem::path shader_path = executable_directory() / "shaders/gradient.slang.spv";
+    if (const char* buck_shader_path = std::getenv("VULKAN_SHADER_PATH");
+        buck_shader_path != nullptr && *buck_shader_path != '\0') {
+        shader_path = buck_shader_path;
+    }
+    VkShaderModule shader = load_shader_module(shader_path, device_.device);
 
     VkPipelineShaderStageCreateInfo stage{};
     stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

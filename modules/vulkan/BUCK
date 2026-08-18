@@ -1,0 +1,43 @@
+load("//buck:module.bzl", "add_module")
+
+genrule(
+    name = "gradient_spv",
+    srcs = ["shaders/gradient.slang"],
+    out = "shaders/gradient.slang.spv",
+    cmd = "$(exe //:slangc) $SRCDIR/shaders/gradient.slang -target spirv -o $OUT",
+)
+
+add_module(
+    name = "vulkan",
+    srcs = [
+        "renderer.cc",
+        "frame.cc",
+        "vk_utils.cc",
+        "vma_impl.cc",
+        "vulkan_test.cc",
+    ],
+    exported_headers = {
+        "vulkan_module/renderer.h": "include/vulkan_module/renderer.h",
+    },
+    deps = [
+        "//:doctest",
+        "//:sdl3",
+        "//:vulkan_loader",
+        "//:vk_bootstrap",
+        "//:vma",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+        "-Wno-nullability-completeness",
+        "-Wno-missing-field-initializers",
+    ],
+    resources = {
+        "shaders/gradient.slang.spv": ":gradient_spv",
+    },
+    env = {
+        "VULKAN_SHADER_PATH": "$(location :gradient_spv)",
+    },
+    module_source_dir = "modules/vulkan",
+)
