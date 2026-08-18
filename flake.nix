@@ -183,11 +183,7 @@
             patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
           });
 
-          # Used by buck2's `flake.prebuilt_pkgconfig_library`, which reads a
-          # package's `.pc` file to discover its include dirs and libraries.
-          # Comes from the flake rather than from PATH so the buck build depends
-          # on the same pkg-config whether or not it runs in the shell.
-          inherit (pkgs) pkg-config python3;
+          inherit (pkgs) python3;
 
           cxx = pkgs.stdenv.mkDerivation {
             name = "buck2-cxx";
@@ -407,6 +403,22 @@
 
             hardeningDisable = [ "all" ];
           };
-        });
+        }
+        # A shell per package, which is how buck2's
+        # `flake.prebuilt_pkgconfig_library` asks a package where its headers
+        # and libraries are: it runs `nix develop .#pkgconfig-<name> --command
+        # pkg-config ...`. Entering the shell runs nixpkgs' own setup hooks, so
+        # PKG_CONFIG_PATH is assembled exactly as it would be for a nix build
+        # that depends on the package -- propagated inputs included -- rather
+        # than by buck reconstructing that itself.
+        #
+        # `buildInputs` also picks the `dev` output where a package has one,
+        # which is where `.pc` files live, so nothing has to name it.
+        // pkgs.lib.mapAttrs'
+          (name: package: pkgs.lib.nameValuePair "pkgconfig-${name}" (pkgs.mkShell {
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ package ];
+          }))
+          my_packages);
     };
 }

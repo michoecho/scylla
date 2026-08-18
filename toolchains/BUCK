@@ -25,16 +25,6 @@ nix_cxx_toolchain(
     visibility = ["PUBLIC"],
 )
 
-# drives `flake.prebuilt_pkgconfig_library()`, which reads a package's `.pc`
-# file to discover its include dirs and libraries
-flake.package(
-    name = "pkg_config",
-    binary = "pkg-config",
-    package = "pkg-config",
-    path = "root//:flake",
-    visibility = ["PUBLIC"],
-)
-
 flake.package(
     name = "python",
     binary = "python3",

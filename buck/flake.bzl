@@ -3,7 +3,7 @@
 #    load("//buck:flake.bzl", "flake")
 #
 #    flake.package(name = "pkg", path = "path/to/flake/dir", ...)
-#    flake.prebuilt_pkgconfig_library(name = "lib", path = flake.store(package = "lib", path = "path/to/flake/dir"))
+#    flake.prebuilt_pkgconfig_library(name = "lib", path = "path/to/flake/dir")
 
 load("@prelude//:prelude.bzl", "native")
 load("@prelude//decls/common.bzl", "buck")
@@ -230,64 +230,22 @@ __flake_package = rule(
 ## ---------------------------------------------------------------------------------------------------------------------
 ## pkg-config package discovery
 
-# A `.pc` file's `Requires:` line names further modules, and pkg-config resolves them only among the
-# `.pc` files on its search path. On an ordinary system one prefix holds them all; in nix every
-# package is its own store path, so the path has to be assembled -- and the packages a prefix needs
-# are exactly the ones nix recorded in `nix-support/propagated-build-inputs` when it was built.
+# The query runs inside `nix develop`, in a shell whose `buildInputs` hold the package (see the
+# `pkgconfig-<name>` shells in flake.nix). Entering that shell runs nixpkgs' own setup hooks, which
+# is what assembles `PKG_CONFIG_PATH`.
 #
-# That is the same file nixpkgs' own setup hooks read to decide what a dependent gets to see, so
-# following it here reproduces the search path a nix build of a dependent would have had, with
-# nothing for the caller to restate.
-__PKG_CONFIG_PATH = """
-pkg_config_path() {
-    todo=$*
-    seen=
-    while [ -n "$todo" ]; do
-        set -- $todo
-        prefix=$1
-        shift
-        todo=$*
-
-        case " $seen " in
-            *" $prefix "*) continue ;;
-        esac
-        seen="$seen $prefix"
-
-        for file in propagated-build-inputs propagated-native-build-inputs; do
-            if [ -f "$prefix/nix-support/$file" ]; then
-                todo="$todo $(cat "$prefix/nix-support/$file")"
-            fi
-        done
-    done
-
-    path=
-    for prefix in $seen; do
-        for dir in lib/pkgconfig share/pkgconfig lib64/pkgconfig; do
-            if [ -d "$prefix/$dir" ]; then
-                path="$path:$prefix/$dir"
-            fi
-        done
-    done
-    printf '%s' "${path#:}"
-}
-"""
-
+# That indirection is the point. A `.pc` file's `Requires:` line names further modules, and
+# pkg-config resolves them only among the `.pc` files on its search path; on an ordinary system one
+# prefix holds them all, while in nix every package is its own store path. Reconstructing that path
+# here would mean reimplementing stdenv's offset-parameterised walk over the propagated inputs, plus
+# the env hooks any package is free to ship -- an approximation that agrees until it doesn't. Asking
+# nix for the environment instead leaves that to the code that defines it.
 def __pkg_config_impl(ctx: AnalysisContext) -> list[Provider]:
     cflags = ctx.actions.declare_output("cflags")
     libs = ctx.actions.declare_output("libs")
 
-    # The search path is computed at build time from the packages themselves, see
-    # `__PKG_CONFIG_PATH`. `readlink` resolves the out-links, since a package names its own prefix
-    # and has to be read from where it really lives.
-    roots = cmd_args(
-        [
-            cmd_args(dep[DefaultInfo].default_outputs[0], format = "$(readlink -f {})")
-            for dep in [ctx.attrs.path] + ctx.attrs.prefixes
-        ],
-        delimiter = " ",
-    )
-
-    modules = ctx.attrs.package or ctx.label.name
+    package = ctx.attrs.package or ctx.label.name
+    modules = ctx.attrs.module or package
     if ctx.attrs.version:
         modules += " " + ctx.attrs.version
 
@@ -298,8 +256,7 @@ def __pkg_config_impl(ctx: AnalysisContext) -> list[Provider]:
     rpaths = "sed -E 's#(^| )-L([^ ]+)#\\1-L\\2 -Wl,-rpath,\\2#g'"
     system = "sed -E 's#(^| )-I#\\1-isystem#g'" if ctx.attrs.system_includes else "cat"
 
-    pkg_config = ctx.attrs._pkg_config[RunInfo]
-    options = " --print-errors --static" if ctx.attrs.static else " --print-errors"
+    options = "--print-errors --static" if ctx.attrs.static else "--print-errors"
 
     # pkg-config is captured into a variable rather than piped straight into `sed`: a pipeline
     # reports the status of its *last* command, so a missing module would leave `set -e` none the
@@ -307,10 +264,8 @@ def __pkg_config_impl(ctx: AnalysisContext) -> list[Provider]:
     # command substitution does fail the script.
     script = cmd_args(
         "set -eu",
-        __PKG_CONFIG_PATH,
-        cmd_args("export PKG_CONFIG_PATH=\"$(pkg_config_path ", roots, ")\"", delimiter = ""),
-        cmd_args("cflags=$(", pkg_config, "{} --cflags '{}')".format(options, modules), delimiter = ""),
-        cmd_args("libs=$(", pkg_config, "{} --libs '{}')".format(options, modules), delimiter = ""),
+        "cflags=$(pkg-config {} --cflags '{}')".format(options, modules),
+        "libs=$(pkg-config {} --libs '{}')".format(options, modules),
         cmd_args(
             "printf '%s\\n' \"$cflags\" |",
             system,
@@ -328,14 +283,30 @@ def __pkg_config_impl(ctx: AnalysisContext) -> list[Provider]:
         delimiter = "\n",
     )
 
-    wrapper, _ = ctx.actions.write(
+    # Written out as a file rather than passed as `--command sh -c '...'`, which would mean quoting
+    # the sed expressions inside an already quoted argument.
+    query, _ = ctx.actions.write(
         "pkg_config.sh",
         script,
         allow_args = True,
         is_executable = True,
     )
+
+    shell = ctx.attrs.shell or "pkgconfig-" + package
     ctx.actions.run(
-        cmd_args("/bin/sh", wrapper, hidden = [script]),
+        cmd_args(
+            "env",
+            "--",  # see `__nix_build`
+            "nix",
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "develop",
+            cmd_args(ctx.attrs.path, format = "path:{}#" + shell),
+            "--command",
+            "/bin/sh",
+            query,
+            hidden = [script],
+        ),
         category = "pkg_config",
         local_only = True,
     )
@@ -353,18 +324,26 @@ def __pkg_config_impl(ctx: AnalysisContext) -> list[Provider]:
 __pkg_config = rule(
     impl = __pkg_config_impl,
     attrs = {
-        "package": attrs.option(attrs.string(), default = None, doc = """
+        "module": attrs.option(attrs.string(), default = None, doc = """
           name of the pkg-config module
+
+          (optional, default: same as `package`, i.e. the nix package's own name)
+        """),
+        "package": attrs.option(attrs.string(), default = None, doc = """
+          name of the flake output holding the package
+
+          It selects the `pkgconfig-<package>` shell to ask, so it is the nix name rather than the
+          pkg-config one; use `module` when the two differ.
 
           (optional, default: same as `name`)
         """),
-        "path": attrs.dep(doc = "a target whose output is the installed prefix to search, see `flake.store()`"),
-        "prefixes": attrs.list(attrs.dep(), default = [], doc = """
-          further prefixes to search
+        "path": attrs.source(allow_directory = True, doc = "the path to the flake"),
+        "shell": attrs.option(attrs.string(), default = None, doc = """
+          name of the devShell to ask instead of `pkgconfig-<package>`
 
-          Rarely needed: the packages `path` propagates are followed on their own. This is for a
-          module that is required but not propagated, which is a packaging bug on the nix side more
-          often than not.
+          For a module that needs more in scope than its own package -- one whose `Requires:` names
+          something the package fails to propagate, say -- declare a shell with both and name it
+          here.
         """),
         "static": attrs.bool(default = False, doc = """
           ask for the flags of a static link
@@ -378,37 +357,17 @@ __pkg_config = rule(
 
           (optional, default: any version)
         """),
-        "_pkg_config": attrs.exec_dep(providers = [RunInfo], default = "toolchains//:pkg_config"),
     },
-    doc = "Asks pkg-config for the flags of a module inside a prefix, and writes them out as response files.",
+    doc = "Asks pkg-config, from inside the package's own nix shell, for the flags of a module.",
 )
-
-def __flake_store(package: str, path: str, output: str = "out", name: str | None = None) -> str:
-    """Declare (once) a target whose output is the store path of a nix package, and return its label.
-
-    Unlike `flake.package()`, nothing inside the package is named: the whole prefix is the output,
-    which is what a consumer that discovers the layout for itself --
-    `flake.prebuilt_pkgconfig_library()` -- needs. Repeated calls for the same package reuse the one
-    target, so the same store path can be handed to several rules without the caller having to name
-    and share it.
-    """
-    if name == None:
-        slug = "{}_{}_{}".format(path, package, output)
-        for char in ["/", ":", ".", "-", "@", "#"]:
-            slug = slug.replace(char, "_")
-        name = "_flake_store__" + slug
-
-    if not rule_exists(name):
-        __flake_package(name = name, package = package, path = path, output = output)
-
-    return ":" + name
 
 def __prebuilt_pkgconfig_library(
         name,
         path,
         package = None,
+        module = None,
         version = "",
-        prefixes = [],
+        shell = None,
         static = False,
         system_includes = True,
         exported_deps = [],
@@ -421,24 +380,27 @@ def __prebuilt_pkgconfig_library(
     ```starlark
     flake.prebuilt_pkgconfig_library(
         name = "doctest",
-        path = flake.store(package = "doctest", path = "root//:flake"),
+        path = "root//:flake",
     )
     ```
 
     This asks the package's own `.pc` file where its headers and libraries are, instead of the
     caller naming them with `files` and wiring them into a `prebuilt_cxx_library` by hand. The
-    module name defaults to the target name; `package` overrides it, for when the nix package and
-    the pkg-config module are spelled differently.
+    package name defaults to the target name, and the question is put to the package's
+    `pkgconfig-<package>` shell, which flake.nix derives from the flake's package set -- so a
+    package that is already a flake output needs nothing further to be consumable here.
 
     The flags land in two response files handed to the compiler and the linker, so they are
     discovered when the package is built rather than when the BUCK file is parsed. This is the same
-    shape as `@prelude//third-party:pkgconfig.bzl`, except that the prefix to search is an input of
-    the rule rather than whatever `PKG_CONFIG_PATH` happens to hold.
+    shape as `@prelude//third-party:pkgconfig.bzl`, except that the environment pkg-config runs in
+    is built by nix from the package itself rather than being whatever the ambient
+    `PKG_CONFIG_PATH` happens to hold.
 
     Details a package can force:
 
-    * `prefixes` -- extra `flake.store()` targets to search, for a required module that the package
-      does not propagate. The propagated ones are found without being named.
+    * `module` -- the pkg-config module name, when it differs from the nix package name.
+    * `shell` -- a devShell to ask instead of `pkgconfig-<package>`, for a module needing more than
+      its own package in scope.
     * `static` -- take `Libs.private` into account, for a static link.
     * `version` -- a constraint such as `">= 1.2"`, which fails the build if unmet.
     """
@@ -447,8 +409,9 @@ def __prebuilt_pkgconfig_library(
         name = flags,
         path = path,
         package = package or name,
+        module = module,
         version = version,
-        prefixes = prefixes,
+        shell = shell,
         static = static,
         system_includes = system_includes,
     )
@@ -465,5 +428,4 @@ def __prebuilt_pkgconfig_library(
 flake = struct(
     package = __flake_package,
     prebuilt_pkgconfig_library = __prebuilt_pkgconfig_library,
-    store = __flake_store,
 )

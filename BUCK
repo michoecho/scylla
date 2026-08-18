@@ -12,10 +12,7 @@ load("//buck:flake.bzl", "flake")
 
 flake.prebuilt_pkgconfig_library(
     name = "doctest",
-    path = flake.store(
-        package = "doctest",
-        path = "root//:flake",
-    ),
+    path = "root//:flake",
 )
 
 cxx_binary(
@@ -29,5 +26,6 @@ cxx_binary(
     ':doctest',
   ],
 )
+
 
 

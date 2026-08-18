@@ -19,20 +19,24 @@ changes that are not upstream:
 * `flake.bzl`: a `files` attribute, exposing paths inside a nix package as
   sub-targets so that packages which are not just a bag of executables
   (headers, libraries, data) can be consumed by other rules.
-* `flake.bzl`: `flake.store()` and `flake.prebuilt_pkgconfig_library()`, which
-  discover a package's include directories and libraries with pkg-config instead
-  of having the BUCK file name them. `flake.store()` names the store path of a
-  nix package, and `prebuilt_pkgconfig_library` reads the `.pc` files under it
-  and feeds the resulting flags to `prebuilt_cxx_library` as response files.
-  This is what `//:doctest` is. It needs a `pkg-config` binary target, which
-  `toolchains//:pkg_config` provides.
+* `flake.bzl`: `flake.prebuilt_pkgconfig_library()`, which discovers a
+  package's include directories and libraries with pkg-config instead of having
+  the BUCK file name them. This is what `//:doctest` is.
 
-  This is `@prelude//third-party:pkgconfig.bzl` with the search path made an
-  input: upstream's version shells out to whatever `pkg-config` finds through
-  the ambient `PKG_CONFIG_PATH`, whereas the prefixes here are targets, so buck
-  knows the flags depend on them. Since every nix package is its own prefix, a
-  `.pc` file with a `Requires:` line needs the prefixes of those modules listed
-  in `prefixes` as well.
+  The query runs inside `nix develop .#pkgconfig-<package>`, one of the shells
+  flake.nix derives from the flake's package set. That is the whole trick: in
+  nix every package is its own prefix, so `PKG_CONFIG_PATH` has to be assembled
+  from the package and everything it propagates, and entering the shell has
+  nixpkgs' own setup hooks do that -- rather than this file reimplementing
+  stdenv's walk over `nix-support/propagated-build-inputs` and the env hooks
+  packages are free to ship. A package that is already a flake output therefore
+  needs nothing further to be consumable from buck2.
+
+  The flags reach `prebuilt_cxx_library` as response files, the same shape as
+  `@prelude//third-party:pkgconfig.bzl` -- which shells out to whatever
+  `pkg-config` finds on the ambient `PKG_CONFIG_PATH`, where this builds the
+  environment from the package itself.
+
 * `cxx.bzl`: `shlib_interfaces` set to `"disabled"`. Upstream sets
   `"stub_from_library"` without defining a `shared_library_interface_producer`,
   which makes analysis fail for any target with a shared library dependency.
