@@ -1,0 +1,4 @@
+[buildscript.build.env]
+OPT_LEVEL = "3"
+[buildscript.run.env]
+OPT_LEVEL = "3"

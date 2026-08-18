@@ -1,0 +1,9 @@
+rust_library(
+    name = "libafl-wrapper",
+    srcs = ["src/lib.rs"],
+    deps = [
+        "//modules/libafl/rust/third-party:libafl",
+        "//modules/libafl/rust/third-party:libafl_bolts",
+        "//modules/libafl/rust/third-party:libafl_targets",
+    ],
+)

@@ -208,7 +208,9 @@
             vulkan-headers
             vulkan-memory-allocator
             vk-bootstrap
-            shader-slang;
+            shader-slang
+            rustc
+            ;
 
           cxx = pkgs.stdenv.mkDerivation {
             name = "buck2-cxx";
@@ -338,6 +340,7 @@
               # vendored separately (see CARGO_VENDOR_DIR below).
               cargo
               rustc
+              reindeer
               # Drives that cargo build from CMake: find_package(Corrosion) in
               # modules/libafl turns the crate into a real imported target with
               # a build rule behind it. See the comments there for what it

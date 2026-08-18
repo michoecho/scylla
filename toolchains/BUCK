@@ -1,5 +1,6 @@
 load("@root//buck:flake.bzl", "flake")
 load("@root//buck:cxx.bzl", "nix_cxx_toolchain")
+load("@root//buck:rust.bzl", "nix_rust_toolchain")
 load("@root//buck:python.bzl", "nix_python_bootstrap_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
@@ -56,5 +57,27 @@ remote_test_execution_toolchain(
 
 system_genrule_toolchain(
     name = "genrule",
+    visibility = ["PUBLIC"],
+)
+
+flake.package(
+    name = "rustc",
+    binary = "rustc",
+    binaries = ["rustdoc"],
+    path = "root//:flake",
+)
+
+flake.package(
+    name = "clippy",
+    binary = "clippy-driver",
+    path = "root//:flake",
+)
+
+nix_rust_toolchain(
+    name = "rust",
+    clippy = ":clippy",
+    default_edition = "2024",
+    rustc = ":rustc",
+    rustdoc = ":rustc[rustdoc]",
     visibility = ["PUBLIC"],
 )
