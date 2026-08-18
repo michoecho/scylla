@@ -33,7 +33,13 @@ nix_cxx_toolchain(
         "-std=c++23",
         "-Wall",
         "-Wextra",
-    ],
+    ] + select({
+        "root//:build_mode[debug]": [
+            "-O0",
+            "-g",
+        ],
+        "root//:build_mode[release]": ["-O3"],
+    }),
     visibility = ["PUBLIC"],
 )
 

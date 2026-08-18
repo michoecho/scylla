@@ -8,13 +8,27 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
-constraint_setting(
+constraint(
     name = "build_mode",
+    default = "debug",
+    values = [
+        "debug",
+        "release",
+    ],
 )
 
-constraint_value(
+constraint(
+    name = "instrumentation",
+    default = "none",
+    values = [
+        "none",
+        "libafl",
+    ],
+)
+
+configuration_alias(
     name = "libafl",
-    constraint_setting = ":build_mode",
+    actual = ":instrumentation[libafl]",
 )
 
 load("//buck:flake.bzl", "flake")

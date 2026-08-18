@@ -16,8 +16,6 @@ add_module(
     ],
     compiler_flags = ["-DBUILD_LIBAFL"] + select({
         "//:libafl": [
-            "-O0",
-            "-g",
             "-fsanitize-coverage=trace-pc-guard",
             "-fno-sanitize-link-runtime",
         ],
