@@ -212,7 +212,7 @@
             rustc
             ;
 
-          cxx = pkgs.stdenv.mkDerivation {
+          cxx = pkgs.llvmPackages_22.stdenv.mkDerivation {
             name = "buck2-cxx";
             dontUnpack = true;
             dontCheck = true;
