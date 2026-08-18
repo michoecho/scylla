@@ -1,11 +1,5 @@
 load("//buck:module.bzl", "add_module")
 
-filegroup(
-    name = "snapshots",
-    srcs = glob([".snapshots/**"]),
-    visibility = ["PUBLIC"],
-)
-
 add_module(
     name = "snapshot",
     srcs = [
@@ -30,8 +24,5 @@ add_module(
         "-Wall",
         "-Wextra",
     ],
-    env = {
-        "SNAPSHOT_ROOT": "$(location :snapshots)/.snapshots",
-    },
     module_source_dir = "modules/snapshot",
 )

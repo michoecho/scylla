@@ -18,6 +18,21 @@ def add_module(
     """
     test_name = name + "_test"
     source_dir = module_source_dir or name
+    snapshot_sources = glob([".snapshots/**"])
+    snapshot_target = name + "_snapshots"
+
+    # Snapshot stores belong to the module whose tests consume them. Keep the
+    # filegroup harmless for modules without a store: glob() is empty, and no
+    # location macro is emitted into the test environment in that case.
+    native.filegroup(
+        name = snapshot_target,
+        srcs = snapshot_sources,
+        visibility = visibility,
+    )
+
+    test_env = dict(env)
+    if snapshot_sources:
+        test_env["SNAPSHOT_ROOT"] = "$(location :{})/.snapshots".format(snapshot_target)
 
     native.cxx_library(
         name = name,
@@ -39,7 +54,7 @@ def add_module(
         srcs = ["//cmake:module_test_main"],
         deps = [":" + name, "//cmake:module_runner"],
         resources = resources,
-        env = env,
+        env = test_env,
         header_namespace = "",
         compiler_flags = compiler_flags + [
             "-Icmake",
