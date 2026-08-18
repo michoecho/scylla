@@ -35,7 +35,7 @@ cxx_library(
   link_whole = True,
 )
 
-cxx_binary(
+cxx_test(
   name = 'hello',
   srcs = [
     'src/a.cc',

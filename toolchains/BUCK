@@ -1,6 +1,11 @@
 load("@root//buck:flake.bzl", "flake")
 load("@root//buck:cxx.bzl", "nix_cxx_toolchain")
 load("@root//buck:python.bzl", "nix_python_bootstrap_toolchain")
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load(
+    "@prelude//toolchains:remote_test_execution.bzl",
+    "remote_test_execution_toolchain",
+)
 
 # use the `cxx` flake package output from `./nix` to provide the compiler tools
 flake.package(
@@ -35,5 +40,15 @@ flake.package(
 nix_python_bootstrap_toolchain(
     name = "python_bootstrap",
     python = ":python",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
     visibility = ["PUBLIC"],
 )
