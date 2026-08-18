@@ -38,15 +38,38 @@ def main() -> int:
                         help="delete orphan files if they are the only problems")
     args = parser.parse_args()
     root = args.root.resolve()
-    snapshot_root = root / ".snapshots"
+    def snapshot_root_for(source):
+        """Use modules/<name>/.snapshots for module sources."""
+        try:
+            relative = source.relative_to(root)
+        except ValueError:
+            return root / ".snapshots"
+        if len(relative.parts) >= 2 and relative.parts[0] == "modules":
+            module = root / relative.parts[0] / relative.parts[1]
+            if module.is_dir() and (
+                    (module / "CMakeLists.txt").is_file() or
+                    (module / "BUCK").is_file()):
+                return module / ".snapshots"
+        return root / ".snapshots"
+
+    snapshot_roots = {root / ".snapshots"}
+    modules = root / "modules"
+    if modules.is_dir():
+        snapshot_roots.update(
+            module / ".snapshots"
+            for module in modules.iterdir()
+            if module.is_dir() and (
+                (module / "CMakeLists.txt").is_file() or
+                (module / "BUCK").is_file()))
+
     references = defaultdict(list)
     problems = []
 
     # rg skips .gitignore'd trees (out/, and whatever else the repo ignores)
-    # for free, which is what keeps this fast; .snapshots is tracked, so it
-    # needs excluding by hand. --with-filename/--line-number keep the output
-    # unambiguous even when only one file matches, and --column is what lets
-    # the loop below look at the text preceding each hit.
+    # for free, which is what keeps this fast; snapshot directories are tracked,
+    # so they need excluding by hand. --with-filename/--line-number keep the
+    # output unambiguous even when only one file matches, and --column is what
+    # lets the loop below look at the text preceding each hit.
     command = ["rg", "--fixed-strings", "--no-heading", "--with-filename",
                "--line-number", "--column", "--glob", "!.snapshots/**"]
     for glob in SOURCE_GLOBS:
@@ -73,11 +96,14 @@ def main() -> int:
         before = text[:int(column) - 1]
         match = REFERENCE_RE.search(before)
         if match:
-            references[match.group()[1:]].append(location)
+            snapshot_root = snapshot_root_for(root / path_text)
+            snapshot_roots.add(snapshot_root)
+            references[(snapshot_root, match.group()[1:])].append(location)
         elif not OPERATOR_RE.search(before):
             problems.append(f"{location}: _filesnap is not immediately preceded by a quoted canonical UUID")
 
-    for uuid, locations in sorted(references.items()):
+    for (snapshot_root, uuid), locations in sorted(
+            references.items(), key=lambda item: (str(item[0][0]), item[0][1])):
         if len(locations) > 1:
             problems.append(f"duplicate {uuid}: " + ", ".join(locations))
         expected = snapshot_root / uuid[:2] / f"{uuid}.snap"
@@ -85,23 +111,27 @@ def main() -> int:
             problems.append(f"missing {expected.relative_to(root)} referenced by {locations[0]}")
 
     orphans = []
-    if snapshot_root.exists():
+    for snapshot_root in sorted(snapshot_roots, key=str):
+        if not snapshot_root.exists():
+            continue
         for path in snapshot_root.rglob("*.snap"):
             relative = path.relative_to(snapshot_root)
             match = re.fullmatch(rf"([0-9a-f]{{2}})/({UUID})\.snap", str(relative))
             if not match or match.group(1) != match.group(2)[:2]:
                 problems.append(f"malformed snapshot path {path.relative_to(root)}")
-            elif match.group(2) not in references:
+            elif (snapshot_root, match.group(2)) not in references:
                 orphans.append(path)
 
     if orphans and args.cleanup and not problems:
         for path in orphans:
             path.unlink()
             print(f"removed {path.relative_to(root)}")
-        for directory in sorted(snapshot_root.rglob("*"), reverse=True):
-            if directory.is_dir():
-                try: directory.rmdir()
-                except OSError: pass
+        for snapshot_root in sorted(snapshot_roots, key=str):
+            if snapshot_root.exists():
+                for directory in sorted(snapshot_root.rglob("*"), reverse=True):
+                    if directory.is_dir():
+                        try: directory.rmdir()
+                        except OSError: pass
         return 0
     problems.extend(f"orphan {path.relative_to(root)}" for path in orphans)
     if problems:

@@ -17,10 +17,6 @@
 
 #include "snapshot/updater.h"
 
-#ifndef SNAPSHOT_ROOT
-#error "SNAPSHOT_ROOT must be configured as an absolute source-tree path"
-#endif
-
 namespace snapshot_testing {
 namespace {
 
@@ -72,7 +68,8 @@ std::string generate_uuid() {
 }
 
 std::filesystem::path snapshot_path(std::string_view id) {
-  return std::filesystem::path(SNAPSHOT_ROOT) / std::string(id.substr(0, 2)) /
+  const char* const root = std::getenv("SNAPSHOT_ROOT");
+  return std::filesystem::path(root ? root : "") / std::string(id.substr(0, 2)) /
          (std::string(id) + ".snap");
 }
 
@@ -254,10 +251,11 @@ void discard_updates() {
 std::string flush_updates() {
   if (updates().empty())
     return {};
-  const std::filesystem::path root(SNAPSHOT_ROOT);
+  const char* const root_env = std::getenv("SNAPSHOT_ROOT");
+  const std::filesystem::path root(root_env ? root_env : "");
   if (!root.is_absolute()) {
     updates().clear();
-    return "SNAPSHOT_ROOT is not absolute\n";
+    return "SNAPSHOT_ROOT must be set to an absolute path\n";
   }
   std::error_code root_error;
   std::filesystem::create_directories(root, root_error);

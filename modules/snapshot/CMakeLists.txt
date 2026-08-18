@@ -22,5 +22,3 @@ add_module(snapshot
         example_test.cc)
 
 target_compile_options(snapshot PRIVATE -Wall -Wextra)
-target_compile_definitions(snapshot PRIVATE
-    SNAPSHOT_ROOT="${PROJECT_SOURCE_DIR}/.snapshots")

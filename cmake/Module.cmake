@@ -249,7 +249,9 @@ function(add_module name)
     # neither file and the build fails; the next build re-runs it.
     add_custom_command(
         OUTPUT "${shallow_stamp}" "${deep_stamp}"
-        COMMAND "$<TARGET_FILE:${name}_test>"
+        COMMAND ${CMAKE_COMMAND} -E env
+                "SNAPSHOT_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/.snapshots"
+                "$<TARGET_FILE:${name}_test>"
         COMMAND ${CMAKE_COMMAND} -E touch "${shallow_stamp}"
         COMMAND ${CMAKE_COMMAND} -E touch "${deep_stamp}"
         DEPENDS ${name}_test
@@ -307,6 +309,7 @@ function(add_module name)
         ADD_LABELS ON
         PROPERTIES
             LABELS "module.${name}"
+            ENVIRONMENT "SNAPSHOT_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/.snapshots"
             ${M_TEST_PROPERTIES})
 endfunction()
 
