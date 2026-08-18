@@ -1,0 +1,22 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "exhaustigen",
+    srcs = [
+        "exhaustigen_test.cc",
+        "hegel_splits_test.cc",
+    ],
+    exported_headers = {
+        "exhaustigen/exhaustigen.h": "include/exhaustigen/exhaustigen.h",
+    },
+    deps = [
+        "//modules/snapshot:snapshot",
+        "//:hegel",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+    ],
+    module_source_dir = "modules/exhaustigen",
+)
