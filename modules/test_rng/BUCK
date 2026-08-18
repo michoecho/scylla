@@ -1,0 +1,22 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "test_rng",
+    srcs = [
+        "test_rng.cc",
+        "backend_demo_test.cc",
+    ],
+    exported_headers = {
+        "test_rng/test_rng.h": "include/test_rng/test_rng.h",
+    },
+    deps = [
+        "//modules/exhaustigen:exhaustigen",
+        "//:hegel",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+    ],
+    module_source_dir = "modules/test_rng",
+)

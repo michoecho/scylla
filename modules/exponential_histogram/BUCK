@@ -1,0 +1,23 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "exponential_histogram",
+    srcs = [
+        "exponential_histogram.cc",
+        "integer_to_float.cc",
+    ],
+    exported_headers = {
+        "exponential_histogram/exponential_histogram.h": "include/exponential_histogram/exponential_histogram.h",
+        "exponential_histogram/integer_to_float.h": "include/exponential_histogram/integer_to_float.h",
+    },
+    deps = [
+        "//modules/snapshot:snapshot",
+        "//modules/test_rng:test_rng",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+    ],
+    module_source_dir = "modules/exponential_histogram",
+)
