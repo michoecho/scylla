@@ -1,9 +1,11 @@
 rust_library(
     name = "libafl-wrapper",
     srcs = ["src/lib.rs"],
+    soname = "liblibafl_c.so",
     deps = [
         "//modules/libafl/rust/third-party:libafl",
         "//modules/libafl/rust/third-party:libafl_bolts",
         "//modules/libafl/rust/third-party:libafl_targets",
     ],
+    visibility = ["PUBLIC"],
 )

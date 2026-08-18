@@ -11,12 +11,14 @@ add_module(
     },
     deps = [
         "//modules/exhaustigen:exhaustigen",
+        "//modules/libafl:libafl_c",
         "//:hegel",
     ],
     compiler_flags = [
         "-std=c++23",
         "-Wall",
         "-Wextra",
+        "-DBUILD_LIBAFL",
     ],
     module_source_dir = "modules/test_rng",
 )
