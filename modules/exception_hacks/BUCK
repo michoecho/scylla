@@ -1,0 +1,28 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "exception_hacks",
+    srcs = [
+        "exception_hacks.cc",
+    ],
+    exported_headers = {
+        "exception_hacks/exception_hacks.h": "include/exception_hacks/exception_hacks.h",
+    },
+    deps = [
+        "//:doctest",
+        "//:boost_stacktrace",
+        "//:backtrace",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+    ],
+    exported_preprocessor_flags = [
+        "-DBOOST_STACKTRACE_USE_BACKTRACE",
+    ],
+    exported_linker_flags = [
+        "-ldl",
+    ],
+    module_source_dir = "modules/exception_hacks",
+)

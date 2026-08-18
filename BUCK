@@ -15,6 +15,50 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
 )
 
+flake.package(
+    name = "boost_package",
+    package = "boost",
+    files = {
+        "include": "include",
+        "lib": "lib",
+        "stacktrace": "lib/libboost_stacktrace_from_exception.so",
+    },
+    path = "root//:flake",
+)
+
+flake.package(
+    name = "libbacktrace_package",
+    package = "libbacktrace",
+    files = {
+        "include": "include",
+        "lib": "lib",
+        "backtrace": "lib/libbacktrace.so",
+    },
+    path = "root//:flake",
+)
+
+prebuilt_cxx_library(
+    name = "boost_stacktrace",
+    header_dirs = [":boost_package[include]"],
+    shared_lib = ":boost_package[stacktrace]",
+    exported_linker_flags = [
+        "-Wl,-rpath,$(location :boost_package[lib])",
+    ],
+    preferred_linkage = "shared",
+    visibility = ["PUBLIC"],
+)
+
+prebuilt_cxx_library(
+    name = "backtrace",
+    header_dirs = [":libbacktrace_package[include]"],
+    shared_lib = ":libbacktrace_package[backtrace]",
+    exported_linker_flags = [
+        "-Wl,-rpath,$(location :libbacktrace_package[lib])",
+    ],
+    preferred_linkage = "shared",
+    visibility = ["PUBLIC"],
+)
+
 flake.prebuilt_pkgconfig_library(
   name = 'hegel',
   package = 'hegel-cpp',

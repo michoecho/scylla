@@ -40,6 +40,21 @@
         };
       };
 
+      boostFor = pkgs:
+        pkgs.boost.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./nix/patches/boost-stacktrace-from-exception-ptr.patch ];
+        });
+
+      # Buck needs one prefix containing both Boost's headers and its compiled
+      # stacktrace library. Nix keeps those in separate outputs, while CMake's
+      # dev shell consumes them separately.
+      boostBundleFor = pkgs:
+        let boost = boostFor pkgs;
+        in pkgs.symlinkJoin {
+          name = "boost-buck";
+          paths = [ boost boost.dev ];
+        };
+
       # VS Code pre-loaded with the extensions this project needs, built from
       # Nix so it's reproducible and identical inside and outside the sandbox.
       # cpptools is unfree (allowUnfree is set on pkgsUnstableFor).
@@ -162,6 +177,9 @@
           # cdylib, a CMake library, and the C++ binding that consumes both.
           inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
 
+          boost = boostBundleFor pkgs;
+          libbacktrace = pkgs.libbacktrace;
+
           # The crates modules/libafl's Rust wrapper depends on, vendored into a
           # local registry from its Cargo.lock.
           #
@@ -266,9 +284,7 @@
           # handled right now. Upstream's lookup already goes through an
           # exception_ptr internally, so the patch mostly just exposes it; see
           # the patch header and modules/exception_hacks/exception_hacks.cc.
-          boost = pkgs.boost.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./nix/patches/boost-stacktrace-from-exception-ptr.patch ];
-          });
+          boost = boostFor pkgs;
 
           # The `perf script` dlfilter that turns an Intel PT trace into a
           # Perfetto/Fuchsia trace, used by tools/pt-trace. Built from the
