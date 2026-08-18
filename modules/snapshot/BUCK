@@ -1,0 +1,29 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "snapshot",
+    srcs = [
+        "snapshot.cc",
+        "updater.cc",
+        "flush_reporter.cc",
+        "updater_test.cc",
+        "compare_test.cc",
+        "filesnap_test.cc",
+        "example_test.cc",
+    ],
+    exported_headers = {
+        "snapshot/check.h": "include/snapshot/check.h",
+        "snapshot/snapshot.h": "include/snapshot/snapshot.h",
+        "snapshot/updater.h": "include/snapshot/updater.h",
+    },
+    deps = [
+        "//:doctest",
+    ],
+    compiler_flags = [
+        "-std=c++23",
+        "-Wall",
+        "-Wextra",
+        "-DSNAPSHOT_ROOT=\"/proc/self/cwd/.snapshots\"",
+    ],
+    module_source_dir = "modules/snapshot",
+)
