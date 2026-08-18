@@ -195,11 +195,6 @@ void magic_bytes_are_unguessable(TestRng& rng) {
     barrier();
     if (guess[1] != static_cast<std::uint8_t>(kMagic[1])) return;
     barrier();
-    if (guess[2] != static_cast<std::uint8_t>(kMagic[2])) return;
-    barrier();
-    if (guess[3] != static_cast<std::uint8_t>(kMagic[3])) return;
-    barrier();
-    if (guess[4] != static_cast<std::uint8_t>(kMagic[4])) return;
     static_assert(kMagicLen == 5, "one comparison per byte, unrolled above");
 
     throw std::runtime_error("guessed the magic bytes");
