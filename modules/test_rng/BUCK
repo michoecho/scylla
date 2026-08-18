@@ -19,6 +19,18 @@ add_module(
         "-Wall",
         "-Wextra",
         "-DBUILD_LIBAFL",
-    ],
+    ] + select({
+        "//:libafl": [
+            "-O0",
+            "-g",
+            "-fsanitize-coverage=trace-pc-guard",
+            "-fno-sanitize-link-runtime",
+        ],
+        "DEFAULT": [],
+    }),
+    exported_linker_flags = select({
+        "//:libafl": ["-fno-sanitize-link-runtime"],
+        "DEFAULT": [],
+    }),
     module_source_dir = "modules/test_rng",
 )

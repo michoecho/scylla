@@ -8,6 +8,15 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
+constraint_setting(
+    name = "build_mode",
+)
+
+constraint_value(
+    name = "libafl",
+    constraint_setting = ":build_mode",
+)
+
 load("//buck:flake.bzl", "flake")
 
 flake.prebuilt_pkgconfig_library(
