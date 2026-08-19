@@ -210,6 +210,39 @@ constexpr SnapshotLiteral operator""_snap() {
         .value = {detail::StrippedLiteral<L>::text.data(), detail::StrippedLiteral<L>::size}};
 }
 
+// File-backed snapshot IDs are also kept in the test binary. The repository
+// validator will eventually use this section instead of having to recover
+// literal syntax from source text. `used` is important here: this is metadata,
+// so no ordinary code needs to reference the object after the literal has been
+// converted. `retain` (when available) keeps link-time section garbage
+// collection from discarding it as well.
+#if defined(__ELF__) && (defined(__GNUC__) || defined(__clang__))
+#  if defined(__has_attribute)
+#    if __has_attribute(retain)
+#      define SNAPSHOT_TESTING_FILE_SNAPSHOT_SECTION \
+        __attribute__((used, retain, section(".snapshot_files")))
+#    else
+#      define SNAPSHOT_TESTING_FILE_SNAPSHOT_SECTION \
+        __attribute__((used, section(".snapshot_files")))
+#    endif
+#  else
+#    define SNAPSHOT_TESTING_FILE_SNAPSHOT_SECTION \
+      __attribute__((used, section(".snapshot_files")))
+#  endif
+#else
+#  define SNAPSHOT_TESTING_FILE_SNAPSHOT_SECTION
+#endif
+
+namespace detail {
+
+// One null-terminated record per distinct file-snapshot literal. Keeping the
+// original literal as the record means malformed IDs are present too; the
+// validator can report them instead of silently losing them at compile time.
+template <RawLiteral L>
+SNAPSHOT_TESTING_FILE_SNAPSHOT_SECTION inline constexpr auto file_snapshot_id = L.data;
+
+}  // namespace detail
+
 // An expected value plus the source location of its _snap literal.
 //
 // The location is an anchor, not a hint: it points at the literal's opening
@@ -260,10 +293,21 @@ struct FileSnapshotLiteral {
         copy.forced = true;
         return copy;
     }
+
+private:
+    // Keeping construction private ensures every file-snapshot ID comes from
+    // the literal operator, which is also what records it in the ELF section.
+    consteval FileSnapshotLiteral(std::string_view id, bool forced = false)
+        : id(id), forced(forced) {}
+
+    template <detail::RawLiteral L>
+    friend constexpr FileSnapshotLiteral operator""_filesnap();
 };
 
-constexpr FileSnapshotLiteral operator""_filesnap(const char* text, std::size_t size) {
-    return FileSnapshotLiteral{.id = {text, size}};
+template <detail::RawLiteral L>
+constexpr FileSnapshotLiteral operator""_filesnap() {
+    return FileSnapshotLiteral{
+        std::string_view{detail::file_snapshot_id<L>.data(), L.view().size()}};
 }
 
 struct FileSnapshot {
@@ -389,5 +433,7 @@ std::string flush_updates();
 
 using snapshot_testing::operator""_snap;
 using snapshot_testing::operator""_filesnap;
+
+#undef SNAPSHOT_TESTING_FILE_SNAPSHOT_SECTION
 
 #endif  // SNAPSHOT_SNAPSHOT_H
