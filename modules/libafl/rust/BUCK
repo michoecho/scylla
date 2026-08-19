@@ -3,9 +3,9 @@ rust_library(
     srcs = ["src/lib.rs"],
     soname = "liblibafl_c.so",
     deps = [
-        "libafl_third_party//:libafl",
-        "libafl_third_party//:libafl_bolts",
-        "libafl_third_party//:libafl_targets",
+        "rust_third_party//:libafl",
+        "rust_third_party//:libafl_bolts",
+        "rust_third_party//:libafl_targets",
     ],
     visibility = ["PUBLIC"],
 )

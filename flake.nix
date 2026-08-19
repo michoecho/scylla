@@ -181,7 +181,7 @@
           libbacktrace = pkgs.libbacktrace;
 
           # The crates modules/libafl's Rust wrapper depends on, vendored into a
-          # local registry from its Cargo.lock.
+          # local registry from the workspace Cargo.lock.
           #
           # Note what this is *not*: it is not a build of that wrapper. The
           # wrapper is our code and is built by CMake, in the build tree, like
@@ -194,7 +194,7 @@
           # changed signature -- is a derivation rebuild before C++ can see it,
           # which is a barrier in exactly the place iteration happens.
           libafl-cargo-deps = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./modules/libafl/rust/Cargo.lock;
+            lockFile = ./Cargo.lock;
           };
 
           doctest = pkgs.doctest.overrideAttrs (old: {
@@ -412,7 +412,7 @@
             shellHook = ''
               export PYTHONPYCACHEPREFIX="''${PYTHONPYCACHEPREFIX:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")/.cache/pycache}"
 
-              # Where Nix vendored modules/libafl's crate dependencies. CMake
+              # Where Nix vendored the workspace's crate dependencies. CMake
               # reads this to point cargo at a local registry, so the Rust build
               # runs --offline and fetches nothing: the dependency set stays
               # pinned by Cargo.lock and Nix hashes even though the crate itself
@@ -423,7 +423,7 @@
               # (modules/libafl/CMakeLists.txt errors when it is unset) rather
               # than silently reaching for the network.
               export LIBAFL_CARGO_VENDOR_DIR="${pkgs.rustPlatform.importCargoLock {
-                lockFile = ./modules/libafl/rust/Cargo.lock;
+                lockFile = ./Cargo.lock;
               }}"
             '';
 

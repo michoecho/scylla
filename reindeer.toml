@@ -1,6 +1,6 @@
 vendor = false
 manifest_path = "Cargo.toml"
-third_party_dir = "third-party"
+third_party_dir = "third-party/rust"
 cargo_env = [
     "CARGO_BIN_NAME",
     "CARGO_CRATE_NAME",

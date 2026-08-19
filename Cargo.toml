@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "modules/libafl/rust",
+]
+resolver = "2"
+
+[profile.release]
+# Keep release backtraces useful for the LibAFL wrapper and its dependencies.
+debug = true

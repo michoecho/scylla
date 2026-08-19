@@ -1,6 +1,6 @@
 [cells]
   root = .
-  libafl_third_party = modules/libafl/rust/third-party
+  rust_third_party = third-party/rust
   prelude = prelude
   toolchains = toolchains
   none = none

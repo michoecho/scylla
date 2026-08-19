@@ -48,8 +48,3 @@ libafl_targets = { version = "0.15.4", default-features = true, features = [
     "sancov_pcguard",
     "sancov_cmplog",
 ] }
-
-[profile.release]
-# Debug info so a profile or a backtrace through the fuzzer names its Rust
-# frames rather than showing bare addresses.
-debug = true

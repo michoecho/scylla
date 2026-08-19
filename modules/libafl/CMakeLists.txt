@@ -7,7 +7,8 @@
 # the same as it would be in C++.
 #
 # Only the crates it depends on come from Nix, vendored into a local registry
-# from rust/Cargo.lock and pointed at by LIBAFL_CARGO_VENDOR_DIR (see flake.nix).
+# from the workspace Cargo.lock and pointed at by LIBAFL_CARGO_VENDOR_DIR (see
+# flake.nix).
 # That keeps the dependency set pinned and the build offline while leaving the
 # part we edit in the tree. The split is deliberate: a derivation around our own
 # source would put a `nix build` between every C ABI change and the C++ that
@@ -17,7 +18,7 @@
 # real target named after the crate (libafl_c), with a build rule, correct
 # link/RPATH handling and a per-build-tree cargo target directory. What is left
 # here is the project-specific part -- the offline vendor registry, the release
-# profile, and the RUSTFLAGS LibAFL needs.
+# profile from the workspace root, and the RUSTFLAGS LibAFL needs.
 #
 # This is not an add_module(): a module is a C++ library with doctest cases and
 # dependency-ordered test stamps, and this is a cargo build wrapped in an
@@ -48,8 +49,8 @@ endif()
 # PROFILE release because LibAFL is a fuzzer: a debug build of it is slow enough
 # to change what the backend can find within a budget. It has to be said
 # explicitly -- Corrosion otherwise follows CMAKE_BUILD_TYPE, and the LibAfl
-# preset is a Debug build. Debug info is kept via the release profile in
-# Cargo.toml, so backtraces still name Rust frames.
+# preset is a Debug build. Debug info is kept via the release profile in the
+# workspace Cargo.toml, so backtraces still name Rust frames.
 #
 # The imported target is named after the crate: libafl_c.
 corrosion_import_crate(
