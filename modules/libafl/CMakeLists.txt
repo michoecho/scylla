@@ -68,35 +68,6 @@ corrosion_import_crate(
         --config "source.crates-io.replace-with='vendored-sources'"
         --config "source.vendored-sources.directory='$ENV{LIBAFL_CARGO_VENDOR_DIR}'")
 
-# The Rust cdylib exports the pcguard callbacks referenced by Rust, but the
-# trace-cmp callbacks are only referenced by instrumented C++ objects. Rust's
-# native archive link therefore leaves those objects hidden inside the cdylib.
-# Link LibAFL's SanCov archives again at the final C++ boundary, where the
-# instrumented objects can resolve them. This is the CMake counterpart of the
-# explicit whole-archive link in modules/libafl/BUCK. Corrosion creates the
-# archive only while building Cargo, so the helper discovers it at build time
-# and copies it to stable generated paths for this interface target.
-set(_libafl_sancov_dir "${CMAKE_CURRENT_BINARY_DIR}/sancov")
-set(_libafl_sancov_archives
-    "${_libafl_sancov_dir}/libsancov_cmp.a"
-    "${_libafl_sancov_dir}/libcommon.a"
-    "${_libafl_sancov_dir}/libcoverage.a"
-    "${_libafl_sancov_dir}/libcmplog.a")
-add_custom_command(
-    OUTPUT ${_libafl_sancov_archives}
-    COMMAND ${CMAKE_COMMAND}
-        "-DSOURCE_ROOT=${CMAKE_BINARY_DIR}/cargo"
-        "-DDEST_DIR=${_libafl_sancov_dir}"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/link_sancov.cmake"
-    DEPENDS cargo-build_libafl_c
-    VERBATIM)
-add_custom_target(libafl_sancov_archives DEPENDS ${_libafl_sancov_archives})
-add_dependencies(libafl_c libafl_sancov_archives)
-target_link_options(libafl_c INTERFACE
-    "SHELL:-Wl,--whole-archive"
-    ${_libafl_sancov_archives}
-    "SHELL:-Wl,--no-whole-archive")
-
 # LibAFL builds with `-D warnings`, so a lint from a rustc newer than upstream
 # released against is a hard error in a dependency we do not own. --cap-lints
 # demotes those to warnings, which is what cargo already does for crates.io

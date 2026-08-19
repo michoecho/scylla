@@ -134,7 +134,7 @@ find_path(BACKTRACE_INCLUDE_DIR backtrace.h REQUIRED)
 find_library(BACKTRACE_LIBRARY backtrace REQUIRED)
 
 # LibAFL's in-process fuzzer, behind a C ABI (modules/libafl). Off by default;
-# the LibAfl preset turns this on AND adds -fsanitize-coverage=trace-pc-guard,trace-cmp,
+# the LibAfl preset turns this on AND adds -fsanitize-coverage=trace-pc-guard,
 # so the whole binary carries SanitizerCoverage instrumentation.
 #
 # This is the second coverage-guided backend, and it exists because of what the

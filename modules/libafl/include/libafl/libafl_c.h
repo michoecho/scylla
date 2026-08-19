@@ -43,14 +43,12 @@
 //
 // Two flags, and the second one is not optional despite looking like it:
 //
-//     -fsanitize-coverage=trace-pc-guard,trace-cmp
-//                                           instrument edges and comparisons
+//     -fsanitize-coverage=trace-pc-guard    instrument edges
 //     -fno-sanitize-link-runtime            do NOT link clang's own runtime
 //
-// The first makes the compiler emit calls to the pcguard and trace-cmp
-// callbacks. The second is what makes those calls reach *this* library's
-// implementations, including the CmpLog map used for comparison-guided
-// mutations.
+// The first is what makes the compiler emit calls to
+// __sanitizer_cov_trace_pc_guard. The second is what makes those calls reach
+// *this* library's implementation of it.
 //
 // Without the second flag the search silently does nothing, which is the worst
 // failure mode available and is worth spelling out. clang links

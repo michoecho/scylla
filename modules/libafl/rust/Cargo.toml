@@ -37,14 +37,13 @@ libafl_bolts = { version = "0.15.4", default-features = false, features = [
     "serdeany_autoreg",
 ] }
 
-# The SanCov runtimes. `sancov_pcguard` defines the edge callbacks and
-# `sancov_cmplog` defines the trace-cmp callbacks. The latter populates the map
-# observed by CmpLogObserver; value profiling is enabled alongside it because
-# the instrumented build supplies both forms of comparison feedback.
+# The SanCov runtime. `sancov_pcguard` is what defines
+# __sanitizer_cov_trace_pc_guard and its _init, so linking this crate is what
+# gives the instrumented C++ binary something to call.
 #
-# `default-features = true` retains LibAFL's standard support types, while the
-# explicit features document the SanCov pieces this wrapper consumes. The
-# forkserver is not used: the executor is in-process.
+# Default features are off deliberately: the default set pulls `forkserver` and
+# `cmplog`, and the forkserver is precisely the thing this backend exists to not
+# need. What is left is the pcguard runtime and the C coverage map it indexes.
 libafl_targets = { version = "0.15.4", default-features = true, features = [
     "sancov_pcguard",
     "sancov_cmplog",
