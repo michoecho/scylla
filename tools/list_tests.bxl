@@ -1,0 +1,12 @@
+def _main(ctx):
+    for target in ctx.configured_targets("//..."):
+        result = ctx.analysis(target)
+        provider_names = [p.name for p in result.providers_info()]
+
+        if (
+            "ExternalRunnerTestInfo" in provider_names
+            or "InternalRunnerTestInfo" in provider_names
+        ):
+            ctx.output.print(target.label)
+
+main = bxl_main(impl = _main, cli_args = {})
