@@ -2752,6 +2752,7 @@ cargo.rust_library(
         "sancov_cmplog",
         "sancov_pcguard",
         "sancov_pcguard_hitcounts",
+        "sancov_value_profile",
         "sanitizers_flags",
         "std",
         "windows_asan",
@@ -2805,6 +2806,7 @@ cargo.rust_binary(
         "sancov_cmplog",
         "sancov_pcguard",
         "sancov_pcguard_hitcounts",
+        "sancov_value_profile",
         "sanitizers_flags",
         "std",
         "windows_asan",
@@ -2844,6 +2846,7 @@ buildscript_run(
         "sancov_cmplog",
         "sancov_pcguard",
         "sancov_pcguard_hitcounts",
+        "sancov_value_profile",
         "sanitizers_flags",
         "std",
         "windows_asan",
@@ -6967,4 +6970,12 @@ buildscript_run(
         "CARGO_PKG_VERSION_PRE": "",
     },
     version = "1.0.23",
+)
+
+alias(
+    # Expose the buildscript output directory to the C++ wrapper target. The
+    # generated buildscript rule itself is intentionally private.
+    name = "libafl_targets-build-script-run-public",
+    actual = ":libafl_targets-0.15-build-script-run",
+    visibility = ["PUBLIC"],
 )

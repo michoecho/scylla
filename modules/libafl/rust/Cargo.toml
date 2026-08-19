@@ -47,4 +47,5 @@ libafl_bolts = { version = "0.15.4", default-features = false, features = [
 libafl_targets = { version = "0.15.4", default-features = true, features = [
     "sancov_pcguard",
     "sancov_cmplog",
+    "sancov_value_profile",
 ] }

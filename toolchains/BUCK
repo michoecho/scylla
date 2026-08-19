@@ -41,7 +41,7 @@ nix_cxx_toolchain(
         "root//:build_mode[release]": ["-O3"],
     }) + select({
         "root//:libafl": [
-            "-fsanitize-coverage=trace-pc-guard",
+            "-fsanitize-coverage=trace-pc-guard,trace-cmp",
             "-fno-sanitize-link-runtime",
         ],
         "DEFAULT": [],
