@@ -28,4 +28,4 @@
 [project]
   # Nested buck-out directories contain materialized external cells, whose BUCK files
   # would otherwise be picked up by target patterns such as `//...`.
-  ignore = .git, **/buck-out
+  ignore = .git, **/buck-out, ignored

@@ -125,7 +125,7 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
                 compiler = RunInfo(args = [asm_compiler]),
                 compiler_type = asm_compiler_type,
             ),
-            header_mode = HeaderMode("symlink_tree_only"),
+            header_mode = HeaderMode("header_map_only"),
             cpp_dep_tracking_mode = ctx.attrs.cpp_dep_tracking_mode,
             pic_behavior = pic_behavior,
             llvm_link = llvm_link,
