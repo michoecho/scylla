@@ -4,12 +4,9 @@
 //! (Rust owns the loop, the harness receives raw bytes, exceptions never cross).
 //! This file is about how the pieces are assembled on the Rust side.
 //!
-//! The assembly is deliberately the *minimal* LibAFL fuzzer -- one observer, one
-//! feedback, one scheduler, one mutational stage. LibAFL's whole selling point
-//! is that these are swappable, and every one of them is a place this backend
-//! could later grow (a cmplog observer, a different power schedule). None of
-//! that is here yet, because the thing being proven is that an in-process
-//! coverage-guided search can drive an ordinary C++ test body at all.
+//! The assembly is deliberately a small LibAFL fuzzer -- one observer, one
+//! feedback, one scheduler, a corpus-trimming stage, and ordinary mutation.
+//! LibAFL's whole selling point is that these are swappable.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_int, c_void, CString};
@@ -25,14 +22,63 @@ use libafl::{
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
     monitors::SimpleMonitor,
-    mutators::{havoc_mutations::havoc_mutations, scheduled::HavocScheduledMutator},
+    mutators::{
+        havoc_mutations::havoc_mutations,
+        mutations::BytesDeleteMutator,
+        MutationResult, Mutator,
+        scheduled::HavocScheduledMutator,
+    },
     schedulers::QueueScheduler,
-    stages::mutational::StdMutationalStage,
-    state::StdState,
+    stages::{
+        ObserverEqualityFactory, StdTMinMutationalStage,
+        mutational::StdMutationalStage,
+    },
+    state::{HasRand, StdState},
     Error, Evaluator,
 };
-use libafl_bolts::{rands::StdRand, tuples::tuple_list, AsSlice};
+use libafl_bolts::{Named, rands::StdRand, tuples::tuple_list, AsSlice};
 use libafl_targets::{edges_max_num, std_edges_map_observer};
+
+/// `StdTMinMutationalStage` retries a skipped mutation without advancing its
+/// run counter. `BytesDeleteMutator` skips inputs of length two or less, which
+/// would make a trim stage spin forever once it had reduced the seed to that
+/// size. Report a no-op as `Mutated` in that case; TMin will see that the input
+/// did not get shorter and count the attempt without executing the harness.
+#[derive(Debug)]
+struct TrimBytesDeleteMutator;
+
+impl Named for TrimBytesDeleteMutator {
+    fn name(&self) -> &std::borrow::Cow<'static, str> {
+        static NAME: std::borrow::Cow<'static, str> =
+            std::borrow::Cow::Borrowed("TrimBytesDeleteMutator");
+        &NAME
+    }
+}
+
+impl<S> Mutator<BytesInput, S> for TrimBytesDeleteMutator
+where
+    S: HasRand,
+{
+    fn mutate(
+        &mut self,
+        state: &mut S,
+        input: &mut BytesInput,
+    ) -> Result<MutationResult, Error> {
+        if input.target_bytes().as_slice().len() <= 2 {
+            return Ok(MutationResult::Mutated);
+        }
+
+        BytesDeleteMutator::new().mutate(state, input)
+    }
+
+    fn post_exec(
+        &mut self,
+        _state: &mut S,
+        _new_corpus_id: Option<libafl::corpus::CorpusId>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
 
 // --- the C ABI surface ------------------------------------------------------
 
@@ -210,6 +256,7 @@ fn run_inner(
     // kept in the corpus to mutate from, exactly when it lit a map entry no
     // earlier input did. This is the gradient the magic-bytes demo climbs.
     let mut feedback = MaxMapFeedback::new(&edges_observer);
+    let trim_factory = ObserverEqualityFactory::new(&edges_observer);
 
     // What counts as a find. `feedback_or_fast` short-circuits, so the map is
     // not consulted once a crash is known.
@@ -269,8 +316,18 @@ fn run_inner(
         BytesInput::new(vec![0u8; 1]),
     )?;
 
+    // First try deleting bytes while preserving the exact edge map. The trim
+    // stage replaces the corpus entry only when the deletion is coverage
+    // equivalent, so minimization does not discard the path that made the
+    // testcase interesting.
+    let trim_stage = StdTMinMutationalStage::new(
+        TrimBytesDeleteMutator,
+        trim_factory,
+        1,
+    );
+
     let mutator = HavocScheduledMutator::new(havoc_mutations());
-    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    let mut stages = tuple_list!(trim_stage, StdMutationalStage::new(mutator));
 
     // The loop. `fuzz_loop` would run forever, so the budget is enforced by
     // driving one iteration at a time and checking after each -- which also
