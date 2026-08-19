@@ -4,12 +4,11 @@
 //! (Rust owns the loop, the harness receives raw bytes, exceptions never cross).
 //! This file is about how the pieces are assembled on the Rust side.
 //!
-//! The assembly is deliberately the *minimal* LibAFL fuzzer -- one observer, one
-//! feedback, one scheduler, one mutational stage. LibAFL's whole selling point
-//! is that these are swappable, and every one of them is a place this backend
-//! could later grow (a cmplog observer, a different power schedule). None of
-//! that is here yet, because the thing being proven is that an in-process
-//! coverage-guided search can drive an ordinary C++ test body at all.
+//! The assembly is deliberately a small LibAFL fuzzer -- edge and comparison
+//! observers, one feedback, one scheduler, and mutational stages. LibAFL's
+//! whole selling point is that these are swappable; this backend uses the
+//! comparison observer to feed input-to-state replacement mutations, while
+//! still allowing the input to grow, in addition to ordinary havoc.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_int, c_void, CString};
@@ -19,20 +18,25 @@ use std::ptr;
 use libafl::{
     corpus::InMemoryCorpus,
     events::SimpleEventManager,
-    executors::{inprocess::InProcessExecutor, ExitKind},
+    executors::{inprocess::InProcessExecutor, ExitKind, ShadowExecutor},
     feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
     monitors::SimpleMonitor,
-    mutators::{havoc_mutations::havoc_mutations, scheduled::HavocScheduledMutator},
+    mutators::{
+        havoc_mutations::havoc_mutations,
+        mutations::BytesExpandMutator,
+        scheduled::HavocScheduledMutator,
+        token_mutations::I2SRandReplace,
+    },
     schedulers::QueueScheduler,
-    stages::mutational::StdMutationalStage,
+    stages::{ShadowTracingStage, mutational::StdMutationalStage},
     state::StdState,
     Error, Evaluator,
 };
 use libafl_bolts::{rands::StdRand, tuples::tuple_list, AsSlice};
-use libafl_targets::{edges_max_num, std_edges_map_observer};
+use libafl_targets::{CmpLogObserver, edges_max_num, std_edges_map_observer};
 
 // --- the C ABI surface ------------------------------------------------------
 
@@ -206,6 +210,13 @@ fn run_inner(
     // a time in this process (the C++ provider is not re-entrant).
     let edges_observer = unsafe { std_edges_map_observer("edges") };
 
+    // SanCov's trace-cmp runtime writes the operands of comparisons into this
+    // map. CmpLogObserver turns the map into CmpValuesMetadata after each
+    // shadow execution; I2SRandReplace below uses that metadata to replace
+    // bytes in a testcase with the constants the target actually compared
+    // against.
+    let cmplog_observer = CmpLogObserver::new("cmplog", true);
+
     // Novelty search over that map: an input is "interesting", and therefore
     // kept in the corpus to mutate from, exactly when it lit a map entry no
     // earlier input did. This is the gradient the magic-bytes demo climbs.
@@ -239,13 +250,19 @@ fn run_inner(
     let scheduler = QueueScheduler::new();
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
 
-    let mut executor = InProcessExecutor::new(
+    let executor = InProcessExecutor::new(
         &mut bridge,
         tuple_list!(edges_observer),
         &mut fuzzer,
         &mut state,
         &mut manager,
     )?;
+    // CmpLogObserver is deliberately kept out of the main executor: LibAFL
+    // requires main-executor observers to be serializable, while this runtime
+    // observer owns a raw pointer to SanCov's static map. ShadowExecutor lets
+    // the comparison observer participate in tracing without affecting edge
+    // feedback or event serialization.
+    let mut executor = ShadowExecutor::new(executor, tuple_list!(cmplog_observer));
 
     // A seed input, rather than a generated corpus. One all-zero testcase is
     // enough: the body draws zeroes past the end of a short input anyway, so
@@ -269,8 +286,24 @@ fn run_inner(
         BytesInput::new(vec![0u8; 1]),
     )?;
 
+    // Run comparison-guided replacement/expansion as its own stage. Keeping it
+    // separate from ordinary havoc makes every fuzzing iteration get an
+    // opportunity to use the operands collected from the previous execution.
+    // HavocScheduledMutator randomly chooses between replacing a matching byte
+    // and expanding the input, so replacement can become useful beyond the
+    // initial one-byte seed without requiring a fixed five-byte seed.
+    let cmplog_mutator = HavocScheduledMutator::new(tuple_list!(
+        I2SRandReplace::new(),
+        BytesExpandMutator::new(),
+    ));
+    let cmplog_stage = StdMutationalStage::new(cmplog_mutator);
+
     let mutator = HavocScheduledMutator::new(havoc_mutations());
-    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    let mut stages = tuple_list!(
+        ShadowTracingStage::new(),
+        cmplog_stage,
+        StdMutationalStage::new(mutator)
+    );
 
     // The loop. `fuzz_loop` would run forever, so the budget is enforced by
     // driving one iteration at a time and checking after each -- which also

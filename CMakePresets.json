@@ -81,7 +81,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "BUILD_LIBAFL": "ON",
-                "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fsanitize-coverage=trace-pc-guard -fno-sanitize-link-runtime"
+                "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fsanitize-coverage=trace-pc-guard,trace-cmp -fno-sanitize-link-runtime"
             },
             "inherits": [
                 "Base",
