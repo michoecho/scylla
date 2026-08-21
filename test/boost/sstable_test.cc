@@ -40,6 +40,9 @@
 #include "sstables/exceptions.hh"
 #include "sstables/decompressing_input_stream.hh"
 #include "sstables/consumer.hh"
+#include "sstables/stats.hh"
+#include "test/lib/log.hh"
+#include "utils/div_ceil.hh"
 
 #include <boost/range/combine.hpp>
 
@@ -1190,4 +1193,77 @@ SEASTAR_TEST_CASE(test_digest_validation_toc) {
 
 SEASTAR_TEST_CASE(test_digest_validation_scylla) {
     return test_component_digest_validation(component_type::Scylla, sstable::version_types::me, "Scylla digest mismatch");
+}
+
+struct offsets_memory {
+    uint64_t after_write;
+    uint64_t after_load;
+    uint64_t chunk_count;
+};
+
+// Writes a ~20MB compressed sstable in the given version and returns how much
+// memory its in-memory copy of the chunk offsets takes up: right after the
+// write, and after reopening the sstable for reading.
+static offsets_memory compression_offsets_memory_of_sstable(test_env& env, sstable_version_types version) {
+    constexpr size_t cell_size = 100 * 1024;
+    constexpr size_t data_size = 20 * 1024 * 1024;
+    constexpr size_t chunk_size = 1024;
+    const size_t cell_count = div_ceil(data_size, cell_size);
+
+    auto s = schema_builder(this_smp_shard_count(), "ks", "cf")
+            .with_column("pk", int32_type, column_kind::partition_key)
+            .with_column("v", bytes_type)
+            .set_compressor_params(compression_parameters({
+                {compression_parameters::SSTABLE_COMPRESSION, "LZ4Compressor"},
+                {compression_parameters::CHUNK_LENGTH_KB, std::to_string(chunk_size / 1024)},
+            }))
+            .build();
+
+    const auto value = tests::random::get_bytes(cell_size);
+
+    utils::chunked_vector<mutation> muts;
+    for (size_t i = 0; i < cell_count; ++i) {
+        mutation m(s, partition_key::from_single_value(*s, int32_type->decompose(int32_t(i))));
+        m.set_clustered_cell(clustering_key::make_empty(), "v", data_value(value), api::new_timestamp());
+        muts.push_back(std::move(m));
+    }
+
+    auto memory_used = [] { return sstables_stats::get_shard_stats().compression_offsets_memory; };
+
+    const auto before_write = memory_used();
+    auto sst = make_sstable_containing(env.make_sstable(s, version), std::move(muts), validate::no).get();
+    const auto after_write = memory_used() - before_write;
+    BOOST_REQUIRE_GE(sst->data_size(), cell_count * cell_size);
+
+    const auto before_load = memory_used();
+    auto reopened = env.reusable_sst(s, sst).get();
+    const auto after_load = memory_used() - before_load;
+
+    const auto chunk_count = div_ceil(sst->data_size(), uint64_t(chunk_size));
+    testlog.info("version={}: {} chunks, {} bytes of offsets after write, {} after load",
+            version, chunk_count, after_write, after_load);
+
+    return {after_write, after_load, chunk_count};
+}
+
+// `me` reads Data.db by uncompressed position, so it has to keep the chunk
+// offsets in memory. `mu` navigates by chunk coordinates taken from the index
+// instead, and reads the offsets from CompressionInfo.db on demand, so it must
+// not hold any.
+SEASTAR_TEST_CASE(test_compression_offsets_memory_metric) {
+    return test_env::do_with_async([] (test_env& env) {
+        const auto me = compression_offsets_memory_of_sstable(env, sstable_version_types::me);
+        // ~20MB of data in 1kB chunks is over 20000 offsets, which take 9 buckets.
+        BOOST_REQUIRE_GE(me.after_write, 8 * 1024);
+        // Number of buckets `n` chunk offsets of a 1kB-chunk sstable occupy, times the
+        // bucket size. See segmented_compress_params.hh: for a chunk size of 1kB, a
+        // bucket holds 289 segments of 8 offsets each.
+        auto expected_offsets_memory = div_ceil(me.chunk_count, uint64_t(289 * 8)) * 4096;
+        BOOST_REQUIRE_EQUAL(me.after_write, expected_offsets_memory);
+        BOOST_REQUIRE_EQUAL(me.after_load, me.after_write);
+
+        const auto mu = compression_offsets_memory_of_sstable(env, sstable_version_types::mu);
+        BOOST_REQUIRE_EQUAL(mu.after_write, 0);
+        BOOST_REQUIRE_EQUAL(mu.after_load, 0);
+    });
 }
