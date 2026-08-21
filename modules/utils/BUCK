@@ -1,0 +1,12 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "utils",
+    srcs = [
+        "clock.cc",
+    ],
+    exported_headers = {
+        "utils/clock.h": "include/utils/clock.h",
+    },
+    module_source_dir = "modules/utils",
+)

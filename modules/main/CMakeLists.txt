@@ -27,6 +27,7 @@ target_link_libraries(main PUBLIC
 # the executable keeps carrying the from_exception library that captures traces
 # at throw time, and so its tests are gated behind main's.
 target_link_module(main PUBLIC exception_hacks)
+target_link_module(main PUBLIC utils)
 
 target_compile_options(main PRIVATE
     -Wall

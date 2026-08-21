@@ -2,6 +2,7 @@
 # requires the dependency to already be a target when it is called -- so a
 # module must be added before anything that links it. Hence the two blocks:
 # the shared test infrastructure first, its consumers after.
+add_subdirectory(utils)
 add_subdirectory(snapshot)
 add_subdirectory(exhaustigen)
 # Not an add_module(): a cargo build imported by Corrosion, and a no-op unless
