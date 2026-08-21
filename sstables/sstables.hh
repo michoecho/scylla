@@ -389,8 +389,6 @@ public:
     sstable_position end_position() const;
 
     double approximate_file_fraction(sstable_positions_range range) const;
-    sstable_position sstable_position_from_logical_position(uint64_t logical_position) const;
-    disk_read_range disk_read_range_from_logical_range(uint64_t begin, uint64_t end) const;
 
     uint64_t index_size() const {
         return _index_file_size;

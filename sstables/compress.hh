@@ -499,18 +499,18 @@ uint32_t read_chunk_length_field(const char* src, uint32_t uncompressed_chunk_le
 
 using stream_creator_fn = std::function<future<input_stream<char>>(uint64_t, uint64_t, file_input_stream_options)>;
 
-// Note: compression_metadata is passed by reference; The caller is
-// responsible for keeping the compression_metadata alive as long as there
-// are open streams on it. This should happen naturally on a higher level -
-// as long as we have *sstables* work in progress, we need to keep the whole
-// sstable alive, and the compression metadata is only a part of it.
+// Note: the compression_info_accessor holds a reference to the underlying
+// sstables::compression; the caller is responsible for keeping it alive as long
+// as there are open streams on it. This should happen naturally on a higher
+// level - as long as we have *sstables* work in progress, we need to keep the
+// whole sstable alive, and the compression metadata is only a part of it.
 input_stream<char> make_compressed_file_k_l_format_input_stream(stream_creator_fn stream_creator,
-                sstables::compression* cm, sstable_version_types version, disk_read_range range,
+                compression_info_accessor ci, sstable_version_types version, disk_read_range range,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 
 input_stream<char> make_compressed_file_m_format_input_stream(stream_creator_fn stream_creator,
-                sstables::compression* cm, sstable_version_types version, disk_read_range range,
+                compression_info_accessor ci, sstable_version_types version, disk_read_range range,
                 class file_input_stream_options options, reader_permit permit,
                 std::optional<uint32_t> digest);
 

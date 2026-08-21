@@ -876,8 +876,8 @@ future<> parse(const schema& s, sstable_version_types v, random_access_reader& i
     uint32_t len = 0;
     compression::segmented_offsets::writer offsets = c.offsets.get_writer();
     co_await parse(s, v, in, len);
-    // Remember where the array of offsets starts, so that the offsets can later
-    // be read from the file on demand, without an in-memory copy.
+    // Remember where the array of offsets starts, so that
+    // uncached_compressioninfo_accessor can read the offsets from the file on demand.
     c.set_offsets_start_pos(in.offset());
     c.set_chunk_count(len);
     auto eoarr = [&c, &len] { return c.offsets.size() == len; };
@@ -897,8 +897,8 @@ void write(sstable_version_types v, file_writer& out, compression& c) {
 
     write(v, out, static_cast<uint32_t>(c.offsets.size()));
 
-    // Remember where the array of offsets starts, so that the offsets can later
-    // be read from the file on demand, without an in-memory copy.
+    // Remember where the array of offsets starts, so that
+    // uncached_compressioninfo_accessor can read the offsets from the file on demand.
     c.set_offsets_start_pos(out.offset());
     c.set_chunk_count(c.offsets.size());
 
@@ -2941,22 +2941,6 @@ sstable_position sstable::end_position() const {
     return sstable_position::from_logical(data_size());
 }
 
-sstable_position sstable::sstable_position_from_logical_position(uint64_t logical_position) const {
-    if (!_components->compression || holds_logical_position(_version)) {
-        return sstable_position::from_logical(logical_position);
-    }
-    if (logical_position >= data_size()) {
-        return end_position();
-    }
-    const auto& comp = _components->compression;
-    auto chunk = comp.locate(logical_position, comp.offsets.get_accessor());
-    return sstable_position::from_physical(chunk.chunk_start, chunk.chunk_len, chunk.offset);
-}
-
-disk_read_range sstable::disk_read_range_from_logical_range(uint64_t begin, uint64_t end) const {
-    return {sstable_position_from_logical_position(begin), sstable_position_from_logical_position(end)};
-}
-
 double sstable::approximate_file_fraction(sstable_positions_range range) const {
     auto start = range.start;
     auto end = range.end.value_or(end_position());
@@ -3376,9 +3360,9 @@ future<std::unique_ptr<data_consumer::continuous_data_consumer_input_stream>> ss
         digest = get_digest();
     }
 
-    if (_components->compression && !holds_logical_position(_version)) {
-        // The physical-position compressed format (`mu`) is read through the
-        // decompressing stream, which navigates the data file by chunk
+    if (_components->compression && !holds_logical_position(_version) && range.start.is_physical()) {
+        // The physical-position compressed format (`mu`) is normally read through
+        // the decompressing stream, which navigates the data file by chunk
         // coordinates. It opens its own (traced) file, verifies per-chunk
         // checksums, and - when reading the whole file in order from the start -
         // folds each chunk's checksum into a running whole-file digest (verified
@@ -3395,18 +3379,27 @@ future<std::unique_ptr<data_consumer::continuous_data_consumer_input_stream>> ss
     };
 
     if (_components->compression) {
-        // Logical-position compressed formats (mc..me, ka/la) decompress on the
-        // fly using the external compression offsets, verifying per-chunk
-        // checksums (and the whole-file digest when `digest` is set). The
-        // resulting decompressed byte stream is a plain input_stream fed to the
-        // parsers through the seastar-input-stream adapter.
+        // Compressed formats addressed by logical position decompress on the fly
+        // using the external compression offsets, verifying per-chunk checksums
+        // (and the whole-file digest when `digest` is set). The resulting
+        // decompressed byte stream is a plain input_stream fed to the parsers
+        // through the seastar-input-stream adapter.
+        //
+        // A `mu` sstable only gets here when addressed by a logical range. Only
+        // database::sample_data_files does this: it samples the data file at
+        // logical offsets, having no index entry to start from. Its compression
+        // offsets are read from CompressionInfo.db on demand rather than from the
+        // in-memory copy, which is meant to go away.
+        auto ci = holds_logical_position(_version)
+                ? compression_info_accessor(_components->compression)
+                : compression_info_accessor(shared_from_this());
         if (_version >= sstable_version_types::mc) {
             co_return std::make_unique<data_consumer::continuous_data_consumer_seastar_input_stream>(
-                make_compressed_file_m_format_input_stream(stream_creator, &_components->compression, _version,
+                make_compressed_file_m_format_input_stream(stream_creator, std::move(ci), _version,
                     range, std::move(options), permit, digest));
         }
         co_return std::make_unique<data_consumer::continuous_data_consumer_seastar_input_stream>(
-            make_compressed_file_k_l_format_input_stream(stream_creator, &_components->compression, _version,
+            make_compressed_file_k_l_format_input_stream(stream_creator, std::move(ci), _version,
                 range, std::move(options), permit, digest));
     }
 
@@ -3493,7 +3486,10 @@ future<temporary_buffer<char>> sstable::data_read(uint64_t pos, size_t len, read
         co_return temporary_buffer<char>();
     }
     auto end = std::min<uint64_t>(pos + len, data_size());
-    auto disk_range = disk_read_range_from_logical_range(pos, end);
+    // A logical range. For a `mu` sstable this is the one caller which doesn't
+    // have physical positions to work with, so data_stream() serves it by reading
+    // the compression offsets from CompressionInfo.db on demand.
+    disk_read_range disk_range{sstable_position::from_logical(pos), sstable_position::from_logical(end)};
     // Random-access read of a byte range. data_stream() decompresses if needed and
     // handles both compressed and uncompressed data files; we drain exactly the
     // requested number of decompressed bytes from it. No whole-file digest is

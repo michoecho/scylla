@@ -805,7 +805,8 @@ SEASTAR_TEST_CASE(test_skipping_in_compressed_stream) {
             auto stream_creator = [f](uint64_t pos, uint64_t len, file_input_stream_options options)->future<input_stream<char>> {
                 co_return input_stream<char>(make_file_data_source(std::move(f), pos, len, std::move(options)));
             };
-            return compressed_reader(make_compressed_file_m_format_input_stream(stream_creator, &c, version,
+            return compressed_reader(make_compressed_file_m_format_input_stream(stream_creator,
+                    sstables::compression_info_accessor(c), version,
                     sstables::disk_read_range(sstables::sstable_position::from_logical(0),
                                               sstables::sstable_position::from_logical(uncompressed_size)),
                     opts, semaphore.make_permit(), std::nullopt));
