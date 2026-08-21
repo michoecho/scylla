@@ -47,6 +47,7 @@
 #include "types/types.hh"
 #include "sstables/types.hh"
 #include "sstables/version.hh"
+#include "sstables/shared_sstable.hh"
 #include "sstables/sstable_position.hh"
 #include "checksum_utils.hh"
 
@@ -384,6 +385,59 @@ public:
     }
 
     friend class sstable;
+};
+
+// Everything a reader needs in order to decompress a compressed Data.db: the
+// compressor, the uncompressed chunk size, and - via locate() - the on-disk
+// extent of the compressed chunk holding a given uncompressed position.
+//
+// locate() is asynchronous because the chunk offsets don't have to be in memory.
+// They come from one of two places, chosen at construction:
+//
+// * The in-memory copy of CompressionInfo.db held by sstables::compression. Then
+//   locate() never blocks and returns a ready future.
+// * CompressionInfo.db itself, read on demand, keeping nothing in memory.
+//   Sstables which pack their compression offsets into the index (`mu`) are meant
+//   to be read this way, so that their in-memory copy can eventually go away.
+class compression_info_accessor {
+    const compression& _compression;
+    // Engaged iff the offsets are served from the in-memory copy.
+    std::optional<compression::segmented_offsets::accessor> _offsets;
+    // Engaged iff the offsets are read from CompressionInfo.db on demand. Keeps
+    // the sstable alive so that its component file stays openable.
+    shared_sstable _sst;
+    // The opened CompressionInfo.db, in the on-demand case. Opened lazily, on the
+    // first locate().
+    file _file;
+
+    future<compression::chunk_and_offset> locate_from_file(uint64_t chunk_index, unsigned chunk_offset);
+public:
+    // Serves the offsets from the in-memory copy held by `c`.
+    explicit compression_info_accessor(const compression& c)
+        : _compression(c)
+        , _offsets(c.offsets.get_accessor()) {
+    }
+
+    // Reads the offsets from `sst`'s CompressionInfo.db on demand.
+    explicit compression_info_accessor(shared_sstable sst);
+
+    uint32_t uncompressed_chunk_size() const noexcept {
+        return _compression.uncompressed_chunk_length();
+    }
+
+    uint64_t uncompressed_file_size() const noexcept {
+        return _compression.uncompressed_file_length();
+    }
+
+    ::compressor& compressor() const {
+        return _compression.get_compressor();
+    }
+
+    // Locates the compressed chunk containing the given position of the
+    // uncompressed data. Throws if the position is beyond the last chunk.
+    future<compression::chunk_and_offset> locate(uint64_t position);
+
+    future<> close();
 };
 
 // The maximum on-disk length, in bytes, of a compressed chunk whose uncompressed

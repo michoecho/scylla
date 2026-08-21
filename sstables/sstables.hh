@@ -1233,6 +1233,8 @@ public:
     friend class mc::writer;
     friend class index_reader;
     friend class sstables_manager;
+    // Needs open_file() to read chunk offsets straight from CompressionInfo.db.
+    friend class compression_info_accessor;
     template <typename DataConsumeRowsContext>
     friend future<std::unique_ptr<DataConsumeRowsContext>>
     data_consume_rows(const schema&, shared_sstable, typename DataConsumeRowsContext::consumer&, disk_read_range, sstable_position, integrity_check);

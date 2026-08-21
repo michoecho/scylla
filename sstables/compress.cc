@@ -12,6 +12,7 @@
 #include <seastar/core/align.hh>
 #include <seastar/core/bitops.hh>
 #include <seastar/core/byteorder.hh>
+#include <seastar/core/coroutine.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/on_internal_error.hh>
 
@@ -19,6 +20,7 @@
 #include "compressor.hh"
 #include "exceptions.hh"
 #include "unimplemented.hh"
+#include "sstables/sstables.hh"
 #include "sstables/version.hh"
 #include "sstables/checksum_utils.hh"
 #include "segmented_compress_params.hh"
@@ -323,6 +325,56 @@ compression::locate(uint64_t position, const compression::segmented_offsets::acc
             ? _compressed_file_length
             : accessor.at(chunk_index + 1);
     return { chunk_start, chunk_end - chunk_start, chunk_offset };
+}
+
+compression_info_accessor::compression_info_accessor(shared_sstable sst)
+    : _compression(sst->get_compression())
+    , _sst(std::move(sst)) {
+}
+
+future<compression::chunk_and_offset> compression_info_accessor::locate_from_file(uint64_t chunk_index, unsigned chunk_offset) {
+    if (!_file) {
+        _file = co_await _sst->open_file(component_type::CompressionInfo, open_flags::ro);
+    }
+    // The offsets are a plain array of big-endian uint64_t, so chunk `i` starts at
+    // offsets_start_pos() + i * 8. A chunk extends to the start of the next one,
+    // or -- for the last chunk -- to the end of the data file. The two offsets are
+    // adjacent, so a single read fetches both.
+    const bool has_next = chunk_index + 1 < _compression.chunk_count();
+    const auto len = (has_next ? 2 : 1) * sizeof(uint64_t);
+    const auto pos = _compression.offsets_start_pos() + chunk_index * sizeof(uint64_t);
+    temporary_buffer<char> buf;
+    try {
+        // dma_read_exactly() takes care of the alignment requirements of the underlying file.
+        buf = co_await _file.dma_read_exactly<char>(pos, len);
+    } catch (const file::eof_error&) {
+        throw_malformed_sstable_exception(format("CompressionInfo of {} is truncated: no offset for chunk {}",
+                _sst->get_filename(), chunk_index));
+    }
+    auto chunk_start = read_be<uint64_t>(buf.get());
+    auto chunk_end = has_next ? read_be<uint64_t>(buf.get() + sizeof(uint64_t)) : _compression.compressed_file_length();
+    co_return compression::chunk_and_offset{chunk_start, chunk_end - chunk_start, chunk_offset};
+}
+
+future<compression::chunk_and_offset> compression_info_accessor::locate(uint64_t position) {
+    if (_offsets) {
+        return make_ready_future<compression::chunk_and_offset>(_compression.locate(position, *_offsets));
+    }
+    auto ucl = _compression.uncompressed_chunk_length();
+    auto chunk_index = position / ucl;
+    auto chunk_offset = position % ucl;
+    if (chunk_index >= _compression.chunk_count()) {
+        return make_exception_future<compression::chunk_and_offset>(std::out_of_range(
+                format("compression_info_accessor::locate: position {} is beyond the last chunk of {}",
+                        position, _sst->get_filename())));
+    }
+    return locate_from_file(chunk_index, chunk_offset);
+}
+
+future<> compression_info_accessor::close() {
+    if (_file) {
+        co_await std::exchange(_file, file()).close();
+    }
 }
 
 std::map<sstring, sstring> options_from_compression(const compression& c) {
