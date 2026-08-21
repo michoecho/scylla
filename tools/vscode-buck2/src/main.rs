@@ -4,7 +4,7 @@ use std::{
     io,
     path::PathBuf,
     pin::Pin,
-    process,
+    process::{self, Command, Stdio},
     task::{Context, Poll},
 };
 
@@ -61,6 +61,7 @@ struct Cli {
 struct Options {
     output: Option<PathBuf>,
     list_only: bool,
+    coverage: bool,
     selected_cases: HashSet<String>,
     list_arg: String,
     location_arg: Option<String>,
@@ -71,6 +72,7 @@ struct Options {
 struct OutputFile {
     tests: Vec<DiscoveredCase>,
     results: Vec<CaseResult>,
+    coverage: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -97,6 +99,12 @@ struct CaseResult {
     status: &'static str,
     duration_ms: Option<u64>,
     output: String,
+}
+
+#[derive(Debug)]
+struct CoverageInput {
+    profile: PathBuf,
+    binary: PathBuf,
 }
 
 #[derive(Clone)]
@@ -193,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
 
     let channel = client_channel(orchestrator_io).await?;
     let mut orchestrator = test_orchestrator_client::TestOrchestratorClient::new(channel);
-    let mut output = OutputFile { tests: Vec::new(), results: Vec::new() };
+    let mut output = OutputFile { tests: Vec::new(), results: Vec::new(), coverage: Vec::new() };
     let mut exit_code = 0;
 
     while let Some(message) = spec_receiver.recv().await {
@@ -238,6 +246,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
         match key {
             "--vscode-output" => options.output = Some(PathBuf::from(value_or_next(args, index, value)?)),
             "--vscode-list-only" => options.list_only = true,
+            "--vscode-coverage" => options.coverage = true,
             "--vscode-case" => {
                 options.selected_cases.insert(value_or_next(args, index, value)?.to_owned());
             }
@@ -356,6 +365,7 @@ async fn process_spec(
         &spec,
         TestStage { item: Some(test_stage::Item::Listing(test_stage::Listing { suite: target_name.clone(), cacheable: false })) },
         list_command,
+        options.coverage.then(|| execution_env(&spec, Some(verbatim_arg("/dev/null")))),
     ).await?;
     let listing_output = execution_output(&listing);
     let cases = parse_listing(&execution_stream_output(listing.stdout.as_ref()))?;
@@ -396,6 +406,7 @@ async fn process_spec(
         return Ok(());
     }
 
+    let mut coverage_inputs = Vec::new();
     for case in cases {
         let case_name = case.name;
         let case_filter = if options.case_arg == "--test-case={}" {
@@ -404,13 +415,32 @@ async fn process_spec(
             case_name.clone()
         };
         let command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
+        let stage = TestStage { item: Some(test_stage::Item::Testing(Testing { suite: target_name.clone(), testcases: vec![case_name.clone()], variant: None, repeat_count: None })) };
+        let coverage_output = coverage_output_name(&target_name, &case_name);
+        let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
+        let coverage_paths = if options.coverage {
+            Some(prepare_coverage_paths(
+                orchestrator,
+                &handle,
+                stage.clone(),
+                &command,
+                declared_output(&coverage_output),
+                env.clone(),
+            ).await?)
+        } else {
+            None
+        };
         let result = execute(
             orchestrator,
             &handle,
             &spec,
-            TestStage { item: Some(test_stage::Item::Testing(Testing { suite: target_name.clone(), testcases: vec![case_name.clone()], variant: None, repeat_count: None })) },
+            stage,
             command,
+            Some(env),
         ).await?;
+        if let Some((profile, binary)) = coverage_paths {
+            coverage_inputs.push(CoverageInput { profile, binary });
+        }
         let details = execution_output(&result);
         let status = result_status(&result);
         orchestrator.report_test_result(proto::ReportTestResultRequest { result: Some(TestResult {
@@ -430,7 +460,109 @@ async fn process_spec(
             output: details,
         });
     }
+    if options.coverage && !coverage_inputs.is_empty() {
+        let coverage_dir = options
+            .output
+            .as_ref()
+            .and_then(|path| path.parent())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let lcov = process_coverage(coverage_dir, &target_name, &coverage_inputs)?;
+        output.coverage.push(lcov.to_string_lossy().into_owned());
+    }
     Ok(())
+}
+
+fn execution_env(spec: &ExternalRunnerSpec, profile: Option<ArgValue>) -> Vec<proto::EnvironmentVariable> {
+    let mut env = spec.env.iter().map(|(key, value)| proto::EnvironmentVariable {
+        key: key.clone(),
+        value: Some(ArgValue {
+            content: Some(ArgValueContent { value: Some(proto::arg_value_content::Value::SpecValue(value.clone())) }),
+            format: None,
+        }),
+    }).collect::<Vec<_>>();
+    if let Some(profile) = profile {
+        env.push(proto::EnvironmentVariable { key: "LLVM_PROFILE_FILE".to_owned(), value: Some(profile) });
+    }
+    env
+}
+
+fn declared_output(name: &str) -> ArgValue {
+    ArgValue {
+        content: Some(ArgValueContent { value: Some(proto::arg_value_content::Value::DeclaredOutput(proto::OutputName { name: name.to_owned() })) }),
+        format: None,
+    }
+}
+
+async fn prepare_coverage_paths(
+    orchestrator: &mut test_orchestrator_client::TestOrchestratorClient<Channel>,
+    handle: &ConfiguredTargetHandle,
+    stage: TestStage,
+    command: &[ArgValue],
+    profile: ArgValue,
+    env: Vec<proto::EnvironmentVariable>,
+) -> anyhow::Result<(PathBuf, PathBuf)> {
+    let mut path_command = command.to_vec();
+    path_command.push(profile);
+    let response = orchestrator.prepare_for_local_execution(proto::PrepareForLocalExecutionRequest {
+        test_executable: Some(proto::TestExecutable {
+            stage: Some(stage),
+            target: Some(handle.clone()),
+            cmd: path_command,
+            pre_create_dirs: Vec::new(),
+            env,
+        }),
+        required_local_resources: Vec::new(),
+    }).await?.into_inner();
+    let prepared = response.result.ok_or_else(|| anyhow!("Buck2 returned no prepared coverage command"))?;
+    let profile = prepared.cmd.last().ok_or_else(|| anyhow!("Buck2 returned an empty prepared coverage command"))?;
+    let binary = prepared.cmd.first().ok_or_else(|| anyhow!("Buck2 returned no test executable"))?;
+    Ok((PathBuf::from(profile), PathBuf::from(binary)))
+}
+
+fn coverage_output_name(target: &str, case: &str) -> String {
+    format!("vscode-coverage/{:016x}/{:016x}.profraw", stable_hash(target), stable_hash(case))
+}
+
+fn stable_hash(value: &str) -> u64 {
+    value.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+fn process_coverage(
+    coverage_dir: &std::path::Path,
+    target: &str,
+    inputs: &[CoverageInput],
+) -> anyhow::Result<PathBuf> {
+    fs::create_dir_all(coverage_dir).with_context(|| format!("creating coverage directory {}", coverage_dir.display()))?;
+    let stem = format!("buck2-{:016x}", stable_hash(target));
+    let profdata = coverage_dir.join(format!("{stem}.profdata"));
+    let lcov = coverage_dir.join(format!("{stem}.lcov"));
+    let mut merge = Command::new("llvm-profdata");
+    merge.arg("merge").arg("-sparse");
+    for input in inputs {
+        merge.arg(&input.profile);
+    }
+    let merge_status = merge.arg("-o").arg(&profdata).status()
+        .context("starting llvm-profdata")?;
+    if !merge_status.success() {
+        return Err(anyhow!("llvm-profdata failed with status {merge_status}"));
+    }
+
+    let export = Command::new("llvm-cov")
+        .arg("export")
+        .arg("-format=lcov")
+        .arg("-instr-profile")
+        .arg(&profdata)
+        .arg(&inputs[0].binary)
+        .stdout(Stdio::piped())
+        .output()
+        .context("starting llvm-cov")?;
+    if !export.status.success() {
+        return Err(anyhow!("llvm-cov failed: {}", String::from_utf8_lossy(&export.stderr)));
+    }
+    fs::write(&lcov, export.stdout).with_context(|| format!("writing coverage report {}", lcov.display()))?;
+    Ok(lcov)
 }
 
 fn command_with_arg(command: &[ExternalRunnerSpecValue], arg: &str) -> Vec<ArgValue> {
@@ -466,6 +598,7 @@ async fn execute(
     spec: &ExternalRunnerSpec,
     stage: TestStage,
     command: Vec<ArgValue>,
+    env: Option<Vec<proto::EnvironmentVariable>>,
 ) -> anyhow::Result<proto::ExecutionResult2> {
     let response = orchestrator.execute2(ExecuteRequest2 {
         timeout: Some(ProtoDuration { seconds: 300, nanos: 0 }),
@@ -479,13 +612,7 @@ async fn execute(
             target: Some(handle.clone()),
             cmd: command,
             pre_create_dirs: Vec::new(),
-            env: spec.env.iter().map(|(key, value)| proto::EnvironmentVariable {
-                key: key.clone(),
-                value: Some(ArgValue {
-                    content: Some(ArgValueContent { value: Some(proto::arg_value_content::Value::SpecValue(value.clone())) }),
-                    format: None,
-                }),
-            }).collect(),
+            env: env.unwrap_or_else(|| execution_env(spec, None)),
         }),
         executor_override: None,
         required_local_resources: Vec::new(),

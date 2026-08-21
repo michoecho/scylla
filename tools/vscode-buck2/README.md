@@ -54,3 +54,8 @@ test binary for its individual cases and writes them to the configured
 artifact. Running a VS Code case repeats the same protocol flow with
 `--vscode-case` and writes its result to the artifact. The full Buck2 output is
 attached to each corresponding VS Code test result.
+
+The `Run Tests with Coverage` profile adds `--modifier root//:coverage` to the
+Buck2 invocation. The executor assigns each test case an LLVM raw profile
+output, merges the profiles with `llvm-profdata`, exports LCOV with `llvm-cov`,
+and the extension loads the resulting files through VS Code's coverage API.

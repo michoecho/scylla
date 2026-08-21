@@ -11,10 +11,15 @@ add_module(
     },
     deps = [
         "//modules/exhaustigen:exhaustigen",
-        "//modules/libafl:libafl_c",
         "//:hegel",
-    ],
-    compiler_flags = ["-DBUILD_LIBAFL"],
+    ] + select({
+        "//:libafl": ["//modules/libafl:libafl_c"],
+        "DEFAULT": [],
+    }),
+    compiler_flags = select({
+        "//:libafl": ["-DBUILD_LIBAFL"],
+        "DEFAULT": [],
+    }),
     exported_needs_coverage_instrumentation = select({
         "//:libafl": True,
         "DEFAULT": False,

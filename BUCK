@@ -21,6 +21,7 @@ constraint(
     name = "instrumentation",
     default = "none",
     values = [
+        "coverage",
         "none",
         "libafl",
     ],
@@ -29,6 +30,11 @@ constraint(
 configuration_alias(
     name = "libafl",
     actual = ":instrumentation[libafl]",
+)
+
+configuration_alias(
+    name = "coverage",
+    actual = ":instrumentation[coverage]",
 )
 
 load("//buck:flake.bzl", "flake")

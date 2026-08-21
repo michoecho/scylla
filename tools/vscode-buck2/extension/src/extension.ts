@@ -24,6 +24,7 @@ interface CaseResult {
 interface ExecutorOutput {
     tests: DiscoveredCase[];
     results: CaseResult[];
+    coverage?: string[];
 }
 
 interface TestRecord {
@@ -34,10 +35,18 @@ interface TestRecord {
     case_name: string;
 }
 
+interface LcovSection {
+    path: string;
+    lines: { hit: number; instrumented: number; details: { line: number; hit: number }[] };
+    branches: { hit: number; instrumented: number; details: { line: number; hit: number; branch: string }[] };
+    functions: { hit: number; instrumented: number; details: { name: string; line: number; hit: number }[] };
+}
+
 let controller: vscode.TestController;
 let extensionContext: vscode.ExtensionContext;
 const roots = new Map<string, vscode.TestItem>();
 const records = new Map<vscode.TestItem, TestRecord>();
+const coverageData = new WeakMap<vscode.FileCoverage, vscode.FileCoverageDetail[]>();
 
 export function activate(context: vscode.ExtensionContext): void {
     extensionContext = context;
@@ -46,9 +55,16 @@ export function activate(context: vscode.ExtensionContext): void {
     controller.createRunProfile(
         "Run Tests",
         vscode.TestRunProfileKind.Run,
-        (request, cancellation) => runTests(request, cancellation),
+        (request, cancellation) => runTests(request, cancellation, false),
         true,
     );
+    const coverageProfile = controller.createRunProfile(
+        "Run Tests with Coverage",
+        vscode.TestRunProfileKind.Coverage,
+        (request, cancellation) => runTests(request, cancellation, true),
+        true,
+    );
+    coverageProfile.loadDetailedCoverage = async (_, fileCoverage) => coverageData.get(fileCoverage) ?? [];
     context.subscriptions.push(
         controller,
         vscode.commands.registerCommand("buck2Test.refresh", () => refreshAll()),
@@ -131,6 +147,7 @@ function createCaseItem(
 async function runTests(
     request: vscode.TestRunRequest,
     cancellation: vscode.CancellationToken,
+    withCoverage: boolean,
 ): Promise<void> {
     const run = controller.createTestRun(request);
     const selected = [...records.values()].filter(record => {
@@ -161,8 +178,20 @@ async function runTests(
             }
             const cases = group.records.map(record => record.case_name);
             const response = await withTempOutput(async output => {
-                await runBuck2(folder, [group.target], output, [], cases, cancellation);
-                return readOutput(output);
+                await runBuck2(
+                    folder,
+                    [group.target],
+                    output,
+                    withCoverage ? ["--vscode-coverage"] : [],
+                    cases,
+                    cancellation,
+                    withCoverage ? "root//:coverage" : undefined,
+                );
+                const response = await readOutput(output);
+                if (withCoverage) {
+                    await addCoverageFiles(run, response.coverage ?? []);
+                }
+                return response;
             });
             const results = new Map(response.results.map(result => [caseKey(result.target, result.case_name), result]));
             for (const record of group.records) {
@@ -196,6 +225,127 @@ async function runTests(
     } finally {
         run.end();
     }
+}
+
+async function addCoverageFiles(run: vscode.TestRun, files: string[]): Promise<void> {
+    for (const file of files) {
+        let contents: Uint8Array;
+        try {
+            contents = await fs.promises.readFile(file);
+        } catch (error) {
+            throw new Error(`Could not open coverage file ${file}: ${errorMessage(error)}`);
+        }
+        const sections = parseLcov(contents);
+        for (const section of sections) {
+            const coverage = new vscode.FileCoverage(
+                vscode.Uri.file(section.path.trim()),
+                new vscode.TestCoverageCount(section.lines.hit, section.lines.instrumented),
+                new vscode.TestCoverageCount(section.branches.hit, section.branches.instrumented),
+                new vscode.TestCoverageCount(section.functions.hit, section.functions.instrumented),
+            );
+            const lineBranches = new Map<number, vscode.BranchCoverage[]>();
+            for (const branch of section.branches.details) {
+                const item = new vscode.BranchCoverage(
+                    branch.hit,
+                    new vscode.Position(branch.line - 1, 0),
+                    branch.branch,
+                );
+                lineBranches.set(branch.line, [...(lineBranches.get(branch.line) ?? []), item]);
+            }
+            const details: vscode.FileCoverageDetail[] = [];
+            for (const line of section.lines.details) {
+                details.push(new vscode.StatementCoverage(
+                    line.hit,
+                    new vscode.Position(line.line - 1, 0),
+                    lineBranches.get(line.line) ?? [],
+                ));
+            }
+            for (const declaration of section.functions.details) {
+                details.push(new vscode.DeclarationCoverage(
+                    declaration.name,
+                    declaration.hit,
+                    new vscode.Position(declaration.line - 1, 0),
+                ));
+            }
+            coverageData.set(coverage, details);
+            run.addCoverage(coverage);
+        }
+    }
+}
+
+function parseLcov(contents: Uint8Array): LcovSection[] {
+    const sections: LcovSection[] = [];
+    let section: LcovSection | undefined;
+    const functions = new Map<string, { name: string; line: number; hit: number }>();
+    const functionHits = new Map<string, number>();
+    for (const record of Buffer.from(contents).toString("utf8").split(/\r?\n/)) {
+        if (record === "TN:" || (record.startsWith("SF:") && !section)) {
+            section = {
+                path: "",
+                lines: { hit: 0, instrumented: 0, details: [] },
+                branches: { hit: 0, instrumented: 0, details: [] },
+                functions: { hit: 0, instrumented: 0, details: [] },
+            };
+            functions.clear();
+            functionHits.clear();
+        }
+        if (section) {
+            if (record === "end_of_record") {
+                for (const [name, declaration] of functions) {
+                    declaration.hit = functionHits.get(name) ?? 0;
+                    section.functions.details.push(declaration);
+                }
+                sections.push(section);
+                section = undefined;
+                continue;
+            }
+            const separator = record.indexOf(":");
+            const key = separator < 0 ? "" : record.slice(0, separator);
+            const value = separator < 0 ? "" : record.slice(separator + 1);
+            if (key === "SF") {
+                section.path = value;
+            } else if (key === "FN") {
+                const comma = value.indexOf(",");
+                if (comma >= 0) {
+                    const line = Number(value.slice(0, comma));
+                    const name = value.slice(comma + 1);
+                    functions.set(name, { name, line, hit: 0 });
+                }
+            } else if (key === "FNDA") {
+                const comma = value.indexOf(",");
+                if (comma >= 0) {
+                    functionHits.set(value.slice(comma + 1), Number(value.slice(0, comma)) || 0);
+                }
+            } else if (key === "FNF") {
+                section.functions.instrumented = Number(value) || 0;
+            } else if (key === "FNH") {
+                section.functions.hit = Number(value) || 0;
+            } else if (key === "BRDA") {
+                const fields = value.split(",");
+                if (fields.length >= 4) {
+                    section.branches.details.push({
+                        line: Number(fields[0]) || 0,
+                        hit: fields[3] === "-" ? 0 : Number(fields[3]) || 0,
+                        branch: fields[2],
+                    });
+                }
+            } else if (key === "BRF") {
+                section.branches.instrumented = Number(value) || 0;
+            } else if (key === "BRH") {
+                section.branches.hit = Number(value) || 0;
+            } else if (key === "DA") {
+                const fields = value.split(",");
+                if (fields.length >= 2) {
+                    section.lines.details.push({ line: Number(fields[0]) || 0, hit: Number(fields[1]) || 0 });
+                }
+            } else if (key === "LF") {
+                section.lines.instrumented = Number(value) || 0;
+            } else if (key === "LH") {
+                section.lines.hit = Number(value) || 0;
+            }
+        }
+    }
+    return sections;
 }
 
 function locationFor(item: vscode.TestItem): vscode.Location | undefined {
@@ -250,6 +400,7 @@ async function runBuck2(
     modeArgs: string[],
     cases?: string[],
     cancellation?: vscode.CancellationToken,
+    modifier?: string,
 ): Promise<void> {
     const config = vscode.workspace.getConfiguration("buck2Test", folder.uri);
     const buck2 = config.get<string>("buck2Path", "buck2");
@@ -270,6 +421,7 @@ async function runBuck2(
         "--config", `test.v2_test_executor=${executor}`,
         "--console", "simple",
         "--no-interactive-console",
+        ...(modifier ? ["--modifier", modifier] : []),
         ...targets,
         "--",
         ...runnerArgs,

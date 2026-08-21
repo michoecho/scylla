@@ -44,6 +44,17 @@ nix_cxx_toolchain(
             "-fsanitize-coverage=trace-pc-guard,trace-cmp",
             "-fno-sanitize-link-runtime",
         ],
+        "root//:coverage": [
+            "-fprofile-instr-generate",
+            "-fcoverage-mapping",
+        ],
+        "DEFAULT": [],
+    }),
+    link_flags = select({
+        "root//:coverage": [
+            "-fprofile-instr-generate",
+            "-fcoverage-mapping",
+        ],
         "DEFAULT": [],
     }),
     visibility = ["PUBLIC"],
