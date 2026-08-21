@@ -67,6 +67,7 @@ int execute(const char* argv0,
             const std::vector<std::string>& preset) {
     doctest::Context context;
     context.setAsDefaultForAssertsOutOfTestCases();
+    context.setOption("no-intro", true);
 
     // Benchmarks are ordinary tests whose bodies select a minimal smoke run
     // unless BENCHMARK is set. The bench subcommand only scopes the run to that

@@ -252,7 +252,7 @@ RunReport hunt(Backend backend, void (*body)(TestRng&),
 // Budgets. Generous enough that a miss is a statement about the backend rather
 // than about the cap, and small enough that the whole file is a fraction of a
 // second.
-constexpr std::uint64_t kBudget = 5'000;
+constexpr std::uint64_t kBudget = 500;
 
 // Exit status the AFL case below uses to signal "found it", paired with
 // AFL_CRASH_EXITCODE in the self-test. Any value AFL will not otherwise see

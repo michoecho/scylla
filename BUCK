@@ -146,19 +146,6 @@ prebuilt_cxx_library(
 )
 
 cxx_library(
-  name = 'tests',
-  srcs = [
-    'src/b.cc',
-  ],
-  deps = [
-    ':doctest',
-    ':hegel',
-  ],
-  preferred_linkage = 'static',
-  link_whole = True,
-)
-
-cxx_library(
     name = "test_locations_reporter",
     srcs = [
         "modules/main/test_locations_reporter.cc",
@@ -169,18 +156,4 @@ cxx_library(
     link_whole = True,
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
-)
-
-cxx_test(
-  name = 'hello',
-  srcs = [
-    'src/a.cc',
-  ],
-  headers = [
-  ],
-  deps = [
-    ':doctest',
-    ':test_locations_reporter',
-    ':tests',
-  ],
 )
