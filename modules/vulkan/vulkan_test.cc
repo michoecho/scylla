@@ -53,7 +53,6 @@ void restore_wayland_environment() {
         }
     }
 
-#if defined(__unix__) || defined(__APPLE__)
     if (!runtime_dir) {
         const auto fallback = std::filesystem::path("/run/user") / std::to_string(getuid());
         std::error_code ec;
@@ -61,7 +60,6 @@ void restore_wayland_environment() {
             runtime_dir = fallback;
         }
     }
-#endif
 
     if (!runtime_dir) {
         return;

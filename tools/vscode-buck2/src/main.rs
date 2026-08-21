@@ -202,17 +202,28 @@ async fn main() -> anyhow::Result<()> {
     let channel = client_channel(orchestrator_io).await?;
     let mut orchestrator = test_orchestrator_client::TestOrchestratorClient::new(channel);
     let mut output = OutputFile { tests: Vec::new(), results: Vec::new(), coverage: Vec::new() };
+    let mut coverage_inputs = Vec::new();
     let mut exit_code = 0;
 
     while let Some(message) = spec_receiver.recv().await {
         let Some(spec) = message else { break };
-        match process_spec(&mut orchestrator, &options, spec, &mut output).await {
+        match process_spec(&mut orchestrator, &options, spec, &mut output, &mut coverage_inputs).await {
             Ok(()) => {}
             Err(error) => {
                 eprintln!("buck2-vscode-test-executor: {error:#}");
                 exit_code = 32;
             }
         }
+    }
+
+    if options.coverage && !coverage_inputs.is_empty() {
+        let coverage_dir = options
+            .output
+            .as_ref()
+            .and_then(|path| path.parent())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let lcov = process_coverage(coverage_dir, &coverage_inputs)?;
+        output.coverage.push(lcov.to_string_lossy().into_owned());
     }
 
     if let Some(path) = &options.output {
@@ -350,6 +361,7 @@ async fn process_spec(
     options: &Options,
     spec: ExternalRunnerSpec,
     output: &mut OutputFile,
+    coverage_inputs: &mut Vec<CoverageInput>,
 ) -> anyhow::Result<()> {
     let target = spec.target.clone().ok_or_else(|| anyhow!("test spec has no target"))?;
     let handle = target.handle.clone().ok_or_else(|| anyhow!("test spec has no target handle"))?;
@@ -386,7 +398,13 @@ async fn process_spec(
     let cases = if options.selected_cases.is_empty() {
         cases
     } else {
-        cases.into_iter().filter(|case| options.selected_cases.contains(&case.name)).collect()
+        cases.into_iter().filter(|case| {
+            // The extension qualifies selections when one Buck invocation
+            // covers several targets. Keep accepting the old unqualified
+            // spelling for callers that invoke the executor directly.
+            options.selected_cases.contains(&format!("{}\u{1f}{}", target_name, case.name))
+                || options.selected_cases.contains(&case.name)
+        }).collect()
     };
     let discovered = cases.iter().map(|case| DiscoveredCase {
         target: target_name.clone(),
@@ -406,7 +424,6 @@ async fn process_spec(
         return Ok(());
     }
 
-    let mut coverage_inputs = Vec::new();
     for case in cases {
         let case_name = case.name;
         let case_filter = if options.case_arg == "--test-case={}" {
@@ -459,15 +476,6 @@ async fn process_spec(
             duration_ms: result.execution_time.as_ref().map(duration_ms),
             output: details,
         });
-    }
-    if options.coverage && !coverage_inputs.is_empty() {
-        let coverage_dir = options
-            .output
-            .as_ref()
-            .and_then(|path| path.parent())
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let lcov = process_coverage(coverage_dir, &target_name, &coverage_inputs)?;
-        output.coverage.push(lcov.to_string_lossy().into_owned());
     }
     Ok(())
 }
@@ -531,13 +539,11 @@ fn stable_hash(value: &str) -> u64 {
 
 fn process_coverage(
     coverage_dir: &std::path::Path,
-    target: &str,
     inputs: &[CoverageInput],
 ) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(coverage_dir).with_context(|| format!("creating coverage directory {}", coverage_dir.display()))?;
-    let stem = format!("buck2-{:016x}", stable_hash(target));
-    let profdata = coverage_dir.join(format!("{stem}.profdata"));
-    let lcov = coverage_dir.join(format!("{stem}.lcov"));
+    let profdata = coverage_dir.join("buck2-total.profdata");
+    let lcov = coverage_dir.join("buck2-total.lcov");
     let mut merge = Command::new("llvm-profdata");
     merge.arg("merge").arg("-sparse");
     for input in inputs {
@@ -549,12 +555,41 @@ fn process_coverage(
         return Err(anyhow!("llvm-profdata failed with status {merge_status}"));
     }
 
+    let debug_dir = coverage_dir.join(".build-id");
+    let mut binaries = Vec::new();
+    for input in inputs {
+        collect_binaries(input.binary.parent().unwrap_or_else(|| std::path::Path::new(".")), &mut binaries)?;
+    }
+    binaries.sort();
+    binaries.dedup();
+
+    for binary in binaries {
+        let Some(build_id) = read_build_id(&binary)? else { continue };
+        if build_id.len() < 3 {
+            return Err(anyhow!("invalid build ID '{}' in {}", build_id, binary.display()));
+        }
+        let link_dir = debug_dir.join(&build_id[..2]);
+        fs::create_dir_all(&link_dir)
+            .with_context(|| format!("creating build-ID directory {}", link_dir.display()))?;
+        let link = link_dir.join(format!("{}.debug", &build_id[2..]));
+        match fs::symlink_metadata(&link) {
+            Ok(_) => fs::remove_file(&link)
+                .with_context(|| format!("removing stale build-ID link {}", link.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("checking build-ID link {}", link.display())),
+        }
+        symlink_file(&binary, &link)
+            .with_context(|| format!("linking {} as {}", binary.display(), link.display()))?;
+    }
+
     let export = Command::new("llvm-cov")
         .arg("export")
         .arg("-format=lcov")
+        .arg("--check-binary-ids")
+        .arg("--debug-file-directory")
+        .arg(coverage_dir)
         .arg("-instr-profile")
         .arg(&profdata)
-        .arg(&inputs[0].binary)
         .stdout(Stdio::piped())
         .output()
         .context("starting llvm-cov")?;
@@ -563,6 +598,50 @@ fn process_coverage(
     }
     fs::write(&lcov, export.stdout).with_context(|| format!("writing coverage report {}", lcov.display()))?;
     Ok(lcov)
+}
+
+fn collect_binaries(dir: &std::path::Path, binaries: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("scanning {} for coverage binaries", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_binaries(&path, binaries)?;
+        } else if file_type.is_file() || file_type.is_symlink() {
+            // readelf is the authoritative ELF check here; the directory also
+            // contains argsfiles and object files that should simply be ignored.
+            if read_build_id(&path)?.is_some() {
+                binaries.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_build_id(binary: &std::path::Path) -> anyhow::Result<Option<String>> {
+    let output = Command::new("readelf")
+        .arg("-n")
+        .arg(binary)
+        .output()
+        .with_context(|| format!("reading build ID from {}", binary.display()))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text.lines().find_map(|line| {
+        line.trim().strip_prefix("Build ID:").map(|id| id.trim().to_owned())
+    }))
+}
+
+fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link)
+    }
 }
 
 fn command_with_arg(command: &[ExternalRunnerSpecValue], arg: &str) -> Vec<ArgValue> {

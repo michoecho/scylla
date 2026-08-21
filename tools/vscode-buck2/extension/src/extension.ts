@@ -165,22 +165,45 @@ async function runTests(
         groups.set(key, group);
     }
 
+    // Buck delivers one ExternalRunnerSpec per target. Keep the TestItem
+    // bookkeeping grouped by target, but send all targets in one Buck2
+    // invocation so the executor can merge every raw profile produced by this
+    // VS Code run into one report.
+    const projects = new Map<string, { folder: string; groups: typeof groups }>();
+    for (const group of groups.values()) {
+        let project = projects.get(group.folder);
+        if (!project) {
+            project = { folder: group.folder, groups: new Map() };
+            projects.set(group.folder, project);
+        }
+        project.groups.set(`${group.folder}\0${group.target}`, group);
+    }
+
     try {
-        for (const group of groups.values()) {
+        for (const project of projects.values()) {
             if (cancellation.isCancellationRequested) {
-                group.records.forEach(record => run.skipped(record.item));
+                for (const group of project.groups.values()) {
+                    group.records.forEach(record => run.skipped(record.item));
+                }
                 continue;
             }
-            group.records.forEach(record => run.started(record.item));
-            const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(group.folder));
-            if (!folder) {
-                throw new Error(`No workspace folder for ${group.folder}`);
+            for (const group of project.groups.values()) {
+                group.records.forEach(record => run.started(record.item));
             }
-            const cases = group.records.map(record => record.case_name);
+            const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(project.folder));
+            if (!folder) {
+                throw new Error(`No workspace folder for ${project.folder}`);
+            }
+            const targetGroups = [...project.groups.values()];
+            const targets = targetGroups.map(group => group.target);
+            const cases = targetGroups.flatMap(group => group.records.map(record => ({
+                target: group.target,
+                case_name: record.case_name,
+            })));
             const response = await withTempOutput(async output => {
                 await runBuck2(
                     folder,
-                    [group.target],
+                    targets,
                     output,
                     withCoverage ? ["--vscode-coverage"] : [],
                     cases,
@@ -194,21 +217,23 @@ async function runTests(
                 return response;
             });
             const results = new Map(response.results.map(result => [caseKey(result.target, result.case_name), result]));
-            for (const record of group.records) {
-                const result = results.get(caseKey(record.target, record.case_name));
-                if (!result) {
-                    run.errored(record.item, new vscode.TestMessage("Buck2 returned no result for this test case."));
-                } else {
-                    const output = normalizeCrlf(result.output);
-                    if (output) {
-                        run.appendOutput(output, locationFor(record.item), record.item);
-                    }
-                    if (result.status === "passed") {
-                        run.passed(record.item, result.duration_ms);
-                    } else if (result.status === "failed") {
-                        run.failed(record.item, new vscode.TestMessage(output || "Buck2 test case failed."), result.duration_ms);
+            for (const group of targetGroups) {
+                for (const record of group.records) {
+                    const result = results.get(caseKey(record.target, record.case_name));
+                    if (!result) {
+                        run.errored(record.item, new vscode.TestMessage("Buck2 returned no result for this test case."));
                     } else {
-                        run.errored(record.item, new vscode.TestMessage(output || "Buck2 test case errored."));
+                        const output = normalizeCrlf(result.output);
+                        if (output) {
+                            run.appendOutput(output, locationFor(record.item), record.item);
+                        }
+                        if (result.status === "passed") {
+                            run.passed(record.item, result.duration_ms);
+                        } else if (result.status === "failed") {
+                            run.failed(record.item, new vscode.TestMessage(output || "Buck2 test case failed."), result.duration_ms);
+                        } else {
+                            run.errored(record.item, new vscode.TestMessage(output || "Buck2 test case errored."));
+                        }
                     }
                 }
             }
@@ -398,7 +423,7 @@ async function runBuck2(
     targets: string[],
     output: string,
     modeArgs: string[],
-    cases?: string[],
+    cases?: { target: string; case_name: string }[],
     cancellation?: vscode.CancellationToken,
     modifier?: string,
 ): Promise<void> {
@@ -414,7 +439,10 @@ async function runBuck2(
         "--vscode-location-arg", locationArg,
         "--vscode-case-arg", caseArg,
         ...modeArgs,
-        ...(cases ?? []).flatMap(testCase => ["--vscode-case", testCase]),
+        ...(cases ?? []).flatMap(testCase => [
+            "--vscode-case",
+            `${testCase.target}\u001f${testCase.case_name}`,
+        ]),
     ];
     const args = [
         "test",

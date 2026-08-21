@@ -54,6 +54,7 @@ nix_cxx_toolchain(
         "root//:coverage": [
             "-fprofile-instr-generate",
             "-fcoverage-mapping",
+            "-Wl,--build-id",
         ],
         "DEFAULT": [],
     }),
