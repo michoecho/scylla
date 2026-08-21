@@ -13,8 +13,14 @@
 // Vulkan error anywhere else is still a failure.
 
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <string>
+#include <system_error>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
 
 #include <doctest/doctest.h>
 
@@ -32,9 +38,61 @@ constexpr int kWindowWidth = 640;
 constexpr int kWindowHeight = 400;
 constexpr uint32_t kScreenshotMaxDim = 120;
 
+// Buck2's local test runner deliberately gives tests a minimal environment, so
+// it can remove WAYLAND_DISPLAY and XDG_RUNTIME_DIR even when the test itself
+// is running on the desktop. Recover those values from the standard Wayland
+// socket location before asking SDL whether a display is available.
+void restore_wayland_environment() {
+#if defined(__unix__) || defined(__APPLE__)
+    const char* configured_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    std::optional<std::filesystem::path> runtime_dir;
+    if (configured_runtime_dir != nullptr && *configured_runtime_dir != '\0') {
+        std::error_code ec;
+        if (std::filesystem::is_directory(configured_runtime_dir, ec)) {
+            runtime_dir = configured_runtime_dir;
+        }
+    }
+
+#if defined(__unix__) || defined(__APPLE__)
+    if (!runtime_dir) {
+        const auto fallback = std::filesystem::path("/run/user") / std::to_string(getuid());
+        std::error_code ec;
+        if (std::filesystem::is_directory(fallback, ec)) {
+            runtime_dir = fallback;
+        }
+    }
+#endif
+
+    if (!runtime_dir) {
+        return;
+    }
+
+    const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
+    if (wayland_display == nullptr || *wayland_display == '\0') {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(*runtime_dir, ec)) {
+            const auto name = entry.path().filename().string();
+            std::error_code entry_ec;
+            if (name.rfind("wayland-", 0) != 0 || !entry.is_socket(entry_ec)) {
+                continue;
+            }
+            setenv("WAYLAND_DISPLAY", name.c_str(), 0);
+            break;
+        }
+    }
+
+    const char* xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    if (xdg_runtime_dir == nullptr || *xdg_runtime_dir == '\0') {
+        const std::string value = runtime_dir->string();
+        setenv("XDG_RUNTIME_DIR", value.c_str(), 0);
+    }
+#endif
+}
+
 // True when there is no display server for SDL to open a window on. SDL will
 // fail at init in that case, and that is an environment fact, not a bug.
 bool no_display() {
+    restore_wayland_environment();
     const char* wayland = std::getenv("WAYLAND_DISPLAY");
     const char* x11 = std::getenv("DISPLAY");
     return (wayland == nullptr || *wayland == '\0') && (x11 == nullptr || *x11 == '\0');
