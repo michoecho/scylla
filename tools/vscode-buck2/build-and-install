@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Build the Buck2 test executor and VS Code extension, then install the VSIX
+# into the project-local VS Code used by flake.nix's `code` wrapper.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$here"
+
+echo "==> cargo build --release"
+cargo build --release --manifest-path "$here/Cargo.toml"
+
+echo "==> npm ci"
+npm --prefix "$here/extension" ci
+
+echo "==> npm run compile"
+npm --prefix "$here/extension" run compile
+
+# The executor is a runtime dependency of the extension. Include the host
+# build in the VSIX so an installed extension does not depend on the checkout's
+# ignored Cargo target directory.
+executor="buck2-test-executor"
+if [[ -f "$here/target/release/${executor}.exe" ]]; then
+    executor="${executor}.exe"
+fi
+mkdir -p "$here/extension/bin"
+install -m 0755 "$here/target/release/$executor" "$here/extension/bin/$executor"
+
+echo "==> vsce package"
+(
+    cd "$here/extension"
+    npx @vscode/vsce package \
+        --allow-missing-repository \
+        -o buck2-test.vsix
+)
+
+echo "==> installing into the project-local VS Code"
+code --install-extension "$here/extension/buck2-test.vsix" --force
+
+cat <<'EOF'
+
+Installed. Launch the project-local editor with:
+
+  nix run .#code       (or `code` from the development shell)
+
+Then open the Testing view. The extension runs `buck2 test` through the
+bundled Buck2 test executor and displays individual test cases.
+EOF

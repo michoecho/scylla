@@ -54,7 +54,7 @@ def add_module(
     native.cxx_test(
         name = test_name,
         srcs = ["//cmake:module_test_main"],
-        deps = [":" + name, "//cmake:module_runner"],
+        deps = [":" + name, "//:test_locations_reporter", "//cmake:module_runner"],
         resources = resources,
         env = test_env,
         header_namespace = "",

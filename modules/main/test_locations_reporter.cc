@@ -1,12 +1,9 @@
-// A doctest reporter that lists each test case's source location, for CMake
-// test discovery.
+// A doctest reporter that lists each test case's source location for test
+// discovery integrations.
 //
-// The VS Code test explorer resolves "go to test" from the CTest
-// DEF_SOURCE_LINE property, so discovery has to learn where each case is
-// defined. doctest's built-in xml reporter carries that (filename=, line=),
-// but consuming it means parsing XML from CMake -- which in practice meant a
-// regex sensitive to attribute order, to entity escaping, and to the fact that
-// testsuite= is omitted entirely for cases belonging to no suite.
+// The VS Code test explorer needs to learn where each case is defined. doctest's
+// built-in XML reporter carries that (filename=, line=), but consuming it
+// means parsing XML and dealing with escaping and optional attributes.
 //
 // The location is not actually derived from the XML: it is a plain field on
 // TestCaseData, which report_query hands us directly. Emitting it in a form

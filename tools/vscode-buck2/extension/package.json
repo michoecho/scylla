@@ -1,0 +1,73 @@
+{
+  "name": "buck2-test",
+  "displayName": "Buck2 Test",
+  "description": "Run Buck2 tests from the VS Code Testing view.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": ["Testing", "Other"],
+  "activationEvents": [
+    "onCommand:buck2Test.refresh",
+    "workspaceContains:BUCK",
+    "workspaceContains:.buckroot"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "package": "npm run compile && npx @vscode/vsce package"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "buck2Test.refresh",
+        "title": "Buck2: Refresh Tests"
+      }
+    ],
+    "configuration": {
+      "title": "Buck2 Test",
+      "properties": {
+        "buck2Test.buck2Path": {
+          "type": "string",
+          "default": "buck2",
+          "description": "Path to the buck2 executable."
+        },
+        "buck2Test.executorPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Rust Buck2 test executor. Empty uses the bundled helper or checkout build."
+        },
+        "buck2Test.targetPatterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["//..."],
+          "description": "Buck2 target patterns used when discovering tests."
+        },
+        "buck2Test.listArgument": {
+          "type": "string",
+          "default": "--list-test-cases",
+          "description": "Argument appended to a test command for Buck2 listing execution."
+        },
+        "buck2Test.locationArgument": {
+          "type": "string",
+          "default": "--reporters=test-locations",
+          "description": "Optional argument appended during listing to emit test source locations; empty disables it."
+        },
+        "buck2Test.caseArgument": {
+          "type": "string",
+          "default": "--test-case={}",
+          "description": "Argument template used to select one case; {} is replaced with the case name."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.6.3",
+    "@vscode/vsce": "^3.1.0"
+  }
+}

@@ -1,10 +1,40 @@
 #include "module_run.h"
 
+#include <algorithm>
 #include <cstring>
+#include <cstdio>
+#include <string>
 
 #include "doctest/doctest.h"
 
 namespace run {
+
+namespace {
+
+std::string shell_quote(const std::string& value) {
+    std::string quoted = "'";
+    for (const char character : value) {
+        if (character == '\'')
+            quoted += "'\\''";
+        else
+            quoted += character;
+    }
+    quoted += "'";
+    return quoted;
+}
+
+void log_command_line(const char* argv0, const std::vector<std::string>& args) {
+    std::string command = shell_quote(argv0);
+    for (const std::string& arg : args)
+        command += " " + shell_quote(arg);
+    std::fprintf(stdout, "%s\n", command.c_str());
+}
+
+bool is_listing_invocation(const std::vector<std::string>& args) {
+    return std::find(args.begin(), args.end(), "--list-test-cases") != args.end();
+}
+
+}  // namespace
 
 Command classify(int argc, char* const argv[], bool default_to_test) {
     Command command;
@@ -61,6 +91,18 @@ int execute(const char* argv0,
         forwarded.push_back(arg.c_str());
     for (const std::string& arg : command.args)
         forwarded.push_back(arg.c_str());
+
+    // Keep the logged form next to the actual argv construction so the two
+    // cannot drift apart.
+    {
+        std::vector<std::string> logged_args;
+        logged_args.reserve(preset.size() + scoped.size() + command.args.size());
+        logged_args.insert(logged_args.end(), preset.begin(), preset.end());
+        logged_args.insert(logged_args.end(), scoped.begin(), scoped.end());
+        logged_args.insert(logged_args.end(), command.args.begin(), command.args.end());
+        if (!is_listing_invocation(logged_args))
+            log_command_line(argv0, logged_args);
+    }
 
     context.applyCommandLine(static_cast<int>(forwarded.size()), forwarded.data());
 

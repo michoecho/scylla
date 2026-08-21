@@ -1,0 +1,28 @@
+[package]
+name = "buck2-test-executor"
+version = "0.1.0"
+edition = "2024"
+description = "Discovery and execution helper for the VS Code Buck2 test extension"
+license = "MIT"
+
+# Keep this helper out of the parent project's Cargo workspace. It is built and
+# packaged independently because the VS Code extension is a build-system tool.
+[workspace]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+prost-types = "0.14"
+prost = "0.14"
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.53", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-stream = "0.1"
+tonic = { version = "0.14", features = ["transport"] }
+tonic-prost = "0.14"
+tower = "0.5"
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-prost-build = "0.14"

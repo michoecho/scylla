@@ -158,6 +158,19 @@ cxx_library(
   link_whole = True,
 )
 
+cxx_library(
+    name = "test_locations_reporter",
+    srcs = [
+        "modules/main/test_locations_reporter.cc",
+    ],
+    deps = [
+        ":doctest",
+    ],
+    link_whole = True,
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
 cxx_test(
   name = 'hello',
   srcs = [
@@ -167,6 +180,7 @@ cxx_test(
   ],
   deps = [
     ':doctest',
+    ':test_locations_reporter',
     ':tests',
   ],
 )

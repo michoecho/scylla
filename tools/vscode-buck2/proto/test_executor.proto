@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package buck.test;
+
+import "google/protobuf/duration.proto";
+
+message Empty {}
+
+message ConfiguredTargetHandle { int64 id = 1; }
+
+message ConfiguredTarget {
+  ConfiguredTargetHandle handle = 1;
+  string cell = 3;
+  string package = 4;
+  string target = 5;
+  string configuration = 6;
+  string package_project_relative_path = 7;
+  bool test_config_unification_rollout = 8;
+  optional string package_oncall = 9;
+}
+
+message ExternalRunnerSpecRequest { ExternalRunnerSpec test_spec = 1; }
+
+message ExternalRunnerSpec {
+  ConfiguredTarget target = 1;
+  string test_type = 2;
+  repeated ExternalRunnerSpecValue command = 3;
+  map<string, ExternalRunnerSpecValue> env = 4;
+  repeated string labels = 5;
+  repeated string contacts = 6;
+  optional string oncall = 7;
+  string working_dir_cell = 8;
+}
+
+message ExternalRunnerSpecValue {
+  oneof value {
+    string verbatim = 1;
+    int64 arg_handle = 2;
+    string env_handle = 3;
+  }
+}
+
+message Testing {
+  string suite = 1;
+  repeated string testcases = 2;
+  optional string variant = 3;
+  optional uint64 repeat_count = 4;
+}
+
+message TestStage {
+  message Listing { string suite = 1; bool cacheable = 2; }
+  oneof item {
+    Listing listing = 1;
+    Testing testing = 2;
+  }
+}
+
+message ArgValue {
+  ArgValueContent content = 1;
+  ArgFormat format = 2;
+}
+
+message ArgFormat { string format = 1; }
+
+message ArgValueContent {
+  oneof value {
+    ExternalRunnerSpecValue spec_value = 1;
+    OutputName declared_output = 2;
+  }
+}
+
+message OutputName { string name = 1; }
+
+message EnvironmentVariable {
+  string key = 1;
+  ArgValue value = 2;
+}
+
+message DeclaredOutput {
+  string name = 1;
+  bool supports_remote = 2;
+  TtlConfig ttl_config = 3;
+}
+
+message TtlConfig {
+  int64 ttl_seconds = 1;
+  string use_case = 2;
+}
+
+message ExecutorConfigOverride { string name = 1; }
+message LocalResourceType { string name = 1; }
+
+message HostSharingRequirements {
+  message ExclusiveAccess {}
+  oneof requirements { ExclusiveAccess exclusive_access = 2; }
+}
+
+message TestExecutable {
+  TestStage stage = 1;
+  ConfiguredTargetHandle target = 2;
+  repeated ArgValue cmd = 3;
+  repeated DeclaredOutput pre_create_dirs = 5;
+  repeated EnvironmentVariable env = 6;
+}
+
+message ExecuteRequest2 {
+  google.protobuf.Duration timeout = 5;
+  HostSharingRequirements host_sharing_requirements = 6;
+  TestExecutable test_executable = 8;
+  ExecutorConfigOverride executor_override = 9;
+  repeated LocalResourceType required_local_resources = 10;
+  bool disable_test_execution_caching = 11;
+}
+
+message ExecutionStream {
+  oneof value { bytes inline = 1; }
+}
+
+message ExecutionStatus {
+  oneof status {
+    int32 finished = 1;
+    google.protobuf.Duration timed_out = 2;
+  }
+}
+
+message ExecutionResult2 {
+  ExecutionStatus status = 1;
+  ExecutionStream stdout = 2;
+  ExecutionStream stderr = 3;
+  google.protobuf.Duration execution_time = 6;
+  optional uint64 max_memory_used_bytes = 8;
+}
+
+message Cancelled { int32 reason = 1; }
+message ExecuteResponse2 {
+  oneof response {
+    ExecutionResult2 result = 1;
+    Cancelled cancelled = 2;
+  }
+}
+
+enum TestStatus {
+  NOT_SET = 0;
+  PASS = 1;
+  FAIL = 2;
+  SKIP = 3;
+  OMITTED = 4;
+  FATAL = 5;
+  TIMEOUT = 6;
+  UNKNOWN = 7;
+  RERUN = 8;
+  LISTING_SUCCESS = 9;
+  LISTING_FAILED = 10;
+  INFRA_FAILURE = 11;
+}
+
+message TestResult {
+  message OptionalMsg { string msg = 1; }
+  string name = 1;
+  TestStatus status = 2;
+  OptionalMsg msg = 5;
+  ConfiguredTargetHandle target = 6;
+  google.protobuf.Duration duration = 7;
+  string details = 8;
+  optional uint64 max_memory_used_bytes = 9;
+}
+
+message ReportTestResultRequest { TestResult result = 1; }
+message ReportTestsDiscoveredRequest {
+  ConfiguredTargetHandle target = 1;
+  Testing testing = 3;
+}
+message ReportTestSessionRequest {
+  string session_info = 3;
+  optional string test_session_id = 4;
+}
+message EndOfTestResultsRequest { int32 exit_code = 1; }
+message AttachInfoMessageRequest { string message = 1; }
+message PrepareForLocalExecutionRequest {
+  TestExecutable test_executable = 1;
+  repeated LocalResourceType required_local_resources = 2;
+}
+message PrepareForLocalExecutionResult {
+  repeated string cmd = 1;
+  string cwd = 3;
+}
+message PrepareForLocalExecutionResponse {
+  PrepareForLocalExecutionResult result = 1;
+}
+message UploadFileToCasRequest {
+  string local_path = 1;
+  TtlConfig ttl_config = 2;
+}
+message CasDigest { string hash = 1; int64 size_bytes = 2; }
+message UploadFileToCasResponse { CasDigest digest = 1; }
+message UnstableHeapDumpRequest { string destination_path = 1; }
+message UnstableHeapDumpResponse {}
+
+service TestExecutor {
+  rpc ExternalRunnerSpec(ExternalRunnerSpecRequest) returns (Empty);
+  rpc EndOfTestRequests(Empty) returns (Empty);
+  rpc Unstable_HeapDump(UnstableHeapDumpRequest) returns (UnstableHeapDumpResponse);
+}
+
+service TestOrchestrator {
+  rpc EndOfTestResults(EndOfTestResultsRequest) returns (Empty);
+  rpc ReportTestResult(ReportTestResultRequest) returns (Empty);
+  rpc ReportTestsDiscovered(ReportTestsDiscoveredRequest) returns (Empty);
+  rpc ReportTestSession(ReportTestSessionRequest) returns (Empty);
+  rpc Execute2(ExecuteRequest2) returns (ExecuteResponse2);
+  rpc PrepareForLocalExecution(PrepareForLocalExecutionRequest) returns (PrepareForLocalExecutionResponse);
+  rpc AttachInfoMessage(AttachInfoMessageRequest) returns (Empty);
+  rpc UploadFileToCas(UploadFileToCasRequest) returns (UploadFileToCasResponse);
+}
