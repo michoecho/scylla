@@ -19,5 +19,13 @@ add_module(
     deps = [
         "//:doctest",
     ],
+    # Snapshot tests inspect their source_location file at runtime. Keep the
+    # source files in the remote test input set as well as the compile inputs.
+    resources = [
+        "compare_test.cc",
+        "example_test.cc",
+        "filesnap_test.cc",
+        "updater_test.cc",
+    ],
     module_source_dir = "modules/snapshot",
 )

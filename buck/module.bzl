@@ -61,6 +61,18 @@ def add_module(
         resources = resources,
         env = test_env,
         labels = labels,
+        supports_test_execution_caching = True,
+        # Buck2 only caches test executions through the RE action cache. Keep
+        # these tests on the same local RE worker used by the build platform.
+        remote_execution = {
+            "capabilities": {
+                "OSFamily": "",
+                "container-image": "",
+                "ISA": "x86-64",
+            },
+            "remote_cache_enabled": True,
+            "use_case": "buck2-default",
+        },
         header_namespace = "",
         compiler_flags = compiler_flags + [
             "-Icmake",

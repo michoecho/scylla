@@ -10,6 +10,7 @@ def _platforms(ctx):
         executor_config = CommandExecutorConfig(
             local_enabled = True,
             remote_enabled = True,
+            remote_cache_enabled = True,
             use_limited_hybrid = True,
             allow_cache_uploads = True,
             # These match the local worker in buck/basic_cas.json5.  In

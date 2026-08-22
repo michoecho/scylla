@@ -399,7 +399,7 @@ async fn process_spec(
         orchestrator,
         &handle,
         &spec,
-        TestStage { item: Some(test_stage::Item::Listing(test_stage::Listing { suite: target_name.clone(), cacheable: false })) },
+        TestStage { item: Some(test_stage::Item::Listing(test_stage::Listing { suite: target_name.clone(), cacheable: true })) },
         list_command,
         options.coverage.then(|| execution_env(&spec, Some(verbatim_arg("/dev/null")))),
     ).await?;
@@ -856,7 +856,7 @@ async fn execute(
         }),
         executor_override: None,
         required_local_resources: Vec::new(),
-        disable_test_execution_caching: true,
+        disable_test_execution_caching: false,
     }).await?.into_inner();
     match response.response {
         Some(execute_response2::Response::Result(result)) => Ok(result),
