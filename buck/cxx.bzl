@@ -100,6 +100,7 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
             binary_utilities_info = BinaryUtilitiesInfo(
                 nm = nix_cc["nm"][RunInfo],
                 objcopy = nix_cc["objcopy"][RunInfo],
+                objdump = nix_cc["objdump"][RunInfo],
                 ranlib = nix_cc["ranlib"][RunInfo],
                 strip = nix_cc["strip"][RunInfo],
                 dwp = None,
@@ -161,6 +162,7 @@ nix_cxx_toolchain = rule(
             "c++",
             "nm",
             "objcopy",
+            "objdump",
             "ranlib",
             "strip",
         ],

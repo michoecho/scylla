@@ -18,6 +18,7 @@ flake.package(
         "c++",
         "nm",
         "objcopy",
+        "objdump",
         "ranlib",
         "strip",
     ],

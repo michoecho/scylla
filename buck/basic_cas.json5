@@ -77,11 +77,9 @@
         },
         work_directory: "/tmp/nativelink/work",
         additional_environment: {
-          // Buck's remote actions invoke shell utilities by name. Keep the
-          // local worker's host tools available to those actions.
-          PATH: {
-            value: "/run/current-system/sw/bin",
-          },
+          // Preserve the environment of the `nix run nativelink ...` process
+          // for shell-based remote actions.
+          PATH: "from_environment",
           foo: "from_environment",
           bar: {
             value: "something",

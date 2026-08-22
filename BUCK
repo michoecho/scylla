@@ -70,6 +70,7 @@ prebuilt_cxx_library(
     name = "boost_stacktrace",
     header_dirs = [":boost_package[include]"],
     shared_lib = ":boost_package[stacktrace]",
+    extract_soname = True,
     exported_linker_flags = [
         "-Wl,-rpath,$(location :boost_package[lib])",
     ],
@@ -81,6 +82,7 @@ prebuilt_cxx_library(
     name = "backtrace",
     header_dirs = [":libbacktrace_package[include]"],
     shared_lib = ":libbacktrace_package[backtrace]",
+    extract_soname = True,
     exported_linker_flags = [
         "-Wl,-rpath,$(location :libbacktrace_package[lib])",
     ],

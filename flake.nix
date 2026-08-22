@@ -241,7 +241,7 @@
 
               mkdir -p "$out/bin"
 
-              for tool in ar nm objcopy ranlib strip; do
+              for tool in ar nm objcopy objdump ranlib strip; do
                   ln -st "$out/bin" "$NIX_CC/bin/$tool"
               done
 
