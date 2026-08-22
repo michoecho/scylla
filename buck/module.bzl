@@ -1,6 +1,7 @@
 def add_module(
         name,
         srcs,
+        headers = [],
         exported_headers = {},
         deps = [],
         compiler_flags = [],
@@ -39,6 +40,7 @@ def add_module(
     native.cxx_library(
         name = name,
         srcs = srcs,
+        headers = headers,
         compiler_flags = compiler_flags,
         exported_deps = deps,
         exported_headers = exported_headers,

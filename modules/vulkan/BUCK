@@ -16,6 +16,7 @@ add_module(
         "vma_impl.cc",
         "vulkan_test.cc",
     ],
+    headers = ["vk_utils.h"],
     exported_headers = {
         "vulkan_module/renderer.h": "include/vulkan_module/renderer.h",
     },

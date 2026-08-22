@@ -1,0 +1,6 @@
+load(":defs.bzl", "platforms")
+
+platforms(
+    name = "platforms",
+    base = "prelude//platforms:default",
+)

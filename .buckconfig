@@ -18,13 +18,20 @@
 [external_cells]
   prelude = bundled
 
+[buck2_re_client]
+  action_cache_address = grpc://127.0.0.1:50051
+  engine_address = grpc://127.0.0.1:50051
+  cas_address = grpc://127.0.0.1:50051
+  tls = false
+  instance_name = main
+
 [parser]
   target_platform_detector_spec = target:root//...->prelude//platforms:default \
     target:prelude//...->prelude//platforms:default \
     target:toolchains//...->prelude//platforms:default
 
 [build]
-  execution_platforms = prelude//platforms:default
+  execution_platforms = root//platforms:platforms
 
 [project]
   # Nested buck-out directories contain materialized external cells, whose BUCK files
