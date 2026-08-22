@@ -92,8 +92,10 @@ set(MODULE_RUN_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}"
 # It lives in the main module (which compiles it into its library as well) but
 # is named by path rather than inherited through a link dependency: a module
 # test executable must not have to depend on the main module to be discoverable.
-set(MODULE_TEST_REPORTER "${PROJECT_SOURCE_DIR}/modules/main/test_locations_reporter.cc"
-    CACHE INTERNAL "Discovery reporter shared by all module test executables")
+set(MODULE_TEST_REPORTERS
+    "${PROJECT_SOURCE_DIR}/modules/main/test_locations_reporter.cc"
+    "${PROJECT_SOURCE_DIR}/modules/main/vscode_results_reporter.cc"
+    CACHE INTERNAL "Reporters shared by all module test executables")
 
 function(add_module name)
     cmake_parse_arguments(M "" "TYPE" "SOURCES;TEST_PROPERTIES" ${ARGN})
@@ -170,7 +172,7 @@ function(add_module name)
 
     # --- the test executable ---------------------------------------------
     add_executable(${name}_test
-        ${MODULE_TEST_MAIN} ${MODULE_RUN} ${MODULE_TEST_REPORTER})
+        ${MODULE_TEST_MAIN} ${MODULE_RUN} ${MODULE_TEST_REPORTERS})
     target_include_directories(${name}_test PRIVATE ${MODULE_RUN_INCLUDE_DIR})
     target_compile_definitions(${name}_test PRIVATE
         DOCTEST_CONFIG_IMPLEMENTATION_IN_DLL

@@ -439,11 +439,12 @@ async function runBuck2(
         "--vscode-location-arg", locationArg,
         "--vscode-case-arg", caseArg,
         ...modeArgs,
-        ...(cases ?? []).flatMap(testCase => [
-            "--vscode-case",
-            `${testCase.target}\u001f${testCase.case_name}`,
-        ]),
     ];
+    if (cases) {
+        const selectionFile = path.join(path.dirname(output), "selection.json");
+        await fs.promises.writeFile(selectionFile, JSON.stringify(cases), "utf8");
+        runnerArgs.push("--vscode-selection-file", selectionFile);
+    }
     const args = [
         "test",
         "--config", `test.v2_test_executor=${executor}`,

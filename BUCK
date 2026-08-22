@@ -155,6 +155,7 @@ cxx_library(
     name = "test_locations_reporter",
     srcs = [
         "modules/main/test_locations_reporter.cc",
+        "modules/main/vscode_results_reporter.cc",
     ],
     deps = [
         ":doctest",

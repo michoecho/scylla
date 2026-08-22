@@ -51,9 +51,18 @@ not provide that reporter.
 For discovery, the extension runs `buck2 test <patterns> --` with
 `--vscode-list-only`. The executor uses Buck2's test listing stage to ask each
 test binary for its individual cases and writes them to the configured
-artifact. Running a VS Code case repeats the same protocol flow with
-`--vscode-case` and writes its result to the artifact. The full Buck2 output is
-attached to each corresponding VS Code test result.
+artifact. Running selected VS Code cases writes the target/case pairs to a
+temporary JSON selection file and passes its path to the executor. This keeps
+large selections out of Buck2's argument vector. The executor filters the
+listing against that file and writes its result to the artifact. The full Buck2
+output is attached to each corresponding VS Code test result.
+
+Targets may set the `startup_shared` Buck label. For those targets, the
+executor combines the selected doctest names into one `--test-case` filter and
+runs the executable once. The bundled `vscode-results` doctest reporter emits
+one machine-readable result per case so VS Code still receives individual
+statuses and durations. Unlabelled targets retain one process invocation per
+case.
 
 The `Run Tests with Coverage` profile adds `--modifier root//:coverage` to the
 Buck2 invocation. The executor assigns each test case an LLVM raw profile

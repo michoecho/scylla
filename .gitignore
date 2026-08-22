@@ -18,5 +18,6 @@
 /fuzz
 
 /tools/vscode-cmake-tools
+/tools/vscode-buck2/extension/buck2-test.vsix
 /nuke
 buck-out/

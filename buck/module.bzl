@@ -10,6 +10,7 @@ def add_module(
         resources = [],
         env = {},
         module_source_dir = None,
+        labels = ["startup_shared"],
         visibility = ["PUBLIC"]):
     """Declare a module library and its matching doctest executable.
 
@@ -57,6 +58,7 @@ def add_module(
         deps = [":" + name, "//:test_locations_reporter", "//cmake:module_runner"],
         resources = resources,
         env = test_env,
+        labels = labels,
         header_namespace = "",
         compiler_flags = compiler_flags + [
             "-Icmake",

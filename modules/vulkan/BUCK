@@ -36,5 +36,6 @@ add_module(
     env = {
         "VULKAN_SHADER_PATH": "$(location :gradient_spv)",
     },
+    labels = ["startup_shared"],
     module_source_dir = "modules/vulkan",
 )

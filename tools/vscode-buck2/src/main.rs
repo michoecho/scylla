@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io,
     path::PathBuf,
@@ -11,7 +11,7 @@ use std::{
 use anyhow::{anyhow, Context as _};
 use clap::Parser;
 use prost_types::Duration as ProtoDuration;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpStream, UnixStream},
@@ -63,9 +63,22 @@ struct Options {
     list_only: bool,
     coverage: bool,
     selected_cases: HashSet<String>,
+    selection_file: Option<PathBuf>,
     list_arg: String,
     location_arg: Option<String>,
     case_arg: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelectedCase {
+    target: String,
+    case_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct MachineCaseResult {
+    status: &'static str,
+    duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +274,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
             "--vscode-case" => {
                 options.selected_cases.insert(value_or_next(args, index, value)?.to_owned());
             }
+            "--vscode-selection-file" => {
+                options.selection_file = Some(PathBuf::from(value_or_next(args, index, value)?));
+            }
             "--vscode-list-arg" => options.list_arg = value_or_next(args, index, value)?.to_owned(),
             "--vscode-location-arg" => {
                 let location_arg = value_or_next(args, index, value)?;
@@ -269,10 +285,18 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
             "--vscode-case-arg" => options.case_arg = value_or_next(args, index, value)?.to_owned(),
             _ => {}
         }
-        if value.is_empty() && matches!(key, "--vscode-output" | "--vscode-case" | "--vscode-list-arg" | "--vscode-location-arg" | "--vscode-case-arg") {
+        if value.is_empty() && matches!(key, "--vscode-output" | "--vscode-case" | "--vscode-selection-file" | "--vscode-list-arg" | "--vscode-location-arg" | "--vscode-case-arg") {
             index += 1;
         }
         index += 1;
+    }
+    if let Some(path) = &options.selection_file {
+        let selected = serde_json::from_slice::<Vec<SelectedCase>>(
+            &fs::read(path).with_context(|| format!("reading VS Code selection file {}", path.display()))?,
+        ).with_context(|| format!("parsing VS Code selection file {}", path.display()))?;
+        for case in selected {
+            options.selected_cases.insert(format!("{}\u{1f}{}", case.target, case.case_name));
+        }
     }
     Ok(options)
 }
@@ -421,6 +445,101 @@ async fn process_spec(
     output.tests.extend(discovered);
 
     if options.list_only {
+        return Ok(());
+    }
+
+    if spec.labels.iter().any(|label| label == "startup_shared") && !cases.is_empty() {
+        if options.case_arg != "--test-case={}" {
+            return Err(anyhow!(
+                "startup_shared tests require buck2Test.caseArgument to remain --test-case={{}}"
+            ));
+        }
+
+        let case_names = cases.iter().map(|case| case.name.clone()).collect::<Vec<_>>();
+        let case_filter = cases
+            .iter()
+            .map(|case| escape_doctest_filter(&case.name))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
+        command.push(verbatim_arg("--reporters=console,vscode-results"));
+        let stage = TestStage {
+            item: Some(test_stage::Item::Testing(Testing {
+                suite: target_name.clone(),
+                testcases: case_names.clone(),
+                variant: None,
+                repeat_count: None,
+            })),
+        };
+        let coverage_output = coverage_output_name(&target_name, "startup-shared");
+        let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
+        let coverage_paths = if options.coverage {
+            Some(prepare_coverage_paths(
+                orchestrator,
+                &handle,
+                stage.clone(),
+                &command,
+                declared_output(&coverage_output),
+                env.clone(),
+            ).await?)
+        } else {
+            None
+        };
+        let result = execute(orchestrator, &handle, &spec, stage, command, Some(env)).await?;
+        if let Some((profile, binary)) = coverage_paths {
+            coverage_inputs.push(CoverageInput { profile, binary });
+        }
+
+        let details = execution_output_without_machine_results(&result);
+        let machine_results = parse_machine_results(&execution_stream_output(result.stdout.as_ref()))?;
+        if machine_results.is_empty() {
+            return Err(anyhow!(
+                "startup_shared test produced no per-case results for {target_name}"
+            ));
+        }
+        for case_name in case_names {
+            let machine = machine_results.get(&case_name);
+            let (buck_status, status, duration_ms) = match machine {
+                Some(result) if result.status == "passed" => (
+                    proto::TestStatus::Pass as i32,
+                    "passed",
+                    result.duration_ms,
+                ),
+                Some(result) if result.status == "failed" => (
+                    proto::TestStatus::Fail as i32,
+                    "failed",
+                    result.duration_ms,
+                ),
+                Some(result) => (
+                    proto::TestStatus::Unknown as i32,
+                    "errored",
+                    result.duration_ms,
+                ),
+                None => (
+                    proto::TestStatus::Unknown as i32,
+                    "errored",
+                    None,
+                ),
+            };
+            orchestrator.report_test_result(proto::ReportTestResultRequest {
+                result: Some(TestResult {
+                    name: case_name.clone(),
+                    status: buck_status,
+                    msg: None,
+                    target: Some(handle.clone()),
+                    duration: duration_ms.map(proto_duration),
+                    details: details.clone(),
+                    max_memory_used_bytes: result.max_memory_used_bytes,
+                }),
+            }).await?;
+            output.results.push(CaseResult {
+                target: target_name.clone(),
+                case_name,
+                status,
+                duration_ms,
+                output: details.clone(),
+            });
+        }
         return Ok(());
     }
 
@@ -671,6 +790,48 @@ fn escape_doctest_filter(case_name: &str) -> String {
     escaped
 }
 
+fn parse_machine_results(output: &str) -> anyhow::Result<HashMap<String, MachineCaseResult>> {
+    const PREFIX: &str = "VSCODE_TEST_RESULT\t";
+    let mut results = HashMap::new();
+    for line in output.lines() {
+        let Some(fields) = line.strip_prefix(PREFIX) else { continue };
+        let fields = fields.split('\t').collect::<Vec<_>>();
+        if fields.len() != 3 {
+            return Err(anyhow!("malformed VS Code test result record: {line:?}"));
+        }
+        let case_name = decode_hex(fields[0])?;
+        let status = match fields[1] {
+            "passed" => "passed",
+            "failed" => "failed",
+            other => return Err(anyhow!("unknown VS Code test result status {other:?}")),
+        };
+        let duration_ms = fields[2]
+            .parse::<u64>()
+            .with_context(|| format!("invalid VS Code test duration {:?}", fields[2]))?;
+        results.insert(case_name, MachineCaseResult { status, duration_ms: Some(duration_ms) });
+    }
+    Ok(results)
+}
+
+fn decode_hex(value: &str) -> anyhow::Result<String> {
+    if value.len() % 2 != 0 {
+        return Err(anyhow!("odd-length hexadecimal test name"));
+    }
+    let bytes = (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .context("invalid hexadecimal test name")?;
+    String::from_utf8(bytes).context("machine-readable test name is not UTF-8")
+}
+
+fn proto_duration(milliseconds: u64) -> ProtoDuration {
+    ProtoDuration {
+        seconds: (milliseconds / 1000) as i64,
+        nanos: ((milliseconds % 1000) * 1_000_000) as i32,
+    }
+}
+
 async fn execute(
     orchestrator: &mut test_orchestrator_client::TestOrchestratorClient<Channel>,
     handle: &ConfiguredTargetHandle,
@@ -721,6 +882,23 @@ fn execution_output(result: &proto::ExecutionResult2) -> String {
     format!("---- STDOUT ----\n{}\n---- STDERR ----\n{}", execution_stream_output(result.stdout.as_ref()), execution_stream_output(result.stderr.as_ref()))
 }
 
+fn execution_output_without_machine_results(result: &proto::ExecutionResult2) -> String {
+    format!(
+        "---- STDOUT ----\n{}\n---- STDERR ----\n{}",
+        strip_machine_result_lines(&execution_stream_output(result.stdout.as_ref())),
+        execution_stream_output(result.stderr.as_ref()),
+    )
+}
+
+fn strip_machine_result_lines(output: &str) -> String {
+    const PREFIX: &str = "VSCODE_TEST_RESULT\t";
+    output
+        .lines()
+        .filter(|line| !line.starts_with(PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn execution_stream_output(stream: Option<&proto::ExecutionStream>) -> String {
     let bytes = stream.and_then(inline_bytes).unwrap_or_default();
     String::from_utf8_lossy(&bytes).into_owned()
@@ -765,7 +943,7 @@ fn parse_location(line: &str) -> Option<(String, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_doctest_filter, parse_listing};
+    use super::{escape_doctest_filter, parse_listing, parse_machine_results, strip_machine_result_lines};
 
     #[test]
     fn parses_test_locations_listing() {
@@ -785,5 +963,23 @@ mod tests {
     #[test]
     fn escapes_doctest_filter_separators() {
         assert_eq!(escape_doctest_filter(r#"case, with \ slash"#), r#"case\, with \\ slash"#);
+    }
+
+    #[test]
+    fn parses_machine_results() {
+        let results = parse_machine_results(
+            "VSCODE_TEST_RESULT\t6669727374\tpassed\t12\nVSCODE_TEST_RESULT\t7365636f6e64\tfailed\t34\n",
+        ).unwrap();
+        assert_eq!(results["first"].status, "passed");
+        assert_eq!(results["first"].duration_ms, Some(12));
+        assert_eq!(results["second"].status, "failed");
+    }
+
+    #[test]
+    fn hides_machine_results_from_display_output() {
+        assert_eq!(
+            strip_machine_result_lines("before\nVSCODE_TEST_RESULT\t6669727374\tpassed\t12\nafter\n"),
+            "before\nafter",
+        );
     }
 }
