@@ -29,7 +29,7 @@ constraint(
 
 constraint(
     name = "precompiled_headers",
-    default = "disabled",
+    default = "enabled",
     values = [
         "enabled",
         "disabled",
@@ -49,6 +49,11 @@ configuration_alias(
 configuration_alias(
     name = "pch",
     actual = ":precompiled_headers[enabled]",
+)
+
+configuration_alias(
+    name = "no_pch",
+    actual = ":precompiled_headers[disabled]",
 )
 
 load("//buck:flake.bzl", "flake")

@@ -2,7 +2,7 @@
 
 // Keep this list limited to headers shared by the Buck C++ modules. The
 // cxx_precompiled_header target supplies the corresponding external include
-// paths and libraries when the pch modifier is enabled.
+// paths and libraries when PCH is enabled.
 #include <algorithm>
 #include <array>
 #include <bit>

@@ -48,8 +48,8 @@ def add_module(
         exported_preprocessor_flags = exported_preprocessor_flags,
         exported_needs_coverage_instrumentation = exported_needs_coverage_instrumentation,
         precompiled_header = select({
-            "//:pch": "//:project_pch",
-            "DEFAULT": None,
+            "//:no_pch": None,
+            "DEFAULT": "//:project_pch",
         }),
         header_namespace = "",
         link_whole = True,
@@ -62,8 +62,8 @@ def add_module(
         name = test_name,
         srcs = ["//cmake:module_test_main"],
         deps = [":" + name, "//:test_locations_reporter", "//cmake:module_runner"] + select({
-            "//:pch": ["//:project_pch"],
-            "DEFAULT": [],
+            "//:no_pch": [],
+            "DEFAULT": ["//:project_pch"],
         }),
         resources = resources,
         env = test_env,
@@ -87,8 +87,8 @@ def add_module(
             "-DMODULE_SOURCE_DIR=\"{}\"".format(source_dir),
         ],
         precompiled_header = select({
-            "//:pch": "//:project_pch",
-            "DEFAULT": None,
+            "//:no_pch": None,
+            "DEFAULT": "//:project_pch",
         }),
         link_style = "shared",
         visibility = visibility,

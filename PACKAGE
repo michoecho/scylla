@@ -10,6 +10,7 @@ native.set_cfg_constructor(
         debug = "//:build_mode[debug]",
         release = "//:build_mode[release]",
         pch = "//:pch",
+        no_pch = "//:no_pch",
     ),
     extra_data = struct(),
 )
