@@ -770,34 +770,32 @@ fn normalize_lcov_paths(contents: &[u8], workspace_root: &std::path::Path) -> Ve
 }
 
 fn normalize_source_path(path: &str, workspace_root: &std::path::Path) -> String {
-    const WORK_MARKER: &str = "/work/";
-    let Some(first_work) = path.find(WORK_MARKER) else {
-        return path.to_owned();
-    };
-    let after_first_work = &path[first_work + WORK_MARKER.len()..];
-    let Some(second_work) = after_first_work.find(WORK_MARKER) else {
-        return path.to_owned();
-    };
-    let worker_id = &after_first_work[..second_work];
-    if !is_uuid(worker_id) {
-        return path.to_owned();
+    let path = std::path::Path::new(path);
+    if path.is_relative() {
+        let local = workspace_root.join(path);
+        return if local.is_file() {
+            local.to_string_lossy().into_owned()
+        } else {
+            path.to_string_lossy().into_owned()
+        };
     }
-    let relative = &after_first_work[second_work + WORK_MARKER.len()..];
-    if relative.is_empty() {
-        return path.to_owned();
-    }
-    workspace_root.join(relative).to_string_lossy().into_owned()
-}
 
-fn is_uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+    if path.is_file() {
+        return path.to_string_lossy().into_owned();
+    }
+
+    let components = path.components().collect::<Vec<_>>();
+    for start in 1..components.len() {
+        let mut relative = PathBuf::new();
+        for component in &components[start..] {
+            relative.push(component.as_os_str());
+        }
+        let local = workspace_root.join(&relative);
+        if local.is_file() {
+            return local.to_string_lossy().into_owned();
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
 
 fn collect_binaries(dir: &std::path::Path, binaries: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -1079,11 +1077,12 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_remote_worker_source_paths_in_lcov() {
-        let contents = b"SF:/tmp/nativelink/work/01234567-89ab-cdef-0123-456789abcdef/work/modules/test_rng/test_rng.cc\nDA:1,1\nend_of_record\n";
+    fn normalizes_remote_source_paths_in_lcov() {
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let contents = b"SF:/some/remote/worker/work/tools/vscode-buck2/src/main.rs\nDA:1,1\nend_of_record\n";
         assert_eq!(
-            String::from_utf8(normalize_lcov_paths(contents, std::path::Path::new("/workspace"))).unwrap(),
-            "SF:/workspace/modules/test_rng/test_rng.cc\nDA:1,1\nend_of_record\n",
+            String::from_utf8(normalize_lcov_paths(contents, &workspace_root)).unwrap(),
+            format!("SF:{}/src/main.rs\nDA:1,1\nend_of_record\n", workspace_root.display()),
         );
     }
 }
