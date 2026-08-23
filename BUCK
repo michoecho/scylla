@@ -27,6 +27,15 @@ constraint(
     ],
 )
 
+constraint(
+    name = "precompiled_headers",
+    default = "disabled",
+    values = [
+        "enabled",
+        "disabled",
+    ],
+)
+
 configuration_alias(
     name = "libafl",
     actual = ":instrumentation[libafl]",
@@ -35,6 +44,11 @@ configuration_alias(
 configuration_alias(
     name = "coverage",
     actual = ":instrumentation[coverage]",
+)
+
+configuration_alias(
+    name = "pch",
+    actual = ":precompiled_headers[enabled]",
 )
 
 load("//buck:flake.bzl", "flake")
@@ -69,6 +83,7 @@ flake.package(
 prebuilt_cxx_library(
     name = "boost_stacktrace",
     header_dirs = [":boost_package[include]"],
+    exported_preprocessor_flags = ["-DBOOST_STACKTRACE_USE_BACKTRACE"],
     shared_lib = ":boost_package[stacktrace]",
     extract_soname = True,
     exported_linker_flags = [
@@ -151,6 +166,25 @@ prebuilt_cxx_library(
   header_dirs = [":vma_package[include]"],
   header_only = True,
   visibility = ["PUBLIC"],
+)
+
+cxx_precompiled_header(
+    name = "project_pch",
+    compile_pch_file = True,
+    pch_clanguage = ".cc",
+    preferred_linkage = "static",
+    src = "buck/pch.h",
+    deps = [
+        ":backtrace",
+        ":boost_stacktrace",
+        ":doctest",
+        ":hegel",
+        ":sdl3",
+        ":vk_bootstrap",
+        ":vma",
+        ":vulkan_loader",
+    ],
+    visibility = ["PUBLIC"],
 )
 
 cxx_library(

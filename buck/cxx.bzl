@@ -27,7 +27,10 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
     compiler_with_flags = RunInfo(args = [compiler] + ctx.attrs.c_flags)
     cxx_compiler_with_flags = RunInfo(args = [cxx_compiler] + ctx.attrs.cxx_flags)
 
-    compiler_type = "clang" if host_info().os.is_macos else "g++"
+    # The Nix cxx package used by this repository provides Clang on Linux and
+    # macOS. Buck's C++ precompiled-header implementation uses this metadata
+    # to select the compiler-specific PCH flags.
+    compiler_type = "clang"
     archiver = nix_cc["ar"][RunInfo]
     archiver_type = "gnu"
     archiver_supports_argfiles = True

@@ -13,9 +13,6 @@ add_module(
         "//:boost_stacktrace",
         "//:backtrace",
     ],
-    exported_preprocessor_flags = [
-        "-DBOOST_STACKTRACE_USE_BACKTRACE",
-    ],
     exported_linker_flags = [
         "-ldl",
     ],

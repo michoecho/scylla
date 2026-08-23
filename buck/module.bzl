@@ -47,6 +47,10 @@ def add_module(
         exported_linker_flags = exported_linker_flags,
         exported_preprocessor_flags = exported_preprocessor_flags,
         exported_needs_coverage_instrumentation = exported_needs_coverage_instrumentation,
+        precompiled_header = select({
+            "//:pch": "//:project_pch",
+            "DEFAULT": None,
+        }),
         header_namespace = "",
         link_whole = True,
         preferred_linkage = "static",
@@ -57,7 +61,10 @@ def add_module(
     native.cxx_test(
         name = test_name,
         srcs = ["//cmake:module_test_main"],
-        deps = [":" + name, "//:test_locations_reporter", "//cmake:module_runner"],
+        deps = [":" + name, "//:test_locations_reporter", "//cmake:module_runner"] + select({
+            "//:pch": ["//:project_pch"],
+            "DEFAULT": [],
+        }),
         resources = resources,
         env = test_env,
         labels = labels,
@@ -79,6 +86,10 @@ def add_module(
             "-DMODULE_NAME=\"{}\"".format(name),
             "-DMODULE_SOURCE_DIR=\"{}\"".format(source_dir),
         ],
+        precompiled_header = select({
+            "//:pch": "//:project_pch",
+            "DEFAULT": None,
+        }),
         link_style = "shared",
         visibility = visibility,
     )

@@ -9,6 +9,7 @@ native.set_cfg_constructor(
         libafl = "//:libafl",
         debug = "//:build_mode[debug]",
         release = "//:build_mode[release]",
+        pch = "//:pch",
     ),
     extra_data = struct(),
 )
