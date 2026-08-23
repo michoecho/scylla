@@ -118,6 +118,14 @@ struct CaseResult {
 struct CoverageInput {
     profile: PathBuf,
     binary: PathBuf,
+    workspace_root: PathBuf,
+}
+
+#[derive(Debug)]
+struct PreparedCoveragePaths {
+    profile: PathBuf,
+    binary: PathBuf,
+    workspace_root: PathBuf,
 }
 
 #[derive(Clone)]
@@ -486,8 +494,12 @@ async fn process_spec(
             None
         };
         let result = execute(orchestrator, &handle, &spec, stage, command, Some(env)).await?;
-        if let Some((profile, binary)) = coverage_paths {
-            coverage_inputs.push(CoverageInput { profile, binary });
+        if let Some(paths) = coverage_paths {
+            coverage_inputs.push(CoverageInput {
+                profile: paths.profile,
+                binary: paths.binary,
+                workspace_root: paths.workspace_root,
+            });
         }
 
         let details = execution_output_without_machine_results(&result);
@@ -574,8 +586,12 @@ async fn process_spec(
             command,
             Some(env),
         ).await?;
-        if let Some((profile, binary)) = coverage_paths {
-            coverage_inputs.push(CoverageInput { profile, binary });
+        if let Some(paths) = coverage_paths {
+            coverage_inputs.push(CoverageInput {
+                profile: paths.profile,
+                binary: paths.binary,
+                workspace_root: paths.workspace_root,
+            });
         }
         let details = execution_output(&result);
         let status = result_status(&result);
@@ -627,7 +643,7 @@ async fn prepare_coverage_paths(
     command: &[ArgValue],
     profile: ArgValue,
     env: Vec<proto::EnvironmentVariable>,
-) -> anyhow::Result<(PathBuf, PathBuf)> {
+) -> anyhow::Result<PreparedCoveragePaths> {
     let mut path_command = command.to_vec();
     path_command.push(profile);
     let response = orchestrator.prepare_for_local_execution(proto::PrepareForLocalExecutionRequest {
@@ -643,10 +659,11 @@ async fn prepare_coverage_paths(
     let prepared = response.result.ok_or_else(|| anyhow!("Buck2 returned no prepared coverage command"))?;
     let profile = prepared.cmd.last().ok_or_else(|| anyhow!("Buck2 returned an empty prepared coverage command"))?;
     let binary = prepared.cmd.first().ok_or_else(|| anyhow!("Buck2 returned no test executable"))?;
-    Ok((
-        resolve_prepared_path(&prepared.cwd, profile),
-        resolve_prepared_path(&prepared.cwd, binary),
-    ))
+    Ok(PreparedCoveragePaths {
+        profile: resolve_prepared_path(&prepared.cwd, profile),
+        binary: resolve_prepared_path(&prepared.cwd, binary),
+        workspace_root: PathBuf::from(prepared.cwd),
+    })
 }
 
 fn resolve_prepared_path(cwd: &str, path: &str) -> PathBuf {
@@ -727,8 +744,60 @@ fn process_coverage(
     if !export.status.success() {
         return Err(anyhow!("llvm-cov failed: {}", String::from_utf8_lossy(&export.stderr)));
     }
-    fs::write(&lcov, export.stdout).with_context(|| format!("writing coverage report {}", lcov.display()))?;
+    let workspace_root = inputs
+        .first()
+        .map(|input| input.workspace_root.as_path())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let lcov_contents = normalize_lcov_paths(&export.stdout, workspace_root);
+    fs::write(&lcov, lcov_contents).with_context(|| format!("writing coverage report {}", lcov.display()))?;
     Ok(lcov)
+}
+
+fn normalize_lcov_paths(contents: &[u8], workspace_root: &std::path::Path) -> Vec<u8> {
+    let contents = String::from_utf8_lossy(contents);
+    let mut normalized = String::with_capacity(contents.len());
+    for line in contents.split_inclusive('\n') {
+        let (body, newline) = line.strip_suffix('\n').map_or((line, ""), |body| (body, "\n"));
+        if let Some(path) = body.strip_prefix("SF:") {
+            normalized.push_str("SF:");
+            normalized.push_str(&normalize_source_path(path, workspace_root));
+            normalized.push_str(newline);
+        } else {
+            normalized.push_str(line);
+        }
+    }
+    normalized.into_bytes()
+}
+
+fn normalize_source_path(path: &str, workspace_root: &std::path::Path) -> String {
+    const WORK_MARKER: &str = "/work/";
+    let Some(first_work) = path.find(WORK_MARKER) else {
+        return path.to_owned();
+    };
+    let after_first_work = &path[first_work + WORK_MARKER.len()..];
+    let Some(second_work) = after_first_work.find(WORK_MARKER) else {
+        return path.to_owned();
+    };
+    let worker_id = &after_first_work[..second_work];
+    if !is_uuid(worker_id) {
+        return path.to_owned();
+    }
+    let relative = &after_first_work[second_work + WORK_MARKER.len()..];
+    if relative.is_empty() {
+        return path.to_owned();
+    }
+    workspace_root.join(relative).to_string_lossy().into_owned()
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
 }
 
 fn collect_binaries(dir: &std::path::Path, binaries: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -957,7 +1026,7 @@ fn parse_location(line: &str) -> Option<(String, u32)> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{escape_doctest_filter, parse_listing, parse_machine_results, resolve_prepared_path, strip_machine_result_lines};
+    use super::{escape_doctest_filter, normalize_lcov_paths, parse_listing, parse_machine_results, resolve_prepared_path, strip_machine_result_lines};
 
     #[test]
     fn parses_test_locations_listing() {
@@ -1006,6 +1075,15 @@ mod tests {
         assert_eq!(
             resolve_prepared_path("/workspace", "/tmp/profile.profraw"),
             PathBuf::from("/tmp/profile.profraw"),
+        );
+    }
+
+    #[test]
+    fn normalizes_remote_worker_source_paths_in_lcov() {
+        let contents = b"SF:/tmp/nativelink/work/01234567-89ab-cdef-0123-456789abcdef/work/modules/test_rng/test_rng.cc\nDA:1,1\nend_of_record\n";
+        assert_eq!(
+            String::from_utf8(normalize_lcov_paths(contents, std::path::Path::new("/workspace"))).unwrap(),
+            "SF:/workspace/modules/test_rng/test_rng.cc\nDA:1,1\nend_of_record\n",
         );
     }
 }
