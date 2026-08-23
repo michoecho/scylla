@@ -8,7 +8,7 @@
     nativelink.inputs.nixpkgs.follows = "nixpkgs-stable";
   };
 
-  outputs = { self, nixpkgs-stable, nixpkgs-unstable, ... }:
+  outputs = { self, nixpkgs-stable, nixpkgs-unstable, nativelink, ... }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs-stable.lib.genAttrs supportedSystems (system: f system);
@@ -21,6 +21,21 @@
         inherit system;
         config.allowUnfree = true;
       };
+      nativelinkInput = nativelink;
+      nativelinkFor = pkgs:
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "nativelink";
+          version = "1.6.4";
+          src = nativelinkInput.sourceInfo.outPath;
+          cargoLock = {
+            lockFile = "${nativelinkInput.sourceInfo.outPath}/Cargo.lock";
+            outputHashes = {
+              "ginepro-0.9.3" = "sha256-rsFgm5T3b2W3Bd23Bo0/dgCJeV6VaFxdH25JYvvXvTs=";
+            };
+          };
+          cargoBuildFlags = [ "--bin" "nativelink" ];
+          doCheck = false;
+        };
 
       # The Hegel stack, built entirely from source. Upstream's own CMake and
       # flake fetch a prebuilt libhegel from a GitHub release at configure
@@ -168,6 +183,7 @@
         let pkgs = pkgsStableFor system;
         in {
           code = vscodeFor (pkgsUnstableFor system);
+          nativelink = nativelinkFor pkgs;
           perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
 
           # Hegel (property-based testing), packaged nixpkgs-style from source.
@@ -260,6 +276,7 @@
           pkgs-unstable = pkgsUnstableFor system;
           code = vscodeFor pkgs-unstable;
           llvmPkgs = pkgs.llvmPackages_22;
+          nativelinkPackage = my_packages.nativelink;
 
           # nixpkgs' doctest plus our two extensions to doctest_discover_tests:
           # a TEST_SUBCOMMAND argument, which lets the discovered runner be
@@ -292,6 +309,43 @@
           # Perfetto/Fuchsia trace, used by tools/pt-trace. Built from the
           # upstream cargo project; see nix/perf2perfetto.nix.
           perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
+
+          # Local REAPI uses tiny HTTP/2 messages, so the default TCP behavior
+          # can introduce delayed-ACK/Nagle stalls on loopback. These wrappers
+          # force TCP_NODELAY without changing the underlying Buck2 or
+          # NativeLink binaries.
+          tcpNodelay = pkgs.stdenv.mkDerivation {
+            pname = "tcp-nodelay-preload";
+            version = "0.1.0";
+            src = ./nix/tcp-nodelay.c;
+            dontUnpack = true;
+            dontConfigure = true;
+            buildPhase = ''
+              $CC -shared -fPIC -O2 -Wall -Wextra \
+                -o libtcp-nodelay.so "$src" -ldl
+            '';
+            installPhase = ''
+              install -Dm755 libtcp-nodelay.so "$out/lib/libtcp-nodelay.so"
+            '';
+          };
+
+          buck2Wrapped = pkgs.writeShellScriptBin "buck2" ''
+            preload="${tcpNodelay}/lib/libtcp-nodelay.so"
+            if [ -n "''${LD_PRELOAD:-}" ]; then
+              preload="$preload:''${LD_PRELOAD}"
+            fi
+            export LD_PRELOAD="$preload"
+            exec ${pkgs-unstable.buck2}/bin/buck2 "$@"
+          '';
+
+          nativelinkWrapped = pkgs.writeShellScriptBin "nativelink" ''
+            preload="${tcpNodelay}/lib/libtcp-nodelay.so"
+            if [ -n "''${LD_PRELOAD:-}" ]; then
+              preload="$preload:''${LD_PRELOAD}"
+            fi
+            export LD_PRELOAD="$preload"
+            exec ${nativelinkPackage}/bin/nativelink "$@"
+          '';
         in
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
@@ -392,7 +446,8 @@
               # find_package(vk-bootstrap).
               vk-bootstrap
 
-              pkgs-unstable.buck2
+              buck2Wrapped
+              nativelinkWrapped
               spdlog
               fmt
             ];
