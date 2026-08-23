@@ -643,7 +643,19 @@ async fn prepare_coverage_paths(
     let prepared = response.result.ok_or_else(|| anyhow!("Buck2 returned no prepared coverage command"))?;
     let profile = prepared.cmd.last().ok_or_else(|| anyhow!("Buck2 returned an empty prepared coverage command"))?;
     let binary = prepared.cmd.first().ok_or_else(|| anyhow!("Buck2 returned no test executable"))?;
-    Ok((PathBuf::from(profile), PathBuf::from(binary)))
+    Ok((
+        resolve_prepared_path(&prepared.cwd, profile),
+        resolve_prepared_path(&prepared.cwd, binary),
+    ))
+}
+
+fn resolve_prepared_path(cwd: &str, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() || cwd.is_empty() {
+        path
+    } else {
+        PathBuf::from(cwd).join(path)
+    }
 }
 
 fn coverage_output_name(target: &str, case: &str) -> String {
@@ -943,7 +955,9 @@ fn parse_location(line: &str) -> Option<(String, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_doctest_filter, parse_listing, parse_machine_results, strip_machine_result_lines};
+    use std::path::PathBuf;
+
+    use super::{escape_doctest_filter, parse_listing, parse_machine_results, resolve_prepared_path, strip_machine_result_lines};
 
     #[test]
     fn parses_test_locations_listing() {
@@ -980,6 +994,18 @@ mod tests {
         assert_eq!(
             strip_machine_result_lines("before\nVSCODE_TEST_RESULT\t6669727374\tpassed\t12\nafter\n"),
             "before\nafter",
+        );
+    }
+
+    #[test]
+    fn resolves_prepared_paths_against_the_prepared_working_directory() {
+        assert_eq!(
+            resolve_prepared_path("/workspace", "buck-out/profile.profraw"),
+            PathBuf::from("/workspace/buck-out/profile.profraw"),
+        );
+        assert_eq!(
+            resolve_prepared_path("/workspace", "/tmp/profile.profraw"),
+            PathBuf::from("/tmp/profile.profraw"),
         );
     }
 }
