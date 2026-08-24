@@ -114,6 +114,7 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.cxx_flags,
                 compiler_type = compiler_type,
+                allow_cache_upload = True,
             ),
             c_compiler_info = CCompilerInfo(
                 compiler = compiler_with_flags,
