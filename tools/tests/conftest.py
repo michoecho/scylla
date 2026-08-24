@@ -1,10 +1,7 @@
-"""Shared fixtures for the tools/ tests.
+"""Shared fixtures for integration tests that drive built binaries.
 
-These tests drive built binaries, so they need to know which ones to run -- and
-those must come from the preset under test, not a hardcoded path, or a
-`ctest --preset SanitizeTest` run would silently exercise the Debug build. CMake
-passes the answers in as environment variables resolved from $<TARGET_FILE:...>;
-see CMakeLists.txt.
+The Buck2 test invocation supplies the binary path through the environment;
+running these tests directly without that context skips them.
 """
 
 import os
@@ -14,26 +11,14 @@ import pytest
 
 
 def _binary_from_env(var):
-    """Resolve an env var naming a built binary, skipping if it is unset.
-
-    Unset means "not launched from ctest", which is a skip: the path is the
-    build system's to supply. Set but missing is a failure -- the variable came
-    from a $<TARGET_FILE:...> whose target was never built, and silently
-    skipping there would hide a broken build.
-    """
+    """Resolve an environment-provided binary, skipping if it is unset."""
     raw = os.environ.get(var)
     if not raw:
-        pytest.skip(f"{var} unset; run these tests via ctest")
+        pytest.skip(f"{var} unset; run these tests with a Buck2-provided binary")
     path = Path(raw)
     if not path.exists():
         pytest.fail(f"{var} points at a missing file: {path}")
     return path
-
-
-@pytest.fixture(scope="session")
-def cpp_template_bin():
-    """Path to the cpp_template binary for the preset being tested."""
-    return _binary_from_env("CPP_TEMPLATE_BIN")
 
 
 @pytest.fixture(scope="session")

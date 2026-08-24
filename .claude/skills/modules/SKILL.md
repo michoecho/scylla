@@ -1,22 +1,22 @@
 ---
 name: modules
-description: Add, split, or wire up a module under modules/ — a library that owns its tests, with dependency-ordered test stamps. Use when asked to add a new module, add sources/tests/dependencies to an existing one, publish or hide a header, run one module's tests, or fix "not a target" / missing-test-case / include-not-found errors from the module build.
+description: Add, split, or wire up a module under modules/ — a library that owns its tests. Use when asked to add a module, sources, dependencies, headers, or to fix missing Buck2 targets and test cases.
 ---
 
 # Working with modules
 
 A module is a directory under `modules/` holding a library, its tests, and its
-public headers. `add_module()` (`cmake/Module.cmake`) generates from it:
+public headers. `add_module()` in `buck/module.bzl` creates the library and its
+matching doctest executable:
 
 | Target | What it is |
 |---|---|
-| `<name>` | the library (production **and** test sources) |
-| `<name>_test` | executable: that library + doctest `main()` |
-| `<name>_tested` | stamp `<name>.passed` — this module's tests passed |
-| `<name>_tested_deep` | stamp `<name>.deep.passed` — same run, ordered after every dependency's deep stamp |
+| `<name>` | the library, including production and test sources |
+| `<name>_test` | executable: that library plus the shared doctest runner |
 
-Stamps are files, so Ninja skips re-running a suite whose sources and dependency
-stamps are unchanged. A failing test leaves no stamp and stops everything above it.
+Test sources live in the library. The test executable links the library whole
+so static initializers register every doctest case. By default it filters to
+the module's own source directory; `--all` includes linked dependencies.
 
 ## Add a module
 
@@ -24,73 +24,26 @@ stamps are unchanged. A failing test leaves no stamp and stops everything above 
 mkdir -p modules/module_x/include/module_x
 ```
 
-```
-modules/module_x/
-  CMakeLists.txt
-  x.cc                      # sources
-  x_test.cc                 # tests — just SOURCES, no separate list
-  detail.h                  # private header — this module only
-  include/module_x/x.h      # public header — dependees #include "module_x/x.h"
-```
+Add `modules/module_x/BUCK`:
 
-`modules/module_x/CMakeLists.txt`:
+```python
+load("//buck:module.bzl", "add_module")
 
-```cmake
-add_module(module_x
-    SOURCES x.cc x_test.cc)
-
-target_link_module(module_x PUBLIC module_a)      # module deps
-target_link_libraries(module_x PRIVATE CLI11::CLI11)  # everything else
+add_module(
+    name = "module_x",
+    srcs = ["x.cc", "x_test.cc"],
+    exported_headers = {
+        "module_x/x.h": "include/module_x/x.h",
+    },
+    deps = ["//modules/module_a:module_a"],
+    compiler_flags = ["-Wall", "-Wextra"],
+    module_source_dir = "modules/module_x",
+)
 ```
 
-Then in `modules/CMakeLists.txt` — order doesn't matter:
-
-```cmake
-add_subdirectory(module_x)
-```
-
-### `add_module` arguments
-
-`add_module` is `add_library` plus extras. It takes no dependencies; declare
-those afterwards with `target_link_module` / `target_link_libraries`.
-
-| Argument | Use |
-|---|---|
-| `SOURCES` | all `.cc`, production and test alike |
-| `TYPE` | `STATIC` or `SHARED`; defaults to `BUILD_SHARED_LIBS` |
-| `TEST_PROPERTIES` | extra CTest properties on discovered cases (e.g. `TIMEOUT 10`) |
-
-### Linking
-
-```cmake
-target_link_module(module_x PRIVATE module_a)   # PUBLIC / PRIVATE / INTERFACE
-```
-
-Use it for **module** deps. On top of the plain link it adds:
-- test ordering — `module_x`'s tests run only after `module_a`'s have passed
-- whole-archive, so a static dep's cases survive into `module_x_test --all`
-
-Plain `target_link_libraries(module_x PRIVATE module_a)` on a module is
-allowed and links correctly — it just skips those two extras. Fine while
-developing; use `target_link_module` once it settles.
-
-Per-target flags go after the call, on `<name>`:
-
-```cmake
-target_compile_options(module_x PRIVATE -Wall -Wextra)
-target_compile_definitions(module_x PUBLIC SOME_MACRO)
-```
-
-## Headers
-
-```cpp
-#include "module_a/a.h"   // dependency's public header — must be linked first
-#include "detail.h"       // own private header, unprefixed
-```
-
-- Publish: put it in `include/<module>/`.
-- Hide: put it directly in the module directory.
-- Including a non-dependency fails at the `#include`, not at link.
+Use `deps` for other modules and libraries. Add a module's own test sources to
+`srcs`; there is no separate test target declaration. Publish headers through
+`exported_headers`, and keep private headers in the module directory.
 
 ## Test file shape
 
@@ -104,31 +57,26 @@ TEST_CASE("module_a::twice doubles") {
 }
 ```
 
-## Run
+## Build and run
 
 ```sh
-cmake --build --preset Debug --target module_x_tested       # own tests only
-cmake --build --preset Debug --target module_x_tested_deep  # deps' tests first
-
-out/build/Debug/modules/module_x/module_x_test              # own cases
-out/build/Debug/modules/module_x/module_x_test --all        # + all linked deps' cases
-out/build/Debug/modules/module_x/module_x_test --test-case="module_a::twice*"
-out/build/Debug/modules/module_x/module_x_test --list-test-cases
-
-ctest --preset DebugTest -L module.module_x                 # by label
-ctest --preset DebugTest -R "module_x:::"                   # by name prefix
+buck2 build //modules/module_x:module_x_test
+buck2 test //modules/module_x:module_x_test
+buck2 run //modules/module_x:module_x_test -- --all
+buck2 run //modules/module_x:module_x_test -- --test-case="module_x*"
+buck2 run //modules/module_x:module_x_test -- --list-test-cases
 ```
 
-A test binary defaults to only its own module's cases — the runner filters on
-`--source-file=*<module dir>/*`. `--all` opts out. Benchmarks run from it too:
-`module_x_test bench`. Randomized tests need no subcommand — they are ordinary
-cases whose engine is picked by `TEST_RNG` (see `modules/test_rng`).
+The `test` subcommand is optional for module runners: bare doctest flags are
+treated as a test run. Benchmarks are ordinary doctest cases in the `bench`
+suite and can be scoped with `buck2 run ... -- bench`.
+
+Randomized tests are ordinary cases whose engine is selected by `TEST_RNG`; see
+`modules/test_rng`.
 
 ## Benchmarks
 
-Benchmarks are regular doctest cases in the `bench` suite. They are deliberately
-included in normal test discovery and execution so their functionality cannot
-silently bitrot. Include `main/bench.h` and declare one with `BENCHMARK()`:
+Include `main/bench.h` and declare a benchmark with `BENCHMARK()`:
 
 ```cpp
 #include "main/bench.h"
@@ -136,59 +84,9 @@ silently bitrot. Include `main/bench.h` and declare one with `BENCHMARK()`:
 BENCHMARK("module_x operation") {
     benchmark::Bench bench;
     bench.title("module_x operation");
-
-    bench.run("operation", [&] {
-        // Exercise the same functionality in smoke and measurement modes.
-    });
+    bench.run("operation", [&] { /* exercise the operation */ });
 }
 ```
 
-The convention is:
-
-- `BENCHMARK` unset: `benchmark::Bench` does not construct nanobench. Configuration
-  methods are ignored and each `run()` invokes its operation directly once, so
-  the functionality is still exercised without nanobench's OS setup overhead.
-- `BENCHMARK` set (any value): `benchmark::Bench` forwards to nanobench for the
-  full measurement.
-
-Use the wrapper rather than `ankerl::nanobench::Bench` directly. It intentionally
-exposes only nanobench methods already needed by this repository; add another
-forwarding method when a benchmark starts using it.
-
-Use `ctest --preset Benchmark` for full runs; that preset sets `BENCHMARK=1`.
-The `bench` subcommand selects only the benchmark suite but does not itself
-enable a full run, so set the variable when invoking a binary directly:
-
-```sh
-BENCHMARK=1 out/build/Release/cpp_template bench
-BENCHMARK=1 out/build/Release/modules/module_x/module_x_test bench
-```
-
-## Force a re-run
-
-Stamps are cached by mtime:
-
-```sh
-rm out/build/Debug/module-stamps/module_x.*.passed
-```
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `'<x>' is not a target` from `target_link_module` | typo, or `add_subdirectory(<x>)` hasn't run yet — the dep must exist by the time it's linked |
-| `#include "module_a/a.h"` not found | `module_a` not linked into this module |
-| Test case never runs / missing from `--list-test-cases` | file not in `SOURCES`, or case is outside the module dir (it is filtered out — check with `--all`) |
-| Dep's cases missing from `--all` | dep linked with plain `target_link_libraries`; use `target_link_module` |
-| Dep's tests don't run first | same — plain link carries no ordering |
-| Dependency tests re-run every build | you named `<dep>_tested_deep` where `<dep>_tested` was meant |
-| Suite doesn't re-run after editing | touched file isn't in `SOURCES`; delete the stamp |
-| `hidden symbol ... referenced by DSO` | a target links doctest without `DOCTEST_CONFIG_IMPLEMENTATION_IN_DLL` — build it via `add_module` |
-
-## Gotchas
-
-- Never put `main()` in a module — `add_module` compiles sources into a library.
-  The shipping `main()` lives in `src/main.cc`.
-- Test sources go in the **library**, so `--whole-archive` handling for static
-  modules is what keeps registrations alive. Handled by `add_module`; don't
-  hand-roll link flags for module archives.
+Normal tests exercise the operation as a smoke test. Set `BENCHMARK=1` when
+running the `bench` subcommand to enable full nanobench measurements.

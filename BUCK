@@ -58,6 +58,23 @@ configuration_alias(
 
 load("//buck:flake.bzl", "flake")
 
+export_file(
+    name = "module_test_main",
+    src = "buck/module_test_main.cc",
+    out = "module_test_main.cc",
+    visibility = ["PUBLIC"],
+)
+
+cxx_library(
+    name = "module_runner",
+    srcs = ["buck/module_run.cc"],
+    exported_headers = {
+        "module_run.h": "buck/module_run.h",
+    },
+    exported_deps = [":doctest"],
+    visibility = ["PUBLIC"],
+)
+
 flake.prebuilt_pkgconfig_library(
     name = "doctest",
     path = "root//:flake",
@@ -193,9 +210,8 @@ cxx_precompiled_header(
 )
 
 cxx_library(
-    name = "test_locations_reporter",
+    name = "vscode_results_reporter",
     srcs = [
-        "modules/main/test_locations_reporter.cc",
         "modules/main/vscode_results_reporter.cc",
     ],
     deps = [

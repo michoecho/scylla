@@ -5,15 +5,15 @@
 // file is touched. That means a hook that fires once, after the last test.
 //
 // A doctest reporter is that hook, and it is the reason this needs no change to
-// the shared runner (cmake/module_test_main.cc): a reporter is registered by a
+// the shared runner (buck/module_test_main.cc): a reporter is registered by a
 // static initializer in this module's library, so any test binary that links
 // the snapshot module gets the behaviour, and one that does not is unaffected.
 // The alternative -- teaching run::execute about snapshots -- would put a
 // module's concern into infrastructure shared by every module.
 //
 // Registered as a *listener* rather than a named reporter, so it is always
-// active and does not displace the console output or the `test-locations`
-// discovery reporter.
+// active and does not displace the console output or the Buck2 results
+// reporter.
 
 #include <cstdio>
 #include <cstdlib>

@@ -431,7 +431,7 @@ async function runBuck2(
     const buck2 = config.get<string>("buck2Path", "buck2");
     const executor = executorPath(config.get<string>("executorPath", ""));
     const listArg = config.get<string>("listArgument", "--list-test-cases");
-    const locationArg = config.get<string>("locationArgument", "--reporters=test-locations");
+    const locationArg = config.get<string>("locationArgument", "");
     const caseArg = config.get<string>("caseArgument", "--test-case={}");
     const runnerArgs = [
         "--vscode-output", output,

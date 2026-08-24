@@ -8,8 +8,7 @@
 //
 // To accept a deliberate change, do not edit the expected values. Run:
 //
-//     SNAPSHOT_UPDATE=1 ninja -C out/build/Debug && \
-//         ./out/build/Debug/modules/exhaustigen/exhaustigen_test
+//     SNAPSHOT_UPDATE=1 buck2 test //modules/exhaustigen:exhaustigen_test
 //
 // and read the diff. See modules/snapshot/example_test.cc.
 

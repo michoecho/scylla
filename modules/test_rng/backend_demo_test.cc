@@ -28,9 +28,8 @@
 // test case can be while also being the target. So it is split in two. The
 // target is here -- "afl guesses the magic bytes", the same
 // magic_bytes_are_unguessable body under the afl backend, inert unless
-// something is fuzzing it. What points afl-fuzz at it lives outside the suite,
-// in tools/fuzz, and tools/tests/test_fuzz.py is the test that claims the
-// column: it drives that tool and checks AFL comes back with the five bytes.
+// something is fuzzing it. An external afl-fuzz invocation points directly at
+// the Buck2-built binary.
 //
 // A note on how these tests are written. The bodies below signal a bug by
 // throwing, and are run with TestRngProvider::search(), which reports the
@@ -318,9 +317,9 @@ TEST_CASE("the afl backend refuses to run when it cannot fuzz") {
     // fallback: a fuzzing backend that is not being fuzzed tests nothing, and
     // quietly "passing" would be the worst of the available outcomes.
     //
-    // Outside a live fuzzing run -- which is every ordinary ctest run,
+    // Outside a live fuzzing run -- which is every ordinary buck2 test run,
     // instrumented or not -- constructing the provider therefore throws. Under
-    // afl-fuzz it succeeds, which is what tools/tests/test_fuzz.py exercises.
+    // afl-fuzz it succeeds.
     //
     // The extra parentheses keep this an expression: without them
     // `TestRngProvider(Backend::Afl)` parses as a declaration of a variable
@@ -350,8 +349,8 @@ TEST_CASE("the afl backend refuses to run when it cannot fuzz") {
 //     TEST_RNG=afl afl-fuzz -i in -o out -- <binary> \
 //         --test-case='afl guesses the magic bytes'
 //
-// tools/fuzz is what issues that command, locating this case through ctest
-// rather than hardcoding either the binary or the name.
+// Buck2 builds the instrumented test binary; the case can then be selected
+// directly with the command above.
 TEST_CASE("afl guesses the magic bytes") {
     if (std::getenv("__AFL_SHM_FUZZ_ID") == nullptr &&
         std::getenv("__AFL_SHM_ID") == nullptr)
@@ -389,8 +388,7 @@ TEST_CASE("afl guesses the magic bytes") {
 // Skipped unless the binary is instrumented, since the provider refuses the
 // backend otherwise. That is the LibAfl preset:
 //
-//     cmake --preset LibAfl && cmake --build --preset LibAfl
-//     ctest --preset LibAflTest
+//     buck2 test --modifier root//:libafl //modules/test_rng:test_rng_test
 //
 // The budget is worth explaining, because the obvious small number is wrong and
 // the measurements say why. Across seeds the cost of this search varies by more
@@ -409,11 +407,8 @@ TEST_CASE("afl guesses the magic bytes") {
 // spread matters only because a *future* change to the body or the engine would
 // land somewhere else in that distribution.
 // Named "in-process" rather than the obvious "libafl guesses the magic bytes",
-// and the reason is a trap worth leaving signposted: ctest's -R takes an
-// unanchored regex, so a case called "libafl guesses..." is also matched by the
-// pattern tools/fuzz uses to find "afl guesses the magic bytes$". That tool
-// insists on exactly one match -- correctly, since it is about to point a
-// fuzzer at whatever it finds -- so the near-duplicate name breaks it.
+// and the reason is a trap worth leaving signposted: keeping the backend name
+// in the case makes the two demonstrations easy to distinguish.
 TEST_CASE("libafl guesses the magic bytes in-process") {
     if (!test_rng::libafl_available())
         return;
@@ -486,7 +481,7 @@ TEST_CASE("TEST_RNG selects the backend") {
             ::unsetenv("TEST_RNG");
     };
 
-    // Unset means Smoke: an ordinary ctest run executes every randomized body
+    // Unset means Smoke: an ordinary buck2 test run executes every randomized body
     // once, cheaply, rather than launching a search nobody asked for.
     set(nullptr);
     CHECK(test_rng::TestRngProvider().backend() == Backend::Smoke);

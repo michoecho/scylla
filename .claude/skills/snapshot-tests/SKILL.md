@@ -13,10 +13,14 @@ Provided by the `snapshot` module (`modules/snapshot/`), in namespace
 
 ## Add one
 
-`modules/module_x/CMakeLists.txt`:
+`modules/module_x/BUCK`:
 
-```cmake
-target_link_module(module_x PRIVATE snapshot)
+```python
+add_module(
+    name = "module_x",
+    srcs = ["x.cc", "x_test.cc"],
+    deps = ["//modules/snapshot:snapshot"],
+)
 ```
 
 `modules/module_x/x_test.cc`:
@@ -37,9 +41,8 @@ TEST_CASE("render_table lays out aligned columns") {
 Then fill it in:
 
 ```sh
-SNAPSHOT_UPDATE=1 out/build/Debug/modules/module_x/module_x_test
-cmake --build --preset Debug --target module_x_test
-out/build/Debug/modules/module_x/module_x_test        # now green
+SNAPSHOT_UPDATE=1 buck2 run //modules/module_x:module_x_test
+buck2 test //modules/module_x:module_x_test
 git diff                                              # review what it wrote
 ```
 
@@ -58,7 +61,7 @@ check_snapshot(render_document(), ""_filesnap);
 
 An explicit update generates a UUID in the source and stores the exact bytes
 under `.snapshots/<first-two-hex-digits>/<uuid>.snap`. The snapshot root is an
-absolute source-tree path configured by CMake, so the test may run from any
+absolute source-tree path recorded by the build, so the test may run from any
 working directory. `_filesnap.update()` and `SNAPSHOT_UPDATE=1` behave exactly
 like their inline counterparts, including the deliberately failing update run
 and stale-marker check.
@@ -72,7 +75,7 @@ tools/snapshot-files --cleanup       # remove orphans, but only if nothing else 
 ```
 
 The validator reports duplicate or malformed literals, missing snapshot files,
-malformed storage paths, and orphans. CTest runs the dry-run validator too.
+malformed storage paths, and orphans. Buck2 test runs the dry-run validator too.
 
 ## No macros — and why it matters
 
@@ -92,8 +95,8 @@ surrounding expression.
 ## Update after a behaviour change
 
 ```sh
-SNAPSHOT_UPDATE=1 out/build/Debug/modules/module_x/module_x_test   # rewrites all
-cmake --build --preset Debug --target module_x_test
+SNAPSHOT_UPDATE=1 buck2 run //modules/module_x:module_x_test   # rewrites all
+buck2 test //modules/module_x:module_x_test
 git diff                                                          # this is the review
 ```
 
@@ -246,7 +249,7 @@ still decode to the value the test saw, and rewrites only that span.
 | `no matching literal operator for ... _snap` | add `using snapshot_testing::operator""_snap;` to the test file |
 | `unsupported escape '\x'` | only `\n \t \r \" \\` are decoded; rewrite the value |
 | `unterminated string literal` | a literal spans a line break; keep each on one line |
-| `refusing to update ...: reported a relative path` | the TU was compiled with a relative source path; build via the CMake presets, which pass absolute ones |
+| `refusing to update ...: reported a relative path` | the TU was compiled with a relative source path; rebuild through Buck2 so source locations are stable |
 | `source file is not valid UTF-8` | fix the file's encoding; nothing was written |
 | `new snapshot value ... is not valid UTF-8` | the code under test emitted invalid UTF-8 — that's the bug |
 | Nothing rewritten, test still fails | `SNAPSHOT_UPDATE=1` not set and no `.update()`, or a filter excluded the case |

@@ -243,12 +243,12 @@ private:
 // runtime half of the question.
 //
 // The runtime half cannot be folded into a compile-time constant, because the
-// instrumented binary is also run directly -- by ctest, and for crash replay --
+// instrumented binary is also run directly -- by buck2 test, and for crash replay --
 // and it must not claim to be fuzzing then.
 std::string afl_unusable_reason() {
 #if !defined(BUILD_FUZZERS) || !defined(__AFL_HAVE_MANUAL_CONTROL)
-    return "this is not an instrumented build (configure with the Fuzz preset, "
-           "which builds with afl-clang-fast++ and BUILD_FUZZERS=ON)";
+    return "this is not an AFL-instrumented build (use an AFL++ compiler and "
+           "define BUILD_FUZZERS)";
 #else
     if (std::getenv("__AFL_SHM_FUZZ_ID") == nullptr &&
         std::getenv("__AFL_SHM_ID") == nullptr)
@@ -282,8 +282,8 @@ std::string afl_unusable_reason() {
 std::string libafl_unusable_reason() {
     const std::size_t edges = libafl_c_edge_count();
     if (edges == 0)
-        return "the binary has no SanitizerCoverage instrumentation (configure "
-               "with the LibAfl preset)";
+        return "the binary has no SanitizerCoverage instrumentation (build with "
+               "the root//:libafl Buck2 modifier)";
     // The map libafl_targets allocates is 2^21 entries. A real program has far
     // fewer edges than that, so a count at the cap means _init never ran and
     // this is the uninitialized map size being reported.
@@ -296,8 +296,8 @@ std::string libafl_unusable_reason() {
 }
 #else
 std::string libafl_unusable_reason() {
-    return "this build does not link modules/libafl (configure with the LibAfl "
-           "preset, which sets BUILD_LIBAFL=ON)";
+    return "this build does not link modules/libafl (build with the "
+           "root//:libafl Buck2 modifier)";
 }
 #endif
 

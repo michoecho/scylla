@@ -7,8 +7,8 @@ description = "LibAFL's in-process fuzzer behind a C ABI, for the test_rng libaf
 
 [lib]
 # Cargo prefixes a cdylib with `lib` unconditionally, so this stem produces
-# liblibafl_c.so in the build tree. Nothing renames it: CMake links the file by
-# path out of the cargo target directory (see ../CMakeLists.txt), so the doubled
+# liblibafl_c.so in the build tree. Nothing renames it: Buck2 links the file by
+# path out of the cargo target directory, so the doubled
 # name never has to be spelled by a consumer.
 name = "libafl_c"
 # cdylib only. The C++ side links this as a shared library, so there is no
@@ -17,7 +17,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The three LibAFL crates, from crates.io and pinned by Cargo.lock. Nix vendors
-# them into a local registry from that lockfile and CMake builds this crate
+# them into a local registry from that lockfile and Buck2 builds this crate
 # against it offline -- so the dependency set is as reproducible as a derivation
 # would make it, while this file stays editable in the build tree.
 #

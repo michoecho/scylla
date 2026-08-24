@@ -15,9 +15,8 @@ def add_module(
         visibility = ["PUBLIC"]):
     """Declare a module library and its matching doctest executable.
 
-    Test translation units live in the library, just like they do for the
-    CMake add_module() convention.  The test executable links the library
-    whole so static initializers register every doctest case.
+    Test translation units live in the library. The test executable links the
+    library whole so static initializers register every doctest case.
     """
     test_name = name + "_test"
     source_dir = module_source_dir or name
@@ -60,8 +59,8 @@ def add_module(
 
     native.cxx_test(
         name = test_name,
-        srcs = ["//cmake:module_test_main"],
-        deps = [":" + name, "//:test_locations_reporter", "//cmake:module_runner"] + select({
+        srcs = ["//:module_test_main"],
+        deps = [":" + name, "//:vscode_results_reporter", "//:module_runner"] + select({
             "//:no_pch": [],
             "DEFAULT": ["//:project_pch"],
         }),
@@ -82,7 +81,6 @@ def add_module(
         },
         header_namespace = "",
         compiler_flags = compiler_flags + [
-            "-Icmake",
             "-DMODULE_NAME=\"{}\"".format(name),
             "-DMODULE_SOURCE_DIR=\"{}\"".format(source_dir),
         ],

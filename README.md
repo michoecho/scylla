@@ -1,9 +1,10 @@
 # cpp_template
 
 ```sh
-cmake --preset Debug                      # configure
-cmake --build --preset Debug              # build
-ctest --preset DebugTest                  # test
-cmake --preset Debug -DENABLE_TEST_COVERAGE=YES -B out/build/Cov && cmake --build out/build/Cov && ctest --test-dir out/build/Cov  # coverage on any preset
-./tools/merge-coverage out/build/Cov      # -> out/build/Cov/coverage/total/total/index.html
+buck2 build //modules/...
+buck2 test //modules/...
 ```
+
+The Buck2 VS Code extension adds per-test discovery and coverage. Build and
+install it with `./tools/vscode-buck2/build-and-install`, then use the Testing
+view in the project-local editor.

@@ -58,8 +58,7 @@ mistake does not announce itself — see the empty-trace note in Troubleshooting
 
 - An Intel PT capable host: `/sys/devices/intel_pt` must exist and `perf list`
   must show `intel_pt//`. Without it, `perf record -e intel_pt//u` fails.
-- The binary you intend to trace, built: `cmake --build --preset Debug`, or
-  `--target <module>_test` for a single module's test binary.
+- The binary you intend to trace, built: `buck2 build //modules/...:<module>_test`.
 - For `run --ftf` / `run --perfetto`: the `perf2perfetto` dlfilter. Nothing to build —
   the devshell provides it prebuilt and points `$PERF2PERFETTO_DLFILTER` at it.
   Outside `nix develop` the variable is unset and you must pass `--dlfilter`.
@@ -83,8 +82,12 @@ TEST_CASE("my hot path") {
 The helpers live in the `pt` module, so link it from the module whose test you
 are tracing (see skills/modules):
 
-```cmake
-target_link_module(module_x PRIVATE pt)
+```python
+add_module(
+    name = "module_x",
+    srcs = ["x.cc", "x_test.cc"],
+    deps = ["//modules/pt:pt"],
+)
 ```
 
 Linking `pt` into the module is the whole wiring job — it makes that module's
@@ -92,7 +95,7 @@ own `<module>_test` traceable, which is the binary you will point pt-trace at.
 No further linking is needed, and in particular nothing has to be added to
 `cpp_template`.
 
-When the test runs untraced (normal `ctest`), the helpers no-op, so this is safe
+When the test runs untraced (normal `buck2 test`), the helpers no-op, so this is safe
 to leave in place. Worked examples, each traced via its own module's test binary:
 `modules/pt/pt_control_test.cc` (a nested call tree, via `pt_test`) and
 `modules/playground/hegel_trace_test.cc` (a `pt::Trace` around `hegel::test`,

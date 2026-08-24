@@ -20,10 +20,11 @@
 // That includes AFL. A fuzzing run is not a different kind of test here, it is
 // the same test case under a different backend:
 //
-//     ctest                                          # smoke, one pass
-//     TEST_RNG=random ./module_test                  # Hegel, with shrinking
-//     tools/fuzz 'my property'                       # AFL, via ctest by name
-//     ctest --preset LibAflTest                      # LibAFL, in-process
+//     buck2 test //modules/test_rng:test_rng_test     # smoke, one pass
+//     TEST_RNG=random buck2 test //modules/test_rng:test_rng_test
+//                                                   # Hegel, with shrinking
+//     TEST_RNG=libafl buck2 test --modifier root//:libafl \\
+//         //modules/test_rng:test_rng_test            # LibAFL, in-process
 //
 // The provider owns the AFL persistent loop, so a test never writes one. This
 // is the whole reason there is no separate "fuzz target" concept: a fuzz target
@@ -224,10 +225,7 @@ enum class Backend {
     // is missing, since a fuzzing backend that is not being fuzzed tests
     // nothing. A test is therefore run under it like this:
     //
-    //     tools/fuzz 'my property'
-    //
-    // which builds the instrumented binaries and resolves the name through
-    // ctest. By hand, the part that matters is that TEST_RNG is set on
+    // By hand, the part that matters is that TEST_RNG is set on
     // afl-fuzz itself: an `env TEST_RNG=afl ...` prefix on the target makes AFL
     // inspect `env` for instrumentation and abort.
     //
@@ -245,7 +243,7 @@ enum class Backend {
     // and each testcase runs in a fresh forked child. Nothing in that model
     // knows what a test case is, which is why driving one test under AFL means
     // pointing afl-fuzz at the binary and selecting the case by name from
-    // outside (tools/fuzz). LibAFL is a library rather than a program, so its
+    // outside. LibAFL is a library rather than a program, so its
     // InProcessExecutor calls the body as an ordinary function in this process:
     // no fork server, no re-exec, and the search is a plain function call that
     // returns a verdict. A randomized test can therefore run it inline, the way
@@ -260,18 +258,17 @@ enum class Backend {
     //     else running here, not only the body. That costs some feedback
     //     precision and is the price of not forking.
     //
-    // Requires a build instrumented with SanitizerCoverage; the LibAfl preset
-    // is that build. As with afl, the provider refuses rather than degrading
+    // Requires a build instrumented with SanitizerCoverage; the `root//:libafl`
+    // Buck2 modifier enables that build. As with afl, the provider refuses rather than degrading
     // when the instrumentation is absent, because a coverage-guided search with
     // no coverage is a slow random search that looks like a passing one.
     //
-    //     cmake --preset LibAfl && cmake --build --preset LibAfl
-    //     ctest --preset LibAflTest
+    //     buck2 test --modifier root//:libafl //modules/test_rng:test_rng_test
     LibAfl,
 
     // "smoke" -- no search at all. One invocation, every parameter taking a
     // fixed representative value from its domain. This is the default when
-    // TEST_RNG is unset, so an ordinary `ctest` run executes every randomized
+    // TEST_RNG is unset, so an ordinary `buck2 test` run executes every randomized
     // test body once, cheaply, and catches the errors that need no search at
     // all -- a body that does not compile against its domains, a property that
     // is simply false. The real searches are opt-in because they are slow.

@@ -14,7 +14,7 @@
 //       ./out/build/Debug/modules/playground/playground_test \
 //       --test-case='hegel under pt'
 //
-// Untraced -- a normal ctest run -- pt::Trace no-ops and this is an ordinary,
+// Untraced -- a normal buck2 test run -- pt::Trace no-ops and this is an ordinary,
 // somewhat small property test.
 
 #include <cstddef>

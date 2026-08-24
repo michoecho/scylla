@@ -36,7 +36,7 @@ namespace snapshot_testing {
 // reader needs -- including the two values, for a mismatch. Nothing is written
 // to stderr on the side: a diagnostic split between an assertion message and a
 // stray printf arrives interleaved with every other test's output, and under a
-// parallel ctest run the two halves need not even stay adjacent.
+// parallel Buck2 test run the two halves need not even stay adjacent.
 //
 // One message per outcome, and each says only what is true of that outcome.
 // Routing both failures through a single assertion is how output ends up

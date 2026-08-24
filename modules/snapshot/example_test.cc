@@ -13,8 +13,7 @@
 // To change what this asserts, do not edit the expected values. Change the code
 // and run:
 //
-//     SNAPSHOT_UPDATE=1 ninja -C out/build/Debug && \
-//         ./out/build/Debug/modules/snapshot/snapshot_test
+//     SNAPSHOT_UPDATE=1 buck2 test //modules/snapshot:snapshot_test
 //
 // which rewrites every snapshot in this file at once, then read the diff. The
 // run still fails, deliberately: accepting the new behaviour is the diff you

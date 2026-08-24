@@ -269,7 +269,7 @@ fn run_inner(
         StdRand::with_seed(seed),
         // In-memory on both counts: this backend is a test that runs in a build
         // tree, and writing a corpus or a crash directory into it would leave
-        // artefacts an ordinary `ctest` run has no way to clean up. The C++
+        // artefacts an ordinary `buck2 test` run has no way to clean up. The C++
         // side learns about a failure through the report, not through a file.
         InMemoryCorpus::new(),
         InMemoryCorpus::new(),

@@ -37,7 +37,7 @@
           doCheck = false;
         };
 
-      # The Hegel stack, built entirely from source. Upstream's own CMake and
+      # The Hegel stack, built entirely from source. Upstream's own build files and
       # flake fetch a prebuilt libhegel from a GitHub release at configure
       # time; we compile the Rust engine ourselves and hand it to the C++
       # binding via HEGEL_LIBHEGEL_LIBRARY, so no build step downloads
@@ -61,8 +61,8 @@
         });
 
       # Buck needs one prefix containing both Boost's headers and its compiled
-      # stacktrace library. Nix keeps those in separate outputs, while CMake's
-      # dev shell consumes them separately.
+      # stacktrace library. Nix keeps those in separate outputs, while the
+      # Buck2 dev shell consumes them separately.
       boostBundleFor = pkgs:
         let boost = boostFor pkgs;
         in pkgs.symlinkJoin {
@@ -90,14 +90,6 @@
               anthropic.claude-code
               eamodio.gitlens
               ms-vscode.cpptools
-              # Upstream CMake Tools, and the default until the fork in
-              # tools/vscode-cmake-tools (which adds per-test coverage) is
-              # installed over it by that directory's build-and-install. The
-              # fork is deliberately *not* built here: its dependencies come
-              # from yarn at dev time rather than from Nix, so baking it in
-              # would make `nix build .#code` need network access. The wrapper
-              # below is what makes overriding it possible at all.
-              ms-vscode.cmake-tools
               ms-python.python
               ms-python.vscode-pylance
               ms-python.debugpy
@@ -140,12 +132,9 @@
           # given, and ours are prepended, so a user-supplied one wins.
           #
           # The extensions directory has to be writable, and the one baked into
-          # `withExts` is a read-only store path. Making it project-local is
-          # what lets a locally built extension override a packaged one -- in
-          # particular the CMake Tools fork in tools/vscode-cmake-tools, which
-          # shares upstream's identity and so replaces it once installed here.
-          # Without this the fork would sit on disk unused, since the store
-          # path always wins.
+          # `withExts` is a read-only store path. Making it project-local lets
+          # locally built extensions, such as the Buck2 test extension, be
+          # installed without modifying the Nix store.
           #
           # Seeding copies rather than symlinks is deliberate: VS Code writes
           # inside extension directories, and the store is read-only. Each
@@ -163,8 +152,8 @@
                   name="$(basename "$ext")"
                   # Any directory whose name starts with the extension id
                   # counts as present: `--install-extension` appends a version
-                  # suffix (ms-vscode.cmake-tools-1.13.0), and copying the
-                  # packaged one back in would shadow the installed override.
+                  # suffix, and copying the packaged one back in would shadow
+                  # the installed override.
                   # The glob is matched with `set --` in a subshell rather than
                   # compgen, which this non-interactive bash does not provide.
                   if ! ( set -- "$extdir/$name" "$extdir/$name"-*; [ -e "$1" ] || [ -e "$2" ] ); then
@@ -190,32 +179,13 @@
           # Upstream ships a flake, but it downloads a prebuilt engine .so from
           # a GitHub release; these build the whole stack from source instead.
           # Three packages because they are three separate builds: a Rust
-          # cdylib, a CMake library, and the C++ binding that consumes both.
+          # cdylib, a native library, and the C++ binding that consumes both.
           inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
 
           boost = boostBundleFor pkgs;
           libbacktrace = pkgs.libbacktrace;
 
-          # The crates modules/libafl's Rust wrapper depends on, vendored into a
-          # local registry from the workspace Cargo.lock.
-          #
-          # Note what this is *not*: it is not a build of that wrapper. The
-          # wrapper is our code and is built by CMake, in the build tree, like
-          # every other module here -- see modules/libafl/CMakeLists.txt. Only
-          # its third-party dependencies come from Nix, because those are the
-          # part that is fetched rather than edited.
-          #
-          # That split is the whole point. A Nix derivation around our own
-          # source would mean any change to the C ABI -- a new function, a
-          # changed signature -- is a derivation rebuild before C++ can see it,
-          # which is a barrier in exactly the place iteration happens.
-          libafl-cargo-deps = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./Cargo.lock;
-          };
-
-          doctest = pkgs.doctest.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./nix/patches/doctest-discover-tests.patch ];
-          });
+          doctest = pkgs.doctest;
 
           inherit (pkgs)
             python3
@@ -278,13 +248,8 @@
           llvmPkgs = pkgs.llvmPackages_22;
           nativelinkPackage = my_packages.nativelink;
 
-          # nixpkgs' doctest plus our two extensions to doctest_discover_tests:
-          # a TEST_SUBCOMMAND argument, which lets the discovered runner be
-          # invoked through a subcommand (`cpp_template test ...`), and a
-          # DEF_SOURCE_LINE property on each registered test, which is what the
-          # VS Code test explorer reads to make "go to test" work. Upstream
-          # ships the patched scripts/cmake/*.cmake into lib/cmake/doctest, so
-          # CMakeLists picks the change up via find_package(doctest).
+          # doctest is consumed directly by Buck2; test discovery and coverage
+          # are implemented by the Buck2 VS Code executor.
           doctest = my_packages.doctest;
 
           # nixpkgs' nanobench with our patch making the perf counters ask for
@@ -352,25 +317,21 @@
             packages = with pkgs; [
               aflplusplus
               cli11
-              cmake
               doctest
               nanobench
-              ninja
               llvmPkgs.clang-tools
               llvmPkgs.llvm
               gdb
               boost.dev
               boost
-              # Name resolution backend for Boost.Stacktrace; see CMakeLists.
+              # Name resolution backend for Boost.Stacktrace.
               libbacktrace
               zstd
               lz4
 
               # Test runner for the Python tools under tools/, plus the
               # scientific stack the map-lookup cost study analyses its sweep
-              # with (modules/playground/map_lookup_report.ipynb). CMake only
-              # locates an interpreter (find_package(Python3)); the packages
-              # come from here, so no build step ever installs anything.
+              # with (modules/playground/map_lookup_report.ipynb).
               (python3.withPackages (ps: [
                 ps.pytest
                 ps.numpy
@@ -382,37 +343,23 @@
               ]))
 
               # Property-based testing; see src/hegel_test.cc. hegel-cpp
-              # propagates reflect-cpp, and its CMake config finds the engine
-              # shared library shipped inside its own prefix, so only this one
-              # entry is needed for find_package(hegel) to work.
+              # propagates reflect-cpp and the engine shared library needed by
+              # the Buck2 C++ targets.
               (hegelPackagesFor pkgs).hegel-cpp
 
               # Rust, for modules/libafl -- the wrapper that puts LibAFL's
-              # in-process fuzzer behind a C ABI for TEST_RNG=libafl. The crate
-              # is built by CMake from this tree rather than by a derivation, so
-              # the toolchain has to be in the shell; its dependencies are
-              # vendored separately (see CARGO_VENDOR_DIR below).
+              # in-process fuzzer behind a C ABI for TEST_RNG=libafl.
               cargo
               rustc
+              # Regenerates third-party/rust/BUCK from Cargo manifests for
+              # Buck2 consumption.
               reindeer
-              # Drives that cargo build from CMake: find_package(Corrosion) in
-              # modules/libafl turns the crate into a real imported target with
-              # a build rule behind it. See the comments there for what it
-              # replaces.
-              corrosion
 
               pkgs-unstable.claude-code
               code
               pkgs-unstable.codex
 
-              # Toolchain for building the forked CMake Tools extension in
-              # tools/vscode-cmake-tools (see tools/vscode-cmake-tools/README).
-              # Unlike everything else here, its dependencies are *not*
-              # vendored through Nix: the fork's build runs `yarn install`
-              # against the network into a gitignored node_modules. That is a
-              # deliberate exception -- packaging a large TypeScript
-              # dependency tree reproducibly is a project of its own, and the
-              # extension is a developer tool rather than part of the build.
+              # Build tools for the Buck2 VS Code extension.
               nodejs
               yarn
 
@@ -440,10 +387,8 @@
               dbus
               abseil-cpp
               sdl3
-              # Instance/device selection and swapchain building for the vulkan
-              # module. Packaged in nixpkgs, so no submodule and no local
-              # derivation; it ships a CMake config, hence
-              # find_package(vk-bootstrap).
+              # Instance/device selection and swapchain building for the
+              # vulkan module.
               vk-bootstrap
 
               buck2Wrapped
@@ -467,19 +412,6 @@
             shellHook = ''
               export PYTHONPYCACHEPREFIX="''${PYTHONPYCACHEPREFIX:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")/.cache/pycache}"
 
-              # Where Nix vendored the workspace's crate dependencies. CMake
-              # reads this to point cargo at a local registry, so the Rust build
-              # runs --offline and fetches nothing: the dependency set stays
-              # pinned by Cargo.lock and Nix hashes even though the crate itself
-              # is built here rather than by a derivation.
-              #
-              # Exported rather than looked up in CMake because only Nix can
-              # evaluate it, and a build outside this shell should fail loudly
-              # (modules/libafl/CMakeLists.txt errors when it is unset) rather
-              # than silently reaching for the network.
-              export LIBAFL_CARGO_VENDOR_DIR="${pkgs.rustPlatform.importCargoLock {
-                lockFile = ./Cargo.lock;
-              }}"
             '';
 
             hardeningDisable = [ "all" ];

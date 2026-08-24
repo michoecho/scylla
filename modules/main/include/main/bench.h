@@ -10,7 +10,7 @@
 #include "doctest/doctest.h"
 
 // BENCH_SUITE, the doctest suite every benchmark lives in, comes from the
-// shared runner (cmake/module_run.h): it is that dispatcher which scopes a
+// shared runner (buck/module_run.h): it is that dispatcher which scopes a
 // `bench` run to the suite, and BENCHMARK() below is what puts cases into it.
 #include "module_run.h"
 
@@ -50,7 +50,7 @@ class Bench {
 // Define a benchmark. It is an ordinary doctest test case in BENCH_SUITE, so a
 // normal test run exercises its functionality through benchmark::Bench without
 // constructing nanobench. BENCHMARK=1 enables full measurement. The `bench`
-// subcommand scopes a run to this suite; the Benchmark CMake preset supplies
-// the environment variable.
+// subcommand scopes a run to this suite; the caller supplies the BENCHMARK
+// environment variable when full measurements are wanted.
 #define BENCHMARK(name) \
     TEST_CASE(name * doctest::test_suite(BENCH_SUITE))

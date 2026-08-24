@@ -50,9 +50,8 @@ Command classify(int argc, char* const argv[], bool default_to_test) {
         }
     }
 
-    // No subcommand. A test runner treats that as `test` so CTest can invoke it
-    // with bare doctest flags; the shipping executable leaves it None and falls
-    // back to its own default behaviour.
+    // No subcommand. A test runner treats that as `test` so bare doctest flags
+    // work; the shipping executable leaves it None and decides for itself.
     if (command.kind == Command::Kind::None && default_to_test)
         command.kind = Command::Kind::Test;
 
@@ -72,18 +71,13 @@ int execute(const char* argv0,
     // Benchmarks are ordinary tests whose bodies select a minimal smoke run
     // unless BENCHMARK is set. The bench subcommand only scopes the run to that
     // suite. User filters passed after the subcommand still apply on top.
-    //
-    // Randomized tests need no equivalent: they are ordinary test cases, and
-    // which engine drives them is TEST_RNG's business, not a subcommand's.
     std::vector<std::string> scoped;
     if (command.kind == Command::Kind::Bench)
         scoped = {"--test-suite=" BENCH_SUITE};
 
     // c_str() pointers below must outlive the run; the source vectors do.
-    //
     // Order is preset, then suite scoping, then the user's own arguments, so
-    // each layer can override the one before it -- an explicit --source-file
-    // replaces a module filter rather than being overridden by it.
+    // each layer can override the one before it.
     std::vector<const char*> forwarded;
     forwarded.push_back(argv0);
     for (const std::string& arg : preset)
@@ -93,8 +87,6 @@ int execute(const char* argv0,
     for (const std::string& arg : command.args)
         forwarded.push_back(arg.c_str());
 
-    // Keep the logged form next to the actual argv construction so the two
-    // cannot drift apart.
     {
         std::vector<std::string> logged_args;
         logged_args.reserve(preset.size() + scoped.size() + command.args.size());
@@ -106,11 +98,7 @@ int execute(const char* argv0,
     }
 
     context.applyCommandLine(static_cast<int>(forwarded.size()), forwarded.data());
-
-    int res = context.run();
-    if (context.shouldExit())  // query flags (--list-test-cases, --exit) rely on this
-        return res;
-    return res;
+    return context.run();
 }
 
 }  // namespace run

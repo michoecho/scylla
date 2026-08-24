@@ -16,16 +16,6 @@
     "chat.agent.enabled": false,
     "gitlens.plusFeatures.enabled": false,
     "gitlens.showWhatsNewAfterUpgrades": false,
-    "cmake.ctest.testSuiteDelimiter": ":::",
-    "cmake.ctest.failurePatterns": [
-        { "regexp": "(.*?):(\\d+): *FATAL ERROR: *((?:.*\\n?)(?:  values:.*)?)" },
-        { "regexp": "(.*?):(\\d+): *ERROR: *((?:.*\\n?)(?:  values:.*)?)" },
-        { "regexp": "(.*?):(\\d+): *(?:error: *)(.*)" },
-        { "regexp": "(.*?)\\((\\d+)\\): *(?:error: *)(.*)" },
-        { "regexp": "(.*?):(\\d+): *(Failure.*)" }
-    ],
-    "cmake.ctest.allowParallelJobs": true,
-    "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
     "python.analysis.typeCheckingMode": "basic",
     "git.blame.editorDecoration.enabled": false,
     "testing.coverageToolbarEnabled": true,

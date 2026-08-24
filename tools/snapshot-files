@@ -46,9 +46,7 @@ def main() -> int:
             return root / ".snapshots"
         if len(relative.parts) >= 2 and relative.parts[0] == "modules":
             module = root / relative.parts[0] / relative.parts[1]
-            if module.is_dir() and (
-                    (module / "CMakeLists.txt").is_file() or
-                    (module / "BUCK").is_file()):
+            if module.is_dir() and (module / "BUCK").is_file():
                 return module / ".snapshots"
         return root / ".snapshots"
 
@@ -58,9 +56,7 @@ def main() -> int:
         snapshot_roots.update(
             module / ".snapshots"
             for module in modules.iterdir()
-            if module.is_dir() and (
-                (module / "CMakeLists.txt").is_file() or
-                (module / "BUCK").is_file()))
+            if module.is_dir() and (module / "BUCK").is_file())
 
     references = defaultdict(list)
     problems = []

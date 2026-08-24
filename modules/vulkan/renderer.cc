@@ -294,7 +294,7 @@ void Renderer::init_pipeline() {
         "vkCreatePipelineLayout"
     );
 
-    // Compiled by CMake next to the test binary; see the module's CMakeLists.
+    // Compiled by the Buck2 resource rule next to the test binary.
     std::filesystem::path shader_path = executable_directory() / "shaders/gradient.slang.spv";
     if (const char* buck_shader_path = std::getenv("VULKAN_SHADER_PATH");
         buck_shader_path != nullptr && *buck_shader_path != '\0') {
