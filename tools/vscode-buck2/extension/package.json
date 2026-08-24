@@ -53,8 +53,8 @@
         },
         "buck2Test.locationArgument": {
           "type": "string",
-          "default": "",
-          "description": "Optional argument appended during listing to emit test source locations; empty disables it."
+          "default": "--reporters=test-locations",
+          "description": "Argument appended during listing to emit test source locations."
         },
         "buck2Test.caseArgument": {
           "type": "string",

@@ -212,6 +212,7 @@ cxx_precompiled_header(
 cxx_library(
     name = "vscode_results_reporter",
     srcs = [
+        "modules/main/test_locations_reporter.cc",
         "modules/main/vscode_results_reporter.cc",
     ],
     deps = [

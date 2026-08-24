@@ -44,9 +44,9 @@ The extension defaults to `buck2` on `PATH` and uses `//...` as its target
 pattern. `buck2Test.buck2Path`, `buck2Test.executorPath`,
 `buck2Test.targetPatterns`, `buck2Test.listArgument`,
 `buck2Test.locationArgument`, and `buck2Test.caseArgument` can be set per
-workspace. Location reporting is optional and disabled by default; set
-`buck2Test.locationArgument` only for a test binary that provides a compatible
-reporter.
+workspace. The default location argument selects this project's
+`test-locations` reporter; set it to an empty string for test binaries that do
+not provide that reporter.
 
 For discovery, the extension runs `buck2 test <patterns> --` with
 `--vscode-list-only`. The executor uses Buck2's test listing stage to ask each
