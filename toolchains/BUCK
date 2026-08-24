@@ -49,6 +49,36 @@ nix_cxx_toolchain(
             "-fprofile-instr-generate",
             "-fcoverage-mapping",
         ],
+        # FuzzTest's fuzzing mode, mirroring upstream's
+        # cmake/FuzzTestFlagSetup.cmake. The coverage instrumentation is what
+        # the in-process engine steers on: `inline-8bit-counters` gives it edge
+        # coverage, `trace-cmp` the comparison operands it uses to solve
+        # branches. ASan is what turns a mutated input into a detectable
+        # failure rather than silent corruption, and `-UNDEBUG` keeps assertions
+        # live so they can fail too.
+        #
+        # FuzzTest's own sources opt back out with `-fsanitize-coverage=0`; see
+        # FUZZTEST_COPTS in third-party/fuzztest/BUCK.
+        "root//:fuzztest": [
+            "-g",
+            "-UNDEBUG",
+            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
+            "-DADDRESS_SANITIZER",
+            "-fsanitize=address",
+            # Abseil's Swiss tables add a generation counter to every iterator
+            # when built under ASan, changing the layout of the iterator. The
+            # nixpkgs Abseil is not built under ASan, so without this its
+            # out-of-line code hands back the disabled variant's null
+            # generation pointer and the header-inline code dereferences it --
+            # an immediate SEGV inside flat_hash_set::begin(). `NDEBUG_SANITIZER`
+            # is Abseil's own opt-out ("If defined, performance is important"),
+            # which puts our translation units back in agreement with the
+            # library. The alternative is a second Abseil built with matching
+            # ASan flags; this is cheaper and faster to fuzz under.
+            "-DNDEBUG_SANITIZER",
+            "-fsanitize-coverage=inline-8bit-counters",
+            "-fsanitize-coverage=trace-cmp",
+        ],
         "DEFAULT": [],
     }),
     link_flags = select({
@@ -57,6 +87,7 @@ nix_cxx_toolchain(
             "-fcoverage-mapping",
             "-Wl,--build-id",
         ],
+        "root//:fuzztest": ["-fsanitize=address"],
         "DEFAULT": [],
     }),
     visibility = ["PUBLIC"],

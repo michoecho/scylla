@@ -60,6 +60,70 @@
           patches = (old.patches or [ ]) ++ [ ./nix/patches/boost-stacktrace-from-exception-ptr.patch ];
         });
 
+
+      # FuzzTest's C++ dependencies, rebuilt at this project's language standard.
+      # Abseil's headers key several ABI decisions off the standard they were
+      # compiled under, and re2 links Abseil, so the two have to agree -- hence
+      # the `re2.override` rather than two independently-pinned packages.
+      #
+      # Abseil installs ~214 fine-grained `.pc` files (absl_strings,
+      # absl_flat_hash_map, ...) and no umbrella, which would otherwise force
+      # every consumer to enumerate the modules it needs. `absl-all.pc` is
+      # synthesised here instead: a `.pc` whose `Requires:` names every module
+      # Abseil shipped, so buck asks for one module and pkg-config does the
+      # topological ordering of the ~214 archives itself.
+      fuzztestDepsFor = pkgs: rec {
+        # Pinned to the release FuzzTest's MODULE.bazel declares. nixpkgs is on
+        # 20260107.1, which predates `absl/random/mocking_access.h` -- a header
+        # FuzzTest's `fuzzing_bit_gen` includes, and which `core_domains_impl`
+        # depends on, so the skew is not optional to resolve.
+        abseil-cpp = (pkgs.abseil-cpp_202601.override {
+          cxxStandard = "23";
+        }).overrideAttrs (old: rec {
+          version = "20260526.0";
+          src = pkgs.fetchFromGitHub {
+            owner = "abseil";
+            repo = "abseil-cpp";
+            rev = version;
+            hash = "sha256-O9ClnGm4WSTX3g1Q2VYTMhUtGG52XBwxzgHtWW9WSG0=";
+          };
+        });
+
+        re2 = pkgs.re2.override { abseil-cpp = abseil-cpp; };
+
+        # Only the pkgconfig directory is assembled; the `.pc` files carry
+        # absolute store paths for includedir/libdir, so the headers and
+        # archives are found without joining those trees too.
+        absl = pkgs.runCommand "abseil-cpp-all"
+          { nativeBuildInputs = [ pkgs.pkg-config ]; } ''
+          mkdir -p "$out/lib/pkgconfig"
+          ln -st "$out/lib/pkgconfig" ${abseil-cpp.dev}/lib/pkgconfig/*.pc
+          export PKG_CONFIG_PATH="$out/lib/pkgconfig"
+
+          # Each module is kept only if pkg-config can actually resolve it.
+          # Abseil installs `.pc` files for a few test-only helpers whose own
+          # `Requires:` name modules it does not install (absl_test_instance_tracker,
+          # for one), and a single unresolvable entry fails the whole query. Probing
+          # rather than hardcoding an exclusion list keeps this correct across
+          # Abseil releases.
+          modules=""
+          for pc in "$out"/lib/pkgconfig/*.pc; do
+            module=$(basename "$pc" .pc)
+            if pkg-config --libs "$module" >/dev/null 2>&1; then
+              modules="''${modules:+$modules, }$module"
+            fi
+          done
+
+          cat > "$out/lib/pkgconfig/absl-all.pc" <<EOF
+          Name: absl-all
+          Description: Every resolvable Abseil module, as one pkg-config module
+          Version: ${abseil-cpp.version}
+          Requires: $modules
+          EOF
+          sed -i 's/^ *//' "$out/lib/pkgconfig/absl-all.pc"
+        '';
+      };
+
       # Buck needs one prefix containing both Boost's headers and its compiled
       # stacktrace library. Nix keeps those in separate outputs, while the
       # Buck2 dev shell consumes them separately.
@@ -181,6 +245,12 @@
           # Three packages because they are three separate builds: a Rust
           # cdylib, a native library, and the C++ binding that consumes both.
           inherit (hegelPackagesFor pkgs) libhegel reflectcpp hegel-cpp;
+
+          # FuzzTest's dependencies. `absl` is the umbrella pkg-config view of
+          # abseil-cpp; `re2` is the matching build. Both get a
+          # `pkgconfig-<name>` dev shell from the mapAttrs' below, which is how
+          # buck's `flake.prebuilt_pkgconfig_library` queries them.
+          inherit (fuzztestDepsFor pkgs) absl re2;
 
           boost = boostBundleFor pkgs;
           libbacktrace = pkgs.libbacktrace;

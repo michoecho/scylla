@@ -1,0 +1,27 @@
+# FuzzTest's C++ dependencies, taken from nixpkgs rather than vendored.
+#
+# Unlike FuzzTest itself -- which installs nothing and so has to be built from
+# vendored sources (see third-party/fuzztest/) -- these are ordinary packages
+# with `.pc` files, so they come in through the same pkg-config path as the rest
+# of this repo's third-party libraries.
+
+load("//buck:flake.bzl", "flake")
+
+# Abseil ships ~214 fine-grained `.pc` files and no umbrella module, so flake.nix
+# synthesises `absl-all.pc`, whose `Requires:` names all of them. Asking for that
+# one module lets pkg-config resolve and topologically order the whole library.
+flake.prebuilt_pkgconfig_library(
+    name = "absl",
+    module = "absl-all",
+    path = "root//:flake",
+    static = True,
+)
+
+# Not reachable from `fuzztest_core` -- only the full `fuzztest:domain` needs it,
+# for the `InRegexp` domain. Declared so that closure is a generator config
+# change rather than a packaging one.
+flake.prebuilt_pkgconfig_library(
+    name = "re2",
+    path = "root//:flake",
+    static = True,
+)

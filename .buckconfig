@@ -1,5 +1,6 @@
 [cells]
   root = .
+  fuzztest = third-party/fuzztest
   rust_third_party = third-party/rust
   prelude = prelude
   toolchains = toolchains
@@ -28,6 +29,7 @@
 [parser]
   target_platform_detector_spec = target:root//...->prelude//platforms:default \
     target:prelude//...->prelude//platforms:default \
+    target:fuzztest//...->prelude//platforms:default \
     target:toolchains//...->prelude//platforms:default
 
 [build]
@@ -36,4 +38,18 @@
 [project]
   # Nested buck-out directories contain materialized external cells, whose BUCK files
   # would otherwise be picked up by target patterns such as `//...`.
-  ignore = .git, **/buck-out, ignored, .local
+  ignore = **/.git, **/buck-out, ignored, .local
+
+# Once the fork is pushed, swap the local clone for a buck2-managed checkout by
+# uncommenting the two sections below. Target labels do not change -- that is the
+# point of making it a cell now -- but `third-party/fuzztest` stops being a
+# working tree, so do it only when you no longer need to commit to the fork
+# locally. Delete the directory first; buck2 will not materialise a cell over an
+# existing one.
+#
+# [external_cells]
+#   fuzztest = git
+#
+# [external_cell_fuzztest]
+#   git_origin = https://github.com/<you>/fuzztest.git
+#   commit_hash = <sha of your buck2 branch>
