@@ -1,5 +1,13 @@
 load("//buck:module.bzl", "add_module")
 
+# The two in-process fuzzing backends are each gated behind their own modifier,
+# because each needs the engine linked *and* the whole binary instrumented in the
+# way that engine reads. Neither is on by default: the instrumentation costs
+# speed, and a coverage-guided search is opt-in the way the header describes.
+#
+# The two are mutually exclusive by construction -- `instrumentation` is one
+# constraint with one value at a time -- which is why the selects below never
+# have to combine.
 add_module(
     name = "test_rng",
     srcs = [
@@ -14,17 +22,35 @@ add_module(
         "//:hegel",
     ] + select({
         "//:libafl": ["//modules/libafl:libafl_c"],
+        # FuzzTest's engine, from the third-party/fuzztest cell. `fuzztest_core`
+        # is the GoogleTest-free entry point that carries the FUZZ_TEST macro and
+        # the built-in domains; registry and runtime are the seam the provider
+        # drives, standing in for the `init_fuzztest` driver we do not use.
+        "//:fuzztest": [
+            "fuzztest//fuzztest:fuzztest_core",
+            "fuzztest//fuzztest/internal:configuration",
+            "fuzztest//fuzztest/internal:coverage",
+            "fuzztest//fuzztest/internal:registry",
+            "fuzztest//fuzztest/internal:runtime",
+        ],
         "DEFAULT": [],
     }),
     compiler_flags = select({
         "//:libafl": ["-DBUILD_LIBAFL"],
+        "//:fuzztest": ["-DBUILD_FUZZTEST"],
         "DEFAULT": [],
     }),
     exported_needs_coverage_instrumentation = select({
         "//:libafl": True,
+        "//:fuzztest": True,
         "DEFAULT": False,
     }),
     exported_linker_flags = select({
+        # LibAFL supplies its own __sanitizer_cov_trace_pc_guard, which clang's
+        # runtime would otherwise shadow. FuzzTest needs no such flag: it reads
+        # the 8-bit-counter interface and installs no competing symbol -- and it
+        # must *not* have it, since the fuzztest mode links ASan, whose runtime
+        # this would drop.
         "//:libafl": ["-fno-sanitize-link-runtime"],
         "DEFAULT": [],
     }),

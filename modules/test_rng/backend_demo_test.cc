@@ -8,20 +8,29 @@
 // property written against TestRng gets three genuinely different attempts at
 // falsifying it for the price of one test body.
 //
-//                       exhaustive   random    afl    libafl   smoke
-//   semiprime factor        yes        no       no      no       no
-//   magic 5 bytes            no        no      yes     yes       no
-//   boundary in a wide       no       yes       no      no        no
+//                     exhaustive  random   afl   libafl  fuzztest  smoke
+//   semiprime factor      yes       no      no     no       no       no
+//   magic 5 bytes          no       no     yes    yes      yes       no
+//   boundary in a wide     no      yes      no     no       no       no
 //   domain
 //
-// afl and libafl share a column of results because they are the same strategy
-// -- coverage-guided mutation of a byte string, carved into parameters by the
-// same rule -- run by two different engines. What differs is not what they find
-// but what it costs to run them: AFL needs a fork server and an external
-// afl-fuzz process, so its column is claimed from outside the suite (see
-// below), while LibAFL runs in this process and can therefore be an ordinary
-// test case. That is the entire reason the libafl backend exists, and the two
-// tests below are the evidence: same body, same find, no external fuzzer.
+// afl, libafl and fuzztest share a column of results because they are one
+// strategy -- coverage-guided mutation of a byte string, carved into parameters
+// by the same rule -- run by three different engines. What differs is not what
+// they find but what it costs to run them: AFL needs a fork server and an
+// external afl-fuzz process, so its column is claimed from outside the suite
+// (see below), while LibAFL and FuzzTest run in this process and can therefore
+// be ordinary test cases. That is the entire reason those two backends exist,
+// and the tests below are the evidence: same body, same find, no external
+// fuzzer.
+//
+// That three engines share one column is the honest result, and worth saying
+// plainly: this bug does not discriminate between them and was never going to.
+// It was built to have a per-byte coverage gradient, which is the one thing
+// every coverage-guided engine can see. What the fuzztest column adds is not a
+// new capability but a second data point for the interface claim -- that the
+// engine really is interchangeable behind TestRng, and that a body tuned years
+// ago against AFL is driven unmodified by an engine it never anticipated.
 //
 // The AFL column is the one that cannot be checked in an ordinary test run:
 // that backend needs a live afl-fuzz around the process, which is a thing no
@@ -423,6 +432,95 @@ TEST_CASE("libafl guesses the magic bytes in-process") {
     CHECK(report.failure_message == "guessed the magic bytes");
 }
 
+// The positive half of bug 2 a third time, under a second in-process engine.
+//
+// Everything said about the libafl case applies here: same body, same provider,
+// ordinary test case, no external fuzzer. The only line that differs between the
+// two tests is the backend named in the constructor, and that is the claim the
+// interface makes -- so this test is worth having precisely because it is
+// boring.
+//
+// Skipped unless the binary is instrumented, since the provider refuses the
+// backend otherwise. That is the FuzzTest preset:
+//
+//     buck2 test --modifier root//:fuzztest //modules/test_rng:test_rng_test
+//
+// The search is much cheaper than libafl's, and the reason is the one
+// interesting difference between the engines. FuzzTest is built with
+// -fsanitize-coverage=trace-cmp as well as edge coverage, so its table of recent
+// compares sees the operands of `guess[i] != kMagic[i]` directly and can
+// substitute the byte it just watched being compared, instead of waiting for a
+// mutation to land on it. Where LibAFL's cost ranged from 26k to 753k
+// invocations, twelve runs here measured 9.4k, 12k, 17k, 19k, 22k, 23k, 24k,
+// 44k, 48k, 51k, 51k, 104k.
+//
+// That spread is worth a warning, because it is *not* seed noise and cannot be
+// removed by pinning things. The provider fixes FUZZTEST_PRNG_SEED for the same
+// derandomizing reason the Hegel and libafl backends fix theirs, and the seed
+// really is applied -- the engine echoes it back. Runs still vary by more than
+// 10x. Disabling ASLR does not settle it either, which rules out the other
+// obvious culprit (Abseil's per-process hash salt reordering the cmp table).
+// What is left is the engine's own time-dependent scheduling, so this backend
+// is reproducible in what it finds but not in how long it takes.
+//
+// Hence a budget of 1M against a worst case of 104k. It is deliberately ~10x
+// the slowest run measured rather than a snug fit, and it is close to free: the
+// budget only bounds a search that finds *nothing*, and this one always finds
+// something in well under a tenth of it. Sizing it tightly would buy no speed
+// and would turn the tail of that distribution into a flaky test -- which is
+// the mistake the libafl budget's own history records.
+//
+// Note what has *not* changed: the body. It still draws all five bytes before
+// comparing any, still unrolls the comparisons, still keeps the barriers that
+// stop clang tail-merging the failure paths. cmplog-style feedback does not
+// rescue a body with no coverage gradient -- the AFL notes above record 2.4M
+// execs finding nothing when that was tried -- it only makes an existing
+// gradient cheaper to climb. Both are needed, which is why this body works
+// unmodified under all three engines.
+TEST_CASE("fuzztest guesses the magic bytes in-process") {
+    if (!test_rng::fuzztest_available())
+        return;
+
+    test_rng::TestRngProvider provider(Backend::FuzzTest);
+    provider.max_invocations = 1'000'000;
+
+    // search() rather than run(), so the *find* is the assertion -- the same
+    // inversion every other demonstration here uses.
+    const RunReport report = provider.search(magic_bytes_are_unguessable);
+    REQUIRE(report.found_failure);
+    CHECK(report.failure_message == "guessed the magic bytes");
+}
+
+TEST_CASE("the fuzztest backend runs at most once per process") {
+    if (!test_rng::fuzztest_available())
+        return;
+
+    // FuzzTest's runtime is a process-wide singleton whose termination flag can
+    // be set but not cleared, and setting it is how the search above stopped
+    // early. A second run would see it already set, stop before its first
+    // mutation and report a clean pass -- a passing search that searched
+    // nothing, which is the exact failure every availability check in this file
+    // exists to prevent. So the provider refuses.
+    //
+    // This test depends on the case above having already run, which doctest's
+    // declaration order gives us within a file.
+    test_rng::TestRngProvider provider(Backend::FuzzTest);
+    CHECK_THROWS_AS(provider.search(magic_bytes_are_unguessable),
+                    std::runtime_error);
+}
+
+TEST_CASE("the fuzztest backend refuses to run without coverage") {
+    // The same promise, and the same reasoning, as the libafl case below: a
+    // coverage-guided search with no coverage is a slow random search that
+    // reports exactly like a passing one.
+    if (!test_rng::fuzztest_available())
+        CHECK_THROWS_AS((test_rng::TestRngProvider(Backend::FuzzTest)),
+                        std::runtime_error);
+
+    CHECK(test_rng::parse_backend("fuzztest") == Backend::FuzzTest);
+    CHECK(test_rng::backend_name(Backend::FuzzTest) == "fuzztest");
+}
+
 TEST_CASE("the libafl backend refuses to run without coverage") {
     // The same promise the afl backend makes, and it matters more here. An
     // uninstrumented afl run cannot start at all; an uninstrumented libafl run
@@ -518,6 +616,15 @@ TEST_CASE("TEST_RNG selects the backend") {
     set("libafl");
     if (test_rng::libafl_available())
         CHECK(test_rng::TestRngProvider().backend() == Backend::LibAfl);
+    else
+        CHECK_THROWS_AS(test_rng::TestRngProvider(), std::runtime_error);
+
+    // And fuzztest, on the same terms. Note this only *constructs* a provider --
+    // which is the check being made -- and never runs one, so it does not spend
+    // the single fuzztest search this process is allowed.
+    set("fuzztest");
+    if (test_rng::fuzztest_available())
+        CHECK(test_rng::TestRngProvider().backend() == Backend::FuzzTest);
     else
         CHECK_THROWS_AS(test_rng::TestRngProvider(), std::runtime_error);
 

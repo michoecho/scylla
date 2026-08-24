@@ -88,6 +88,23 @@ def add_module(
             "//:no_pch": None,
             "DEFAULT": "//:project_pch",
         }),
-        link_style = "shared",
+        # Shared normally, because it links faster and is what every other
+        # configuration wants. Static under the fuzztest modifier, and that is
+        # not a preference but a correctness requirement of the backend.
+        #
+        # FuzzTest reads SanitizerCoverage's 8-bit counters, and each shared
+        # object registers its own counter map through
+        # __sanitizer_cov_8bit_counters_init. FuzzTest keeps only the *first*
+        # map it is handed and warns about the rest, so with a shared link the
+        # counters it steers on belong to whichever DSO happened to register
+        # first -- not the one holding the code under test. The search then runs
+        # with edge feedback permanently reading zero: it still works, because
+        # the cmp table is fed separately, but the coverage half of a
+        # coverage-guided search is silently gone. Linking statically leaves one
+        # counter map, which is the one that matters.
+        link_style = select({
+            "//:fuzztest": "static",
+            "DEFAULT": "shared",
+        }),
         visibility = visibility,
     )

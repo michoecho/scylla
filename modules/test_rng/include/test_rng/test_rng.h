@@ -25,6 +25,8 @@
 //                                                   # Hegel, with shrinking
 //     TEST_RNG=libafl buck2 test --modifier root//:libafl \\
 //         //modules/test_rng:test_rng_test            # LibAFL, in-process
+//     TEST_RNG=fuzztest buck2 test --modifier root//:fuzztest \\
+//         //modules/test_rng:test_rng_test            # FuzzTest, in-process
 //
 // The provider owns the AFL persistent loop, so a test never writes one. This
 // is the whole reason there is no separate "fuzz target" concept: a fuzz target
@@ -266,6 +268,43 @@ enum class Backend {
     //     buck2 test --modifier root//:libafl //modules/test_rng:test_rng_test
     LibAfl,
 
+    // "fuzztest" -- Google FuzzTest, also running the body in an in-process
+    // executor.
+    //
+    // The same bargain as LibAfl, and it is here as the second instance of that
+    // bargain rather than as an improvement on it: a coverage-guided search that
+    // is an ordinary test case because the engine is a library rather than a
+    // program. What differs is the engine's own search strategy, which is the
+    // only thing the two columns of the results table can differ by.
+    //
+    // Two differences worth knowing when reading a run:
+    //
+    //   - FuzzTest is told how many testcases to run through the
+    //     FUZZTEST_MAX_FUZZING_RUNS environment variable rather than a
+    //     parameter, so max_invocations is applied by setting it around the run.
+    //   - It reports its own progress on stderr as the corpus grows. That is the
+    //     engine talking, not this module, and there is no knob to quiet it.
+    //   - Its PRNG seed is pinned, as the other searching backends' are, but
+    //     unlike them that does not make a run reproducible: measured cost
+    //     varies by more than 10x with the seed fixed and ASLR disabled. What it
+    //     finds is stable; how long it takes is not. Budget accordingly.
+    //
+    // Like the other two fuzzing backends, requires SanitizerCoverage; the
+    // `root//:fuzztest` Buck2 modifier enables it, along with the ASan that
+    // turns a bad draw into an observable failure. The provider refuses rather
+    // than degrading when the instrumentation is absent, for the same reason it
+    // does for libafl.
+    //
+    //     buck2 test --modifier root//:fuzztest //modules/test_rng:test_rng_test
+    //
+    // One limitation, enforced rather than documented-and-hoped-for: a process
+    // may run this backend once. FuzzTest's runtime singleton has a
+    // termination flag that can be set but not cleared, and that flag is how a
+    // failed search stops the engine without unwinding an exception through its
+    // frames. A second run in the same process would stop instantly and report
+    // a clean pass, so the provider throws instead.
+    FuzzTest,
+
     // "smoke" -- no search at all. One invocation, every parameter taking a
     // fixed representative value from its domain. This is the default when
     // TEST_RNG is unset, so an ordinary `buck2 test` run executes every randomized
@@ -275,7 +314,8 @@ enum class Backend {
     Smoke,
 };
 
-// Parses a backend name ("exhaustive", "random", "afl", "libafl", "smoke").
+// Parses a backend name ("exhaustive", "random", "afl", "libafl", "fuzztest",
+// "smoke").
 // Returns nullopt for anything else, so the caller can report the bad value.
 std::optional<Backend> parse_backend(std::string_view name);
 
@@ -294,6 +334,15 @@ std::string_view backend_name(Backend backend);
 // the environment (afl-fuzz sets shared-memory variables), while this one is a
 // property of how the binary was linked.
 bool libafl_available();
+
+// Whether Backend::FuzzTest can actually run in this process.
+//
+// The analogue of libafl_available(), and asked for the same reason: true only
+// in a build that links the FuzzTest cell *and* carries working
+// SanitizerCoverage, which is the `root//:fuzztest` modifier. Answered by asking
+// FuzzTest's runtime whether it found a coverage map, which is the same question
+// it asks itself before agreeing to fuzz.
+bool fuzztest_available();
 
 // How a run ended. Returned by TestRngProvider::run so a test can assert on the
 // search itself -- the demonstration tests below check that a given backend

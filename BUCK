@@ -228,20 +228,3 @@ cxx_library(
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
 )
-
-# The GoogleTest-free FuzzTest driver. FuzzTest's own mains all route through
-# `init_fuzztest` -> `googletest_adaptor`; this one drives the registry directly.
-# See buck/fuzztest_main.cc.
-cxx_library(
-    name = "fuzztest_main",
-    srcs = ["buck/fuzztest_main.cc"],
-    deps = [
-        "//third-party:absl",
-        "fuzztest//fuzztest/internal:configuration",
-        "fuzztest//fuzztest/internal:registry",
-        "fuzztest//fuzztest/internal:runtime",
-    ],
-    link_whole = True,
-    preferred_linkage = "static",
-    visibility = ["PUBLIC"],
-)
