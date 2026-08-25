@@ -42,3 +42,9 @@ test/resource/wasm/rust/target
 
 /.local
 /.direnv
+
+# clang PGO training scratch space (tools/toolchain/nix/train.sh)
+/build_clang_profile
+# An instrumented clang drops counters in $PWD when LLVM_PROFILE_FILE is unset,
+# which cmake's compiler probes manage to do.
+*.profraw

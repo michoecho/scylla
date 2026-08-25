@@ -4,9 +4,19 @@
   inputs = {
     nixpkgs-stable.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # The clang packages are pinned to an immutable revision rather than to
+    # the nixos-26.05 branch, so that moving nixpkgs-stable forward does not
+    # invalidate the optimized compiler.  Rebuilding it costs three full
+    # LLVM+clang builds and two full Scylla builds (the PGO training runs),
+    # and the profiles in nix/profiles/ are tied to this LLVM version anyway.
+    # This revision is where nixpkgs-stable happened to sit when the profiles
+    # were collected; bump it deliberately, and re-run
+    # tools/toolchain/nix/train.sh when you do.
+    nixpkgs-clang.url = "github:NixOS/nixpkgs/a9e6d84f9c2f9012f5fe7d964a7851352300e61a";
   };
 
-  outputs = { self, nixpkgs-stable, nixpkgs-unstable, ... }:
+  outputs = { self, nixpkgs-stable, nixpkgs-unstable, nixpkgs-clang, ... }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs-stable.lib.genAttrs supportedSystems (system: f system);
@@ -18,6 +28,9 @@
       pkgsUnstableFor = system: import nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
+      };
+      pkgsClangFor = system: import nixpkgs-clang {
+        inherit system;
       };
 
       # VS Code pre-loaded with the extensions this project needs, built from
@@ -120,9 +133,38 @@
       # `nix run .#code` / `nix build .#code` — the same wrapped editor the
       # devShell (and the sandbox) uses.
       packages = forAllSystems (system:
-        let pkgs = pkgsStableFor system;
+        let
+          # Everything clang-related comes from the pinned nixpkgs, not from
+          # nixpkgs-stable.
+          clangPkgs = pkgsClangFor system;
+          mkClang = args:
+            import ./nix/optimized-clang.nix ({ pkgs = clangPkgs; } // args);
+
+          # The profiles are produced outside Nix by
+          # tools/toolchain/nix/train.sh and handed back in as source files.
+          # Note that a flake only sees files git knows about, hence the
+          # `git add -N` the script performs.
+          profile = name:
+            let p = ./nix/profiles + "/${name}";
+            in if builtins.pathExists p then p
+               else throw ("nix/profiles/${name} is missing; run "
+                           + "tools/toolchain/nix/train.sh first");
         in {
           code = vscodeFor (pkgsUnstableFor system);
+
+          # llvm-profdata & friends, matching the instrumented compiler.
+          llvm = clangPkgs.llvmPackages_22.libllvm;
+
+          # Stock nixpkgs clang 22, as the baseline to measure against.
+          clang-stock = clangPkgs.llvmPackages_22.clang;
+
+          # Staging posts on the way to `clang-optimized`; see
+          # nix/optimized-clang.nix and tools/toolchain/nix/train.sh.
+          clang-static = mkClang { stage = "plain"; lto = false; enableClangToolsExtra = false; };
+          clang-lto = mkClang { stage = "plain"; };
+          clang-instrumented-ir = mkClang { stage = "ir"; };
+          clang-instrumented-cs = mkClang { stage = "cs"; profdata = profile "ir.profdata"; };
+          clang-optimized = mkClang { stage = "final"; profdata = profile "combined.profdata"; };
         });
 
       devShells = forAllSystems (system:
@@ -149,7 +191,15 @@
           };
         in
         {
-          default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
+          #default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
+          #
+          # The shell compiler is the LTO+PGO+CSPGO clang from
+          # nix/optimized-clang.nix, so `clang`/`clang++` on PATH -- and hence
+          # configure.py's defaults -- are the fast ones.  This also moves the
+          # shell from the nixpkgs default clang to the pinned clang 22.
+          default = pkgs.mkShell.override {
+            stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = my_packages.clang-optimized; });
+          } {
             shellHook = ''
               export SCYLLA_WASM_CLANG="${wasmClang}/bin/clang"
               export SCYLLA_NIX_SHELL=1
