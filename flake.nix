@@ -40,6 +40,7 @@
               anthropic.claude-code
               eamodio.gitlens
               ms-vscode.cpptools
+              #ms-vscode.cmake-tools
               ms-python.python
               ms-python.vscode-pylance
               ms-python.debugpy
