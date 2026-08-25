@@ -108,6 +108,13 @@ flake.package(
     path = "root//:flake",
 )
 
+genrule(
+    name = "boost_stacktrace_rpath",
+    out = "boost_stacktrace_rpath.args",
+    cmd = "store=`readlink -f $(location :boost_package[stacktrace])`; " +
+          "printf -- '-Wl,-rpath,%s' \"`dirname \"$store\"`\" > $OUT",
+)
+
 prebuilt_cxx_library(
     name = "boost_stacktrace",
     header_dirs = [":boost_package[include]"],
@@ -115,10 +122,40 @@ prebuilt_cxx_library(
     shared_lib = ":boost_package[stacktrace]",
     extract_soname = True,
     exported_linker_flags = [
-        "-Wl,-rpath,$(location :boost_package[lib])",
+        "@$(location :boost_stacktrace_rpath)",
     ],
     preferred_linkage = "shared",
     visibility = ["PUBLIC"],
+)
+
+# The rpath these two need is the *store* path, not the buck-out tree that
+# mirrors it.
+#
+# `$(location ...)` expands to a project-relative path, and a relative RUNPATH
+# entry is resolved by the loader against the process's working directory. That
+# is invisible in most configurations, because a shared-link-style binary also
+# gets an `$ORIGIN/...shared_libs_symlink_tree` entry ahead of it, which is
+# CWD-independent and always wins. Under `root//:fuzztest` the test binary links
+# statically (see buck/module.bzl), no symlink tree is produced, and the relative
+# entry is all that is left -- so the binary runs from the project root and
+# nowhere else. `buck2 run` happens to chdir there; `buck2 test` does not, and
+# every fuzztest-modifier test died with "libbacktrace.so.0: cannot open shared
+# object file".
+#
+# These genrules resolve the symlink to the store path it points at and write an
+# absolute `-Wl,-rpath` into a linker argsfile. Store paths are absolute and
+# immutable, so a binary linked this way runs from any directory -- which is the
+# same property flake.prebuilt_pkgconfig_library already gives every pkg-config
+# dependency by rewriting `-L` into a matching rpath. This just extends it to the
+# two libraries that are wired up by hand.
+#
+# Backticks rather than `$(...)` for the shell substitutions: buck2 parses
+# `$(name ...)` as a macro and would fail on `$(readlink ...)`.
+genrule(
+    name = "backtrace_rpath",
+    out = "backtrace_rpath.args",
+    cmd = "store=`readlink -f $(location :libbacktrace_package[backtrace])`; " +
+          "printf -- '-Wl,-rpath,%s' \"`dirname \"$store\"`\" > $OUT",
 )
 
 prebuilt_cxx_library(
@@ -127,7 +164,7 @@ prebuilt_cxx_library(
     shared_lib = ":libbacktrace_package[backtrace]",
     extract_soname = True,
     exported_linker_flags = [
-        "-Wl,-rpath,$(location :libbacktrace_package[lib])",
+        "@$(location :backtrace_rpath)",
     ],
     preferred_linkage = "shared",
     visibility = ["PUBLIC"],

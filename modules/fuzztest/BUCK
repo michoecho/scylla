@@ -1,0 +1,81 @@
+load("//buck:module.bzl", "add_module")
+
+# FuzzTest properties as doctest cases, with no GoogleTest anywhere.
+#
+# The engine is gated behind the root//:fuzztest modifier for the same reason
+# modules/test_rng gates its backends: a coverage-guided search needs the engine
+# linked *and* the whole binary instrumented the way that engine reads, and the
+# instrumentation costs speed everywhere else. Without the modifier this module
+# still builds and its cases still exist -- they report why they did nothing
+# rather than passing silently.
+#
+# The dep set is the GoogleTest-free subset of the vendored cell.
+# `fuzztest_core` is domains plus the registration macros; registration and
+# registry give the seam the driver walks; runtime and configuration are what it
+# drives; coverage is the availability check. Nothing here reaches deeper.
+
+_FUZZTEST_DEPS = select({
+    "//:fuzztest": [
+        "fuzztest//fuzztest:fuzztest_core",
+        "fuzztest//fuzztest/internal:configuration",
+        "fuzztest//fuzztest/internal:coverage",
+        "fuzztest//fuzztest/internal:registration",
+        "fuzztest//fuzztest/internal:registry",
+        "fuzztest//fuzztest/internal:runtime",
+        "root//third-party:absl",
+    ],
+    "DEFAULT": [],
+})
+
+_FUZZTEST_DEFINE = select({
+    "//:fuzztest": ["-DBUILD_FUZZTEST"],
+    "DEFAULT": [],
+})
+
+# The driver and the assertion bridge, in their own library so they can be
+# compiled *out* of the coverage instrumentation.
+#
+# This is the same policy third-party/fuzztest/buck2/defs.bzl applies to
+# FuzzTest's own sources, and for a stronger reason than "the reader should not
+# pollute the signal it reads". Instrumenting a translation unit that touches
+# FuzzTest's internals hangs the binary outright: std::atomic<bool>::load is a
+# weak inline function, so an instrumented copy emitted here can win COMDAT
+# deduplication for the whole binary -- including for FuzzTest's own
+# coverage.cc. ExecutionCoverage::IsTracing() then loads an atomic whose load
+# calls __sanitizer_cov_trace_const_cmp4, which calls IsTracing(), and the
+# process dies in thousands of frames of that recursion before the first
+# iteration runs.
+#
+# link_whole because the doctest reporter that carries the assertion bridge
+# registers itself through a static initializer, and archive member pruning is
+# exactly what drops the object holding one.
+cxx_library(
+    name = "fuzztest_doctest",
+    srcs = ["fuzztest_doctest.cc"],
+    exported_headers = {
+        # Deliberately *not* a "fuzztest/" header namespace: that is the
+        # vendored cell's own, and `#include "fuzztest/..."` has to keep meaning
+        # upstream's headers inside this module.
+        "fuzztest_doctest/fuzztest_doctest.h": "include/fuzztest_doctest/fuzztest_doctest.h",
+    },
+    header_namespace = "",
+    compiler_flags = ["-fsanitize-coverage=0"] + _FUZZTEST_DEFINE,
+    exported_preprocessor_flags = _FUZZTEST_DEFINE,
+    exported_deps = ["//:doctest"] + _FUZZTEST_DEPS,
+    link_whole = True,
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
+# The properties themselves, which *must* be instrumented -- they are the code
+# under test as far as the engine is concerned.
+add_module(
+    name = "fuzztest",
+    srcs = ["magic_constant_test.cc"],
+    deps = [":fuzztest_doctest"],
+    exported_needs_coverage_instrumentation = select({
+        "//:fuzztest": True,
+        "DEFAULT": False,
+    }),
+    module_source_dir = "modules/fuzztest",
+)
