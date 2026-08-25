@@ -55,7 +55,7 @@
                 name = "chatgpt";
                 publisher = "openai";
                 version = "26.5818.61809";
-                sha256 = "0ql0a58b69j2806s5m85gc21v5ksxibxvks5yf7q462s3mwflihd";
+                sha256 = "sha256-1/dinrtnp1WigzDzp1rBeO9QOSsQM/xuFvj66xY1Ngg=";
               }
             ];
 
@@ -136,10 +136,14 @@
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
             packages = with pkgs; [
               cmake
+              llvmPkgs.bintools
               ninja
               code
               pkgs-unstable.claude-code
               pkgs-unstable.codex
+
+              elfutils
+              jq
             ];
             hardeningDisable = [ "all" ];
           };
