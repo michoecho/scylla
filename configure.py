@@ -485,7 +485,7 @@ modes = {
         'optimization-level': '2',
         'per_src_extra_cxxflags': {},
         'cmake_build_type': 'Dev',
-        'can_have_debug_info': False,
+        'can_have_debug_info': True,
         'build_seastar_shared_libs': True,
         'default': True,
         'description': 'a mode with no optimizations and no debug checks, optimized for fast build times, used for development',
