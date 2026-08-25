@@ -168,8 +168,8 @@
               {
                 name = "chatgpt";
                 publisher = "openai";
-                version = "26.727.40816";
-                sha256 = "0ql0a58b69j2806s5m85gc21v5ksxibxvks5yf7q462s3mwflihd";
+                version = "26.5818.61809";
+                sha256 = "sha256-1/dinrtnp1WigzDzp1rBeO9QOSsQM/xuFvj66xY1Ngg=";
               }
             ];
 
