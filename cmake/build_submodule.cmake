@@ -1,5 +1,5 @@
 function(build_submodule name dir)
-  cmake_parse_arguments(parsed_args "NOARCH" "" "" ${ARGN})
+  cmake_parse_arguments(parsed_args "NOARCH;NOALL" "" "" ${ARGN})
   set(version_release "${Scylla_VERSION}-${Scylla_RELEASE}")
   set(product_version_release
     "${Scylla_PRODUCT}-${Scylla_VERSION}-${Scylla_RELEASE}")
@@ -26,8 +26,13 @@ function(build_submodule name dir)
     COMMAND reloc/build_deb.sh --reloc-pkg ${reloc_pkg}
     DEPENDS ${reloc_pkg}
     WORKING_DIRECTORY "${working_dir}")
-  add_custom_target(dist-${name} ALL
-    DEPENDS dist-${name}-tar dist-${name}-rpm dist-${name}-deb)
+  if(parsed_args_NOALL)
+    add_custom_target(dist-${name}
+      DEPENDS dist-${name}-tar dist-${name}-rpm dist-${name}-deb)
+  else()
+    add_custom_target(dist-${name} ALL
+      DEPENDS dist-${name}-tar dist-${name}-rpm dist-${name}-deb)
+  endif()
 endfunction()
 
 macro(dist_submodule name dir pkgs)

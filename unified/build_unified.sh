@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
 #
 # Copyright (C) 2020-present ScyllaDB
 #
@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
 
+set -e
 trap 'echo "error $? in $0 line $LINENO"' ERR
 
 print_usage() {

@@ -21,9 +21,21 @@ function(pick_rustc_target output_var candidates)
   set(${output_var} "")
   foreach(candidate ${candidates})
     if(candidate IN_LIST target_list)
-      message(STATUS "wasm32 compiled to ${candidate}")
-      set(${output_var} "${candidate}")
-      break()
+      execute_process(
+        COMMAND
+          ${RUSTC} --print target-libdir --target ${candidate}
+        OUTPUT_VARIABLE
+          target_libdir
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+      file(GLOB target_std
+        "${target_libdir}/libstd-*.rlib"
+        "${target_libdir}/libstd-*.rmeta")
+      list(LENGTH target_std target_std_count)
+      if(target_std_count GREATER 0)
+        message(STATUS "wasm32 compiled to ${candidate}")
+        set(${output_var} "${candidate}")
+        break()
+      endif()
     endif()
   endforeach()
   return(PROPAGATE ${output_var})
@@ -59,7 +71,7 @@ function(compile_rust_to_wasm target input)
   set(${parsed_args_WASM} ${output} PARENT_SCOPE)
 endfunction(compile_rust_to_wasm)
 
-pick_rustc_target(rustc_target "wasm32-wasi;wasm32-wasip1")
+pick_rustc_target(rustc_target "wasm32-wasi;wasm32-wasip1;wasm32-unknown-unknown")
 
 set(rust_srcs
   return_input.rs

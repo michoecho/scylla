@@ -1,8 +1,12 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
+
+set -e
 
 trap 'echo "error $? in $0 line $LINENO"' ERR
 
-. /etc/os-release
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+fi
 print_usage() {
     echo "build_rpm.sh --rebuild-dep --target centos7 --reloc-pkg build/release/scylla-package.tar.gz"
     echo "  --dist  create a public distribution rpm"

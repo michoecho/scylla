@@ -2383,7 +2383,7 @@ kmip_lib_ver = '1.9.2a';
 def kmiplib():
     os_ids = get_os_ids()
     for id in os_ids:
-        if id in { 'centos', 'fedora', 'rhel' }:
+        if id in { 'centos', 'fedora', 'rhel', 'linux' }:
             return 'rhel84'
     print('Could not resolve libkmip.a for platform {}'.format(os_ids))
     sys.exit(1)

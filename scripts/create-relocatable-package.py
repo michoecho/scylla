@@ -14,6 +14,7 @@ import subprocess
 import tarfile
 import pathlib
 import shutil
+import stat
 import sys
 import tempfile
 import magic
@@ -43,6 +44,10 @@ def ldd(executable):
         elements = ldd_line.split()
         if ldd_line.endswith('not found'):
             raise Exception('ldd {}: could not resolve {}'.format(executable, elements[0]))
+        if (len(elements) >= 3 and elements[1] == '=>' and
+                os.path.basename(elements[0]).startswith('ld-linux')):
+            libraries['ld.so'] = os.path.realpath(elements[2])
+            continue
         if elements[1] != '=>':
             if elements[0].startswith('linux-vdso.so'):
                 # provided by kernel
@@ -101,6 +106,7 @@ def fix_binary(ar, path):
     # it's a pity patchelf have to patch an actual binary.
     patched_elf = mkstemp()[1]
     shutil.copy2(path, patched_elf)
+    os.chmod(patched_elf, os.stat(patched_elf).st_mode | stat.S_IWUSR)
 
     subprocess.check_call(['patchelf',
                            '--remove-rpath',
@@ -148,6 +154,23 @@ executables_distrocmd = [
                 '/usr/bin/hwloc-calc',
                 '/usr/bin/lsblk']
 
+# The distro package stores these commands at fixed filesystem paths.  A Nix
+# development shell exposes the same tools from the store instead, and some
+# optional networking tools are not present at all.
+if os.environ.get('SCYLLA_NIX_SHELL'):
+    def resolve_distro_command(command):
+        resolved = shutil.which(os.path.basename(command))
+        if not resolved:
+            return None
+        wrapped = os.path.join(
+            os.path.dirname(resolved), f'.{os.path.basename(resolved)}-wrapped')
+        return wrapped if os.path.isfile(wrapped) else resolved
+
+    executables_distrocmd = [
+        resolved for command in executables_distrocmd
+        if (resolved := resolve_distro_command(command))
+    ]
+
 executables = executables_scylla + executables_distrocmd
 
 if args.print_libexec:
@@ -161,10 +184,18 @@ libs = {}
 for exe in executables:
     libs.update(ldd(exe))
 
-# manually add libthread_db for debugging thread
-libs.update({'libthread_db.so.1': os.path.realpath('/lib64/libthread_db.so')})
-# manually add p11-kit-trust.so since it will dynamically load
-libs.update({'pkcs11/p11-kit-trust.so': '/lib64/pkcs11/p11-kit-trust.so'})
+# Manually add these libraries when the host provides them.  Nix does not
+# expose them at the distro's /lib64 paths, and they are optional for the
+# development-shell package.
+thread_db = next((path for path in
+                  ['/lib64/libthread_db.so', '/lib/libthread_db.so']
+                  if os.path.exists(path)), None)
+if thread_db:
+    libs.update({'libthread_db.so.1': os.path.realpath(thread_db)})
+
+p11_kit_trust = '/lib64/pkcs11/p11-kit-trust.so'
+if os.path.exists(p11_kit_trust):
+    libs.update({'pkcs11/p11-kit-trust.so': p11_kit_trust})
 
 ld_so = libs['ld.so']
 
@@ -177,7 +208,11 @@ have_gnutls = any([lib.startswith('libgnutls.so')
 # command. We can complete the compression even faster by using the pigz
 # command - a parallel implementation of gzip utilizing all processors
 # instead of just one.
-gzip_process = subprocess.Popen("pigz > "+output, shell=True, stdin=subprocess.PIPE)
+gzip_command = shutil.which('pigz') or shutil.which('gzip')
+if not gzip_command:
+    raise RuntimeError('neither pigz nor gzip is available')
+gzip_output = open(output, 'wb')
+gzip_process = subprocess.Popen([gzip_command], stdout=gzip_output, stdin=subprocess.PIPE)
 
 ar = tarfile.open(fileobj=gzip_process.stdin, mode='w|')
 # relocatable package format version = 3.0
@@ -208,7 +243,8 @@ for lib, libfile in libs.items():
         ar.reloc_add(libfile, arcname=lib, recursive=False)
 if have_gnutls:
     gnutls_config_nolink = os.path.realpath('/etc/crypto-policies/back-ends/gnutls.config')
-    ar.reloc_add(gnutls_config_nolink, arcname='libreloc/gnutls.config')
+    if os.path.exists(gnutls_config_nolink):
+        ar.reloc_add(gnutls_config_nolink, arcname='libreloc/gnutls.config')
     ar.reloc_add('conf')
 ar.reloc_add('dist', filter=filter_dist)
 with tempfile.NamedTemporaryFile('w') as relocatable_file:
@@ -220,7 +256,8 @@ ar.reloc_add(version_dir / 'SCYLLA-RELEASE-FILE', arcname='SCYLLA-RELEASE-FILE')
 ar.reloc_add(version_dir / 'SCYLLA-VERSION-FILE', arcname='SCYLLA-VERSION-FILE')
 ar.reloc_add(version_dir / 'SCYLLA-PRODUCT-FILE', arcname='SCYLLA-PRODUCT-FILE')
 ar.reloc_add('seastar/scripts')
-ar.reloc_add('seastar/dpdk/usertools')
+if os.path.exists('seastar/dpdk/usertools'):
+    ar.reloc_add('seastar/dpdk/usertools')
 ar.reloc_add('install.sh')
 # scylla_post_install.sh lives at the top level together with install.sh in the src tree, but while install.sh is
 # not distributed in the .rpm and .deb packages, scylla_post_install is, so we'll add it in the package
@@ -243,6 +280,7 @@ ar.reloc_add('fix_system_distributed_tables.py')
 # Complete the tar output, and wait for the gzip process to complete
 ar.close()
 gzip_process.communicate()
+gzip_output.close()
 if gzip_process.returncode != 0:
-    print(f'pigz returned {gzip_process.returncode}!', file=sys.stderr)
+    print(f'{gzip_command} returned {gzip_process.returncode}!', file=sys.stderr)
     sys.exit(1)

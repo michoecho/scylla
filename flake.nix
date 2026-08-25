@@ -132,19 +132,99 @@
           pkgs-unstable = pkgsUnstableFor system;
           code = vscodeFor pkgs-unstable;
           llvmPkgs = pkgs.llvmPackages_22;
+          wasmClang = llvmPkgs.clang-unwrapped;
+          antlr3Patched = pkgs.antlr3.overrideAttrs (old: {
+            patches = (old.patches or []) ++ [
+              ./tools/antlr3-patches/0008-unconst-cyclicdfa-gcc-14.patch
+            ];
+          });
+          cxxbridge = pkgs.rustPlatform.buildRustPackage rec {
+            pname = "cxxbridge-cmd";
+            version = "1.0.83";
+            src = pkgs.fetchCrate {
+              inherit pname version;
+              hash = "sha256-+E3YldAQ0lGyMnYoS4qOqwMDlU+U99h1aPDYaKcBUNU=";
+            };
+            cargoHash = "sha256-akiOZ88fjeE9yOMlXFbe7Z/CbOKrxBwWv6fNg7P5VhE=";
+          };
         in
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
+            shellHook = ''
+              export SCYLLA_WASM_CLANG="${wasmClang}/bin/clang"
+              export SCYLLA_NIX_SHELL=1
+              export CARGO_HOME="$PWD/build/cargo-home"
+              export CXXFLAGS="-isystem ${pkgs.boost188}/include $CXXFLAGS"
+              export PATH="${pkgs.binutils}/bin:$PATH"
+            '';
             packages = with pkgs; [
               cmake
+              python3Packages.pyparsing
+              python3Packages.python-magic
+              python3Packages.shiv
+              python3Packages.cassandra-driver
+              python3Packages.pyyaml
+              python3Packages.click
+              python3Packages.lz4
+              boost188
+              c-ares
+              fmt
+              (lz4.overrideAttrs (old: {
+                cmakeFlags = (old.cmakeFlags or []) ++ [
+                  "-DBUILD_SHARED_LIBS=ON"
+                  "-DBUILD_STATIC_LIBS=ON"
+                ];
+              }))
+              liburing
+              hwloc
+              lksctp-tools
+              xfsprogs
               llvmPkgs.bintools
+              binutils
+              yaml-cpp
+              zlib
               ninja
+              pkg-config
+              protobuf
+              ragel
+              valgrind
+              openssl
+              gnutls
+              doxygen
+              icu
+              antlr3Patched
+              openldap
+              cpp-jwt
+              nlohmann_json
+              cryptopp
+              cargo
+              cxxbridge
+              wabt
+              binaryen
+              rustc
+              rapidxml
+              libdeflate
+              libxcrypt
+              snappy
+              rapidjson
+              xxhash
+              (zstd.override { enableStatic = true; })
+              jsoncpp
+              lua5_4
+              p11-kit
+              systemd
               code
               pkgs-unstable.claude-code
               pkgs-unstable.codex
 
               elfutils
+              systemtap-sdt.stapBuild
               jq
+              zip
+              pigz
+              dpkg
+              debian-devscripts
+              rpm
             ];
             hardeningDisable = [ "all" ];
           };

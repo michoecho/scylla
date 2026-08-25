@@ -1,8 +1,12 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
+
+set -e
 
 trap 'echo "error $? in $0 line $LINENO"' ERR
 
-. /etc/os-release
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+fi
 print_usage() {
     echo "build_deb.sh -target <codename> --dist --rebuild-dep --reloc-pkg build/release/scylla-package.tar.gz"
     echo "  --dist  create a public distribution package"
@@ -56,4 +60,8 @@ PKG_NAME=$(dpkg-parsechangelog --show-field Source)
 #      Since it always '1', this should be okay for now.
 PKG_VERSION=$(dpkg-parsechangelog --show-field Version |sed -e 's/-1$//')
 ln -fv $RELOC_PKG ../"$PKG_NAME"_"$PKG_VERSION".orig.tar.gz
-debuild -rfakeroot -us -uc
+if [ -n "${SCYLLA_NIX_SHELL:-}" ]; then
+    dpkg-buildpackage -us -uc -d
+else
+    debuild -rfakeroot -us -uc
+fi

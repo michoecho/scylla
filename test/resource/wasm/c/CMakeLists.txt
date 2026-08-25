@@ -1,5 +1,10 @@
-find_program(CLANG clang
-  REQUIRED)
+if(DEFINED ENV{SCYLLA_WASM_CLANG})
+  set(CLANG "$ENV{SCYLLA_WASM_CLANG}" CACHE FILEPATH
+    "Unwrapped Clang used to compile C WASM resources." FORCE)
+else()
+  find_program(CLANG clang
+    REQUIRED)
+endif()
 
 function(compile_c_to_wasm input)
   cmake_parse_arguments(parsed_args "" "WASM;OUT_DIR" "" ${ARGN})

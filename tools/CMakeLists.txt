@@ -42,7 +42,11 @@ execute_process(
   COMMAND "${CMAKE_SOURCE_DIR}/install-dependencies.sh" --print-pip-symlinks
   OUTPUT_VARIABLE pip_symlinks
   OUTPUT_STRIP_TRAILING_WHITESPACE)
-build_submodule(python3 python3
+set(python3_build_options)
+if(DEFINED ENV{SCYLLA_NIX_SHELL})
+  list(APPEND python3_build_options NOALL)
+endif()
+build_submodule(python3 python3 ${python3_build_options}
   --packages
   "${python3_dependencies}"
   --pip-packages

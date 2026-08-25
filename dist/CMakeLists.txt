@@ -92,7 +92,9 @@ add_custom_target(package
 set(dist_pkgs
   "${stripped_dist_pkg}")
 dist_submodule(cqlsh cqlsh dist_pkgs)
-dist_submodule(python3 python3 dist_pkgs)
+if(NOT DEFINED ENV{SCYLLA_NIX_SHELL})
+  dist_submodule(python3 python3 dist_pkgs)
+endif()
 set(unified_dist_pkg
   "${CMAKE_BINARY_DIR}/$<CONFIG>/dist/tar/${Scylla_PRODUCT}-unified-${Scylla_VERSION}-${Scylla_RELEASE}.${CMAKE_SYSTEM_PROCESSOR}.tar.gz")
 add_custom_command(
@@ -113,8 +115,10 @@ add_custom_target(dist-unified ALL
 add_custom_target(dist)
 add_dependencies(dist
   dist-cqlsh
-  dist-python3
   dist-server)
+if(NOT DEFINED ENV{SCYLLA_NIX_SHELL})
+  add_dependencies(dist dist-python3)
+endif()
 
 set(dist_rpm_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/dist/rpm")
 set(dist_deb_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/dist/deb")

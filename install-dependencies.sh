@@ -1,4 +1,5 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
+set -e
 #
 # This file is open source software, licensed to you under the terms
 # of the Apache License, Version 2.0 (the "License").  See the NOTICE file
@@ -25,8 +26,7 @@ if [ -f "/etc/os-release" ]; then
 elif [ -f "/etc/arch-release" ]; then
     export ID=arch
 else
-    echo "/etc/os-release missing."
-    exit 1
+    export ID=nix
 fi
 
 debian_base_packages=(
@@ -367,21 +367,23 @@ while [ $# -gt 0 ]; do
 done
 
 if $PRINT_PYTHON3; then
-    if [ "$ID" != "fedora" ]; then
-        echo "Unsupported Distribution: $ID"
-        exit 1
+    if [ "$ID" = "fedora" ]; then
+        echo "${fedora_python3_packages[@]}"
     fi
-    echo "${fedora_python3_packages[@]}"
     exit 0
 fi
 
 if $PRINT_PIP; then
-    echo "${!pip_packages[@]}"
+    if [ "$ID" = "fedora" ]; then
+        echo "${!pip_packages[@]}"
+    fi
     exit 0
 fi
 
 if $PRINT_PIP_SYMLINK; then
-    echo "${pip_symlinks[@]}"
+    if [ "$ID" = "fedora" ]; then
+        echo "${pip_symlinks[@]}"
+    fi
     exit 0
 fi
 
