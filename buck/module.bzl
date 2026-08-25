@@ -104,6 +104,7 @@ def add_module(
         # counter map, which is the one that matters.
         link_style = select({
             "//:fuzztest": "static",
+            "//:centipede": "static",
             "DEFAULT": "shared",
         }),
         visibility = visibility,

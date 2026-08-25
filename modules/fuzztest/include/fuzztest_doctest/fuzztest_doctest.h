@@ -53,11 +53,13 @@
 // be instrumented:
 //
 //     buck2 test --modifier root//:fuzztest //modules/fuzztest:fuzztest_test
+//     buck2 test --modifier root//:centipede //modules/fuzztest:fuzztest_test
 //
-// It refuses to run otherwise rather than reporting a clean pass, for the
-// reason every availability check in modules/test_rng exists: a coverage-guided
-// search with no coverage is a slow random search that reports exactly like a
-// passing one.
+// The first command uses FuzzTest's in-process engine; the second uses the
+// Centipede runner/controller integration. It refuses to run without either
+// backend rather than reporting a clean pass, for the reason every availability
+// check in modules/test_rng exists: a coverage-guided search with no coverage is
+// a slow random search that reports exactly like a passing one.
 //
 // --- what a found bug does -------------------------------------------------
 //
@@ -135,7 +137,7 @@ namespace fuzztest_doctest {
 enum class Mode {
     // Bounded, uninstrumented, no coverage feedback. Safe everywhere.
     UnitTest,
-    // Coverage-guided search. Requires the root//:fuzztest modifier.
+    // Coverage-guided search. Requires root//:fuzztest or root//:centipede.
     Fuzzing,
 };
 

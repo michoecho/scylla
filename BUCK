@@ -25,6 +25,7 @@ constraint(
         "none",
         "libafl",
         "fuzztest",
+        "centipede",
     ],
 )
 
@@ -45,6 +46,11 @@ configuration_alias(
 configuration_alias(
     name = "fuzztest",
     actual = ":instrumentation[fuzztest]",
+)
+
+configuration_alias(
+    name = "centipede",
+    actual = ":instrumentation[centipede]",
 )
 
 configuration_alias(

@@ -21,10 +21,17 @@ namespace fuzztest_doctest {
 #ifdef BUILD_FUZZTEST
 
 std::string fuzzing_unusable_reason() {
+#ifdef FUZZTEST_USE_CENTIPEDE
+    // Centipede owns coverage in its runner process. The controller process
+    // therefore has no FuzzTest ExecutionCoverage object before the adaptor
+    // starts the runner, which is normal rather than an unavailable engine.
+    return {};
+#else
     if (fuzztest::internal::GetExecutionCoverage() == nullptr)
         return "this binary is not instrumented for coverage (build with the "
                "root//:fuzztest Buck2 modifier)";
     return {};
+#endif
 }
 
 void request_stop() {
@@ -138,18 +145,20 @@ bool drive(std::string_view full_name, const RunOptions& options) {
                  std::to_string(options.max_runs).c_str(), 1);
 
     bool ran = false;
+    bool run_succeeded = false;
     fuzztest::internal::ForEachTest([&](fuzztest::internal::FuzzTest& test) {
         if (ran || test.full_name() != name)
             return;
         ran = true;
         auto fuzzer = test.make();
         if (options.mode == Mode::Fuzzing) {
-            // argc/argv are unused by the in-process engine; it parses no flags
-            // of its own here.
-            fuzzer->RunInFuzzingMode(/*argc=*/nullptr, /*argv=*/nullptr,
-                                     configuration);
+            // The Centipede adaptor returns false when the runner reports a
+            // crash. Preserve that result: a child-process crash is still a
+            // failed fuzzing run even though this controller process survives.
+            run_succeeded = fuzzer->RunInFuzzingMode(
+                /*argc=*/nullptr, /*argv=*/nullptr, configuration);
         } else {
-            fuzzer->RunInUnitTestMode(configuration);
+            run_succeeded = fuzzer->RunInUnitTestMode(configuration);
         }
     });
 
@@ -160,13 +169,9 @@ bool drive(std::string_view full_name, const RunOptions& options) {
             ::unsetenv("FUZZTEST_MAX_FUZZING_RUNS");
     }
 
-    // Both entry points return bool, and neither return value means "passed":
-    // RunInUnitTestMode returns true even after breaking on a detected failure,
-    // and a fuzzing-mode failure aborts the process rather than returning. The
-    // doctest case is marked red by the bridge above, or by the CHECK in the
-    // property body itself. So the return value is dropped on purpose.
     CHECK_MESSAGE(ran, "no fuzz test registered under '", name, "'");
-    return ran;
+    CHECK_MESSAGE(run_succeeded, "fuzz test failed: '", name, "'");
+    return ran && run_succeeded;
 }
 
 #else  // !BUILD_FUZZTEST

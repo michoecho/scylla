@@ -2,12 +2,13 @@ load("//buck:module.bzl", "add_module")
 
 # FuzzTest properties as doctest cases, with no GoogleTest anywhere.
 #
-# The engine is gated behind the root//:fuzztest modifier for the same reason
+# The engine is gated behind an explicit backend modifier for the same reason
 # modules/test_rng gates its backends: a coverage-guided search needs the engine
 # linked *and* the whole binary instrumented the way that engine reads, and the
-# instrumentation costs speed everywhere else. Without the modifier this module
-# still builds and its cases still exist -- they report why they did nothing
-# rather than passing silently.
+# instrumentation costs speed everywhere else. `root//:fuzztest` selects the
+# legacy in-process engine; `root//:centipede` selects the external Centipede
+# adaptor. Without either modifier this module still builds and its cases still
+# exist -- they report why they did nothing rather than passing silently.
 #
 # The dep set is the GoogleTest-free subset of the vendored cell.
 # `fuzztest_core` is domains plus the registration macros; registration and
@@ -24,11 +25,21 @@ _FUZZTEST_DEPS = select({
         "fuzztest//fuzztest/internal:runtime",
         "root//third-party:absl",
     ],
+    "//:centipede": [
+        "fuzztest//fuzztest:fuzztest_core",
+        "fuzztest//fuzztest/internal:configuration",
+        "fuzztest//fuzztest/internal:coverage",
+        "fuzztest//fuzztest/internal:registration",
+        "fuzztest//fuzztest/internal:registry",
+        "fuzztest//fuzztest/internal:runtime",
+        "root//third-party:absl",
+    ],
     "DEFAULT": [],
 })
 
 _FUZZTEST_DEFINE = select({
     "//:fuzztest": ["-DBUILD_FUZZTEST"],
+    "//:centipede": ["-DBUILD_FUZZTEST", "-DFUZZTEST_USE_CENTIPEDE"],
     "DEFAULT": [],
 })
 
@@ -75,6 +86,7 @@ add_module(
     deps = [":fuzztest_doctest"],
     exported_needs_coverage_instrumentation = select({
         "//:fuzztest": True,
+        "//:centipede": True,
         "DEFAULT": False,
     }),
     module_source_dir = "modules/fuzztest",

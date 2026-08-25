@@ -4,6 +4,8 @@ load("//buck:module.bzl", "add_module")
 # because each needs the engine linked *and* the whole binary instrumented in the
 # way that engine reads. Neither is on by default: the instrumentation costs
 # speed, and a coverage-guided search is opt-in the way the header describes.
+# Centipede is intentionally not selected here: this provider's RunReport API
+# drives an in-process FuzzTest loop, whereas Centipede owns the runner process.
 #
 # The two are mutually exclusive by construction -- `instrumentation` is one
 # constraint with one value at a time -- which is why the selects below never

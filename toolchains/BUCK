@@ -65,6 +65,16 @@ nix_cxx_toolchain(
             "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
             "-DADDRESS_SANITIZER",
             "-fsanitize=address",
+            "-DNDEBUG_SANITIZER",
+            "-fsanitize-coverage=inline-8bit-counters",
+            "-fsanitize-coverage=trace-cmp",
+        ],
+        "root//:centipede": [
+            "-g",
+            "-UNDEBUG",
+            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
+            "-DADDRESS_SANITIZER",
+            "-fsanitize=address",
             # Abseil's Swiss tables add a generation counter to every iterator
             # when built under ASan, changing the layout of the iterator. The
             # nixpkgs Abseil is not built under ASan, so without this its
@@ -88,6 +98,7 @@ nix_cxx_toolchain(
             "-Wl,--build-id",
         ],
         "root//:fuzztest": ["-fsanitize=address"],
+        "root//:centipede": ["-fsanitize=address"],
         "DEFAULT": [],
     }),
     visibility = ["PUBLIC"],
