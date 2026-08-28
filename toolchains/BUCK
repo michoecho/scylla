@@ -34,6 +34,7 @@ nix_cxx_toolchain(
         "-std=c++23",
         "-Wall",
         "-Wextra",
+        "-Wno-omit-frame-pointer",
     ] + select({
         "root//:build_mode[debug]": [
             "-O0",
