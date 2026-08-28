@@ -1,0 +1,15 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "static_keys",
+    srcs = [
+        "static_keys_test.cc",
+    ],
+    exported_headers = {
+        "static_keys/static_keys.h": "include/static_keys/static_keys.h",
+    },
+    deps = [
+        "//:doctest",
+    ],
+    module_source_dir = "modules/static_keys",
+)
