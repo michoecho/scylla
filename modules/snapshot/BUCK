@@ -28,4 +28,9 @@ add_module(
         "updater_test.cc",
     ],
     module_source_dir = "modules/snapshot",
+    # These tests are the fixtures for the updater itself, so a repo-wide
+    # `-c snapshot.update=1` must not rewrite them: it would replace the
+    # expectations that catch a bad rewrite with that rewrite's own output.
+    # A pinned value beats the config; see add_module.
+    env = {"SNAPSHOT_UPDATE": "0"},
 )

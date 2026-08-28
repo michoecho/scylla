@@ -236,6 +236,21 @@ needs the real source tree and a remotely executed test runs in a sandbox
 holding only the action's inputs. No `--local-only` flag: normal runs stay
 remote so that their results keep populating the action cache.
 
+`snapshot.update` is repo-wide, so `-c snapshot.update=1 //...` puts every
+module into update mode at once. A module can opt out by pinning the variable
+in its own `env`, which `add_module` will not overwrite:
+
+```python
+add_module(
+    name = "snapshot",
+    env = {"SNAPSHOT_UPDATE": "0"},
+)
+```
+
+`modules/snapshot` does exactly that, because its tests are the updater's own
+fixtures. Updating such a module means going through `buck2 run`, which does
+not apply the test's environment.
+
 `SNAPSHOT_UPDATE=1` scopes to whatever the filter selects — narrow it to update
 one test.
 

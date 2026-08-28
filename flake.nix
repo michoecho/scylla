@@ -463,6 +463,9 @@
 
               buck2Wrapped
               nativelinkWrapped
+
+              # Command runner for the recipes in ./justfile.
+              just
               spdlog
               fmt
             ];

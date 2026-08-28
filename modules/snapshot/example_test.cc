@@ -13,7 +13,12 @@
 // To change what this asserts, do not edit the expected values. Change the code
 // and run:
 //
-//     SNAPSHOT_UPDATE=1 buck2 test //modules/snapshot:snapshot_test
+//     SNAPSHOT_UPDATE=1 buck2 run //modules/snapshot:snapshot_test
+//
+// `buck2 run`, not `buck2 test -c snapshot.update=1`: this module pins
+// SNAPSHOT_UPDATE off in its BUCK file, because the other tests here are
+// fixtures for the updater and a repo-wide sweep must not rewrite them. The
+// pin lives in the test's environment, which `buck2 run` does not apply.
 //
 // which rewrites every snapshot in this file at once, then read the diff. The
 // run still fails, deliberately: accepting the new behaviour is the diff you

@@ -32,9 +32,18 @@ def add_module(
         visibility = visibility,
     )
 
-    test_env = dict(env)
+    snapshot_env = {}
     if snapshot_sources:
-        test_env["SNAPSHOT_ROOT"] = "$(location :{})/.snapshots".format(snapshot_target)
+        snapshot_env["SNAPSHOT_ROOT"] = "$(location :{})/.snapshots".format(snapshot_target)
+
+    # File snapshots are read through SNAPSHOT_ROOT above -- the build's copy,
+    # which is hermetic and travels into a remote sandbox -- and written through
+    # this one, the store's path in the source tree. A write has to reach the
+    # repository, and buck-out is not the repository.
+    #
+    # Set unconditionally, because a module recording its first file snapshot
+    # has no store for the glob above to find.
+    snapshot_env["SNAPSHOT_SOURCE_ROOT"] = "{}/.snapshots".format(source_dir)
 
     # Snapshot update mode arrives as a buckconfig, not as an ambient
     # environment variable.
@@ -50,16 +59,21 @@ def add_module(
     # It also selects the executor; see remote_execution below.
     snapshot_update = read_config("snapshot", "update", "0")
     if snapshot_update != "0":
-        test_env["SNAPSHOT_UPDATE"] = snapshot_update
+        snapshot_env["SNAPSHOT_UPDATE"] = snapshot_update
 
-    # File snapshots are read through SNAPSHOT_ROOT above -- the build's copy,
-    # which is hermetic and travels into a remote sandbox -- and written through
-    # this one, the store's path in the source tree. A write has to reach the
-    # repository, and buck-out is not the repository.
-    #
-    # Set unconditionally, because a module recording its first file snapshot
-    # has no store for the glob above to find.
-    test_env["SNAPSHOT_SOURCE_ROOT"] = "{}/.snapshots".format(source_dir)
+    # The module's own `env` wins over everything computed above. The config is
+    # repo-wide, so `-c snapshot.update=1 //...` puts every module into update
+    # mode at once, and a module whose tests are fixtures *about* snapshotting
+    # cannot survive that -- rewriting them replaces the expectations that would
+    # have caught a bad rewrite with that rewrite's own output. Pinning
+    # SNAPSHOT_UPDATE in `env` opts such a module out, and the same precedence
+    # applies to the two roots for anything that needs to point them elsewhere.
+    test_env = dict(snapshot_env)
+    test_env.update(env)
+
+    # What the test will actually see, which is what the executor below has to
+    # agree with -- not the config, which the env may have just overridden.
+    snapshot_update = test_env.get("SNAPSHOT_UPDATE", "0")
 
     # How the test executes, which update mode has to change.
     #
