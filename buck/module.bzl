@@ -52,6 +52,15 @@ def add_module(
     if snapshot_update != "0":
         test_env["SNAPSHOT_UPDATE"] = snapshot_update
 
+    # File snapshots are read through SNAPSHOT_ROOT above -- the build's copy,
+    # which is hermetic and travels into a remote sandbox -- and written through
+    # this one, the store's path in the source tree. A write has to reach the
+    # repository, and buck-out is not the repository.
+    #
+    # Set unconditionally, because a module recording its first file snapshot
+    # has no store for the glob above to find.
+    test_env["SNAPSHOT_SOURCE_ROOT"] = "{}/.snapshots".format(source_dir)
+
     # How the test executes, which update mode has to change.
     #
     # Normally: remote, on the same local RE worker the build platform uses.

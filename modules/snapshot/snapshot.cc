@@ -68,10 +68,29 @@ std::string generate_uuid() {
   return out.str();
 }
 
+std::filesystem::path snapshot_layout(const std::filesystem::path &root,
+                                      std::string_view id) {
+  return root / std::string(id.substr(0, 2)) / (std::string(id) + ".snap");
+}
+
+// Where a file snapshot is *read* from: the build's copy of the store.
+//
+// Hermetic, and materialised into the sandbox by the module's filegroup, which
+// is what lets a test that compares against file snapshots run remotely.
 std::filesystem::path snapshot_path(std::string_view id) {
   const char* const root = std::getenv("SNAPSHOT_ROOT");
-  return std::filesystem::path(root ? root : "") / std::string(id.substr(0, 2)) /
-         (std::string(id) + ".snap");
+  return snapshot_layout(std::filesystem::path(root ? root : ""), id);
+}
+
+// Where a file snapshot is *written*: the store's path in the source tree.
+//
+// Not the read path. That one lives under buck-out, so a snapshot written there
+// would be discarded by the next `buck2 clean`, never reach the repository, and
+// be reported missing by tools/snapshot-files -- which audits the source tree.
+// Recording a snapshot has to land where the snapshot is kept.
+std::filesystem::path snapshot_source_path(std::string_view id) {
+  const char* const root = std::getenv("SNAPSHOT_SOURCE_ROOT");
+  return snapshot_layout(std::filesystem::path(root ? root : ""), id);
 }
 
 struct ReadResult {
@@ -280,10 +299,10 @@ std::string flush_updates() {
     }
   }
   if (has_file_updates) {
-    const char* const store = std::getenv("SNAPSHOT_ROOT");
+    const char* const store = std::getenv("SNAPSHOT_SOURCE_ROOT");
     if (store == nullptr || *store == '\0') {
       updates().clear();
-      return "SNAPSHOT_ROOT must be set to update file snapshots\n";
+      return "SNAPSHOT_SOURCE_ROOT must be set to update file snapshots\n";
     }
   }
 
@@ -348,6 +367,8 @@ std::string flush_updates() {
       errors += "invalid generated file snapshot id\n";
       continue;
     }
+    // Re-read through the read path, to confirm the snapshot still holds what
+    // the test compared against; write through the source path.
     const auto path = snapshot_path(pending.id);
     const ReadResult current = read_bytes(path);
     if ((current.ok &&
@@ -359,7 +380,8 @@ std::string flush_updates() {
                            : current.error + "\n";
       continue;
     }
-    writes.push_back({path, pending.new_value, {}});
+    writes.push_back({cwd / snapshot_source_path(pending.id),
+                      pending.new_value, {}});
     if (pending.initialize)
       ids_by_file[pending.file].push_back(
           {pending.line, pending.column, "", pending.id});

@@ -60,11 +60,16 @@ check_snapshot(render_document(), ""_filesnap);
 ```
 
 An explicit update generates a UUID in the source and stores the exact bytes
-under `.snapshots/<first-two-hex-digits>/<uuid>.snap`. The snapshot root is an
-absolute source-tree path recorded by the build, so the test may run from any
-working directory. `_filesnap.update()` and `SNAPSHOT_UPDATE=1` behave exactly
-like their inline counterparts, including the deliberately failing update run
-and stale-marker check.
+under `.snapshots/<first-two-hex-digits>/<uuid>.snap`. `_filesnap.update()` and
+update mode behave exactly like their inline counterparts, including the
+deliberately failing update run and stale-marker check.
+
+Reads and writes use different roots, and both are project-relative. Reads come
+from `SNAPSHOT_ROOT`, the build's copy of the store, so a test that compares
+against file snapshots stays hermetic and can run remotely. Writes go to
+`SNAPSHOT_SOURCE_ROOT`, the store's path in the source tree, so a recorded
+snapshot reaches the repository rather than buck-out. Inline `_snap` updates use
+neither — they need no store at all.
 
 File snapshots compare bytes exactly. Do not copy an initialized `_filesnap`
 literal: the UUID has one owning assertion. To audit the whole repository run:
@@ -261,7 +266,7 @@ still decode to the value the test saw, and rewrites only that span.
 | `no matching literal operator for ... _snap` | add `using snapshot_testing::operator""_snap;` to the test file |
 | `unsupported escape '\x'` | only `\n \t \r \" \\` are decoded; rewrite the value |
 | `unterminated string literal` | a literal spans a line break; keep each on one line |
-| `SNAPSHOT_ROOT must be set to update file snapshots` | only `_filesnap` needs a store; inline `_snap` updates need none |
+| `SNAPSHOT_SOURCE_ROOT must be set to update file snapshots` | only `_filesnap` needs a store; inline `_snap` updates need none |
 | `cannot read .../x_test.cc` during an update | the test ran remotely, so there was no source tree to rewrite — update mode must come from `-c snapshot.update=1`, which selects a local executor |
 | `source file is not valid UTF-8` | fix the file's encoding; nothing was written |
 | `new snapshot value ... is not valid UTF-8` | the code under test emitted invalid UTF-8 — that's the bug |
