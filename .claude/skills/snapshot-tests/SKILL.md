@@ -114,7 +114,7 @@ check_snapshot(render(x), "stale"_snap.update());
 ```
 
 ```sh
-out/build/Debug/modules/module_x/module_x_test    # rewrites only this one
+buck2 run //modules/module_x:module_x_test    # rewrites only this one
 ```
 
 Then **delete the `.update()`**. Once the value matches, a leftover marker fails
@@ -215,9 +215,21 @@ never had.
 ## Run
 
 ```sh
-out/build/Debug/modules/module_x/module_x_test --test-case="render*"
-SNAPSHOT_UPDATE=1 out/build/Debug/modules/module_x/module_x_test --test-case="render*"
+buck2 run //modules/module_x:module_x_test -- --test-case="render*"
+SNAPSHOT_UPDATE=1 buck2 run //modules/module_x:module_x_test -- --test-case="render*"
 ```
+
+Under `buck2 test`, update mode is a buckconfig rather than an environment
+variable — `buck2 test` does not forward the caller's environment:
+
+```sh
+buck2 test -c snapshot.update=1 //modules/module_x:module_x_test
+```
+
+The config also switches the test to a local-only executor, because a rewrite
+needs the real source tree and a remotely executed test runs in a sandbox
+holding only the action's inputs. No `--local-only` flag: normal runs stay
+remote so that their results keep populating the action cache.
 
 `SNAPSHOT_UPDATE=1` scopes to whatever the filter selects — narrow it to update
 one test.
@@ -249,7 +261,8 @@ still decode to the value the test saw, and rewrites only that span.
 | `no matching literal operator for ... _snap` | add `using snapshot_testing::operator""_snap;` to the test file |
 | `unsupported escape '\x'` | only `\n \t \r \" \\` are decoded; rewrite the value |
 | `unterminated string literal` | a literal spans a line break; keep each on one line |
-| `refusing to update ...: reported a relative path` | the TU was compiled with a relative source path; rebuild through Buck2 so source locations are stable |
+| `SNAPSHOT_ROOT must be set to update file snapshots` | only `_filesnap` needs a store; inline `_snap` updates need none |
+| `cannot read .../x_test.cc` during an update | the test ran remotely, so there was no source tree to rewrite — update mode must come from `-c snapshot.update=1`, which selects a local executor |
 | `source file is not valid UTF-8` | fix the file's encoding; nothing was written |
 | `new snapshot value ... is not valid UTF-8` | the code under test emitted invalid UTF-8 — that's the bug |
 | Nothing rewritten, test still fails | `SNAPSHOT_UPDATE=1` not set and no `.update()`, or a filter excluded the case |

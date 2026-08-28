@@ -36,6 +36,60 @@ def add_module(
     if snapshot_sources:
         test_env["SNAPSHOT_ROOT"] = "$(location :{})/.snapshots".format(snapshot_target)
 
+    # Snapshot update mode arrives as a buckconfig, not as an ambient
+    # environment variable.
+    #
+    # `buck2 test` does not forward the caller's environment to the test, so
+    # `SNAPSHOT_UPDATE=1 buck2 test ...` silently does nothing -- the run just
+    # fails again with "re-run with SNAPSHOT_UPDATE=1". Routing it through `-c`
+    # also makes update mode part of the action key, so a cached green result
+    # cannot stand in for a run that was asked to rewrite sources.
+    #
+    #     buck2 test -c snapshot.update=1 //modules/x:x_test
+    #
+    # It also selects the executor; see remote_execution below.
+    snapshot_update = read_config("snapshot", "update", "0")
+    if snapshot_update != "0":
+        test_env["SNAPSHOT_UPDATE"] = snapshot_update
+
+    # How the test executes, which update mode has to change.
+    #
+    # Normally: remote, on the same local RE worker the build platform uses.
+    # Buck2 only caches test executions through the RE action cache, and only a
+    # remotely executed action populates it -- the test executor config leaves
+    # `allow_cache_uploads` false and the `remote_execution` attr exposes no way
+    # to set it. So a locally executed test uploads nothing, and any action key
+    # that starts cold stays cold.
+    #
+    # Under update mode: local-only, via the attr's "disabled" spelling. A
+    # rewrite needs the real source tree, and a remotely executed test runs in a
+    # sandbox holding only the action's inputs.
+    #
+    # "disabled" rather than adding `local_enabled` to the dict below, because
+    # `local_enabled` merely makes the executor *hybrid*. The prelude builds the
+    # test executor without `use_limited_hybrid` (the platform's setting does not
+    # reach it), so hybrid there means `HybridExecutionLevel::Full` -- local and
+    # remote race, and remote can win. That would put the rewrite back in a
+    # sandbox, intermittently. `--local-only` overrides the race, but relying on
+    # a flag to make the build correct is the wrong shape.
+    #
+    # "disabled" instead yields a genuinely local-only executor, and is the one
+    # path in the prelude that also sets `run_from_project_root`, which is what
+    # makes the project-relative paths a rewrite works with resolve. See
+    # prelude/tests/re_utils.bzl.
+    if snapshot_update != "0":
+        test_remote_execution = "disabled"
+    else:
+        test_remote_execution = {
+            "capabilities": {
+                "OSFamily": "",
+                "container-image": "",
+                "ISA": "x86-64",
+            },
+            "remote_cache_enabled": True,
+            "use_case": "buck2-default",
+        }
+
     native.cxx_library(
         name = name,
         srcs = srcs,
@@ -68,17 +122,7 @@ def add_module(
         env = test_env,
         labels = labels,
         supports_test_execution_caching = True,
-        # Buck2 only caches test executions through the RE action cache. Keep
-        # these tests on the same local RE worker used by the build platform.
-        remote_execution = {
-            "capabilities": {
-                "OSFamily": "",
-                "container-image": "",
-                "ISA": "x86-64",
-            },
-            "remote_cache_enabled": True,
-            "use_case": "buck2-default",
-        },
+        remote_execution = test_remote_execution,
         header_namespace = "",
         compiler_flags = compiler_flags + [
             "-DMODULE_NAME=\"{}\"".format(name),

@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <map>
 #include <random>
+#include <set>
 #include <sstream>
 #include <sys/file.h>
 #include <system_error>
@@ -251,33 +252,81 @@ void discard_updates() {
 std::string flush_updates() {
   if (updates().empty())
     return {};
-  const char* const root_env = std::getenv("SNAPSHOT_ROOT");
-  const std::filesystem::path root(root_env ? root_env : "");
-  if (!root.is_absolute()) {
+  // Source locations arrive project-relative, because that is what Buck2
+  // compiles with, so everything below is anchored on the working directory.
+  // That is sound because an update is necessarily a local run -- `buck2 run`,
+  // or `buck2 test -c snapshot.update=1`, which selects a local-only executor
+  // that starts at the project root. A remotely executed test has no source
+  // tree to rewrite at all, and fails below on reading the source rather than
+  // corrupting anything.
+  std::error_code cwd_error;
+  const std::filesystem::path cwd = std::filesystem::current_path(cwd_error);
+  if (cwd_error) {
     updates().clear();
-    return "SNAPSHOT_ROOT must be set to an absolute path\n";
+    return "cannot determine the working directory: " + cwd_error.message() + "\n";
   }
-  std::error_code root_error;
-  std::filesystem::create_directories(root, root_error);
-  if (root_error) {
-    updates().clear();
-    return "cannot create snapshot root " + root.string() + ": " +
-           root_error.message() + "\n";
+
+  // A store is needed only by the updates that use one.
+  //
+  // An inline rewrite goes to the path std::source_location reported and never
+  // touches a store, so demanding SNAPSHOT_ROOT up front made inline snapshots
+  // unupdatable in any module without a `.snapshots/` directory -- which is
+  // every module that has not yet created a file snapshot.
+  bool has_file_updates = false;
+  for (const PendingUpdate &pending : updates()) {
+    if (pending.kind != PendingUpdate::Kind::Inline) {
+      has_file_updates = true;
+      break;
+    }
   }
+  if (has_file_updates) {
+    const char* const store = std::getenv("SNAPSHOT_ROOT");
+    if (store == nullptr || *store == '\0') {
+      updates().clear();
+      return "SNAPSHOT_ROOT must be set to update file snapshots\n";
+    }
+  }
+
   struct UpdateLock {
     int fd = -1;
+    UpdateLock() = default;
+    UpdateLock(const UpdateLock &) = delete;
+    UpdateLock &operator=(const UpdateLock &) = delete;
+    UpdateLock(UpdateLock &&other) noexcept : fd(other.fd) { other.fd = -1; }
+    UpdateLock &operator=(UpdateLock &&) = delete;
     ~UpdateLock() {
       if (fd >= 0) {
         ::flock(fd, LOCK_UN);
         ::close(fd);
       }
     }
-  } lock;
-  const std::filesystem::path lock_path = root / ".update.lock";
-  lock.fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0666);
-  if (lock.fd < 0 || ::flock(lock.fd, LOCK_EX) != 0) {
-    updates().clear();
-    return "cannot lock snapshot updates at " + lock_path.string() + "\n";
+  };
+
+  // One lock per directory holding a file to rewrite.
+  //
+  // Rewrites are per source file, and two test processes can only collide over
+  // a file they both rewrite -- which in this layout means the same module
+  // directory. Locking those directories needs no store to exist, which is what
+  // lets a module with no `.snapshots/` update its inline snapshots. File
+  // snapshot writes need no lock of their own: each is keyed by a UUID that
+  // exactly one assertion owns.
+  //
+  // Taken in sorted order, so two processes whose directory sets overlap cannot
+  // deadlock against each other.
+  std::set<std::filesystem::path> lock_dirs;
+  for (const PendingUpdate &pending : updates())
+    lock_dirs.insert((cwd / pending.file).parent_path());
+
+  std::vector<UpdateLock> locks;
+  for (const std::filesystem::path &dir : lock_dirs) {
+    const std::filesystem::path lock_path = dir / ".update.lock";
+    UpdateLock lock;
+    lock.fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0666);
+    if (lock.fd < 0 || ::flock(lock.fd, LOCK_EX) != 0) {
+      updates().clear();
+      return "cannot lock snapshot updates at " + lock_path.string() + "\n";
+    }
+    locks.push_back(std::move(lock));
   }
   struct Write {
     std::filesystem::path target;
@@ -323,11 +372,8 @@ std::string flush_updates() {
     source_names[item.first] = true;
   for (const auto &item : source_names) {
     const std::string &name = item.first;
-    const std::filesystem::path path(name);
-    if (!path.is_absolute()) {
-      errors += "refusing relative source path " + name + "\n";
-      continue;
-    }
+    // Project-relative, as compiled; anchored like everything else here.
+    const std::filesystem::path path = cwd / name;
     const ReadResult source = read_bytes(path);
     if (!source.ok) {
       errors += source.error + "\n";

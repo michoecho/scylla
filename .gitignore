@@ -26,3 +26,6 @@ buck-out/
 # pushed and versioned separately, so the parent repo does not track it.
 /third-party/fuzztest
 /references
+
+# Lock file written by snapshot update runs; not a snapshot.
+.update.lock
