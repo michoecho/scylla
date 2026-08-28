@@ -8,8 +8,6 @@
 
 #pragma once
 
-#include <optional>
-
 #include "dht/ring_position.hh"
 #include "sstable_set.hh"
 #include "readers/clustering_combined.hh"
@@ -21,45 +19,38 @@ namespace sstables {
 // specialized when sstables are partitioned in the token range space
 // e.g. leveled compaction strategy
 class partitioned_sstable_set : public sstable_set_impl {
-    // The priority search tree is keyed by biased tokens, i.e. tokens mapped into the
+    // The intervals are keyed by biased tokens, i.e. tokens mapped into the
     // uint64_t domain (see dht::token::unbias()), rather than by ring
     // positions. That keeps the keys plain integers: comparisons don't need
-    // the schema, and no partition key is copied into the map. The loss of
+    // the schema, and no partition key is copied into the index. The loss of
     // precision (a partition key is ignored when a token is shared by
     // sstable bounds) only makes selection return a superset, which callers
     // must tolerate anyway.
     using biased_token = uint64_t;
     using priority_search_tree_type = utils::priority_search_tree<biased_token, shared_sstable>;
-    struct interval_type {
+    struct token_interval {
         biased_token start;
         biased_token end;
     };
 private:
     schema_ptr _schema;
-    std::vector<shared_sstable> _unleveled_sstables;
-    priority_search_tree_type _leveled_sstables;
+    priority_search_tree_type _sstables;
     lw_shared_ptr<sstable_list> _all;
     std::unordered_map<run_id, shared_sstable_run> _all_runs;
-    // Token range spanned by the compaction group owning this sstable set.
-    dht::token_range _token_range;
 private:
-    static interval_type make_interval(const dht::partition_range& range);
-    static interval_type make_interval(const sstable& sst);
-    // SSTables are stored separately to avoid the index fragmentation issue when level 0 falls behind.
-    bool store_as_unleveled(const shared_sstable& sst) const;
-    static dht::ring_position_ext to_next_position(std::optional<biased_token> token);
+    static token_interval make_interval(const dht::partition_range& range);
+    static token_interval make_interval(const sstable& sst);
+    static dht::ring_position_ext to_next_position(std::optional<biased_token> change);
 public:
 
     partitioned_sstable_set(const partitioned_sstable_set&) = delete;
-    explicit partitioned_sstable_set(schema_ptr schema, dht::token_range token_range);
+    explicit partitioned_sstable_set(schema_ptr schema);
     // For cloning the partitioned_sstable_set (makes a deep copy, including *_all)
     explicit partitioned_sstable_set(
         schema_ptr schema,
-        const std::vector<shared_sstable>& unleveled_sstables,
-        const priority_search_tree_type& leveled_sstables,
+        const priority_search_tree_type& sstables,
         const lw_shared_ptr<sstable_list>& all,
         const std::unordered_map<run_id, shared_sstable_run>& all_runs,
-        dht::token_range token_range,
         file_size_stats bytes_on_disk);
 
     virtual std::unique_ptr<sstable_set_impl> clone() const override;
