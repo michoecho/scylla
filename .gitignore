@@ -25,3 +25,4 @@ buck-out/
 # our Buck2 build), cloned here and wired in as the `fuzztest` buck cell. It is
 # pushed and versioned separately, so the parent repo does not track it.
 /third-party/fuzztest
+/references
