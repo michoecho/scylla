@@ -1,15 +1,69 @@
 load("//buck:module.bzl", "add_module")
 
+# The header is the whole implementation, so it gets a target of its own. The
+# plugins below need it, and the module depends on the plugins -- routing them
+# through `:static_keys` instead would be a dependency cycle.
+
+cxx_library(
+    name = "static_keys_headers",
+    exported_headers = {
+        "static_keys/static_keys.h": "include/static_keys/static_keys.h",
+    },
+    header_namespace = "",
+    # Executables need their copy of the jump table registry visible to
+    # dlopen()ed libraries, which resolve against the executable's dynamic
+    # symbol table. See "Modules" in static_keys.h.
+    exported_linker_flags = ["-Wl,--export-dynamic"],
+    visibility = ["PUBLIC"],
+)
+
+# Two shared libraries that own static keys, covering the two ways a jump table
+# can reach a process: linked at build time, and dlopen()ed later.
+#
+# Both are `preferred_linkage = "shared"` so they stay real DSOs with their own
+# __jump_table sections. Linked statically into the test they would merge into
+# the executable's table and prove nothing.
+
+cxx_library(
+    name = "linked_plugin",
+    srcs = ["plugin/linked_plugin.cc"],
+    exported_deps = [":static_keys_headers"],
+    preferred_linkage = "shared",
+    header_namespace = "",
+    visibility = ["PUBLIC"],
+)
+
+cxx_library(
+    name = "dlopen_plugin",
+    srcs = ["plugin/dlopen_plugin.cc"],
+    exported_deps = [":static_keys_headers"],
+    preferred_linkage = "shared",
+    header_namespace = "",
+    visibility = ["PUBLIC"],
+)
+
 add_module(
     name = "static_keys",
     srcs = [
         "static_keys_test.cc",
+        "shared_lib_test.cc",
     ],
     exported_headers = {
         "static_keys/static_keys.h": "include/static_keys/static_keys.h",
     },
     deps = [
         "//:doctest",
+        ":linked_plugin",
     ],
+    exported_linker_flags = [
+        # dlopen()/dlsym() for the plugin the test loads by hand.
+        "-ldl",
+    ],
+    # The dlopen()ed plugin is never linked, so it has to travel to the test as
+    # data and be found by path at runtime.
+    resources = [":dlopen_plugin"],
+    env = {
+        "STATIC_KEYS_DLOPEN_PLUGIN": "$(location :dlopen_plugin)",
+    },
     module_source_dir = "modules/static_keys",
 )

@@ -20,6 +20,11 @@
 //
 //     static_keys::static_key_enable(&feature.key);        // nop -> jmp
 //
+// Keys work the same way inside a shared library, including one loaded with
+// dlopen(), as long as each key's branch sites are in the same library as the
+// key itself. Executables must be linked with -Wl,--export-dynamic; the
+// "Modules" section below explains both requirements.
+//
 // The branch site emits, besides the nop/jmp, a `struct jump_entry` into a
 // `__jump_table` section. The linker brackets that section with
 // `__start___jump_table` / `__stop___jump_table`, which is how we find every
@@ -34,8 +39,11 @@
 //     safe against concurrent execution of a branch being flipped.
 //   - The mprotect() syscalls double as the architecturally required
 //     serializing event between writing and executing the new instruction.
-//   - There is no module support and no __init text, so `struct static_key`
-//     has no JUMP_TYPE_LINKED state and jump entries have no "init" bit.
+//   - Shared libraries stand in for kernel modules: each DSO carries its own
+//     __jump_table and registers it as it loads (see "Modules" below). There is
+//     no __init text, so jump entries have no "init" bit, and `struct
+//     static_key` has no JUMP_TYPE_LINKED state -- see the same section for why
+//     a key can never be shared between DSOs in the first place.
 //   - `arch_jump_entry_size()` recognises the four encodings we can emit
 //     instead of running a general instruction decoder.
 
@@ -60,9 +68,12 @@ namespace static_keys {
 //
 //   bit 0 => 1 if the key is initially true, 0 if initially false
 //
-// The kernel also uses bit 1 to mark a pointer to a static_key_mod list; we
-// have no modules, so JUMP_TYPE_LINKED does not exist here. The mask stays
-// two bits wide so the encoding matches the kernel's.
+// The kernel also uses bit 1 to mark a pointer to a static_key_mod list, which
+// it needs because a module can branch on a key owned by the core kernel. A key
+// here is private to one DSO (see "Modules" for why, and for what it would take
+// to change), so its entries are always one run in one table and
+// JUMP_TYPE_LINKED does not exist. The mask stays two
+// bits wide so the encoding matches the kernel's.
 struct static_key {
     int enabled;
     unsigned long type;
@@ -86,13 +97,29 @@ struct static_key_false {
 #define STATIC_KEY_FALSE_INIT \
     { .enabled = 0, .type = ::static_keys::JUMP_TYPE_FALSE }
 
-#define DEFINE_STATIC_KEY_TRUE(name) \
-    ::static_keys::static_key_true name = {.key = STATIC_KEY_TRUE_INIT}
-#define DEFINE_STATIC_KEY_FALSE(name) \
-    ::static_keys::static_key_false name = {.key = STATIC_KEY_FALSE_INIT}
+// Keys are hidden, which is a hard requirement rather than hygiene.
+//
+// A branch site stores its key as a link-time constant (see JUMP_TABLE_ENTRY),
+// and in position-independent code a symbol's address is only a link-time
+// constant if the symbol cannot be preempted by another object. Defining a key
+// with default visibility in a shared library does not merely risk the wrong
+// key being patched -- it fails to compile, with "impossible constraint in
+// 'asm'". Hidden visibility is what makes the address foldable again.
+//
+// The flip side is that a key is private to the DSO that defines it, which is
+// why this port has no cross-module key sharing. "Modules" below describes what
+// lifting that would take.
+#define STATIC_KEY_VISIBILITY __attribute__((visibility("hidden")))
 
-#define DECLARE_STATIC_KEY_TRUE(name) extern ::static_keys::static_key_true name
-#define DECLARE_STATIC_KEY_FALSE(name) extern ::static_keys::static_key_false name
+#define DEFINE_STATIC_KEY_TRUE(name) \
+    STATIC_KEY_VISIBILITY ::static_keys::static_key_true name = {.key = STATIC_KEY_TRUE_INIT}
+#define DEFINE_STATIC_KEY_FALSE(name) \
+    STATIC_KEY_VISIBILITY ::static_keys::static_key_false name = {.key = STATIC_KEY_FALSE_INIT}
+
+#define DECLARE_STATIC_KEY_TRUE(name) \
+    STATIC_KEY_VISIBILITY extern ::static_keys::static_key_true name
+#define DECLARE_STATIC_KEY_FALSE(name) \
+    STATIC_KEY_VISIBILITY extern ::static_keys::static_key_false name
 
 enum class jump_label_type {
     nop = 0,
@@ -391,6 +418,147 @@ inline void jump_label_sort_entries(jump_entry* start, jump_entry* stop) {
     std::free(decoded);
 }
 
+// -------------------------------------------------------------------------
+// Modules
+// -------------------------------------------------------------------------
+//
+// A shared library is this port's kernel module. The linker synthesises a
+// __jump_table section and a __start/__stop bracket pair per output object, so
+// a process holds one table per DSO plus one for the executable, and each DSO's
+// brackets describe only its own entries. The core therefore keeps a registry
+// of tables rather than reading the brackets directly, exactly as the kernel
+// walks a module's jump_entries rather than the vmlinux table.
+//
+// What the kernel does that this port does not: share a key across the
+// boundary. That is a limit of the entry encoding rather than a fundamental
+// one, and the difference comes down to who resolves the reference.
+//
+// A module reaches the kernel as an ET_REL object with its relocations intact,
+// and the kernel applies them itself: apply_relocate_add() in
+// arch/x86/kernel/module.c handles R_X86_64_PC64. So a module's entry can name
+// a key in vmlinux and have the self-relative offset filled in at load time.
+//
+// A shared library is ET_DYN, and the linker that resolves its references is
+// ld.so, which implements a far smaller set of relocation types. R_X86_64_PC64
+// is not among them -- ld emits the dynamic relocation without complaint and
+// the loader then refuses the library outright, with "unexpected reloc type
+// 0x18". A self-relative key field cannot cross a DSO boundary at all.
+//
+// An absolute key field would work: R_X86_64_64 is supported, and a DSO's entry
+// does resolve to a key in another object through it. The price is losing the
+// relocation-free table this port inherits from
+// CONFIG_HAVE_ARCH_JUMP_LABEL_RELATIVE -- a dynamic relocation per branch site,
+// and a __jump_table that is dirtied at load rather than shared -- plus keys
+// named in the asm template instead of passed as operands, since a preemptible
+// symbol is not an "i" operand. Only then do `struct static_key_mod` and
+// JUMP_TYPE_LINKED start to earn their place, to track a key's runs across
+// several tables.
+//
+// None of that is implemented. A key stays private to its DSO, so the
+// `within_module()` branch of jump_label_add_module() -- plain
+// static_key_set_entries() -- is the only one this port takes.
+//
+// Two things the registry needs from the build:
+//
+//   - An executable must be linked with -Wl,--export-dynamic, which is the
+//     moral equivalent of the kernel's EXPORT_SYMBOL on this machinery. The
+//     registry lives in an inline function's local static, so every DSO carries
+//     a weak copy of it, and which one wins is decided per symbol at load time.
+//     An executable exports nothing to a dlopen()ed library by default, so
+//     without the flag every DSO keeps its own registry holding only its own
+//     table. Keys still toggle correctly that way -- each DSO consistently uses
+//     its own copy -- but the process no longer has one view of its tables, and
+//     jump_label_table_count() below counts only the caller's. The flag is what
+//     makes the registry actually process-wide.
+//   - Nothing may build this header with -fvisibility=hidden and expect
+//     cross-DSO keys to share a registry; jump_label_tables() is pinned to
+//     default visibility below so the common case survives it.
+
+// One registered table: a DSO's __jump_table, as the registry sees it.
+struct jump_table {
+    jump_entry* start;
+    jump_entry* stop;
+    int refs;          // translation units in this DSO that registered it
+    bool initialized;  // sorted, validated, and linked to its keys
+    jump_table* next;
+};
+
+// The registry head. Process-wide: every DSO's copy of this inline function
+// collapses onto one definition at load time, which is what --export-dynamic
+// above is for.
+[[gnu::visibility("default")]] inline jump_table*& jump_label_tables() {
+    static jump_table* head = nullptr;
+    return head;
+}
+
+inline int jump_label_table_count() {
+    int count = 0;
+    for (const jump_table* table = jump_label_tables(); table != nullptr; table = table->next) {
+        count++;
+    }
+    return count;
+}
+
+// The table an entry belongs to, and so the bound a walk from it must stop at.
+inline jump_table* jump_label_table_of(const jump_entry* entry) {
+    for (jump_table* table = jump_label_tables(); table != nullptr; table = table->next) {
+        if (entry >= table->start && entry < table->stop) {
+            return table;
+        }
+    }
+    return nullptr;
+}
+
+// jump_label_add_module(), minus the static_key_mod branch this port cannot
+// reach. Registration only records the table; the sort and validation happen in
+// jump_label_init_table() on first use, which keeps a library's constructors
+// from doing work a program that never touches its keys will not need.
+//
+// Called once per translation unit, so a DSO built from several files registers
+// the same bracket pair repeatedly. Those are counted rather than rejected: the
+// matching destructors run one per translation unit too, and the table has to
+// outlive all of them.
+inline void jump_label_add_table(jump_entry* start, jump_entry* stop) {
+    if (start == nullptr || start == stop) {
+        return;  // a DSO with no branch sites has no section and no brackets
+    }
+    for (jump_table* table = jump_label_tables(); table != nullptr; table = table->next) {
+        if (table->start == start) {
+            table->refs++;
+            return;
+        }
+    }
+
+    auto* table = static_cast<jump_table*>(std::malloc(sizeof(jump_table)));
+    if (table == nullptr) {
+        static_key_bug("out of memory registering a jump table", start);
+    }
+    *table = {start, stop, 1, false, jump_label_tables()};
+    jump_label_tables() = table;
+}
+
+// jump_label_del_module(). The keys and the branch sites are unmapped with the
+// library, so there is nothing to unpatch -- the point is that no later update
+// walks a table whose text is gone.
+inline void jump_label_del_table(const jump_entry* start) {
+    jump_table** prev = &jump_label_tables();
+    for (jump_table* table = *prev; table != nullptr; prev = &table->next, table = table->next) {
+        if (table->start != start) {
+            continue;
+        }
+        if (--table->refs > 0) {
+            return;
+        }
+        *prev = table->next;
+        std::free(table);
+        return;
+    }
+}
+
+// -------------------------------------------------------------------------
+// Core
+// -------------------------------------------------------------------------
+
 // __jump_label_update(): walk this key's run of entries and patch each one.
 inline void __jump_label_update(const static_key* key, jump_entry* entry, const jump_entry* stop) {
     for (; entry < stop && jump_entry_key(entry) == key; entry++) {
@@ -398,34 +566,24 @@ inline void __jump_label_update(const static_key* key, jump_entry* entry, const 
     }
 }
 
-inline bool& static_key_initialized() {
-    static bool initialized = false;
-    return initialized;
-}
-
-// jump_label_init(). Sorts the table, points every key at its run of entries,
-// and checks that each site holds the instruction its initial state implies.
+// The second half of jump_label_add_module(): sort the table, point every key
+// at its run of entries, and check that each site holds the instruction its
+// key's initial state implies.
 //
 // The kernel additionally rewrites sites to nop here, because with
-// CONFIG_HAVE_JUMP_LABEL_HACK every site is assembled as a jmp and objtool
-// nops it out later. We emit the nop directly, so nothing needs rewriting and
-// the loop only has to verify.
-inline void jump_label_init() {
-    if (static_key_initialized()) {
+// CONFIG_HAVE_JUMP_LABEL_HACK every site is assembled as a jmp and objtool nops
+// it out later. We emit the nop directly, so nothing needs rewriting and the
+// loop only has to verify.
+inline void jump_label_init_table(jump_table* table) {
+    if (table->initialized) {
         return;
     }
-    static_key_initialized() = true;
+    table->initialized = true;
 
-    jump_entry* const iter_start = __start___jump_table;
-    jump_entry* const iter_stop = __stop___jump_table;
-    if (iter_start == nullptr || iter_stop == nullptr) {
-        return;
-    }
-
-    jump_label_sort_entries(iter_start, iter_stop);
+    jump_label_sort_entries(table->start, table->stop);
 
     static_key* key = nullptr;
-    for (jump_entry* iter = iter_start; iter < iter_stop; iter++) {
+    for (jump_entry* iter = table->start; iter < table->stop; iter++) {
         if (jump_label_type_of(iter) != jump_label_init_type(iter)) {
             static_key_bug("branch site disagrees with its key's initial state",
                            reinterpret_cast<const void*>(jump_entry_code(iter)));
@@ -440,11 +598,28 @@ inline void jump_label_init() {
     }
 }
 
+// jump_label_init(). Idempotent, and covers tables that appeared since the last
+// call -- a dlopen()ed library registers itself as it loads, and is initialised
+// the next time anyone touches a key.
+inline void jump_label_init() {
+    for (jump_table* table = jump_label_tables(); table != nullptr; table = table->next) {
+        jump_label_init_table(table);
+    }
+}
+
 inline void jump_label_update(const static_key* key) {
     jump_entry* const entry = static_key_entries(key);
-    if (entry != nullptr) {  // a key with no branches
-        __jump_label_update(key, entry, __stop___jump_table);
+    if (entry == nullptr) {
+        return;  // a key with no branches
     }
+
+    // The walk stops at the end of the *owning* table. Running to some other
+    // table's stop would read across a malloc'd gap between two mappings.
+    const jump_table* const table = jump_label_table_of(entry);
+    if (table == nullptr) {
+        static_key_bug("key's entries are in no registered jump table", entry);
+    }
+    __jump_label_update(key, entry, table->stop);
 }
 
 inline void static_key_enable(static_key* key) {
@@ -483,6 +658,30 @@ inline void static_key_slow_dec(static_key* key) {
         jump_label_update(key);
     }
 }
+
+// The registration itself, one object per translation unit.
+//
+// Anonymous namespace, and that is the whole trick. Every other function here
+// is inline, so all DSOs share one copy at runtime -- which is what the
+// registry wants, and exactly what the bracket symbols must not do. A copy of
+// jump_label_init() in a library binds to whichever definition wins globally,
+// and reads that DSO's table forever after. Internal linkage gives each DSO a
+// constructor that is genuinely its own, so `__start___jump_table` here is
+// resolved against the object being loaded.
+//
+// init_priority(101) is the earliest a user constructor may ask for, so a
+// table is registered before any static initialiser that might flip one of its
+// keys. Destructors run in reverse, hence after those same initialisers.
+namespace {
+
+struct jump_label_module {
+    jump_label_module() { jump_label_add_table(__start___jump_table, __stop___jump_table); }
+    ~jump_label_module() { jump_label_del_table(__start___jump_table); }
+};
+
+[[maybe_unused]] __attribute__((init_priority(101))) const jump_label_module jump_label_module_registration;
+
+}  // namespace
 
 }  // namespace static_keys
 
