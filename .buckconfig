@@ -3,7 +3,7 @@
   fuzztest = third-party/fuzztest
   rust_third_party = third-party/rust
   prelude = prelude
-  toolchains = toolchains
+  toolchains = buck/toolchains
   none = none
 
 [cell_aliases]
@@ -33,7 +33,7 @@
     target:toolchains//...->prelude//platforms:default
 
 [build]
-  execution_platforms = root//platforms:platforms
+  execution_platforms = root//buck/platforms:platforms
 
 [project]
   # Nested buck-out directories contain materialized external cells, whose BUCK files

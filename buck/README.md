@@ -9,9 +9,9 @@ they now live here so this repository builds on its own.
 | file         | upstream path           |
 | ------------ | ----------------------- |
 | `flake.bzl`  | `flake.bzl`             |
-| `cxx.bzl`    | `toolchains/cxx.bzl`    |
-| `python.bzl` | `toolchains/python.bzl` |
-| `rust.bzl`   | `toolchains/rust.bzl`   |
+| `cxx.bzl`    | `buck/cxx.bzl`          |
+| `python.bzl` | `buck/python.bzl`       |
+| `rust.bzl`   | `buck/rust.bzl`         |
 
 Vendored at upstream `038b031` ("Run check workflow weekly"), plus two local
 changes that are not upstream:
@@ -42,7 +42,7 @@ changes that are not upstream:
   which makes analysis fail for any target with a shared library dependency.
 
 `rust.bzl` is vendored verbatim and is currently unused -- this project defines
-no Rust toolchain target. Wire up `nix_rust_toolchain` in `toolchains/BUCK` if
+no Rust toolchain target. Wire up `nix_rust_toolchain` in `buck/toolchains/BUCK` if
 that changes.
 
 ## Usage
@@ -51,4 +51,4 @@ that changes.
 load("//buck:flake.bzl", "flake")
 ```
 
-From a non-root cell, spell it `@root//buck:flake.bzl` (see `toolchains/BUCK`).
+From a non-root cell, spell it `@root//buck:flake.bzl` (see `buck/toolchains/BUCK`).

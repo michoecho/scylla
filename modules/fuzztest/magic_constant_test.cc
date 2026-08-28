@@ -10,7 +10,7 @@
 // --- how it is found -------------------------------------------------------
 //
 // The binary is built with `-fsanitize-coverage=trace-cmp` (see
-// toolchains/BUCK), so every integer comparison calls into
+// buck/toolchains/BUCK), so every integer comparison calls into
 // __sanitizer_cov_trace_const_cmp8 with both operands. FuzzTest keeps those
 // operands in a table of recent compares, and ArbitraryImpl<uint64_t>::Mutate
 // draws from that table as a dictionary
