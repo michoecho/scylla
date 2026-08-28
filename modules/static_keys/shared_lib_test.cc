@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 
 #include "static_keys/static_keys.h"
+#include "static_keys_test/shared_key.h"
 
 extern "C" {
 int sk_linked_probe_false_unlikely();
@@ -20,15 +21,27 @@ void sk_linked_enable_false_unlikely();
 void sk_linked_disable_false_unlikely();
 void sk_linked_enable_true_likely();
 void sk_linked_disable_true_likely();
+int sk_linked_probe_shared();
 const void* sk_linked_table_start();
 const void* sk_linked_table_stop();
 }
+
+// The key the libraries branch on. Deliberately at global scope with external
+// linkage: the whole point is that another object can resolve this symbol.
+DEFINE_STATIC_KEY_FALSE_EXPORTED(sk_shared_key);
 
 namespace {
 
 // A key belonging to the executable, so the tests can show that patching a
 // library's branch leaves the executable's alone.
 DEFINE_STATIC_KEY_FALSE(exe_key);
+
+[[gnu::noinline]] int probe_shared_key() {
+    if (static_branch_unlikely(&sk_shared_key)) {
+        return 42;
+    }
+    return 7;
+}
 
 [[gnu::noinline]] int probe_exe_key() {
     if (static_branch_unlikely(&exe_key)) {
@@ -176,4 +189,45 @@ TEST_CASE("static_keys: a library reloaded after dlclose() starts over") {
         CHECK(probe() == 7);
     }
     CHECK(static_keys::jump_label_table_count() == before);
+}
+
+TEST_CASE("static_keys: a library branches on a key owned by the executable") {
+    // One key, three branch sites, in three separate objects and three separate
+    // jump tables. This is what static_key_mod exists for in the kernel.
+    CHECK(probe_shared_key() == 7);
+    CHECK(sk_linked_probe_shared() == 7);
+
+    static_keys::static_key_enable(&sk_shared_key.key);
+    CHECK(probe_shared_key() == 42);
+    CHECK(sk_linked_probe_shared() == 42);
+
+    static_keys::static_key_disable(&sk_shared_key.key);
+    CHECK(probe_shared_key() == 7);
+    CHECK(sk_linked_probe_shared() == 7);
+}
+
+TEST_CASE("static_keys: a library loaded while a key is on gets patched on arrival") {
+    // The kernel's jump_label_add_module() patches a newly arrived site whose
+    // instruction disagrees with the key's current state. Without that, a
+    // library loaded after the key was enabled would run the wrong branch.
+    static_keys::static_key_enable(&sk_shared_key.key);
+
+    plugin_handle plugin;
+    auto probe = plugin.sym<int (*)()>("sk_dlopen_probe_shared");
+    CHECK(probe() == 42);
+
+    // ...and toggling afterwards has to reach into the new table too.
+    static_keys::static_key_disable(&sk_shared_key.key);
+    CHECK(probe() == 7);
+    CHECK(probe_shared_key() == 7);
+
+    static_keys::static_key_enable(&sk_shared_key.key);
+    CHECK(probe() == 42);
+    plugin.close();
+
+    // The library is gone; the key must forget its sites there rather than
+    // patch unmapped text.
+    static_keys::static_key_disable(&sk_shared_key.key);
+    CHECK(probe_shared_key() == 7);
+    CHECK(sk_linked_probe_shared() == 7);
 }

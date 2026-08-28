@@ -8,6 +8,7 @@
 // the linked-plugin test and fails this one.
 
 #include "static_keys/static_keys.h"
+#include "static_keys_test/shared_key.h"
 
 DEFINE_STATIC_KEY_FALSE(dlopen_false_unlikely);
 DEFINE_STATIC_KEY_TRUE(dlopen_true_unlikely);
@@ -34,6 +35,15 @@ void sk_dlopen_enable_false_unlikely() {
 
 void sk_dlopen_disable_true_unlikely() {
     static_keys::static_key_disable(&dlopen_true_unlikely.key);
+}
+
+// A branch on the executable's key, in a library that did not exist when the
+// key was last toggled.
+[[gnu::noinline]] int sk_dlopen_probe_shared() {
+    if (static_branch_unlikely(&sk_shared_key)) {
+        return 42;
+    }
+    return 7;
 }
 
 const void* sk_dlopen_table_start() {

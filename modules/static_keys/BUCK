@@ -10,10 +10,27 @@ cxx_library(
         "static_keys/static_keys.h": "include/static_keys/static_keys.h",
     },
     header_namespace = "",
-    # Executables need their copy of the jump table registry visible to
-    # dlopen()ed libraries, which resolve against the executable's dynamic
-    # symbol table. See "Modules" in static_keys.h.
-    exported_linker_flags = ["-Wl,--export-dynamic"],
+    exported_linker_flags = [
+        # Executables need their copy of the jump table registry visible to
+        # dlopen()ed libraries, which resolve against the executable's dynamic
+        # symbol table. See "Modules" in static_keys.h.
+        "-Wl,--export-dynamic",
+        # dladdr(), which the header uses to tell whether a key belongs to the
+        # object whose table is being registered. A no-op on glibc 2.34 and
+        # later, where libdl was folded into libc.
+        "-ldl",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# The declaration of the key the executable owns and the libraries branch on.
+cxx_library(
+    name = "shared_key_header",
+    exported_headers = {
+        "static_keys_test/shared_key.h": "plugin/shared_key.h",
+    },
+    header_namespace = "",
+    exported_deps = [":static_keys_headers"],
     visibility = ["PUBLIC"],
 )
 
@@ -27,7 +44,7 @@ cxx_library(
 cxx_library(
     name = "linked_plugin",
     srcs = ["plugin/linked_plugin.cc"],
-    exported_deps = [":static_keys_headers"],
+    exported_deps = [":shared_key_header"],
     preferred_linkage = "shared",
     header_namespace = "",
     visibility = ["PUBLIC"],
@@ -36,7 +53,7 @@ cxx_library(
 cxx_library(
     name = "dlopen_plugin",
     srcs = ["plugin/dlopen_plugin.cc"],
-    exported_deps = [":static_keys_headers"],
+    exported_deps = [":shared_key_header"],
     preferred_linkage = "shared",
     header_namespace = "",
     visibility = ["PUBLIC"],
@@ -54,10 +71,7 @@ add_module(
     deps = [
         "//:doctest",
         ":linked_plugin",
-    ],
-    exported_linker_flags = [
-        # dlopen()/dlsym() for the plugin the test loads by hand.
-        "-ldl",
+        ":shared_key_header",
     ],
     # The dlopen()ed plugin is never linked, so it has to travel to the test as
     # data and be found by path at runtime.

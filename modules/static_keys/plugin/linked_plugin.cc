@@ -9,6 +9,7 @@
 // only way it can reach this table is by running code that lives in this DSO.
 
 #include "static_keys/static_keys.h"
+#include "static_keys_test/shared_key.h"
 
 // Deliberately at file scope rather than in an anonymous namespace: a key in an
 // anonymous namespace is internal and would be non-preemptible for free, which
@@ -46,6 +47,15 @@ void sk_linked_disable_true_likely() {
 
 void sk_linked_enable_true_likely() {
     static_keys::static_key_enable(&linked_true_likely.key);
+}
+
+// A branch on a key this library does not own. The key lives in the
+// executable; only its address, filled in by the loader, reaches here.
+[[gnu::noinline]] int sk_linked_probe_shared() {
+    if (static_branch_unlikely(&sk_shared_key)) {
+        return 42;
+    }
+    return 7;
 }
 
 // The bracket symbols as *this* DSO sees them. The test compares them against
