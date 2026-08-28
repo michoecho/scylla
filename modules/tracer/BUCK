@@ -1,0 +1,80 @@
+load("//buck:module.bzl", "add_module")
+
+# The library, without the module's test sources.
+#
+# add_module() puts test translation units *into* the module library and links
+# it whole, which is what makes doctest registration work -- but it also means
+# anything depending on :tracer drags those TUs in. A tracepoint is a static in
+# an ELF section, so test tracepoints linked into :trace_producer would land in
+# the very table the code generator walks. Splitting the production code out
+# keeps the producer's tracepoint table equal to its own call sites.
+cxx_library(
+    name = "tracer_core",
+    srcs = [
+        "codegen.cc",
+        "tracer.cc",
+    ],
+    exported_headers = {
+        "tracer/codegen.h": "include/tracer/codegen.h",
+        "tracer/tracer.h": "include/tracer/tracer.h",
+    },
+    header_namespace = "",
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
+# Step 1: the binary that owns the tracepoints. It can print a decoder for its
+# own table, and it can run a workload and dump the resulting trace.
+cxx_binary(
+    name = "trace_producer",
+    srcs = ["trace_producer.cc"],
+    header_namespace = "",
+    deps = [":tracer_core"],
+)
+
+# Step 2: generate the decoder's source from that binary's tracepoint table.
+genrule(
+    name = "decoder_src",
+    out = "decoder.cc",
+    cmd = "$(exe :trace_producer) --emit-decoder > $OUT",
+)
+
+# Step 3: separately, run the workload and dump a trace. Independent of step 2
+# only because a record identifies its tracepoint by index rather than by
+# address -- otherwise these two runs of a PIE binary would disagree.
+genrule(
+    name = "trace_bin",
+    out = "trace.bin",
+    cmd = "$(exe :trace_producer) --emit-trace $OUT",
+)
+
+# Step 4: compile the generated source into a decoder. This is where a format
+# string that does not match its arguments becomes a build failure.
+cxx_binary(
+    name = "trace_decoder",
+    srcs = [":decoder_src"],
+)
+
+# Step 5: decode the trace. Its output is what the snapshot test asserts on.
+genrule(
+    name = "decoded_trace",
+    out = "decoded.txt",
+    cmd = "$(exe :trace_decoder) $(location :trace_bin) > $OUT",
+)
+
+add_module(
+    name = "tracer",
+    srcs = ["tracer_test.cc"],
+    deps = [
+        ":tracer_core",
+        "//:doctest",
+        "//modules/snapshot:snapshot",
+    ],
+    resources = {
+        "decoded.txt": ":decoded_trace",
+    },
+    env = {
+        "TRACER_DECODED": "$(location :decoded_trace)",
+    },
+    module_source_dir = "modules/tracer",
+)
