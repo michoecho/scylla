@@ -1,0 +1,48 @@
+# The long-running processes a dev session wants up. Started together by
+# `just dev`; see the justfile.
+#
+# Kept declarative rather than as a pile of background shells because the two
+# are ordered: buck2's RE client is pointed at nativelink by .buckconfig
+# ([buck2_re_client] ... 127.0.0.1:50051), so anything that builds wants the
+# CAS accepting connections first. `depends_on` plus a readiness probe is that
+# ordering, written down.
+version: "0.5"
+
+log_level: info
+
+processes:
+  # Local REAPI cache. Everything else that talks to buck2 waits on this.
+  nativelink:
+    command: nativelink buck/basic_cas.json5
+    # Out of the source tree; .cache is gitignored. process-compose creates
+    # the directory itself.
+    log_location: .cache/process-compose/nativelink.log
+    # A TCP connect, not a process check: nativelink is listening some time
+    # after it has forked, and buck2 gets connection-refused in that window.
+    readiness_probe:
+      exec:
+        command: "bash -c '< /dev/tcp/127.0.0.1/50051'"
+      initial_delay_seconds: 1
+      period_seconds: 1
+      failure_threshold: 30
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+      # Capped so a port that is already taken shows up as a process stuck in
+      # Error, rather than an endless restart scroll. The probe above cannot
+      # tell our nativelink's socket from someone else's on the same port, so
+      # a crash loop is otherwise easy to miss.
+      max_restarts: 3
+
+  # Keeps compile_commands.json in step with the BUCK files, standing in for
+  # the reconfigure step buck2 does not have.
+  compdb:
+    command: just watch-compdb
+    log_location: .cache/process-compose/compdb.log
+    # The watcher's first act is a buck2 BXL run, which goes to the CAS above.
+    depends_on:
+      nativelink:
+        condition: process_healthy
+    availability:
+      restart: on_failure
+      backoff_seconds: 2

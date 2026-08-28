@@ -466,6 +466,13 @@
 
               # Command runner for the recipes in ./justfile.
               just
+              # File watcher behind `just watch-compdb`, which stands in for
+              # the reconfigure step buck2 does not have: it re-runs the
+              # compilation-database BXL when a build file changes.
+              watchexec
+              # Supervisor for the long-running dev processes; see
+              # ./process-compose.yaml and `just dev`.
+              process-compose
               spdlog
               fmt
             ];
