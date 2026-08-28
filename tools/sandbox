@@ -43,6 +43,7 @@ def ensure_dirs(home):
         f"{home}/.local/state/claude",
         f"{home}/.cache/Code",   # VS Code cache (rest lives under ~/.config/Code)
         f"{home}/.vscode-shared/sharedStorage",  # VS Code application storage
+        "/tmp/nativelink",  # shared with the host through the sandbox's /tmp
     ):
         os.makedirs(d, exist_ok=True)
 
@@ -279,6 +280,9 @@ def main():
         # (VS Code's `--wait` marker). Node's os.tmpdir() honours TMPDIR, TMP,
         # and TEMP, so all must go; apps then fall back to /tmp.
         "--tmpfs", "/tmp",
+        # Punched back through the tmpfs so it stays shared with the host.
+        # Must come after --tmpfs /tmp, or the tmpfs covers it.
+        "--bind", "/tmp/nativelink", "/tmp/nativelink",
         "--unsetenv", "TMPDIR",
         "--unsetenv", "TMP",
         "--unsetenv", "TEMP",

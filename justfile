@@ -42,7 +42,7 @@ _cache:
 #
 # Bring up everything in ./process-compose.yaml.
 dev: _cache
-    process-compose up \
+    tools/sandbox --whole-sys env PC_LOG_LEVEL=error process-compose up \
         --config {{justfile_directory()}}/process-compose.yaml \
         --use-uds --unix-socket {{justfile_directory()}}/.cache/process-compose.sock
 

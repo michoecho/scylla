@@ -13,7 +13,7 @@ log_level: info
 processes:
   # Local REAPI cache. Everything else that talks to buck2 waits on this.
   nativelink:
-    command: nativelink buck/basic_cas.json5
+    command: just nativelink
     # Out of the source tree; .cache is gitignored. process-compose creates
     # the directory itself.
     log_location: .cache/process-compose/nativelink.log
@@ -24,7 +24,7 @@ processes:
         command: "bash -c '< /dev/tcp/127.0.0.1/50051'"
       initial_delay_seconds: 1
       period_seconds: 1
-      failure_threshold: 30
+      failure_threshold: 10
     availability:
       restart: on_failure
       backoff_seconds: 2
@@ -32,7 +32,7 @@ processes:
       # Error, rather than an endless restart scroll. The probe above cannot
       # tell our nativelink's socket from someone else's on the same port, so
       # a crash loop is otherwise easy to miss.
-      max_restarts: 3
+      max_restarts: 2
 
   # Keeps compile_commands.json in step with the BUCK files, standing in for
   # the reconfigure step buck2 does not have.
@@ -46,3 +46,17 @@ processes:
     availability:
       restart: on_failure
       backoff_seconds: 2
+
+  # The editor itself. `--wait` keeps the process in the foreground for as long
+  # as the window is open, so process-compose tracks the session rather than
+  # exiting the instant code hands off to an already-running instance.
+  code:
+    command: code . --wait
+    log_location: .cache/process-compose/code.log
+    depends_on:
+      nativelink:
+        condition: process_healthy
+    # No restarts: closing the window is a deliberate act, and relaunching the
+    # editor out from under that would fight the user.
+    availability:
+      restart: "no"
