@@ -23,12 +23,16 @@ compdb targets="//...":
 watch-compdb targets="//...":
     watchexec --debounce 500ms --project-origin {{justfile_directory()}} \
         --filter 'BUCK' --filter '**/*.bzl' --filter 'PACKAGE' --filter '.buckconfig' \
-        -- just --justfile {{justfile_directory()}}/justfile compdb {{targets}}
+        -- just compdb {{targets}}
 
 # The socket below needs its parent to exist; process-compose makes the log
 # directory itself.
 _cache:
     mkdir -p {{justfile_directory()}}/.cache
+
+# Run process-compose on the project's unix socket
+process-compose +cmd:
+    env PC_LOG_LEVEL=error process-compose --use-uds --unix-socket {{justfile_directory()}}/.cache/process-compose.sock {{cmd}}
 
 # Long-running dev processes -- local CAS and the compdb watcher. F10 (or
 # Ctrl-C) stops the lot.
@@ -40,23 +44,30 @@ _cache:
 #   process-compose attach -U -u .cache/process-compose.sock
 #   process-compose process logs compdb -U -u .cache/process-compose.sock
 #
-# Bring up everything in ./process-compose.yaml.
+# Start a dev environment, in a sandbox, using process-compose
 dev: _cache
-    tools/sandbox --whole-sys env PC_LOG_LEVEL=error process-compose up \
-        --config {{justfile_directory()}}/process-compose.yaml \
-        --use-uds --unix-socket {{justfile_directory()}}/.cache/process-compose.sock
+    just sandbox just process-compose --config {{justfile_directory()}}/process-compose.yaml
 
+# Regenerate buck2 targets for Rust dependencies (in third-party/rust) from Cargo.toml
 reindeer:
     reindeer buckify
 
+# Build with buck2
 build targets="//...":
     buck2 build {{targets}}
 
+# Test with buck2
 test targets="//...":
     buck2 test {{targets}}
 
+# Run the given targets (snapshot tests), letting them update outdated snapshots
 snapshot-update targets="//...":
     buck2 test -c snapshot.update=1 {{targets}}
 
+# Run a build server (for caching) for buck2
 nativelink:
     nativelink buck/basic_cas.json5
+
+# Run the command in a sandbox, (mainly to limit LLM blast radius).
+sandbox +cmd:
+    tools/sandbox --whole-sys {{cmd}}
