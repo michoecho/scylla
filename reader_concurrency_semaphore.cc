@@ -14,6 +14,7 @@
 #include <seastar/core/coroutine.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 #include <seastar/core/metrics.hh>
+#include <seastar/core/scylla_tracer.hh>
 #include <utility>
 
 #include "reader_concurrency_semaphore.hh"
@@ -159,6 +160,12 @@ private:
     timer<db::timeout_clock> _ttl_timer;
     query::max_result_size _max_result_size{query::result_memory_limiter::unlimited_result_size};
     tracing::trace_state_ptr _trace_ptr;
+    // The task that asked for this read. Default-initialised, so it is captured
+    // where the permit is created -- in the requester's context -- and not where
+    // the read is eventually run, which is the semaphore's own execution loop.
+    // Without it every read in the process is attributed to whichever request
+    // happened to spin that loop up. See execution_loop() below.
+    task_id _task_id;
 
     // Used by with_permit/with_ready_permit for admission signaling.
     // Kept inline since it's used on the hot (direct admission) path.
@@ -358,6 +365,10 @@ public:
 
     reader_concurrency_semaphore::read_func& func() {
         return _func;
+    }
+
+    uint64_t traced_task_id() const noexcept {
+        return _task_id;
     }
 
     promise<>& promise() {
@@ -1032,6 +1043,12 @@ future<> reader_concurrency_semaphore::execution_loop() noexcept {
             tracing::trace(permit.trace_state(), "[reader concurrency semaphore {}] executing read", _name);
 
             try {
+                // Hand the read back to the task that asked for it, so that the
+                // sstable reads it goes on to do -- and their io_begin/io_end --
+                // are attributed to that request rather than to this loop.
+                const uint64_t requester = permit.traced_task_id();
+                switch_task st(requester);
+                trace_semaphore_execute(st.prev(), requester);
                 func(reader_permit(permit.shared_from_this())).forward_to(std::move(pr));
             } catch (...) {
                 pr.set_exception(std::current_exception());

@@ -30,6 +30,13 @@ endif(DEFINED CMAKE_BUILD_TYPE)
 
 option(Scylla_ENABLE_LTO "Turn on link-time optimization for the 'release' mode." ON)
 
+# The cpp_template playground's binary tracepoints. Compiled into libseastar.so
+# (see seastar/CMakeLists.txt); Scylla only needs the headers, for the call
+# sites in transport/server.cc and the snapshot API in api/system.cc.
+include_directories(
+    /home/michal/projects/cpp_template/modules/tracer/include
+    /home/michal/projects/cpp_template/modules/static_keys/include)
+
 include(mode.common)
 get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(is_multi_config)

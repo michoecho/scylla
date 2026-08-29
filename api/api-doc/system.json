@@ -53,6 +53,22 @@
          ]
       },
       {
+         "path":"/system/trace_snapshot",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Snapshot every shard's binary tracepoint rings to disk",
+               "type":"string",
+               "nickname":"trace_snapshot",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+               ]
+            }
+         ]
+      },
+      {
          "path":"/system/log",
          "operations":[
             {

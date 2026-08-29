@@ -9,12 +9,16 @@
 #include "api/api_init.hh"
 #include "api/api-doc/system.json.hh"
 #include "api/api-doc/metrics.json.hh"
+#include "db/config.hh"
 #include "replica/database.hh"
 #include "sstables/sstables_manager.hh"
 
 #include <rapidjson/document.h>
 #include <boost/lexical_cast.hpp>
 #include <seastar/core/reactor.hh>
+#include <seastar/core/scylla_tracer.hh>
+#include <seastar/core/smp.hh>
+#include <seastar/core/thread.hh>
 #include <seastar/core/metrics_api.hh>
 #include <seastar/core/relabel_config.hh>
 #include <seastar/http/exception.hh>
@@ -22,6 +26,9 @@
 #include <seastar/util/short_streams.hh>
 
 #include "utils/log.hh"
+
+#include <filesystem>
+#include <fstream>
 
 extern logging::logger apilog;
 
@@ -151,6 +158,44 @@ void set_system(http_context& ctx, routes& r) {
             throw bad_param_exception("Unknown logging level " + req.get_query_param("level"));
         }
         return json::json_void();
+    });
+
+    // Snapshot the binary tracepoint rings of every shard into the workdir.
+    //
+    // Two phases, and the split is the point. The copy is synchronous on each
+    // shard -- seastar::trace_snapshot() returns bytes, it does not stream --
+    // so what lands on disk is the ring as it was when the shard was asked,
+    // not a ring being written while it is read. The writing afterwards is
+    // ordinary blocking I/O in a seastar thread, which is fine for something
+    // done once by hand.
+    //
+    // The decoder source goes in beside the traces: it is generated from the
+    // tracepoint tables of *this* binary, which is the only thing that can
+    // read them back. See modules/tracer/include/tracer/codegen.h.
+    hs::trace_snapshot.set(r, [&ctx](std::unique_ptr<request> req) -> future<json::json_return_type> {
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        const auto dir = fmt::format("{}/traces/{}", ctx.db.local().get_config().work_directory(),
+                std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+        apilog.info("Snapshotting trace buffers into {}", dir);
+
+        const auto decoder = seastar::trace_decoder_source();
+        co_await seastar::async([&] {
+            std::filesystem::create_directories(dir);
+            std::ofstream out(dir + "/decoder.h");
+            out << decoder;
+        });
+
+        co_await smp::invoke_on_all([&dir] {
+            auto blob = seastar::trace_snapshot();
+            return seastar::async([&dir, blob = std::move(blob)] {
+                std::ofstream out(fmt::format("{}/shard-{}.trace", dir, this_shard_id()),
+                        std::ios::binary);
+                out.write(reinterpret_cast<const char*>(blob.data()), blob.size());
+            });
+        });
+
+        apilog.info("Trace snapshot written to {}", dir);
+        co_return json::json_return_type(sstring(dir));
     });
 
     hs::drop_sstable_caches.set(r, [&ctx](std::unique_ptr<request> req) {
