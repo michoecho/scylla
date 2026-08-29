@@ -3,10 +3,15 @@ load("//buck:module.bzl", "add_module")
 add_module(
     name = "utils",
     srcs = [
+        "barrier.cc",
         "clock.cc",
     ],
     exported_headers = {
+        "utils/barrier.h": "include/utils/barrier.h",
         "utils/clock.h": "include/utils/clock.h",
     },
+    deps = [
+        "//:doctest",
+    ],
     module_source_dir = "modules/utils",
 )
