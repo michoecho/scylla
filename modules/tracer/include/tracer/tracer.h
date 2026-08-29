@@ -4,9 +4,17 @@
 //
 // A TRACEPOINT() records a *pointer to its own static description* plus a
 // timestamp plus the raw bytes of its arguments, into a thread-local ring of
-// buffers. No formatting, no allocation, no string copying -- the format string
-// never even reaches the buffer. What lands there is roughly a store, a
-// timestamp read, and a memcpy per argument.
+// buffers. No formatting, no allocation, no string copying -- neither the
+// tracepoint's name nor its parameters' names ever reach the buffer. What lands
+// there is roughly a store, a timestamp read, and a memcpy per argument.
+//
+// Arguments are *named*: a tracepoint is written as
+//
+//     TRACEPOINT(event_level::debug, "accepted_connection", "conn", i, "peer", addr);
+//
+// and the names live in the description, alongside the wire types, as a single
+// `conn:u32,peer:str` signature. That is what makes a decoded trace a struct
+// with fields rather than a line of text.
 //
 // A tracepoint that is switched off costs less than that: each one carries a
 // static key of its own, named after the tracepoint and disabled at startup, so
@@ -22,8 +30,9 @@
 //
 // Decoding is the other half, and it is not in this header: tracer/codegen.h
 // walks that same section and emits the C++ source of a decoder specialised to
-// this binary's tracepoints. See modules/tracer/BUCK for how the two halves are
-// wired into a build.
+// this binary's tracepoints -- one struct per tracepoint, with the parameter
+// names as members. See modules/tracer/BUCK for how the two halves are wired
+// into a build.
 //
 // Derived from the Seastar tracer patch in references/tracer.patch, with the
 // bugs noted there fixed and the argument-list macro machinery replaced.
@@ -67,18 +76,6 @@ enum class event_level : std::size_t {
     debug,
     count,
 };
-
-// Severity carried in the tracepoint description and printed by the decoder. It
-// never reaches the trace itself.
-enum class log_level : int {
-    error,
-    warn,
-    info,
-    debug,
-    trace,
-};
-
-std::string_view to_string(log_level level) noexcept;
 
 // A ring of fixed-size buffers with a byte budget.
 //
@@ -156,11 +153,23 @@ private:
 // installed; there is deliberately no null check on the hot path.
 extern thread_local trace_buffers* local_tracer;
 
-// --- argument type signatures ------------------------------------------------
+// --- argument signatures -----------------------------------------------------
 //
-// Each tracepoint carries a comma-separated signature ("u32,bool,bytes") naming
-// the wire type of every argument. That string is what lets the code generator
-// emit a correctly typed reader without seeing the call site.
+// Each tracepoint carries one signature string naming both the parameter names
+// and their wire types: "conn:u32,keepalive:bool,peer:bytes". That string is
+// the whole of what the code generator has to work from -- it is what lets it
+// emit a struct with correctly typed, correctly named members without seeing
+// the call site.
+//
+// Building it needs two things that live in different worlds. The wire types
+// come from the argument *types*, which decltype can take from the call site
+// without evaluating anything. The parameter names come from the argument
+// *values*, which it cannot: a name is a string literal, and a consteval
+// function cannot be handed the runtime values sitting between the literals.
+//
+// So the names are taken from the preprocessor instead. TRACEPOINT() passes
+// `#__VA_ARGS__` -- the argument list as written -- as a template parameter,
+// and the two halves are interleaved at compile time below.
 
 template <typename T>
 consteval std::string_view type_to_sig() {
@@ -168,6 +177,14 @@ consteval std::string_view type_to_sig() {
         return "bool";
     } else if constexpr (std::is_same_v<T, std::span<const std::byte>>) {
         return "bytes";
+    } else if constexpr (std::is_same_v<T, std::string_view> ||
+                         std::is_same_v<T, const char*> || std::is_same_v<T, char*> ||
+                         (std::is_array_v<T> &&
+                          std::is_same_v<std::remove_cv_t<std::remove_extent_t<T>>, char>)) {
+        // Checked before the pointer case below, which `const char*` would
+        // otherwise match: a string is worth decoding as text, not as an
+        // address.
+        return "str";
     } else if constexpr (std::is_pointer_v<T>) {
         return "ptr";
     } else if constexpr (std::integral<T>) {
@@ -192,47 +209,191 @@ consteval std::string_view type_to_sig() {
     }
 }
 
-template <typename... Ts>
-consteval std::size_t signature_length() {
-    std::size_t n = 0;
-    bool first = true;
-    ((n += (first ? 0U : 1U) + type_to_sig<Ts>().size(), first = false), ...);
-    return n;
+// A string literal usable as a template argument, which is how the stringified
+// argument list reaches the code below.
+template <std::size_t N>
+struct fixed_string {
+    char chars[N]{};
+
+    consteval fixed_string(const char (&s)[N]) {  // NOLINT(google-explicit-constructor)
+        for (std::size_t i = 0; i < N; ++i) {
+            chars[i] = s[i];
+        }
+    }
+
+    [[nodiscard]] constexpr std::string_view view() const { return {chars, N - 1}; }
+};
+
+// Never defined, never called; named only inside decltype. The arguments supply
+// their types without being evaluated, and without needing to be constant
+// expressions -- which is the only reason a tracepoint can carry the type of a
+// local variable at all.
+template <typename... Args>
+struct arg_types {};
+
+template <typename... Args>
+arg_types<Args...> sig_probe(const Args&...);
+
+namespace detail {
+
+// The argument list as written, split on top-level commas.
+//
+// Capacity is generous rather than exact, and the count is kept even when the
+// items overflow it: a value containing a comma the preprocessor did not see as
+// an argument separator (a braced initialiser, say) yields more fields than
+// there are arguments, and signature_builder diagnoses that by the count. A
+// tight array would instead fail as a subscript out of range, which says
+// nothing about the tracepoint.
+template <std::size_t Capacity>
+struct arg_text {
+    std::array<std::string_view, Capacity> items{};
+    std::size_t count = 0;
+};
+
+constexpr std::string_view trim(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
+    return s;
 }
 
-template <typename... Ts>
-consteval auto make_signature() {
-    std::array<char, signature_length<Ts...>() + 1> out{};
-    std::size_t i = 0;
-    bool first = true;
-    auto append = [&](std::string_view s) {
-        if (!first) {
-            out[i++] = ',';
+template <std::size_t Capacity>
+consteval arg_text<Capacity> split_args(std::string_view s) {
+    arg_text<Capacity> out{};
+    if (trim(s).empty()) {
+        return out;  // TRACEPOINT() with no parameters
+    }
+
+    std::size_t depth = 0;
+    std::size_t start = 0;
+    bool in_string = false;
+    bool in_char = false;
+
+    for (std::size_t i = 0; i <= s.size(); ++i) {
+        if (i == s.size() || (depth == 0 && !in_string && !in_char && s[i] == ',')) {
+            if (out.count < Capacity) {
+                out.items[out.count] = trim(s.substr(start, i - start));
+            }
+            ++out.count;
+            start = i + 1;
+            continue;
         }
-        first = false;
-        for (char c : s) {
-            out[i++] = c;
+        const char c = s[i];
+        if (in_string || in_char) {
+            if (c == '\\') ++i;
+            else if (c == (in_string ? '"' : '\'')) in_string = in_char = false;
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '\'') {
+            in_char = true;
+        } else if (c == '(' || c == '[' || c == '{') {
+            ++depth;
+        } else if ((c == ')' || c == ']' || c == '}') && depth > 0) {
+            --depth;
         }
-    };
-    (append(type_to_sig<Ts>()), ...);
+    }
     return out;
 }
 
-template <typename... Args>
-struct signature_of {
-    static constexpr auto value = make_signature<std::remove_cvref_t<Args>...>();
+// The text of a parameter name argument, with its quotes taken off. Whether it
+// is a *well-formed* name -- an identifier, and distinct from its siblings --
+// is not decided here but by the code generator, which is also the only place
+// that can see the names of other translation units' tracepoints.
+constexpr bool is_quoted(std::string_view field) {
+    return field.size() >= 2 && field.front() == '"' && field.back() == '"';
+}
+
+constexpr std::string_view unquote(std::string_view field) {
+    return is_quoted(field) ? field.substr(1, field.size() - 2) : std::string_view{};
+}
+
+}  // namespace detail
+
+template <fixed_string Raw, typename Types>
+struct signature_builder;
+
+template <fixed_string Raw, typename... Args>
+struct signature_builder<Raw, arg_types<Args...>> {
+    static_assert(sizeof...(Args) % 2 == 0,
+                  "TRACEPOINT parameters must come in pairs: a name literal then a value");
+
+    static constexpr std::size_t arg_count = sizeof...(Args);
+    static constexpr std::size_t pair_count = arg_count / 2;
+
+    // Room for a few stray commas, so that a miscount is diagnosed by the
+    // static_assert below rather than by a subscript out of range.
+    static constexpr auto text = detail::split_args<arg_count + 8>(Raw.view());
+    static_assert(text.count == arg_count,
+                  "a TRACEPOINT parameter value containing a top-level comma must be "
+                  "parenthesised");
+
+    static constexpr std::array<std::string_view, arg_count> sigs{
+        type_to_sig<std::remove_cvref_t<Args>>()...};
+
+    static consteval std::size_t length() {
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < pair_count; ++i) {
+            n += (i == 0 ? 0U : 1U) + detail::unquote(text.items[2 * i]).size() + 1 +
+                 sigs[2 * i + 1].size();
+        }
+        return n;
+    }
+
+    static consteval auto build() {
+        std::array<char, length() + 1> out{};
+        std::size_t at = 0;
+        auto put = [&](std::string_view s) {
+            for (char c : s) out[at++] = c;
+        };
+        for (std::size_t i = 0; i < pair_count; ++i) {
+            if (i != 0) out[at++] = ',';
+            put(detail::unquote(text.items[2 * i]));
+            out[at++] = ':';
+            put(sigs[2 * i + 1]);
+        }
+        return out;
+    }
+
+    // Every name has to be a literal, because that is the only way its text
+    // survives into the signature at all. A non-literal is caught here rather
+    // than by silently producing a nameless field.
+    static consteval bool names_are_literals() {
+        for (std::size_t i = 0; i < pair_count; ++i) {
+            if (!detail::is_quoted(text.items[2 * i])) return false;
+        }
+        return true;
+    }
+    static_assert(names_are_literals(),
+                  "each TRACEPOINT parameter name must be a string literal");
+
+    static constexpr auto value = build();
 };
 
-// Never defined, never called. TRACEPOINT() only ever names it inside decltype,
-// which is an unevaluated context -- so the arguments supply their types
-// without being evaluated, and without needing to be constant expressions.
-//
-// This replaces the NARGS/SIG_1..SIG_13 macro ladder in the original patch, and
-// with it the thirteen-argument ceiling.
-template <typename... Args>
-signature_of<Args...> signature_probe(const Args&...);
-
 // --- serialisation -----------------------------------------------------------
+//
+// Only the values are written; a parameter's name is in the signature and never
+// on the wire.
+
+template <typename T>
+concept string_like =
+    std::is_same_v<T, std::string_view> || std::is_same_v<T, const char*> ||
+    std::is_same_v<T, char*> ||
+    (std::is_array_v<T> && std::is_same_v<std::remove_cv_t<std::remove_extent_t<T>>, char>);
+
+// A string argument as bytes, without its terminator. An array carries its
+// length in its type -- and is assumed to be a literal, so the last byte is
+// dropped as the terminator -- while a pointer has to be walked. A null pointer
+// is an empty string rather than a crash: a tracepoint is not the place to
+// discover one.
+template <string_like T>
+constexpr std::string_view as_view(const T& x) {
+    if constexpr (std::is_array_v<T>) {
+        return {x, std::extent_v<T> - 1};
+    } else if constexpr (std::is_pointer_v<T>) {
+        return x == nullptr ? std::string_view{} : std::string_view{x};
+    } else {
+        return x;
+    }
+}
 
 template <typename T>
 consteval std::size_t unknown_size() {
@@ -240,7 +401,7 @@ consteval std::size_t unknown_size() {
 }
 
 template <typename T>
-    requires(!std::integral<T>)
+    requires(!std::integral<T> && !string_like<T>)
 constexpr std::size_t arg_size(const T&) {
     return unknown_size<T>();
 }
@@ -250,17 +411,17 @@ constexpr std::size_t arg_size(const T& x) {
     return sizeof(x);
 }
 
+template <string_like T>
+constexpr std::size_t arg_size(const T& x) {
+    return as_view(x).size() + sizeof(std::uint16_t);
+}
+
 constexpr std::size_t arg_size(const void* const&) {
     return sizeof(std::uint64_t);
 }
 
 constexpr std::size_t arg_size(const std::span<const std::byte>& x) {
     return x.size() + sizeof(std::uint16_t);
-}
-
-template <typename... Args>
-constexpr std::size_t args_size(const Args&... args) {
-    return (arg_size(args) + ... + 0);
 }
 
 template <typename T>
@@ -272,15 +433,23 @@ inline void write_raw(std::byte*& out, const T& x) {
     out += sizeof(x);
 }
 
+// Length-prefixed with a uint16_t, so a run of bytes has to fit in one.
+inline void write_bytes(std::byte*& out, const void* data, std::size_t size) {
+    assert(size <= UINT16_MAX && "byte run too long for a tracepoint");
+    write_raw(out, static_cast<std::uint16_t>(size));
+    std::memcpy(out, data, size);
+    out += size;
+}
+
 template <typename T>
-    requires(!std::integral<T>)
+    requires(!std::integral<T> && !string_like<T>)
 inline void serialize_arg(std::byte*& out, const T& x) {
     constexpr std::size_t sz = unknown_size<T>();
     std::memcpy(out, &x, std::min(sizeof(x), sz));
     if constexpr (sizeof(T) < sz) {
         // The slot is a fixed 8 or 16 bytes wide. Zero the remainder rather
         // than leaving it whatever the buffer held last time round the ring:
-        // the decoder prints the whole slot as hex.
+        // the decoder hands the whole slot to the caller as bytes.
         std::memset(out + sizeof(T), 0, sz - sizeof(T));
     }
     out += sz;
@@ -291,31 +460,49 @@ inline void serialize_arg(std::byte*& out, const T& x) {
     write_raw(out, x);
 }
 
+template <string_like T>
+inline void serialize_arg(std::byte*& out, const T& x) {
+    const std::string_view s = as_view(x);
+    write_bytes(out, s.data(), s.size());
+}
+
 inline void serialize_arg(std::byte*& out, const void* const& x) {
     write_raw(out, reinterpret_cast<std::uintptr_t>(x));
 }
 
 inline void serialize_arg(std::byte*& out, const std::span<const std::byte>& x) {
-    // Length-prefixed with a uint16_t, so a span has to fit in one.
-    assert(x.size() <= UINT16_MAX && "byte span too long for a tracepoint");
-    write_raw(out, static_cast<std::uint16_t>(x.size()));
-    std::memcpy(out, x.data(), x.size());
-    out += x.size();
+    write_bytes(out, x.data(), x.size());
 }
 
-template <typename... Args>
-inline void serialize_args(std::byte*& out, const Args&... args) {
-    (serialize_arg(out, args), ...);
+// The two below walk the argument list in (name, value) pairs, dropping the
+// names: they are compile-time data, already folded into the signature.
+
+constexpr std::size_t args_size() { return 0; }
+
+template <std::size_t N, typename T, typename... Rest>
+constexpr std::size_t args_size(const char (&)[N], const T& value, const Rest&... rest) {
+    return arg_size(value) + args_size(rest...);
+}
+
+inline void serialize_args(std::byte*&) {}
+
+template <std::size_t N, typename T, typename... Rest>
+inline void serialize_args(std::byte*& out, const char (&)[N], const T& value,
+                           const Rest&... rest) {
+    serialize_arg(out, value);
+    serialize_args(out, rest...);
 }
 
 // --- the tracepoint table ----------------------------------------------------
 
 struct tracepoint_entry {
-    const char* name;  // also the format string the decoder fills in
+    // An identifier, not a sentence: the code generator turns it into the name
+    // of a struct type, and rejects it if it cannot.
+    const char* name;
     const char* file;
     int line;
-    int level;
     const char* function;
+    // "conn:u32,keepalive:bool", or "" for a tracepoint with no parameters.
     const char* signature;
 
     // The static key gating this tracepoint, named after `name`. Not something
@@ -334,13 +521,15 @@ extern "C" const tracepoint_entry __stop_tracepoints[];
 // --- turning tracepoints on ---------------------------------------------------
 //
 // Tracepoints are off by default, so something has to switch them on, and the
-// handle it switches them on by is the name -- the format string. That is the
-// one thing about a tracepoint that a config file, a flag or an RPC can carry:
-// its key has no linkage and its index is a fact about this build's link order.
+// handle it switches them on by is the name. That is the one thing about a
+// tracepoint that a config file, a flag or an RPC can carry: its key has no
+// linkage and its index is a fact about this build's link order.
 //
-// A name is not unique. Two call sites may share a format string, and both are
-// meant when it is named, so these speak of however many tracepoints matched
-// rather than of "the" tracepoint.
+// Nothing in this header makes a name unique -- two call sites may share one,
+// and both are meant when it is named, so these speak of however many
+// tracepoints matched rather than of "the" tracepoint. The code generator is
+// stricter: a decoder needs one struct per name, so it rejects a table in which
+// a name repeats.
 
 [[nodiscard]] bool is_enabled(const tracepoint_entry& entry) noexcept;
 
@@ -364,11 +553,13 @@ void set_all_tracepoints_enabled(bool enabled);
 // anything cheaper.
 inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof(std::uint64_t);
 
-// TRACEPOINT(level, format, severity, args...)
+// TRACEPOINT(level, name, "param", value, "param", value, ...)
 //
-// `format` is both the tracepoint's name and the format string the decoder
-// applies to the arguments; it must be a literal, and its placeholders must
-// match the arguments, which the *generated decoder* checks at compile time.
+// `name` and each parameter name must be string literals. `name` names the
+// tracepoint, the static key gating it, and the struct the generated decoder
+// deserialises this tracepoint's records into; the parameter names become that
+// struct's members. Both are checked for being usable as identifiers -- and for
+// being unique -- by the code generator, in tracer/codegen.h.
 //
 // Every tracepoint is compiled behind a static key of its own, named after the
 // tracepoint and disabled at startup. A tracepoint that nobody has turned on is
@@ -376,7 +567,7 @@ inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof
 // laid out off the fallthrough path -- so the cost of a tracepoint in a hot
 // function that is not being traced is the nop, and the instruction cache lines
 // it does not touch. Enabling one rewrites that nop into a jmp; see
-// set_tracepoint_enabled() below, and modules/static_keys for how the patching
+// set_tracepoint_enabled() above, and modules/static_keys for how the patching
 // works.
 //
 // The key is block-scope, so the only thing that can name it is this expansion.
@@ -384,21 +575,26 @@ inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof
 // below, which is how the tracer finds it by name, and through the descriptor
 // DEFINE_STATIC_KEY_FALSE_LOCAL() emits, which is how static_keys' own listing
 // does.
-#define TRACEPOINT(level_, format_, severity_, ...)                                       \
+//
+// `#__VA_ARGS__` is the parameter list as written. It is the only way the
+// parameter *names* -- as opposed to their types -- reach the signature; see
+// signature_builder above.
+#define TRACEPOINT(level_, name_, ...)                                                    \
     do {                                                                                  \
-        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, format_);                              \
+        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
         static constexpr auto tracer_sig_ __attribute__((                                 \
             section("tracepoint_signatures"), used)) =                                    \
-            decltype(::tracer::signature_probe(__VA_ARGS__))::value;                       \
+            ::tracer::signature_builder<                                                  \
+                ::tracer::fixed_string{#__VA_ARGS__},                                     \
+                decltype(::tracer::sig_probe(__VA_ARGS__))>::value;                       \
         static constexpr char tracer_name_[] __attribute__((                              \
-            section("tracepoint_names"), used)) = format_;                                \
+            section("tracepoint_names"), used)) = name_;                                  \
         static constexpr char tracer_file_[] __attribute__((                              \
             section("tracepoint_files"), used)) = __FILE__;                               \
         static constexpr ::tracer::tracepoint_entry tracer_tp_ __attribute__((            \
             section("tracepoints"), used)) = {tracer_name_,                               \
                                               tracer_file_,                               \
                                               __LINE__,                                   \
-                                              static_cast<int>(severity_),                \
                                               __PRETTY_FUNCTION__,                        \
                                               tracer_sig_.data(),                         \
                                               &tracer_key_};                              \

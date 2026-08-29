@@ -37,10 +37,24 @@ cxx_binary(
 )
 
 # Step 2: generate the decoder's source from that binary's tracepoint table.
+# This is where a tracepoint whose name or parameter names cannot become a
+# struct becomes a build failure, with a diagnostic naming the call site.
 genrule(
     name = "decoder_src",
-    out = "decoder.cc",
+    out = "decoder.h",
     cmd = "$(exe :trace_producer) --emit-decoder > $OUT",
+)
+
+# The generated header, as something to depend on. Both the decoder program and
+# the module's own tests are built against it.
+cxx_library(
+    name = "decoder",
+    exported_headers = {
+        "tracer_generated/decoder.h": ":decoder_src",
+    },
+    header_namespace = "",
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
 )
 
 # Step 3: separately, run the workload and dump a trace. Independent of step 2
@@ -52,11 +66,14 @@ genrule(
     cmd = "$(exe :trace_producer) --emit-trace $OUT",
 )
 
-# Step 4: compile the generated source into a decoder. This is where a format
-# string that does not match its arguments becomes a build failure.
+# Step 4: a program that decodes with the generated header. It is a callback
+# that prints and nothing else -- and it is the check that the generated header
+# compiles standing on its own, outside the test that also includes it.
 cxx_binary(
     name = "trace_decoder",
-    srcs = [":decoder_src"],
+    srcs = ["trace_decoder.cc"],
+    header_namespace = "",
+    deps = [":decoder"],
 )
 
 # Step 5: decode the trace. Its output is what the snapshot test asserts on.
@@ -70,15 +87,18 @@ add_module(
     name = "tracer",
     srcs = ["tracer_test.cc"],
     deps = [
+        ":decoder",
         ":tracer_core",
         "//:doctest",
         "//modules/snapshot:snapshot",
     ],
     resources = {
         "decoded.txt": ":decoded_trace",
+        "trace.bin": ":trace_bin",
     },
     env = {
         "TRACER_DECODED": "$(location :decoded_trace)",
+        "TRACER_TRACE": "$(location :trace_bin)",
     },
     module_source_dir = "modules/tracer",
 )

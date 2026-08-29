@@ -4,13 +4,14 @@
 // tracepoint table of the binary that produced the trace, and that table is
 // this file's TRACEPOINT() call sites. Run it two ways --
 //
-//     trace_producer --emit-decoder        C++ source of the matching decoder
+//     trace_producer --emit-decoder        C++ header of the matching decoder
 //     trace_producer --emit-trace FILE     a trace of the demo workload
 //
 // -- and see modules/tracer/BUCK for how those become build steps.
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <span>
@@ -34,36 +35,33 @@ inline std::uint64_t tick() noexcept {
 namespace {
 
 using tracer::event_level;
-using tracer::log_level;
 
 std::span<const std::byte> as_bytes(std::string_view s) {
     return {reinterpret_cast<const std::byte*>(s.data()), s.size()};
 }
 
 // A workload chosen to cover every wire type the codegen can emit: the integer
-// widths, bool, a length-prefixed byte span, a pointer, and no arguments at all.
+// widths, bool, a string, a length-prefixed byte span, a pointer, and no
+// parameters at all.
 void run_demo() {
-    TRACEPOINT(event_level::info, "listening on port {}", log_level::info,
-               static_cast<std::uint16_t>(8080));
+    TRACEPOINT(event_level::info, "listening", "port", static_cast<std::uint16_t>(8080));
 
     for (std::uint32_t i = 0; i < 3; ++i) {
-        TRACEPOINT(event_level::debug, "accepted connection {} (keepalive={})", log_level::debug, i,
-                   i % 2 == 0);
-        TRACEPOINT(event_level::debug, "request header {}", log_level::trace,
-                   as_bytes(i == 1 ? "GET /index.html" : "GET /"));
+        TRACEPOINT(event_level::debug, "accepted_connection", "conn", i, "keepalive", i % 2 == 0);
+        TRACEPOINT(event_level::debug, "request_header", "method", "GET", "path",
+                   i == 1 ? "/index.html" : "/");
     }
 
-    TRACEPOINT(event_level::info, "cache miss for key {} at slot {}", log_level::warn,
-               as_bytes("session"),
+    TRACEPOINT(event_level::info, "cache_miss", "key", as_bytes("session"), "slot",
                // A fixed value rather than a real address: under ASLR a real
                // one would differ between the two runs of this binary and the
                // decoded output would not be snapshottable.
                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0xdeadbeef)));
 
-    TRACEPOINT(event_level::info, "clock skew {} ns, retries {}", log_level::error,
-               static_cast<std::int64_t>(-4200), static_cast<std::uint8_t>(3));
+    TRACEPOINT(event_level::info, "clock_skew", "nanoseconds", static_cast<std::int64_t>(-4200),
+               "retries", static_cast<std::uint8_t>(3));
 
-    TRACEPOINT(event_level::info, "shutting down", log_level::info);
+    TRACEPOINT(event_level::info, "shutting_down");
 }
 
 int emit_trace(const char* path) {
@@ -100,7 +98,14 @@ int main(int argc, char** argv) {
     const std::string_view mode = argc > 1 ? argv[1] : "";
 
     if (mode == "--emit-decoder" && argc == 2) {
-        std::cout << tracer::generate_decoder_source();
+        // A table this binary cannot describe is a build failure with a
+        // diagnostic, not a generated header that fails to compile.
+        try {
+            std::cout << tracer::generate_decoder_source();
+        } catch (const std::exception& e) {
+            std::cerr << "cannot generate a decoder: " << e.what() << "\n";
+            return 1;
+        }
         return 0;
     }
     if (mode == "--emit-trace" && argc == 3) {

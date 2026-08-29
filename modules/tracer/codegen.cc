@@ -1,7 +1,11 @@
 #include "tracer/codegen.h"
 
+#include <algorithm>
+#include <cctype>
 #include <format>
-#include <sstream>
+#include <set>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,52 +15,144 @@
 namespace tracer {
 namespace {
 
-std::vector<std::string> split_signature(std::string_view signature) {
-    std::vector<std::string> out;
-    std::stringstream ss{std::string(signature)};
-    std::string token;
-    while (std::getline(ss, token, ',')) {
-        if (!token.empty()) {
-            out.push_back(token);
+struct field {
+    std::string name;
+    std::string type;  // a signature token: "u32", "str", "bytes", ...
+};
+
+// Where a complaint about a tracepoint points. The generator runs as a build
+// step, so its diagnostics are all the author gets.
+std::string at(const tracepoint_entry& entry) {
+    return std::format("{}:{} (tracepoint \"{}\")", entry.file, entry.line, entry.name);
+}
+
+[[noreturn]] void fail(const tracepoint_entry& entry, std::string_view what) {
+    throw std::runtime_error(std::format("{}: {}", at(entry), what));
+}
+
+bool is_identifier(std::string_view s) {
+    if (s.empty()) return false;
+    if (std::isdigit(static_cast<unsigned char>(s.front())) != 0) return false;
+    return std::ranges::all_of(s, [](char c) {
+        return c == '_' || std::isalnum(static_cast<unsigned char>(c)) != 0;
+    });
+}
+
+// "conn:u32,peer:str" -> two fields. Everything about the shape of a signature
+// that could be wrong is wrong here, where the tracepoint that produced it is
+// still in hand.
+std::vector<field> parse_signature(const tracepoint_entry& entry) {
+    const std::string_view signature = entry.signature;
+    std::vector<field> fields;
+    std::set<std::string, std::less<>> seen;
+
+    for (std::size_t pos = 0; pos < signature.size();) {
+        const std::size_t comma = std::min(signature.find(',', pos), signature.size());
+        const std::string_view token = signature.substr(pos, comma - pos);
+        pos = comma + 1;
+
+        const std::size_t colon = token.find(':');
+        if (colon == std::string_view::npos) {
+            fail(entry, std::format("parameter \"{}\" is not name:type", token));
         }
+        const std::string_view name = token.substr(0, colon);
+        const std::string_view type = token.substr(colon + 1);
+
+        if (!is_identifier(name)) {
+            fail(entry, std::format("parameter name \"{}\" is not an identifier", name));
+        }
+        if (type.empty()) {
+            fail(entry, std::format("parameter \"{}\" has no type", name));
+        }
+        if (!seen.insert(std::string(name)).second) {
+            fail(entry, std::format("parameter \"{}\" appears twice", name));
+        }
+        fields.push_back({std::string(name), std::string(type)});
     }
-    return out;
+    return fields;
 }
 
 // The C++ type a signature token decodes into. Unrecognised and oversized
 // arguments were written as opaque fixed-width slots, so they come back as
-// spans and are printed as hex.
-std::string_view decoded_type(std::string_view sig) {
-    if (sig == "u64") return "std::uint64_t";
-    if (sig == "i64") return "std::int64_t";
-    if (sig == "u32") return "std::uint32_t";
-    if (sig == "i32") return "std::int32_t";
-    if (sig == "u16") return "std::uint16_t";
-    if (sig == "i16") return "std::int16_t";
-    if (sig == "u8") return "std::uint8_t";
-    if (sig == "i8") return "std::int8_t";
-    if (sig == "bool") return "bool";
-    if (sig == "ptr") return "const void*";
-    return "std::span<const std::byte>";  // bytes, unknown64, unknown128
+// spans of the bytes that were copied.
+std::string_view decoded_type(std::string_view type) {
+    if (type == "u64") return "std::uint64_t";
+    if (type == "i64") return "std::int64_t";
+    if (type == "u32") return "std::uint32_t";
+    if (type == "i32") return "std::int32_t";
+    if (type == "u16") return "std::uint16_t";
+    if (type == "i16") return "std::int16_t";
+    if (type == "u8") return "std::uint8_t";
+    if (type == "i8") return "std::int8_t";
+    if (type == "bool") return "bool";
+    if (type == "ptr") return "const void*";
+    if (type == "str") return "std::string_view";
+    if (type == "bytes" || type == "unknown64" || type == "unknown128") {
+        return "std::span<const std::byte>";
+    }
+    return {};
 }
 
-bool is_opaque(std::string_view sig) {
-    return sig == "bytes" || sig == "unknown64" || sig == "unknown128";
+std::string escape(std::string_view s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '\\' || c == '"') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+// The statement that reads one field out of the record.
+std::string read_field(const field& f) {
+    if (f.type == "str") {
+        return std::format("    out.{} = detail::read_str(p);\n", f.name);
+    }
+    if (f.type == "bytes") {
+        return std::format("    out.{} = detail::read_bytes(p);\n", f.name);
+    }
+    if (f.type == "unknown64" || f.type == "unknown128") {
+        return std::format("    out.{} = detail::read_opaque(p, {});\n", f.name,
+                           f.type == "unknown64" ? 8 : 16);
+    }
+    if (f.type == "ptr") {
+        return std::format(
+            "    out.{} = reinterpret_cast<const void*>(detail::read_unaligned<std::uintptr_t>(p));\n",
+            f.name);
+    }
+    return std::format("    out.{} = detail::read_unaligned<{}>(p);\n", f.name,
+                       decoded_type(f.type));
 }
 
 std::string generate_prologue() {
     return R"cpp(// Generated by tracer::generate_decoder_source(). Do not edit.
+//
+// One struct per tracepoint of the binary this was generated from, and a
+// decode() that turns a trace of that binary into those structs.
+#pragma once
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <format>
-#include <fstream>
-#include <iostream>
-#include <iterator>
 #include <span>
-#include <vector>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
 
-namespace {
+namespace trace {
+
+// Which tracepoint a record came from, and when it was taken. Everything but
+// the timestamp is a fact about the call site, fixed at compile time.
+struct tracepoint_metadata {
+    std::string_view name;
+    std::string_view file;
+    int line;
+    std::string_view function;
+    std::uint64_t timestamp;
+};
+
+namespace detail {
 
 template <typename To>
     requires std::is_trivially_copyable_v<To>
@@ -67,147 +163,199 @@ To read_unaligned(const std::byte*& p) {
     return dst;
 }
 
-struct hex_bytes {
-    std::span<const std::byte> v;
-};
+// Length-prefixed runs. Both views point into the trace buffer rather than
+// copying out of it, which is what keeps decoding allocation-free -- and what
+// makes them valid only as long as that buffer is.
+inline std::span<const std::byte> read_bytes(const std::byte*& p) {
+    const auto len = read_unaligned<std::uint16_t>(p);
+    const std::span<const std::byte> out(p, len);
+    p += len;
+    return out;
+}
 
-}  // namespace
+inline std::string_view read_str(const std::byte*& p) {
+    const std::span<const std::byte> raw = read_bytes(p);
+    return {reinterpret_cast<const char*>(raw.data()), raw.size()};
+}
 
-template <>
-struct std::formatter<hex_bytes> {
-    static constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+// An argument the tracer had no wire type for: a fixed-width slot of whatever
+// bytes the value occupied.
+inline std::span<const std::byte> read_opaque(const std::byte*& p, std::size_t width) {
+    const std::span<const std::byte> out(p, width);
+    p += width;
+    return out;
+}
 
-    static auto format(const hex_bytes& h, std::format_context& ctx) {
-        auto out = ctx.out();
-        for (std::byte b : h.v) {
-            out = std::format_to(out, "{:02x}", std::to_integer<unsigned>(b));
-        }
-        return out;
+// How to_string() renders one field. Free functions rather than a formatter
+// specialisation, so that a caller printing a field itself can reach for the
+// same rendering without adopting it for every std::span in its program.
+inline std::string field_to_string(std::span<const std::byte> v) {
+    std::string out;
+    for (std::byte b : v) {
+        out += std::format("{:02x}", std::to_integer<unsigned>(b));
     }
-};
+    return out;
+}
 
-namespace {
+inline std::string field_to_string(std::string_view v) { return std::string(v); }
+
+inline std::string field_to_string(const void* v) { return std::format("{}", v); }
+
+template <typename T>
+std::string field_to_string(const T& v) {
+    return std::format("{}", v);
+}
+
+}  // namespace detail
 
 )cpp";
 }
 
-std::string generate_deserializer(std::size_t id,
-                                  const tracepoint_entry& entry,
-                                  std::size_t fileline_width) {
-    const std::vector<std::string> sigs = split_signature(entry.signature);
-
-    std::string code;
-    code += std::format("// {}:{}  [{}]\n", entry.file, entry.line, entry.signature);
-    code += std::format("void deserialize_{}(const std::byte*& p) {{\n", id);
-    code += "    const auto ts = read_unaligned<std::uint64_t>(p);\n";
-
-    for (std::size_t i = 0; i < sigs.size(); ++i) {
-        const std::string& sig = sigs[i];
-        const std::size_t n = i + 1;
-        if (sig == "bytes") {
-            code += std::format("    const std::size_t len_{} = read_unaligned<std::uint16_t>(p);\n", n);
-            code += std::format("    const std::span<const std::byte> arg_{}(p, len_{});\n", n, n);
-            code += std::format("    p += len_{};\n", n);
-        } else if (sig == "unknown64" || sig == "unknown128") {
-            const int width = sig == "unknown64" ? 8 : 16;
-            code += std::format("    const std::span<const std::byte> arg_{}(p, {});\n", n, width);
-            code += std::format("    p += {};\n", width);
-        } else if (sig == "ptr") {
-            code += std::format(
-                "    const void* const arg_{} = reinterpret_cast<const void*>(read_unaligned<std::uintptr_t>(p));\n",
-                n);
-        } else {
-            code += std::format("    const {} arg_{} = read_unaligned<{}>(p);\n",
-                                decoded_type(sig), n, decoded_type(sig));
-        }
+std::string generate_struct(const tracepoint_entry& entry, const std::vector<field>& fields) {
+    std::string code = std::format("// {}:{}\nstruct {} {{\n", entry.file, entry.line, entry.name);
+    for (const field& f : fields) {
+        code += std::format("    {} {};\n", decoded_type(f.type), f.name);
     }
 
-    // The tracepoint's name is the format string. Placeholders that do not
-    // match the decoded arguments fail to compile right here, which is the
-    // reason for generating source instead of interpreting the table.
+    // "name{a=1, b=two}". The braces are doubled because this is a format
+    // string being written into a format string.
+    std::string format_string = std::format("{}{{{{", entry.name);
+    std::string arguments;
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        format_string += std::format("{}{}={{}}", i == 0 ? "" : ", ", fields[i].name);
+        arguments += std::format(",\n                           detail::field_to_string({})",
+                                 fields[i].name);
+    }
+    format_string += "}}";
+
+    if (!fields.empty()) code += "\n";
     code += std::format(
-        "    std::cout << std::format(R\"---({{:>18}} | {{:<{}}} | {{:<5}} | {})---\"\n"
-        "                             \"\\n\",\n"
-        "                             ts, \"{}:{}\", \"{}\"",
-        fileline_width, entry.name, entry.file, entry.line, to_string(static_cast<log_level>(entry.level)));
-
-    for (std::size_t i = 0; i < sigs.size(); ++i) {
-        code += is_opaque(sigs[i]) ? std::format(", hex_bytes{{arg_{}}}", i + 1)
-                                   : std::format(", arg_{}", i + 1);
-    }
-    code += ");\n}\n\n";
+        "    [[nodiscard]] std::string to_string() const {{\n"
+        "        return std::format(\"{}\"{});\n"
+        "    }}\n}};\n\n",
+        format_string, arguments);
     return code;
 }
 
-std::string generate_epilogue(std::size_t count) {
-    std::string code = "using deserializer = void (*)(const std::byte*&);\n\n";
-    code += "constexpr deserializer deserializers[] = {\n";
-    for (std::size_t i = 0; i < count; ++i) {
-        code += std::format("    deserialize_{},\n", i);
+std::string generate_reader(const tracepoint_entry& entry, const std::vector<field>& fields) {
+    std::string code = std::format(
+        "inline constexpr tracepoint_metadata metadata_{}{{\"{}\", \"{}\", {}, \"{}\", 0}};\n\n",
+        entry.name, escape(entry.name), escape(entry.file), entry.line, escape(entry.function));
+    // The reader of a tracepoint with no parameters reads nothing, and would
+    // otherwise be a function whose only parameter is unused.
+    code += std::format("inline {} read_{}({}const std::byte*& p) {{\n", entry.name, entry.name,
+                        fields.empty() ? "[[maybe_unused]] " : "");
+    code += std::format("    {} out{{}};\n", entry.name);
+    for (const field& f : fields) {
+        code += read_field(f);
     }
-    if (count == 0) {
-        code += "    nullptr,  // no tracepoints in the producing binary\n";
-    }
-    code += "};\n\n";
-    code += std::format("constexpr std::size_t tracepoint_count = {};\n", count);
-    code += std::format("constexpr std::size_t record_header_size = {};\n\n", record_header_size);
+    code += "    return out;\n}\n\n";
+    return code;
+}
 
-    code += R"cpp(}  // namespace
+std::string generate_decode(const std::vector<std::string>& names, std::size_t fileline_width) {
+    std::string code = std::format(
+        "// The widest \"file:line\" in the table, for a caller lining up a column of\n"
+        "// them.\n"
+        "inline constexpr std::size_t fileline_width = {};\n\n"
+        "inline constexpr std::size_t record_header_size = {};\n\n",
+        fileline_width, record_header_size);
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::cerr << "usage: " << argv[0] << " <trace-file>\n";
-        return 2;
-    }
-
-    std::ifstream in(argv[1], std::ios::binary);
-    if (!in) {
-        std::cerr << "cannot open " << argv[1] << "\n";
-        return 1;
-    }
-    const std::vector<char> raw{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-
-    const auto* p = reinterpret_cast<const std::byte*>(raw.data());
-    const std::byte* const end = p + raw.size();
+    code += R"cpp(// Decode every record in `trace`, in order, calling cb(event, metadata) for each.
+//
+// `cb` is expected to have an operator() per tracepoint struct it cares about --
+// plus, usually, a template one for the rest. A struct's string and byte fields
+// point into `trace`, so they outlive the call only as long as it does.
+//
+// Throws std::runtime_error on a record that cannot be decoded. A record is not
+// self-delimiting, so a truncated or corrupt stream cannot be resynchronised
+// past: the first bad byte ends the decode.
+template <typename Callback>
+void decode(std::span<const std::byte> trace, Callback&& cb) {
+    const std::byte* p = trace.data();
+    const std::byte* const end = p + trace.size();
 
     while (p < end) {
-        // A record is not self-delimiting, so a truncated or corrupt stream has
-        // to stop the decode rather than be resynchronised past.
         if (static_cast<std::size_t>(end - p) < record_header_size) {
-            std::cerr << "truncated trace: " << (end - p) << " trailing bytes\n";
-            return 1;
+            throw std::runtime_error(
+                std::format("truncated trace: {} trailing bytes", end - p));
         }
-        const auto id = read_unaligned<std::uint32_t>(p);
-        if (id >= tracepoint_count) {
-            std::cerr << "bad tracepoint id " << id << "\n";
-            return 1;
-        }
-        deserializers[id](p);
+        const auto id = detail::read_unaligned<std::uint32_t>(p);
+        const auto timestamp = detail::read_unaligned<std::uint64_t>(p);
+
+        switch (id) {
+)cpp";
+
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        code += std::format(
+            "            case {}: {{\n"
+            "                tracepoint_metadata meta = detail::metadata_{};\n"
+            "                meta.timestamp = timestamp;\n"
+            "                cb(detail::read_{}(p), meta);\n"
+            "                break;\n"
+            "            }}\n",
+            i, names[i], names[i]);
     }
 
-    return 0;
+    code += R"cpp(            default:
+                throw std::runtime_error(std::format("bad tracepoint id {}", id));
+        }
+    }
 }
+
+}  // namespace trace
 )cpp";
     return code;
 }
 
 }  // namespace
 
-std::string generate_decoder_source() {
-    const std::span<const tracepoint_entry> table = tracepoints();
+std::string generate_decoder_source(std::span<const tracepoint_entry> table) {
+    std::vector<std::vector<field>> fields;
+    std::vector<std::string> names;
+    std::set<std::string, std::less<>> seen;
 
-    // One column width for the whole run, so the output stays aligned.
+    // A tracepoint's name becomes a struct's name, so what a name has to be is
+    // stricter here than at the call site: an identifier, and one of a kind in
+    // the whole binary. Two call sites sharing a name is legal tracing and
+    // undecodable, so it is rejected rather than silently merged.
+    for (const tracepoint_entry& entry : table) {
+        if (!is_identifier(entry.name)) {
+            fail(entry, "tracepoint name is not an identifier");
+        }
+        if (!seen.insert(entry.name).second) {
+            fail(entry, "a tracepoint of this name is already defined elsewhere");
+        }
+        fields.push_back(parse_signature(entry));
+        for (const field& f : fields.back()) {
+            if (decoded_type(f.type).empty()) {
+                fail(entry, std::format("parameter \"{}\" has unknown type \"{}\"", f.name, f.type));
+            }
+        }
+        names.emplace_back(entry.name);
+    }
+
+    // One column width for the whole table, so a caller printing every record
+    // does not have to make two passes to line them up.
     std::size_t fileline_width = 0;
-    for (const tracepoint_entry& e : table) {
-        fileline_width = std::max(fileline_width, std::format("{}:{}", e.file, e.line).size());
+    for (const tracepoint_entry& entry : table) {
+        fileline_width =
+            std::max(fileline_width, std::format("{}:{}", entry.file, entry.line).size());
     }
 
     std::string out = generate_prologue();
     for (std::size_t i = 0; i < table.size(); ++i) {
-        out += generate_deserializer(i, table[i], fileline_width);
+        out += generate_struct(table[i], fields[i]);
     }
-    out += generate_epilogue(table.size());
+    out += "namespace detail {\n\n";
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        out += generate_reader(table[i], fields[i]);
+    }
+    out += "}  // namespace detail\n\n";
+    out += generate_decode(names, fileline_width);
     return out;
 }
+
+std::string generate_decoder_source() { return generate_decoder_source(tracepoints()); }
 
 }  // namespace tracer

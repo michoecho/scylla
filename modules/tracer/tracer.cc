@@ -15,17 +15,6 @@ void set_enabled(const tracepoint_entry& entry, bool enabled) {
 
 thread_local trace_buffers* local_tracer = nullptr;
 
-std::string_view to_string(log_level level) noexcept {
-    switch (level) {
-        case log_level::error: return "error";
-        case log_level::warn: return "warn";
-        case log_level::info: return "info";
-        case log_level::debug: return "debug";
-        case log_level::trace: return "trace";
-    }
-    return "?";
-}
-
 buffer_group::buffer_group(std::size_t capacity, std::size_t buffer_size)
     : capacity_(capacity), buffer_size_(buffer_size) {
     // Allocate the whole budget up front so that steady-state tracing never
