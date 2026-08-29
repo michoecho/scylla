@@ -73,9 +73,12 @@ Deliberately crudely. Scylla's CMake pulls the tracer in by **absolute path**:
 
 - `seastar/CMakeLists.txt` sets `Scylla_TRACER_REPO` to
   `/home/michal/projects/cpp_template` and compiles `modules/tracer/tracer.cc`
-  and `modules/tracer/codegen.cc` into `libseastar.so`, with `-w` because they
-  are not written to Seastar's `-Wall -Werror`.
-- Scylla's top-level `CMakeLists.txt` adds the two include directories.
+  `modules/tracer/codegen.cc` and `modules/utils/barrier.cc` into
+  `libseastar.so`, with `-w` because they are not written to Seastar's
+  `-Wall -Werror`. The barrier is what the rendezvous below gathers the shards
+  with; its doctest cases live in a separate `barrier_test.cc` precisely so
+  that this build never sees them.
+- Scylla's top-level `CMakeLists.txt` adds the include directories.
 
 **If you check this repo out elsewhere, edit `Scylla_TRACER_REPO`.** There is no
 detection and no fallback.
@@ -110,12 +113,21 @@ Do **not** build or run Scylla's tests.
 
 ## Generating a trace
 
+Tracepoints start **disabled**, so a node that is never told otherwise records
+nothing at all -- each call site is a five-byte nop. Switch them on before the
+load, and off again when you are done:
+
 ```sh
 cd third-party/scylladb
 nix develop -c ./run-node.sh 1          # a single node on 127.11.11.1
+curl -s -X POST 'http://127.11.11.1:10000/system/tracepoints_enabled?enabled=true'
 nix develop -c ./load.py                # 400 inserts, a flush, 10000 selects
 curl -s -X POST http://127.11.11.1:10000/system/trace_snapshot
 ```
+
+Forgetting the enable is the failure to expect: the snapshot succeeds and the
+`.trace` files are ~117 bytes each, which is the metadata prologue and no
+records.
 
 The endpoint returns the directory it wrote, under `<workdir>/traces/<stamp>/`:
 
@@ -134,6 +146,58 @@ The endpoint lives in `api/system.cc`, alongside the logger endpoints. Each
 shard's copy of its rings is synchronous, so what lands on disk is the ring as
 it was when the shard was asked; the writing afterwards is blocking I/O in a
 seastar thread, which is fine for something done by hand.
+
+### Why enabling is a rendezvous
+
+Flipping a tracepoint's static key **rewrites the branch instruction at its
+call site**, and a shard executing that instruction while it changes is
+undefined. So the endpoint does not just call the setter:
+
+- `seastar::set_tracepoints_enabled()` (`core/scylla_tracer_control.hh`, split
+  out of `scylla_tracer.hh` because that one is included by `task.hh` and may
+  not pull in `future.hh`) hands the work to
+  `seastar::run_at_rendezvous()` in `core/rendezvous.hh`.
+- Every shard runs a **rendezvous poller**, registered last in the reactor's
+  poll loop -- the one place a reactor is known not to be inside anybody's
+  code. While no request is in flight it is a relaxed atomic load and nothing
+  else.
+- Shard 0 owns a `utils::barrier` (`modules/utils`, compiled into
+  `libseastar.so` alongside the tracer) and opens a phase for the other
+  `smp::count - 1` shards. They park in it; the completion -- the patching --
+  runs on shard 0 with all of them held.
+- A phase has a 10 ms deadline, because a shard busy with a long task does not
+  reach its poll loop. Shard 0 retries up to 5 times, 200 ms apart, and then
+  gives up; the endpoint returns `false` and **nothing** was switched. It is
+  all-or-nothing, never half-patched.
+- Requests are queued on a semaphore, so only one is ever in flight.
+
+The flag also keeps the shards awake: an idle reactor sleeps in the kernel and
+stops polling, so the poller refuses `try_enter_interrupt_mode()` while a
+request is up, and the request pokes every shard once on the way in.
+
+### What it costs
+
+Measured rather than guessed, with a stamp at each stage logged once per
+request -- instrumentation since removed, and worth putting back if this ever
+looks slow. On the two-shard prototype node, idle or under `load.py`, every
+switch took **one attempt** and 40-230 us end to end inside the process:
+
+| stage | us from the call |
+|---|---|
+| admitted by the semaphore | ~1 |
+| shard 0's poller first sees the request | ~10 |
+| the phase gathered the other shard | 15-140 |
+| the patching returned | +20 |
+
+The gather is the variable part -- it is however far shard 1 was from the end
+of its poll loop -- and the retries have never yet been needed. The patching
+itself is ~20 us for the whole tracepoint table; note that switching a key to
+the state it is already in does nothing, so a repeated `enabled=true` measures
+the rendezvous alone.
+
+A `time curl` on this endpoint reads ~5 ms, which is almost entirely curl
+starting up: `curl -w %{time_total}` puts the request itself at 0.2-0.5 ms,
+and the process-side log line at a few tens of microseconds.
 
 ## Viewing it
 

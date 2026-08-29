@@ -89,7 +89,7 @@ std::string field_to_string(const T& v) {
 
 }  // namespace detail
 
-// seastar/src/core/scylla_tracer.cc:78
+// seastar/src/core/scylla_tracer.cc:80
 struct run_task {
     std::uint64_t prev;
     std::uint64_t task;
@@ -101,7 +101,7 @@ struct run_task {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:83
+// seastar/src/core/scylla_tracer.cc:85
 struct execution_stage {
     std::uint64_t prev;
     std::uint64_t task;
@@ -113,7 +113,7 @@ struct execution_stage {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:88
+// seastar/src/core/scylla_tracer.cc:90
 struct cql_request {
     std::uint64_t prev;
     std::uint64_t task;
@@ -125,7 +125,7 @@ struct cql_request {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:93
+// seastar/src/core/scylla_tracer.cc:95
 struct semaphore_execute {
     std::uint64_t prev;
     std::uint64_t task;
@@ -137,7 +137,7 @@ struct semaphore_execute {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:98
+// seastar/src/core/scylla_tracer.cc:100
 struct io_begin {
     std::uint64_t task;
     std::uint64_t io;
@@ -149,7 +149,7 @@ struct io_begin {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:103
+// seastar/src/core/scylla_tracer.cc:105
 struct io_end {
     std::uint64_t task;
     std::uint64_t io;
@@ -259,12 +259,12 @@ inline trace_object_loaded read_trace_object_loaded(const std::byte*& p, const s
     return out;
 }
 
-inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/scylla_tracer.cc", 78, "void seastar::trace_run_task(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_1{"execution_stage", "seastar/src/core/scylla_tracer.cc", 83, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_2{"cql_request", "seastar/src/core/scylla_tracer.cc", 88, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_3{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 93, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_4{"io_begin", "seastar/src/core/scylla_tracer.cc", 98, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_5{"io_end", "seastar/src/core/scylla_tracer.cc", 103, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/scylla_tracer.cc", 80, "void seastar::trace_run_task(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_1{"execution_stage", "seastar/src/core/scylla_tracer.cc", 85, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_2{"cql_request", "seastar/src/core/scylla_tracer.cc", 90, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_3{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 95, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_4{"io_begin", "seastar/src/core/scylla_tracer.cc", 100, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_5{"io_end", "seastar/src/core/scylla_tracer.cc", 105, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
 inline constexpr tracepoint_metadata metadata_6{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 915, "void tracer::trace_buffers::note_objects_changed()", 0};
 inline constexpr tracepoint_metadata metadata_7{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 930, "void tracer::trace_buffers::note_objects_changed()", 0};
 inline constexpr tracepoint_metadata metadata_8{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 941, "void tracer::trace_buffers::note_objects_changed()", 0};
@@ -286,7 +286,7 @@ struct object_descriptor {
 };
 
 inline constexpr object_descriptor objects[] = {
-    {"ce4d5f4d156125447ec96e69107316c05eacfe25", 0, 9},
+    {"ceb6f0921bfd31a87175ab0e10369e4252700240", 0, 9},
 };
 
 // The widest "file:line" in the trace, for a caller lining up a column of

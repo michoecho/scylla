@@ -4,6 +4,7 @@ add_module(
     name = "utils",
     srcs = [
         "barrier.cc",
+        "barrier_test.cc",
         "clock.cc",
     ],
     exported_headers = {

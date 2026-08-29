@@ -283,8 +283,8 @@ TEST_CASE("a string parameter is recorded as its bytes, however it arrives") {
 // the branch were taken this would not merely record, it would crash, which is
 // a sharper assertion than an empty buffer.
 //
-// The disable has to come first, because a tracepoint starts enabled -- see
-// TRACEPOINT() in tracer.h.
+// The disable is redundant -- a tracepoint starts disabled, see TRACEPOINT()
+// in tracer.h -- and is here to say by name which tracepoint is meant.
 TEST_CASE("a tracepoint switched off by name writes nothing") {
     REQUIRE(tracer::set_tracepoint_enabled("never_recorded", false) == 1);
     tracer::local_tracer = nullptr;
@@ -331,13 +331,13 @@ TEST_CASE("a tracepoint's key is named after the tracepoint") {
     REQUIRE(key != keys.end());
     CHECK(key->file == std::string_view(entry->file));
 
-    // Enabled to begin with, and the name is the handle that turns it off and
-    // on again.
-    CHECK(tracer::is_enabled(*entry));
-    REQUIRE(tracer::set_tracepoint_enabled("keyed_tracepoint", false) == 1);
+    // Disabled to begin with, and the name is the handle that turns it on and
+    // off again.
     CHECK_FALSE(tracer::is_enabled(*entry));
     REQUIRE(tracer::set_tracepoint_enabled("keyed_tracepoint", true) == 1);
     CHECK(tracer::is_enabled(*entry));
+    REQUIRE(tracer::set_tracepoint_enabled("keyed_tracepoint", false) == 1);
+    CHECK_FALSE(tracer::is_enabled(*entry));
 
     // A name nothing was compiled under matches nothing, rather than silently
     // succeeding.
@@ -589,9 +589,17 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
         tracer::local_tracer = &buffers;
         address = plugin_table_address(us);
 
+        // Every tracepoint the plugin's run touches, by name -- a tracepoint
+        // starts disabled, and the plugin's are freshly mapped each pass, so
+        // this has to be redone after every load. "shared_event" is compiled
+        // into both objects, hence no count asserted on it.
         REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", true) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_work", true) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("shared_event", true) >= 1);
         plugin.sym<void (*)(std::uint32_t)>("tracer_plugin_run")(1);
         REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", false) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_work", false) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("shared_event", false) >= 1);
 
         std::vector<std::byte> trace = tracer::collect_trace(buffers);
         tracer::local_tracer = nullptr;
