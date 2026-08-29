@@ -34,7 +34,16 @@ nix_cxx_toolchain(
         "-std=c++23",
         "-Wall",
         "-Wextra",
-        "-Wno-omit-frame-pointer",
+        "-fno-omit-frame-pointer",
+        # Project-wide rather than per-target, because a precompiled header has
+        # to have been built under the same thread model as every translation
+        # unit that includes it -- clang rejects the mismatch outright ("POSIX
+        # thread support was disabled in precompiled file ... but is currently
+        # enabled"). Libraries that arrive through pkg-config bring `-pthread`
+        # with them (abseil and re2 do), so any dependency on one would
+        # otherwise be a build error for the whole module rather than for the
+        # file that uses it.
+        "-pthread",
     ] + select({
         "root//:build_mode[debug]": [
             "-O0",
