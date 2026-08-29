@@ -149,6 +149,20 @@ private:
     void* handle_ = nullptr;
 };
 
+// The table address of the one loaded object that is not this test binary --
+// which is to say the plugin's, whenever one is open. trace_objects() is
+// ordered by build ID, so which end of it the plugin is at depends on a hash;
+// asking for "the one that is not us" does not.
+std::uintptr_t plugin_table_address(std::string_view self) {
+    for (const tracer::trace_object& object : tracer::trace_objects()) {
+        if (object.build_id != self) {
+            return object.table_address;
+        }
+    }
+    FAIL("no plugin is loaded");
+    return 0;
+}
+
 // The tracepoints of the process, by name.
 std::size_t count_named(std::string_view name) {
     std::size_t found = 0;
@@ -487,6 +501,119 @@ TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them aw
     CHECK(tracer::tracepoints().size() == before);
     CHECK(tracer::trace_objects().size() == objects_before);
     CHECK(count_named("plugin_loaded") == 0);
+}
+
+// The header is expensive to build and almost never different, so it is cached
+// against a counter the loader bumps. The sharp edge of that bargain is that a
+// load nobody reported is a load the header does not have.
+TEST_CASE("the trace header is rebuilt only when the loader says the objects changed") {
+    const std::vector<std::byte> before = tracer::trace_header();
+    CHECK(tracer::trace_header() == before);
+
+    {
+        plugin_handle plugin;
+
+        // Loaded, registered, and genuinely part of the process -- but not yet
+        // reported, so the cached header still describes the process as it was.
+        REQUIRE(tracer::trace_objects().size() == 2);
+        CHECK(tracer::trace_header() == before);
+
+        tracer::note_objects_changed();
+        const std::vector<std::byte> after = tracer::trace_header();
+        CHECK(after != before);
+        CHECK(after.size() > before.size());  // one more object in it
+        CHECK(tracer::trace_header() == after);
+
+        plugin.close();
+        tracer::note_objects_changed();
+    }
+
+    CHECK(tracer::trace_header() == before);
+}
+
+// Unloading a plugin and loading another over it, by the protocol in tracer.h.
+//
+// The hazard is that a record names its tracepoint by address: a record left in
+// a ring when its object goes away points into a range that the next dlopen()
+// may well be given -- and it would then decode, plausibly and wrongly, as a
+// tracepoint of the new object. Nothing can detect that afterwards, so the
+// protocol is what prevents it: the records leave the ring, under a header
+// taken while the object is still mapped, before the object does.
+//
+// The traces below are decoded with this build's generated decoder, which knows
+// the plugin (it is the same library the pipeline was generated from) and does
+// not know this test binary. So only the plugin's tracepoint is switched on:
+// what is being tested is that the plugin's records survive its own reload.
+TEST_CASE("a plugin can be replaced without its records being misread") {
+    tracer::trace_buffers buffers(4096, 4096, 512);
+    tracer::local_tracer = &buffers;
+
+    // Taken before anything is loaded, so that "the object that is not this
+    // one" means the plugin for the rest of the test.
+    const std::vector<tracer::trace_object> alone = tracer::trace_objects();
+    REQUIRE(alone.size() == 1);
+    const std::string self = alone.front().build_id;
+
+    // One pass of the protocol: record through the plugin, then take the whole
+    // trace out from under it while it is still mapped.
+    const auto record_and_dump = [&buffers](const plugin_handle& plugin) {
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", true) == 1);
+        plugin.sym<void (*)(std::uint32_t)>("tracer_plugin_run")(1);
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", false) == 1);
+
+        // Step 2, in the order the protocol gives: the header first, because
+        // after the unload there is no header that can name the plugin.
+        std::vector<std::byte> trace = tracer::trace_header();
+        const std::vector<std::byte> records = buffers.drain();
+        trace.insert(trace.end(), records.begin(), records.end());
+        return trace;
+    };
+
+    std::vector<std::byte> first;
+    std::uintptr_t first_address = 0;
+    {
+        plugin_handle plugin;
+        tracer::note_objects_changed();
+        first = record_and_dump(plugin);
+        first_address = plugin_table_address(self);
+
+        plugin.close();                   // step 3
+        tracer::note_objects_changed();   // step 4
+    }
+
+    // Nothing the first plugin wrote is still in the rings, which is what makes
+    // the address it used free to be handed to somebody else.
+    CHECK(buffers.drain().empty());
+
+    std::vector<std::byte> second;
+    std::uintptr_t second_address = 0;
+    {
+        plugin_handle plugin;             // step 5
+        tracer::note_objects_changed();
+        second = record_and_dump(plugin);
+        second_address = plugin_table_address(self);
+        plugin.close();
+        tracer::note_objects_changed();
+    }
+    tracer::local_tracer = nullptr;
+
+    // Both decode, and to the same thing -- which is the point, whether or not
+    // the second load happened to be given the first one's address. It usually
+    // is, and that is exactly the case the protocol exists for.
+    MESSAGE("plugin table at ", first_address, " then ", second_address);
+    const auto decoded = [](std::span<const std::byte> trace) {
+        std::string text;
+        trace::decode(trace, [&text](const auto& event, const trace::tracepoint_metadata& meta) {
+            text += std::format("{}:{} {}\n", meta.file, meta.line, event.to_string());
+        });
+        return text;
+    };
+    CHECK(decoded(first) == "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n");
+    CHECK(decoded(second) == decoded(first));
+
+    // And the two traces differ only where they should: the header records
+    // where the plugin was this time round, so the records can be addresses.
+    CHECK((first == second) == (first_address == second_address));
 }
 
 // The end-to-end pipeline, asserted on its output.

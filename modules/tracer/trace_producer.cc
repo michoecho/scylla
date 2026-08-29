@@ -95,13 +95,16 @@ int emit_trace(const char* path) {
     out.write(reinterpret_cast<const char*>(header.data()),
               static_cast<std::streamsize>(header.size()));
 
-    // Then both rings into one stream, info first. Records are self-describing,
+    // Then every ring into one stream, info first. Records are self-describing,
     // so the decoder does not need to know where one ring ends.
-    for (event_level level : {event_level::info, event_level::debug}) {
-        const std::vector<std::byte> bytes = buffers.group(level).collect();
-        out.write(reinterpret_cast<const char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-    }
+    //
+    // Drained rather than collected, which for a program that dumps once at the
+    // end is the same thing -- but it is the order the reload protocol wants
+    // (header while everything is still mapped, then the records out of the
+    // ring), and this is the example of writing a trace.
+    const std::vector<std::byte> records = buffers.drain();
+    out.write(reinterpret_cast<const char*>(records.data()),
+              static_cast<std::streamsize>(records.size()));
     return out ? 0 : 1;
 }
 

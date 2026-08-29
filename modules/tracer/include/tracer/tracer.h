@@ -46,6 +46,7 @@
 // bugs noted there fixed and the argument-list macro machinery replaced.
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -119,6 +120,17 @@ public:
     // so collecting the tail is this function's job and not the caller's.
     [[nodiscard]] std::vector<std::byte> collect() const;
 
+    // collect(), and then forget: the ring keeps its memory and loses its
+    // records.
+    //
+    // rotate() is not this. Rotating retires the live buffer *into* the ring,
+    // where collect() still finds it -- the ring only forgets under pressure,
+    // when the byte budget evicts the oldest buffer. Draining is how a program
+    // gets records out on purpose, and it is what the reload protocol below
+    // turns on: a record naming an object is only decodable while that object
+    // is still mapped, so the records have to leave the ring before it goes.
+    [[nodiscard]] std::vector<std::byte> drain();
+
     [[nodiscard]] std::size_t buffer_size() const noexcept { return buffer_size_; }
 
 private:
@@ -152,6 +164,15 @@ public:
     [[nodiscard]] const buffer_group& group(event_level level) const {
         return groups_[static_cast<std::size_t>(level)];
     }
+
+    [[nodiscard]] buffer_group& group(event_level level) {
+        return groups_[static_cast<std::size_t>(level)];
+    }
+
+    // Every ring drained into one stream, in level order -- which is the whole
+    // of a thread's records, and what the reload protocol wants a thread to do
+    // before an object it may have traced is unloaded.
+    [[nodiscard]] std::vector<std::byte> drain();
 
 private:
     std::array<buffer_group, level_count> groups_;
@@ -693,9 +714,78 @@ inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + sizeof
 // is worth establishing before a stream of bytes is read as addresses.
 inline constexpr std::uint32_t trace_magic = 0x31435254;
 
-// The header described above, for the objects loaded right now. Prepend it to
-// the collected buffers to make a trace file.
+// --- telling the tracer that the objects changed ------------------------------
+//
+// Building the header means asking the loader where every table is and reading
+// each object's build note, which is a walk of every loaded object per table.
+// That is far too much to do on every dump, and almost always a walk to the
+// same answer: the set of loaded objects changes when something is dlopen()ed
+// and at no other time.
+//
+// So the header is cached, and this is what invalidates the cache. It is the
+// *loader's* to call -- the thread that dlopen()s and dlclose()s objects with
+// tracepoints in them -- rather than something a registration constructor does
+// on its own. That is deliberate: it keeps the atomic out of the load path, and
+// it puts the invalidation where the program already knows the answer.
+//
+// The cost of forgetting is a stale header, which is a trace whose records are
+// attributed to whatever the old header said was at their address -- silently,
+// because a plausible address decodes to a plausible tracepoint. Call it after
+// every load and every unload of an object that has tracepoints.
+
+// Bumped by note_objects_changed(), read by trace_header(). Exposed so that a
+// program with a cache of its own -- a header it stamps into its own container
+// format, say -- can invalidate it on the same signal.
+[[gnu::visibility("default")]] inline std::atomic<std::uint64_t>& object_generation() {
+    static std::atomic<std::uint64_t> generation{0};
+    return generation;
+}
+
+inline void note_objects_changed() {
+    object_generation().fetch_add(1, std::memory_order_release);
+}
+
+// The header described above, for the objects loaded as of the last
+// note_objects_changed(). Prepend it to the drained buffers to make a trace
+// file.
+//
+// Cached per thread against object_generation(), so a program that dumps in a
+// loop pays for the walk once per change rather than once per dump. Per thread
+// rather than once for the process because a dumping thread is exactly what
+// this module already has -- local_tracer is thread_local -- and a shared cache
+// would need a lock on the path this exists to make cheap.
 [[nodiscard]] std::vector<std::byte> trace_header();
+
+// --- unloading an object ------------------------------------------------------
+//
+// A record names its tracepoint by address, and the header turns that address
+// into an object. Both halves are facts about the process as it is *now*, so a
+// record outlives its object only as far as the next header: once a library is
+// unloaded it is gone from the header, and a record still sitting in a ring
+// pointing into where it used to be will be read as belonging to whatever
+// object is below that address -- or, if the range has been reused by a later
+// dlopen(), as belonging to the object now sitting on top of it.
+//
+// Nothing here can detect that after the fact. What makes it a non-problem is
+// ordering, and the program doing the unloading is the only thing that can
+// impose it:
+//
+//   1. Stop the threads that can reach the plugin's tracepoints from running
+//      them. Turning the tracepoints off is not enough on its own; a thread
+//      already inside the recording code has already written.
+//   2. Have every tracing thread build a trace out of trace_header() and
+//      trace_buffers::drain(), in that order and both before the unload. The
+//      header still names the plugin, and after the drain no live ring holds a
+//      record that points into it.
+//   3. dlclose().
+//   4. note_objects_changed().
+//   5. dlopen() the replacement, and note_objects_changed() again. The new
+//      object may well land on the address the old one had; nothing after step
+//      2 refers to that address any more, so it does not matter.
+//   6. Let the threads back in.
+//
+// Steps 2 and 4 are the load-bearing ones. Everything else is the quiescence
+// any program unloading code out from under its threads needs anyway.
 
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
 //

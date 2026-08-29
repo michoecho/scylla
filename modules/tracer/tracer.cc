@@ -47,6 +47,21 @@ void buffer_group::rotate() {
     cur_pos_ = 0;
 }
 
+std::vector<std::byte> buffer_group::drain() {
+    std::vector<std::byte> out = collect();
+    // The buffers stay, their contents do not. Clearing rather than freeing is
+    // the point: a drained ring is as ready to be written into as a fresh one,
+    // and draining is something a program may do on a timer.
+    //
+    // used_ is untouched because it counts capacity, not records, and none of
+    // that capacity has gone anywhere.
+    for (buffer& b : old_) {
+        b.clear();
+    }
+    cur_pos_ = 0;
+    return out;
+}
+
 std::vector<std::byte> buffer_group::collect() const {
     std::size_t total = cur_pos_;
     for (const buffer& b : old_) {
@@ -172,7 +187,28 @@ std::vector<trace_object> trace_objects() {
     return objects;
 }
 
+std::vector<std::byte> trace_buffers::drain() {
+    std::vector<std::byte> out;
+    for (buffer_group& group : groups_) {
+        const std::vector<std::byte> bytes = group.drain();
+        out.insert(out.end(), bytes.begin(), bytes.end());
+    }
+    return out;
+}
+
 std::vector<std::byte> trace_header() {
+    // Cached against the generation the loader last reported. Thread_local, so
+    // two threads dumping at once are two caches and no race; see
+    // note_objects_changed() in the header for what a program owes this.
+    static thread_local std::vector<std::byte> cached;
+    static thread_local std::uint64_t built_at = 0;
+    static thread_local bool built = false;
+
+    const std::uint64_t generation = object_generation().load(std::memory_order_acquire);
+    if (built && generation == built_at) {
+        return cached;
+    }
+
     std::vector<std::byte> out;
     auto put = [&out](const auto& value) {
         const auto* bytes = reinterpret_cast<const std::byte*>(&value);
@@ -188,7 +224,15 @@ std::vector<std::byte> trace_header() {
         out.insert(out.end(), bytes, bytes + object.build_id.size());
         put(static_cast<std::uint64_t>(object.table_address));
     }
-    return out;
+
+    // The copy out is deliberate. What this caches is the walk of every loaded
+    // object and the note parsing, which is the expensive half; handing back a
+    // view into the cache would save a few dozen bytes of memcpy and hand the
+    // caller a pointer the next rebuild invalidates.
+    cached = std::move(out);
+    built_at = generation;
+    built = true;
+    return cached;
 }
 
 bool is_enabled(const tracepoint_entry& entry) noexcept {
