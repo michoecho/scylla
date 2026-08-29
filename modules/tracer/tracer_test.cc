@@ -275,13 +275,18 @@ TEST_CASE("a string parameter is recorded as its bytes, however it arrives") {
     REQUIRE(tracer::set_tracepoint_enabled("string_seen", false) == 3);
 }
 
-// The point of the key: an untouched tracepoint costs a nop and writes nothing.
+// The point of the key: a tracepoint switched off costs a nop and writes
+// nothing.
 //
 // local_tracer is deliberately left null. A disabled tracepoint must not reach
 // the recording code at all, and there is no null check on that path -- so if
 // the branch were taken this would not merely record, it would crash, which is
 // a sharper assertion than an empty buffer.
-TEST_CASE("tracepoints are off until their key is enabled") {
+//
+// The disable has to come first, because a tracepoint starts enabled -- see
+// TRACEPOINT() in tracer.h.
+TEST_CASE("a tracepoint switched off by name writes nothing") {
+    REQUIRE(tracer::set_tracepoint_enabled("never_recorded", false) == 1);
     tracer::local_tracer = nullptr;
 
     TRACEPOINT(tracer::event_level::info, "never_recorded", "n", std::uint32_t{1});
@@ -326,11 +331,13 @@ TEST_CASE("a tracepoint's key is named after the tracepoint") {
     REQUIRE(key != keys.end());
     CHECK(key->file == std::string_view(entry->file));
 
-    CHECK_FALSE(tracer::is_enabled(*entry));
-    REQUIRE(tracer::set_tracepoint_enabled("keyed_tracepoint", true) == 1);
+    // Enabled to begin with, and the name is the handle that turns it off and
+    // on again.
     CHECK(tracer::is_enabled(*entry));
     REQUIRE(tracer::set_tracepoint_enabled("keyed_tracepoint", false) == 1);
     CHECK_FALSE(tracer::is_enabled(*entry));
+    REQUIRE(tracer::set_tracepoint_enabled("keyed_tracepoint", true) == 1);
+    CHECK(tracer::is_enabled(*entry));
 
     // A name nothing was compiled under matches nothing, rather than silently
     // succeeding.
@@ -608,7 +615,9 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
         return text;
     };
     CHECK(decoded(first) ==
-          "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n");
+          "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n"
+          "modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}\n"
+          "modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=1}\n");
     CHECK(decoded(second) == decoded(first));
 }
 

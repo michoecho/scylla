@@ -24,6 +24,13 @@ void set_enabled(const tracepoint_entry& entry, bool enabled) {
 
 thread_local trace_buffers* local_tracer = nullptr;
 
+// The one definition of the registry head; see "the tracepoint registry" in
+// tracer.h for why it is here rather than inline in the header.
+tracepoint_table*& tracepoint_tables() {
+    static tracepoint_table* head = nullptr;
+    return head;
+}
+
 buffer_group::buffer_group(std::size_t capacity, std::size_t buffer_size)
     : capacity_(capacity), buffer_size_(buffer_size) {
     // Allocate the whole budget up front so that steady-state tracing never

@@ -1,11 +1,23 @@
 # Latency trace viewer.  The UI sources are source-backed external cells so
 # updating them does not require a nixpkgs package for either library.
 
+# The decoder is a *generated* header, copied in from a snapshot rather than
+# built here: it is generated from Scylla's own tracepoint table (by
+# POST /system/trace_snapshot, which writes it beside the traces), and this repo
+# has no way to build Scylla. Replace it when Scylla's tracepoints change.
+cxx_library(
+    name = "decoder",
+    exported_headers = {"decoder.h": "decoder.h"},
+    header_namespace = "",
+    preferred_linkage = "static",
+)
+
 cxx_binary(
     name = "trace_viewer",
     srcs = ["main.cc"],
     header_namespace = "",
     deps = [
+        ":decoder",
         "//:fmt",
         "//:opengl",
         "//:sdl3",

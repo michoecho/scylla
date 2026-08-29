@@ -23,6 +23,11 @@
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include "decoder.h"
 
 const double MULTIPLIER = 0.2941171840072451;
 
@@ -32,12 +37,31 @@ inline int64_t rdtsc() {
     return (int64_t)(( rdx << 32 ) + rax);
 }
 
+// The viewer's own flat record.
+//
+// Scylla emits *named* tracepoints now (decoder.h, generated from the very
+// binary that produced the trace), not the four raw words this analysis was
+// originally written against. The numbers below are what those tracepoints are
+// flattened back into, because everything downstream -- the query grouping, the
+// io/cpu/starve accounting, the log formatting -- keys off them:
+//
+//   0  run_task{prev, task}         the reactor started running a task
+//   1  cql_request{prev, task}      a CQL frame opened a new request chain
+//   4  io_begin{task, io}           a task submitted an I/O
+//   5  io_end{task, io}             that I/O completed
+//   0xb execution_stage{prev, task} an execution stage ran a queued work item
+//
+// (0x3 and 0xa, the reader-concurrency-semaphore events of the original
+// experiment, are not emitted by this build; the formatters for them are left
+// in place.)
 struct entry {
     uint64_t event;
     uint64_t id;
     uint64_t arg;
     int64_t ts;
 
+    // Which request this record belongs to. For a *switch* that is the task
+    // being switched to; for everything else, the task it happened under.
     uint64_t query() const {
         if (event == 0 || event == 1 || event == 0xa || event == 0xb) {
             return arg;
@@ -46,6 +70,50 @@ struct entry {
         }
     }
 };
+
+// Task ids are *not* namespaced by shard here, deliberately. A request
+// coordinated on one shard reaches a tablet on another, and the continuations
+// that run there inherit its id -- so one request's records are spread over two
+// shards' files under a single id, and separating them by shard would cut every
+// cross-shard request in half. Scylla mints the ids with the shard already in
+// the top bits, which is what makes that safe; see fresh_task_id in
+// seastar/src/core/scylla_tracer.cc.
+
+// The callback the generated decode() hands each record to: one overload per
+// tracepoint the viewer has a use for, and a template that swallows the rest.
+struct sink {
+    std::vector<entry>& out;
+
+    void operator()(const trace::run_task& e, const trace::tracepoint_metadata& m) const {
+        out.push_back({0, e.prev, e.task, int64_t(m.timestamp)});
+    }
+    void operator()(const trace::cql_request& e, const trace::tracepoint_metadata& m) const {
+        out.push_back({1, e.prev, e.task, int64_t(m.timestamp)});
+    }
+    void operator()(const trace::execution_stage& e, const trace::tracepoint_metadata& m) const {
+        out.push_back({0xb, e.prev, e.task, int64_t(m.timestamp)});
+    }
+    void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
+        out.push_back({0x4, e.task, e.io, int64_t(m.timestamp)});
+    }
+    void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
+        out.push_back({0x5, e.task, e.io, int64_t(m.timestamp)});
+    }
+    template <typename Event>
+    void operator()(const Event&, const trace::tracepoint_metadata&) const {}
+};
+
+// One shard's trace file, decoded into the records above.
+static void load_trace(const std::filesystem::path& path, std::vector<entry>& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::system_error(errno, std::generic_category(), path.string());
+    }
+    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+    trace::decode({reinterpret_cast<const std::byte*>(raw.data()), raw.size()},
+                  sink{out});
+}
 template <> struct fmt::formatter<entry> : formatter<string_view> {
     auto format(const entry& e, auto& ctx) const -> decltype(ctx.out()) {
         // ctx.out() is an output iterator to write to.
@@ -55,30 +123,43 @@ template <> struct fmt::formatter<entry> : formatter<string_view> {
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        fprintf(stderr, "usage: %s FILE\n", argv[0]);
+        fprintf(stderr, "usage: %s SNAPSHOT-DIR\n", argv[0]);
+        fprintf(stderr, "  a directory of shard-N.trace files, as written by Scylla's\n"
+                        "  POST /system/trace_snapshot into <workdir>/traces/<stamp>/\n");
         return 2;
     }
-    const char *memblock;
-    int fd;
-    struct stat sb;
 
-    fd = open(argv[1], O_RDONLY);
-    if (fd < 0 || fstat(fd, &sb) < 0) {
-        throw std::system_error(errno, std::generic_category(), argv[1]);
+    // One file per shard, and one metadata stream per file: a trace describes
+    // the objects *its own* thread saw loaded, so the shards are decoded
+    // separately and merged afterwards rather than concatenated.
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(argv[1])) {
+        if (e.path().extension() == ".trace") {
+            files.push_back(e.path());
+        }
     }
-    size_t file_size = sb.st_size;
-    if (file_size == 0 || file_size % sizeof(entry) != 0) {
-        fprintf(stderr, "trace file is empty or has a partial entry: %s\n", argv[1]);
-        close(fd);
+    std::ranges::sort(files);
+    if (files.empty()) {
+        fprintf(stderr, "no *.trace files in %s\n", argv[1]);
         return 1;
     }
-    memblock = (char*)mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (memblock == MAP_FAILED) {
-        throw std::system_error(errno, std::generic_category(), argv[1]);
+
+    std::vector<entry> entries;
+    for (const auto& file : files) {
+        load_trace(file, entries);
+        fmt::print("{}: {} records so far\n", file.string(), entries.size());
     }
-    size_t n_entries = file_size / sizeof(entry);
-    auto span = std::span<const entry>(reinterpret_cast<const entry*>(memblock), n_entries);
+    if (entries.empty()) {
+        fprintf(stderr, "no records in %s\n", argv[1]);
+        return 1;
+    }
+
+    // The analysis below walks `span` as a global timeline -- it was reading a
+    // single thread's ring in file order -- so the shards have to be merged
+    // into one before it can, and the timestamps are rdtsc from one machine,
+    // which makes that meaningful.
+    std::ranges::sort(entries, {}, &entry::ts);
+    auto span = std::span<const entry>(entries);
     auto sorted = std::vector<entry>(span.begin(), span.end());
     std::ranges::sort(sorted, std::ranges::less(), [] (const auto &x) {return std::make_pair(x.query(), x.ts);});
 #if 0
@@ -776,7 +857,6 @@ int main(int argc, char** argv) {
     SDL_GL_DestroyContext(gl_context);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    munmap(const_cast<char*>(memblock), file_size);
 
     return 0;
 }

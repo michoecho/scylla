@@ -17,10 +17,12 @@
 // with fields rather than a line of text.
 //
 // A tracepoint that is switched off costs less than that: each one carries a
-// static key of its own, named after the tracepoint and disabled at startup, so
-// an untraced call site is a five-byte nop with the recording code laid out
-// elsewhere. tracer::set_tracepoint_enabled() turns one on by name. See the
-// TRACEPOINT() macro at the bottom of this header, and modules/static_keys.
+// static key of its own, named after the tracepoint, so a call site that has
+// been switched off is a five-byte nop with the recording code laid out
+// elsewhere. tracer::set_tracepoint_enabled() flips one by name. Tracepoints
+// start *enabled*, so a program that says nothing about tracing still traces --
+// see the TRACEPOINT() macro at the bottom of this header, and
+// modules/static_keys.
 //
 // The description lives in a dedicated ELF section, `tracepoints`, so the
 // linker collects every tracepoint of one loaded object into an array bracketed
@@ -544,7 +546,9 @@ struct tracepoint_entry {
     // the hot path reads -- the branch is patched into the instruction stream,
     // not tested -- but what lets a tracepoint be found and flipped by name;
     // see set_tracepoint_enabled() below.
-    ::static_keys::static_key_false* key;
+    //
+    // A *true* key: tracepoints start enabled. See TRACEPOINT() at the bottom.
+    ::static_keys::static_key_true* key;
 };
 
 // Synthesised by the linker around *this object's* `tracepoints` section.
@@ -585,12 +589,14 @@ struct tracepoint_table {
     tracepoint_table* next;
 };
 
-// The registry head. Process-wide: every object's copy of this inline function
-// collapses onto one definition at load time.
-[[gnu::visibility("default")]] inline tracepoint_table*& tracepoint_tables() {
-    static tracepoint_table* head = nullptr;
-    return head;
-}
+// The registry head. Process-wide, and defined out of line in tracer.cc rather
+// than as an inline function whose copies collapse at load time: collapsing
+// only happens if the executable exports the symbol, which needs
+// -Wl,--export-dynamic on the link. Putting the definition in one translation
+// unit makes the shared object that holds it the single owner instead, so a
+// program linking tracer.cc into a library -- which is how Scylla consumes this
+// -- gets one registry without any link flag at all.
+[[gnu::visibility("default")]] tracepoint_table*& tracepoint_tables();
 
 // Per-object storage for the entry above. Hidden and inline, so vague linkage
 // folds the copies within one object and hidden keeps objects from folding onto
@@ -677,8 +683,8 @@ struct trace_object {
 
 // --- turning tracepoints on ---------------------------------------------------
 //
-// Tracepoints are off by default, so something has to switch them on, and the
-// handle it switches them on by is the name. That is the one thing about a
+// Tracepoints are on by default, so switching one off is the interesting
+// direction, and the handle it switches by is the name. That is the one thing about a
 // tracepoint that a config file, a flag or an RPC can carry: its key has no
 // linkage and its address is a fact about where this run mapped it.
 //
@@ -826,13 +832,17 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // being unique -- by the code generator, in tracer/codegen.h.
 //
 // Every tracepoint is compiled behind a static key of its own, named after the
-// tracepoint and disabled at startup. A tracepoint that nobody has turned on is
-// therefore not a load-and-test but a five-byte nop, and the recording code is
-// laid out off the fallthrough path -- so the cost of a tracepoint in a hot
-// function that is not being traced is the nop, and the instruction cache lines
-// it does not touch. Enabling one rewrites that nop into a jmp; see
-// set_tracepoint_enabled() above, and modules/static_keys for how the patching
-// works.
+// tracepoint -- and *enabled* at startup, so that a program which never says
+// anything about tracing still produces a trace. The branch is still a patched
+// instruction rather than a load and a test, so switching one off with
+// set_tracepoint_enabled() leaves a five-byte nop behind and costs the call
+// site nothing thereafter.
+//
+// Enabled-by-default is what lets a host program adopt the tracer without
+// having to patch its own text at startup: no key is ever flipped, so nothing
+// has to reason about when it is safe to rewrite instructions under running
+// threads. That is worth more here than a default-off switch nobody was going
+// to leave off.
 //
 // The key is block-scope, so the only thing that can name it is this expansion.
 // It reaches the outside world twice over: through the `tracepoints` entry
@@ -845,9 +855,9 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // signature_builder above.
 #define TRACEPOINT(level_, name_, ...)                                                    \
     do {                                                                                  \
-        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
+        DEFINE_STATIC_KEY_TRUE_LOCAL(tracer_key_, name_);                                 \
         TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_ __VA_OPT__(, ) __VA_ARGS__);          \
-        if (static_branch_unlikely(&tracer_key_)) {                                       \
+        if (static_branch_likely(&tracer_key_)) {                                         \
             TRACER_RECORD(level_ __VA_OPT__(, ) __VA_ARGS__);                              \
         }                                                                                 \
     } while (0)
