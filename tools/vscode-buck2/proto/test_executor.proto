@@ -182,7 +182,16 @@ message PrepareForLocalExecutionRequest {
 }
 message PrepareForLocalExecutionResult {
   repeated string cmd = 1;
+  // Buck2 sends the resolved execution environment here. The coverage path
+  // ignores it, but debugging needs it to launch the binary the way Buck
+  // would have.
+  repeated VerbatimEnvironmentVariable env = 2;
   string cwd = 3;
+}
+
+message VerbatimEnvironmentVariable {
+  string key = 1;
+  string value = 2;
 }
 message PrepareForLocalExecutionResponse {
   PrepareForLocalExecutionResult result = 1;

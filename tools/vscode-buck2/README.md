@@ -64,6 +64,21 @@ one machine-readable result per case so VS Code still receives individual
 statuses and durations. Unlabelled targets retain one process invocation per
 case.
 
+The `Debug Tests` profile does not run the test through Buck. The executor
+asks Buck2 to materialise the test binary and resolve the command line, working
+directory and environment it would have used (`--vscode-debug`, via Buck2's
+`PrepareForLocalExecution`), and the extension hands that to a debug adapter
+through `vscode.debug.startDebugging`. Cases are debugged one at a time.
+
+The adapter is chosen by `buck2Test.debuggerType`, which defaults to `lldb`
+(CodeLLDB, `vadimcn.vscode-lldb`). Set it to `cppdbg` to use the C/C++
+extension's adapter (`ms-vscode.cpptools`), which can front either LLDB or GDB
+via its `MIMode` key. Both extensions are already in this project's `flake.nix`
+VS Code set. `buck2Test.debugConfiguration` is merged into the generated
+configuration and overrides its keys, so adapter-specific settings such as
+`{"MIMode": "gdb"}` or a `sourceMap` go there. Test binaries are built with
+debug info and are not stripped, so no extra build mode is required.
+
 The `Run Tests with Coverage` profile adds `--modifier root//:coverage` to the
 Buck2 invocation. The executor assigns each test case an LLVM raw profile
 output, merges the profiles with `llvm-profdata`, exports LCOV with `llvm-cov`,

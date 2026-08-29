@@ -60,6 +60,16 @@
           "type": "string",
           "default": "--test-case={}",
           "description": "Argument template used to select one case; {} is replaced with the case name."
+        },
+        "buck2Test.debuggerType": {
+          "type": "string",
+          "default": "lldb",
+          "description": "Debug adapter type used by the Debug test profile. \"lldb\" is CodeLLDB (vadimcn.vscode-lldb); \"cppdbg\" is the C/C++ extension's adapter (ms-vscode.cpptools), which can front either LLDB or GDB."
+        },
+        "buck2Test.debugConfiguration": {
+          "type": "object",
+          "default": {},
+          "description": "Extra keys merged into the generated debug configuration. Set anything the chosen adapter supports, for example {\"MIMode\": \"gdb\"} for cppdbg or {\"sourceMap\": {}} for lldb. Keys here override the generated ones."
         }
       }
     }

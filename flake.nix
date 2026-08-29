@@ -147,9 +147,7 @@
       vscodeFor = pkgs-unstable:
         let
           # Bound separately so the wrapper below can seed a writable copy of
-          # exactly this set. `vscode-with-extensions` keeps them in their own
-          # derivation and only references it, so there is no extensions
-          # directory inside `withExts` itself to read.
+          # exactly this set into the project-local extensions directory.
           extensions = (with pkgs-unstable.vscode-extensions; [
               anthropic.claude-code
               eamodio.gitlens
@@ -173,14 +171,9 @@
               }
             ];
 
-          withExts = pkgs-unstable.vscode-with-extensions.override {
-            vscode = pkgs-unstable.vscode;
-            vscodeExtensions = extensions;
-          };
-
-          # The same extensions as one directory, which is what the wrapper
-          # copies from. Built here rather than dug out of `withExts` so the
-          # path is a Nix reference and not a guess at its internal layout.
+          # The extensions as one directory, which is what the wrapper copies
+          # from. Built here so the path is a Nix reference rather than a guess
+          # at another derivation's internal layout.
           extensionsDir = pkgs-unstable.symlinkJoin {
             name = "vscode-extensions-dir";
             paths = extensions;
@@ -188,17 +181,26 @@
         in
         pkgs-unstable.symlinkJoin {
           name = "code-project-local";
-          paths = [ withExts ];
+          # Plain VS Code, not `vscode-with-extensions`. That wrapper appends
+          # its own read-only `--extensions-dir` in the Nix store, and since
+          # VS Code honours the last such option it would win over ours, and
+          # the editor would also warn that extensions-dir was given twice.
+          # The extensions are seeded into the project-local directory below,
+          # so this build only needs the editor itself.
+          paths = [ pkgs-unstable.vscode ];
           nativeBuildInputs = [ pkgs-unstable.makeWrapper ];
+          # `nix run` resolves the derivation name unless told otherwise, and
+          # this one installs its entrypoint as `code`.
+          meta.mainProgram = "code";
           # Rewrite the `code` entrypoint so it injects a project-local
           # --user-data-dir and --extensions-dir computed at launch time. Users
           # can still override either explicitly; VS Code honours the last one
           # given, and ours are prepended, so a user-supplied one wins.
           #
-          # The extensions directory has to be writable, and the one baked into
-          # `withExts` is a read-only store path. Making it project-local lets
-          # locally built extensions, such as the Buck2 test extension, be
-          # installed without modifying the Nix store.
+          # The extensions directory has to be writable, and anything in the
+          # Nix store is read-only. Making it project-local lets locally built
+          # extensions, such as the Buck2 test extension, be installed without
+          # modifying the Nix store.
           #
           # Seeding copies rather than symlinks is deliberate: VS Code writes
           # inside extension directories, and the store is read-only. Each
@@ -206,7 +208,7 @@
           # override is never clobbered on a later launch.
           postBuild = ''
             rm "$out/bin/code"
-            makeWrapper "${withExts}/bin/code" "$out/bin/code" \
+            makeWrapper "${pkgs-unstable.vscode}/bin/code" "$out/bin/code" \
               --run '
                 root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
                 udd="$root/.local/vscode"
@@ -221,7 +223,11 @@
                   # The glob is matched with `set --` in a subshell rather than
                   # compgen, which this non-interactive bash does not provide.
                   if ! ( set -- "$extdir/$name" "$extdir/$name"-*; [ -e "$1" ] || [ -e "$2" ] ); then
-                    cp -r --no-preserve=mode "$ext" "$extdir/$name"
+                    # Dereference entries produced by symlinkJoin. If extension code
+                    # resolves back into /nix/store, VS Code cannot associate
+                    # its `require("vscode")` call with the project-local
+                    # extension and rejects extension-owned API registrations.
+                    cp -rL "$ext" "$extdir/$name"
                   fi
                 done
                 set -- --user-data-dir "$udd" --extensions-dir "$extdir" "$@"

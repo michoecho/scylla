@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io,
     path::PathBuf,
@@ -62,6 +62,7 @@ struct Options {
     output: Option<PathBuf>,
     list_only: bool,
     coverage: bool,
+    debug: bool,
     selected_cases: HashSet<String>,
     selection_file: Option<PathBuf>,
     list_arg: String,
@@ -86,6 +87,20 @@ struct OutputFile {
     tests: Vec<DiscoveredCase>,
     results: Vec<CaseResult>,
     coverage: Vec<String>,
+    debug: Vec<DebugCommand>,
+}
+
+/// A resolved, ready-to-launch invocation for one selected test case. The
+/// extension turns this into a debug adapter configuration; the executor never
+/// runs it itself.
+#[derive(Debug, Serialize)]
+struct DebugCommand {
+    target: String,
+    case_name: String,
+    program: String,
+    args: Vec<String>,
+    cwd: String,
+    env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -222,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
 
     let channel = client_channel(orchestrator_io).await?;
     let mut orchestrator = test_orchestrator_client::TestOrchestratorClient::new(channel);
-    let mut output = OutputFile { tests: Vec::new(), results: Vec::new(), coverage: Vec::new() };
+    let mut output = OutputFile { tests: Vec::new(), results: Vec::new(), coverage: Vec::new(), debug: Vec::new() };
     let mut coverage_inputs = Vec::new();
     let mut exit_code = 0;
 
@@ -279,6 +294,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
             "--vscode-output" => options.output = Some(PathBuf::from(value_or_next(args, index, value)?)),
             "--vscode-list-only" => options.list_only = true,
             "--vscode-coverage" => options.coverage = true,
+            "--vscode-debug" => options.debug = true,
             "--vscode-case" => {
                 options.selected_cases.insert(value_or_next(args, index, value)?.to_owned());
             }
@@ -453,6 +469,50 @@ async fn process_spec(
     output.tests.extend(discovered);
 
     if options.list_only {
+        return Ok(());
+    }
+
+    // Debugging never executes the test through Buck. It asks Buck to
+    // materialise the test binary and resolve the command line it would have
+    // run, then hands that to the extension so a debug adapter can launch it.
+    if options.debug {
+        for case in &cases {
+            let case_filter = if options.case_arg == "--test-case={}" {
+                escape_doctest_filter(&case.name)
+            } else {
+                case.name.clone()
+            };
+            let command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
+            let stage = TestStage {
+                item: Some(test_stage::Item::Testing(Testing {
+                    suite: target_name.clone(),
+                    testcases: vec![case.name.clone()],
+                    variant: None,
+                    repeat_count: None,
+                })),
+            };
+            let prepared = prepare_local_execution(
+                orchestrator,
+                &handle,
+                stage,
+                command,
+                execution_env(&spec, None),
+            ).await?;
+            let mut argv = prepared.cmd.into_iter();
+            let program = argv
+                .next()
+                .ok_or_else(|| anyhow!("Buck2 returned no test executable for {target_name}"))?;
+            output.debug.push(DebugCommand {
+                target: target_name.clone(),
+                case_name: case.name.clone(),
+                program: resolve_prepared_path(&prepared.cwd, &program)
+                    .to_string_lossy()
+                    .into_owned(),
+                args: argv.collect(),
+                env: prepared.env.into_iter().map(|entry| (entry.key, entry.value)).collect(),
+                cwd: prepared.cwd,
+            });
+        }
         return Ok(());
     }
 
@@ -646,17 +706,7 @@ async fn prepare_coverage_paths(
 ) -> anyhow::Result<PreparedCoveragePaths> {
     let mut path_command = command.to_vec();
     path_command.push(profile);
-    let response = orchestrator.prepare_for_local_execution(proto::PrepareForLocalExecutionRequest {
-        test_executable: Some(proto::TestExecutable {
-            stage: Some(stage),
-            target: Some(handle.clone()),
-            cmd: path_command,
-            pre_create_dirs: Vec::new(),
-            env,
-        }),
-        required_local_resources: Vec::new(),
-    }).await?.into_inner();
-    let prepared = response.result.ok_or_else(|| anyhow!("Buck2 returned no prepared coverage command"))?;
+    let prepared = prepare_local_execution(orchestrator, handle, stage, path_command, env).await?;
     let profile = prepared.cmd.last().ok_or_else(|| anyhow!("Buck2 returned an empty prepared coverage command"))?;
     let binary = prepared.cmd.first().ok_or_else(|| anyhow!("Buck2 returned no test executable"))?;
     Ok(PreparedCoveragePaths {
@@ -664,6 +714,28 @@ async fn prepare_coverage_paths(
         binary: resolve_prepared_path(&prepared.cwd, binary),
         workspace_root: PathBuf::from(prepared.cwd),
     })
+}
+
+/// Asks Buck2 to materialise the inputs for one test execution and return the
+/// concrete command line, working directory and environment it would use,
+/// without running anything.
+async fn prepare_local_execution(
+    orchestrator: &mut test_orchestrator_client::TestOrchestratorClient<Channel>,
+    handle: &ConfiguredTargetHandle,
+    stage: TestStage,
+    cmd: Vec<ArgValue>,
+    env: Vec<proto::EnvironmentVariable>,
+) -> anyhow::Result<proto::PrepareForLocalExecutionResult> {
+    orchestrator.prepare_for_local_execution(proto::PrepareForLocalExecutionRequest {
+        test_executable: Some(proto::TestExecutable {
+            stage: Some(stage),
+            target: Some(handle.clone()),
+            cmd,
+            pre_create_dirs: Vec::new(),
+            env,
+        }),
+        required_local_resources: Vec::new(),
+    }).await?.into_inner().result.ok_or_else(|| anyhow!("Buck2 returned no prepared command"))
 }
 
 fn resolve_prepared_path(cwd: &str, path: &str) -> PathBuf {

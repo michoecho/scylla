@@ -21,10 +21,20 @@ interface CaseResult {
     output: string;
 }
 
+interface DebugCommand {
+    target: string;
+    case_name: string;
+    program: string;
+    args: string[];
+    cwd: string;
+    env: Record<string, string>;
+}
+
 interface ExecutorOutput {
     tests: DiscoveredCase[];
     results: CaseResult[];
     coverage?: string[];
+    debug?: DebugCommand[];
 }
 
 interface TestRecord {
@@ -65,6 +75,12 @@ export function activate(context: vscode.ExtensionContext): void {
         true,
     );
     coverageProfile.loadDetailedCoverage = async (_, fileCoverage) => coverageData.get(fileCoverage) ?? [];
+    controller.createRunProfile(
+        "Debug Tests",
+        vscode.TestRunProfileKind.Debug,
+        (request, cancellation) => debugTests(request, cancellation),
+        true,
+    );
     context.subscriptions.push(
         controller,
         vscode.commands.registerCommand("buck2Test.refresh", () => refreshAll()),
@@ -249,6 +265,151 @@ async function runTests(
         });
     } finally {
         run.end();
+    }
+}
+
+// Debugging asks the executor to resolve the test command without running it,
+// then launches each selected case under a debug adapter, one at a time so the
+// user is never looking at several concurrent debug sessions.
+async function debugTests(
+    request: vscode.TestRunRequest,
+    cancellation: vscode.CancellationToken,
+): Promise<void> {
+    const run = controller.createTestRun(request);
+    const selected = [...records.values()].filter(record => {
+        const included = !request.include || request.include.some(item => contains(item, record.item));
+        const excluded = request.exclude?.some(item => contains(item, record.item)) ?? false;
+        return included && !excluded;
+    });
+    try {
+        const projects = new Map<string, TestRecord[]>();
+        for (const record of selected) {
+            run.enqueued(record.item);
+            const folderPath = record.root.description ?? "";
+            projects.set(folderPath, [...(projects.get(folderPath) ?? []), record]);
+        }
+        for (const [folderPath, projectRecords] of projects) {
+            if (cancellation.isCancellationRequested) {
+                projectRecords.forEach(record => run.skipped(record.item));
+                continue;
+            }
+            const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(folderPath));
+            if (!folder) {
+                throw new Error(`No workspace folder for ${folderPath}`);
+            }
+            const targets = [...new Set(projectRecords.map(record => record.target))];
+            const cases = projectRecords.map(record => ({ target: record.target, case_name: record.case_name }));
+            const response = await withTempOutput(async output => {
+                await runBuck2(folder, targets, output, ["--vscode-debug"], cases, cancellation);
+                return readOutput(output);
+            });
+            const commands = new Map(
+                (response.debug ?? []).map(command => [caseKey(command.target, command.case_name), command]),
+            );
+            for (const record of projectRecords) {
+                if (cancellation.isCancellationRequested) {
+                    run.skipped(record.item);
+                    continue;
+                }
+                const command = commands.get(caseKey(record.target, record.case_name));
+                if (!command) {
+                    run.errored(record.item, new vscode.TestMessage("Buck2 returned no debug command for this test case."));
+                    continue;
+                }
+                run.started(record.item);
+                try {
+                    await startDebugSession(folder, record, command);
+                    run.passed(record.item);
+                } catch (error) {
+                    run.errored(record.item, new vscode.TestMessage(errorMessage(error)));
+                }
+            }
+        }
+    } catch (error) {
+        const message = new vscode.TestMessage(errorMessage(error));
+        selected.forEach(record => {
+            if (cancellation.isCancellationRequested) {
+                run.skipped(record.item);
+            } else {
+                run.errored(record.item, message);
+            }
+        });
+    } finally {
+        run.end();
+    }
+}
+
+const DEBUG_EXTENSIONS: Record<string, string> = {
+    lldb: "vadimcn.vscode-lldb",
+    cppdbg: "ms-vscode.cpptools",
+    cppvsdbg: "ms-vscode.cpptools",
+};
+
+// Activate the debug extension before launching, so a failure to activate is
+// reported here rather than as a downstream error from a half-initialised
+// provider. CodeLLDB, for instance, only assigns its settings manager while
+// activating; if that throws, the first symptom is an unhelpful "Cannot read
+// properties of undefined (reading 'getAdapterSettings')" once VS Code asks it
+// to resolve a configuration.
+async function activateDebugExtension(type: string): Promise<void> {
+    const identifier = DEBUG_EXTENSIONS[type];
+    if (!identifier) {
+        return;
+    }
+    const extension = vscode.extensions.getExtension(identifier);
+    if (!extension) {
+        throw new Error(
+            `The "${type}" debug adapter needs the ${identifier} extension, which is not installed.`,
+        );
+    }
+    if (!extension.isActive) {
+        await extension.activate();
+    }
+}
+
+async function startDebugSession(
+    folder: vscode.WorkspaceFolder,
+    record: TestRecord,
+    command: DebugCommand,
+): Promise<void> {
+    const config = vscode.workspace.getConfiguration("buck2Test", folder.uri);
+    const type = config.get<string>("debuggerType", "lldb");
+    const extra = config.get<Record<string, unknown>>("debugConfiguration", {});
+    await activateDebugExtension(type);
+    const configuration: vscode.DebugConfiguration = {
+        type,
+        request: "launch",
+        name: `${record.target} - ${record.case_name}`,
+        program: command.program,
+        args: command.args,
+        cwd: command.cwd || folder.uri.fsPath,
+        // cppdbg spells the environment as a list of name/value pairs; lldb and
+        // the other adapters take the plain object.
+        ...(type === "cppdbg"
+            ? { environment: Object.entries(command.env).map(([name, value]) => ({ name, value })) }
+            : { env: command.env }),
+        ...extra,
+    };
+    // Subscribe before starting: a session that exits quickly can terminate
+    // before startDebugging resolves, and a listener registered afterwards
+    // would wait for an event that already fired.
+    let stopWaiting = () => {};
+    const terminated = new Promise<void>(resolve => { stopWaiting = resolve; });
+    const subscription = vscode.debug.onDidTerminateDebugSession(session => {
+        if (session.name === configuration.name) {
+            stopWaiting();
+        }
+    });
+    try {
+        const started = await vscode.debug.startDebugging(folder, configuration);
+        if (!started) {
+            throw new Error(
+                `Could not start a "${type}" debug session. Install the matching debug extension or set buck2Test.debuggerType.`,
+            );
+        }
+        await terminated;
+    } finally {
+        subscription.dispose();
     }
 }
 
