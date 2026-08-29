@@ -263,6 +263,8 @@
               lua5_4
               p11-kit
               systemd
+              lttng-ust
+              ccache
               code
               pkgs-unstable.claude-code
               pkgs-unstable.codex
