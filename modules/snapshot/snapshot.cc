@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <map>
 #include <random>
+#include <re2/re2.h>
 #include <set>
 #include <sstream>
 #include <sys/file.h>
@@ -147,6 +148,35 @@ std::string byte_summary(std::string_view expected, std::string_view got) {
       expected.size(), got.size(), first);
 }
 
+// A full match of `pattern` against the whole of `value`.
+//
+// RE2 rather than std::regex, for both of the reasons RE2 exists. It matches in
+// time linear in the value, and a snapshot is routinely thousands of characters
+// long -- a backtracking engine walks a plain concatenation of that length by
+// recursing once per character, which is a stack overflow disguised as an
+// assertion. And a malformed pattern is a value here, not an exception: the
+// pattern comes from the test's own serializer, so a bad one has to surface as
+// a failing assertion naming the pattern, not as a throw unwinding out of the
+// test case.
+struct PatternMatch {
+  bool matched = false;
+  bool valid = false;
+  std::string error;
+};
+
+PatternMatch full_match(const std::string &pattern, std::string_view value) {
+  // Quiet, because a bad pattern is reported through the return value and
+  // then again in the assertion message. RE2's default is to also log it to
+  // stderr, which under a parallel test run arrives detached from the failure
+  // it belongs to.
+  const RE2 expression(pattern, RE2::Quiet);
+  if (!expression.ok())
+    return {.matched = false, .valid = false, .error = expression.error()};
+  return {.matched = RE2::FullMatch(value, expression),
+          .valid = true,
+          .error = {}};
+}
+
 std::string location_key(const std::source_location &location) {
   return std::format("{}:{}:{}", location.file_name(), location.line(),
                      location.column());
@@ -174,6 +204,28 @@ Comparison compare(std::string_view got, const Snapshot &expected) {
                                       .column = expected.location.column(),
                                       .old_value = std::string(expected.value),
                                       .new_value = std::string(got),
+                                      .id = {},
+                                      .initialize = false,
+                                      .existed = true});
+  return recording ? Comparison::MismatchedAndRecorded : Comparison::Mismatched;
+}
+
+Comparison compare(const RegexText &got, const Snapshot &expected) {
+  // The recorded value is asked to satisfy the pattern this run produced --
+  // not the other way round. What is being checked is that the sample in the
+  // source is still one of the serializations this code can emit.
+  if (full_match(got.pattern(), expected.value).matched)
+    return expected.forced ? Comparison::StaleUpdateMarker
+                           : Comparison::Matched;
+
+  const bool recording = update_mode() || expected.forced;
+  if (recording)
+    updates().push_back(PendingUpdate{.kind = PendingUpdate::Kind::Inline,
+                                      .file = expected.location.file_name(),
+                                      .line = expected.location.line(),
+                                      .column = expected.location.column(),
+                                      .old_value = std::string(expected.value),
+                                      .new_value = got.text(),
                                       .id = {},
                                       .initialize = false,
                                       .existed = true});
@@ -227,6 +279,20 @@ std::string render_mismatch(std::string_view got, const Snapshot &expected) {
       "--- actual ---\n{}",
       expected.location.file_name(), expected.location.line(),
       expected.location.column(), expected.value, got);
+}
+
+std::string render_mismatch(const RegexText &got, const Snapshot &expected) {
+  const PatternMatch result = full_match(got.pattern(), expected.value);
+  if (!result.valid)
+    return std::format(
+        "malformed snapshot pattern at {}:{}:{}: {}\n--- pattern ---\n{}",
+        expected.location.file_name(), expected.location.line(),
+        expected.location.column(), result.error, got.pattern());
+  return std::format(
+      "snapshot mismatch at {}:{}:{}\n--- expected (in source) ---\n{}\n"
+      "--- actual ---\n{}\n--- pattern the expected value must match ---\n{}",
+      expected.location.file_name(), expected.location.line(),
+      expected.location.column(), expected.value, got.text(), got.pattern());
 }
 
 std::string render_mismatch(std::string_view got,

@@ -81,3 +81,34 @@ add_module(
     },
     module_source_dir = "modules/static_keys",
 )
+
+# The listing test, in a binary of its own -- which is a correctness
+# requirement, not tidiness.
+#
+# list_static_keys() answers a question about the *process*: every key in every
+# loaded object. In a shared executable that answer includes the keys of every
+# other test file linked beside it, so adding a key to a branch test, or to one
+# of its plugin fixtures, would break a snapshot that has nothing to do with it.
+# Kept apart, the listing describes exactly the two files below, and a diff in
+# it is a diff in what those two say.
+
+cxx_library(
+    name = "list_plugin",
+    srcs = ["plugin/list_plugin.cc"],
+    exported_deps = [":static_keys_headers"],
+    preferred_linkage = "shared",
+    header_namespace = "",
+    visibility = ["PUBLIC"],
+)
+
+add_module(
+    name = "static_key_list",
+    srcs = ["static_key_list_test.cc"],
+    deps = [
+        "//:doctest",
+        "//modules/snapshot:snapshot",
+        ":list_plugin",
+        ":static_keys_headers",
+    ],
+    module_source_dir = "modules/static_keys",
+)

@@ -89,7 +89,23 @@
           };
         });
 
-        re2 = pkgs.re2.override { abseil-cpp = abseil-cpp; };
+        # ICU switched off, which is both a want and a need.
+        #
+        # It only buys RE2's `\p{...}` Unicode property classes, which nothing
+        # here uses. And nixpkgs' icu4c sets `libdir` in its `.pc` to the *dev*
+        # output, which holds pkg-config metadata and no libraries at all -- so
+        # `pkg-config --libs --static re2` hands back a `-L` into that output
+        # next to the `-licuuc -licudata` it cannot satisfy, and the link fails
+        # with "cannot find -licuuc". Dropping the dependency removes both the
+        # `Requires: icu-uc` from re2.pc and the reason to care.
+        re2 = (pkgs.re2.override { abseil-cpp = abseil-cpp; }).overrideAttrs (old: {
+          propagatedBuildInputs = [ abseil-cpp ];
+          cmakeFlags =
+            (builtins.filter
+              (flag: !(pkgs.lib.hasInfix "RE2_USE_ICU" flag))
+              (old.cmakeFlags or [ ]))
+            ++ [ (pkgs.lib.cmakeBool "RE2_USE_ICU" false) ];
+        });
 
         # Only the pkgconfig directory is assembled; the `.pc` files carry
         # absolute store paths for includedir/libdir, so the headers and

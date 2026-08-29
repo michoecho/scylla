@@ -4,20 +4,27 @@ add_module(
     name = "snapshot",
     srcs = [
         "snapshot.cc",
+        "regex_text.cc",
         "updater.cc",
         "flush_reporter.cc",
         "updater_test.cc",
         "compare_test.cc",
         "filesnap_test.cc",
+        "regex_text_test.cc",
         "example_test.cc",
     ],
     exported_headers = {
         "snapshot/check.h": "include/snapshot/check.h",
+        "snapshot/regex_text.h": "include/snapshot/regex_text.h",
         "snapshot/snapshot.h": "include/snapshot/snapshot.h",
         "snapshot/updater.h": "include/snapshot/updater.h",
     },
     deps = [
         "//:doctest",
+        # RE2, for the pattern half of a RegexText snapshot. Linear-time
+        # matching and a malformed pattern reported as a value rather than
+        # thrown; see the note in snapshot.cc.
+        "root//third-party:re2",
     ],
     # Snapshot tests inspect their source_location file at runtime. Keep the
     # source files in the remote test input set as well as the compile inputs.
@@ -25,6 +32,7 @@ add_module(
         "compare_test.cc",
         "example_test.cc",
         "filesnap_test.cc",
+        "regex_text_test.cc",
         "updater_test.cc",
     ],
     module_source_dir = "modules/snapshot",

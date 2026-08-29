@@ -87,6 +87,8 @@
 #include <string_view>
 #include <vector>
 
+#include "snapshot/regex_text.h"
+
 namespace snapshot_testing {
 
 // --- the block literal -------------------------------------------------------
@@ -387,6 +389,21 @@ enum class Comparison {
 Comparison compare(std::string_view got, const Snapshot& expected);
 Comparison compare(std::string_view got, const FileSnapshot& expected);
 
+// The same decision for a value that describes its own general form.
+//
+// The asymmetry is the point: the snapshot is recorded from `got.text()`, so
+// the file ends up holding a full, readable serialization, but it is compared
+// against `got.pattern()` -- by full match, so a pattern that merely occurs
+// somewhere inside the recorded value is not a match. A value whose variable
+// fields moved therefore stays green with its old sample in the file, while a
+// value whose *shape* changed fails and is re-recorded with a fresh one.
+//
+// A malformed pattern is a mismatch, never a throw: the serializer built the
+// pattern, so this is a bug in the test, and it has to surface as a failing
+// assertion with the pattern in it rather than as an exception escaping the
+// case. render_mismatch() below says which of the two it was.
+Comparison compare(const RegexText& got, const Snapshot& expected);
+
 // Render a mismatch: the two values whole, one after the other.
 //
 // Exposed because check_snapshot needs it and the two live in different
@@ -395,6 +412,10 @@ Comparison compare(std::string_view got, const FileSnapshot& expected);
 // show it as one escaped line.
 std::string render_mismatch(std::string_view got, const Snapshot& expected);
 std::string render_mismatch(std::string_view got, const FileSnapshot& expected);
+
+// Both values plus the pattern the comparison actually used, since a mismatch
+// here is usually a question about the pattern rather than about the text.
+std::string render_mismatch(const RegexText& got, const Snapshot& expected);
 
 // Whether update mode is on. Read once from the environment, on first use.
 bool update_mode();

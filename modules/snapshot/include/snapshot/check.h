@@ -86,6 +86,45 @@ inline void check_snapshot(std::string_view got, const Snapshot& expected) {
     }
 }
 
+// The same assertion for a value that carries its own pattern; see
+// snapshot/regex_text.h. Recorded from the text, compared against the pattern.
+inline void check_snapshot(const RegexText& got, const Snapshot& expected) {
+    const Comparison result = compare(got, expected);
+    if (result == Comparison::Matched) return;
+
+    const char* const file = expected.location.file_name();
+    const auto line = static_cast<int>(expected.location.line());
+
+    switch (result) {
+        case Comparison::Matched:
+            return;
+
+        case Comparison::Mismatched: {
+            const std::string message =
+                render_mismatch(got, expected) +
+                "\n\nRe-run with SNAPSHOT_UPDATE=1, or add .update() to this "
+                "snapshot, to rewrite it.";
+            ADD_FAIL_CHECK_AT(file, line, message);
+            return;
+        }
+
+        case Comparison::MismatchedAndRecorded: {
+            const std::string message = render_mismatch(got, expected) +
+                                        "\n\nRewritten in place -- rebuild and "
+                                        "review the diff.";
+            ADD_FAIL_CHECK_AT(file, line, message);
+            return;
+        }
+
+        case Comparison::StaleUpdateMarker:
+            ADD_FAIL_CHECK_AT(file, line,
+                              "this snapshot matches but still has .update() on it. "
+                              "Remove it -- a committed .update() stops the snapshot "
+                              "from ever failing.");
+            return;
+    }
+}
+
 inline void check_snapshot(std::string_view got, const FileSnapshot& expected) {
     const Comparison result = compare(got, expected);
     if (result == Comparison::Matched) return;

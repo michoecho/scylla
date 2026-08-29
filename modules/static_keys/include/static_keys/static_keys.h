@@ -30,6 +30,18 @@
 // `__start___jump_table` / `__stop___jump_table`, which is how we find every
 // branch belonging to a key at runtime.
 //
+// A key definition likewise emits a `struct static_key_desc` into a
+// `__static_keys` section, holding the key's name and the source location that
+// defined it. The name defaults to the identifier and can be given explicitly:
+//
+//     DEFINE_STATIC_KEY_FALSE(tracing);                 // named "tracing"
+//     DEFINE_STATIC_KEY_FALSE(tracing, "net.tracing");  // named "net.tracing"
+//
+// static_keys::list_static_keys() walks those sections -- every loaded object's
+// -- and answers what keys the process holds, each with its defining object,
+// its offset within it, its name, and its source location. See "Key metadata"
+// and "The key registry" below.
+//
 // Differences from the kernel, all consequences of being a single-threaded
 // userspace program:
 //
@@ -47,12 +59,15 @@
 //   - `arch_jump_entry_size()` recognises the four encodings we can emit
 //     instead of running a general instruction decoder.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include <dlfcn.h>
 #include <sys/mman.h>
@@ -99,6 +114,59 @@ struct static_key_false {
 #define STATIC_KEY_FALSE_INIT \
     { .enabled = 0, .type = ::static_keys::JUMP_TYPE_FALSE }
 
+// -------------------------------------------------------------------------
+// Key metadata
+// -------------------------------------------------------------------------
+
+// What a key is called and where it was defined.
+//
+// Every DEFINE_STATIC_KEY_* below emits one of these into a `__static_keys`
+// section beside the key itself. Nothing on any code path reads a descriptor;
+// it exists so that a process can be *asked* what keys it holds, by
+// list_static_keys() further down, which is otherwise unanswerable -- a key is
+// a two-word object with no name in it, and a branch site is an instruction.
+//
+// The section name is a valid C identifier, so the linker brackets it with
+// __start___static_keys/__stop___static_keys exactly as it does __jump_table.
+// Unlike __jump_table this one is an ordinary array of ordinary variables:
+// nothing here is an `asm` operand, so the pointers are plain pointers filled
+// in by the loader with the relocations it already implements, and no
+// self-relative encoding is needed.
+struct static_key_desc {
+    const char* name;  // the explicit name, or the defining identifier
+    const char* file;  // __FILE__ where the key was defined
+    int line;          // __LINE__ where the key was defined
+    static_key* key;
+};
+
+// `used` because nothing ever references a descriptor by name -- it is reached
+// only by walking the section, which the compiler cannot see -- and `retain`,
+// where the compiler has it, so that --gc-sections does not drop it either.
+//
+// Hidden, so each object's descriptors are its own even for a key that is
+// exported: what the section describes is what this object defined.
+//
+// Deliberately not `const`. A const object lands in a read-only section, and
+// this one's initialiser holds pointers, so it would need dynamic relocations
+// applied to read-only memory -- which is what `-z relro` exists to refuse.
+#if defined(__has_attribute)
+#  if __has_attribute(retain)
+#    define STATIC_KEY_DESC_ATTRS \
+        __attribute__((used, retain, section("__static_keys"), visibility("hidden")))
+#  else
+#    define STATIC_KEY_DESC_ATTRS \
+        __attribute__((used, section("__static_keys"), visibility("hidden")))
+#  endif
+#else
+#  define STATIC_KEY_DESC_ATTRS \
+      __attribute__((used, section("__static_keys"), visibility("hidden")))
+#endif
+
+extern "C" {
+extern static_key_desc __start___static_keys[] __attribute__((weak));
+extern static_key_desc __stop___static_keys[] __attribute__((weak));
+}
+
 // Keys are hidden, which is a hard requirement rather than hygiene.
 //
 // A branch site stores its key as a link-time constant (see JUMP_TABLE_ENTRY),
@@ -113,10 +181,53 @@ struct static_key_false {
 // and reaches its branch sites through key_ref.
 #define STATIC_KEY_VISIBILITY __attribute__((visibility("hidden")))
 
-#define DEFINE_STATIC_KEY_TRUE(name) \
-    STATIC_KEY_VISIBILITY ::static_keys::static_key_true name = {.key = STATIC_KEY_TRUE_INIT}
-#define DEFINE_STATIC_KEY_FALSE(name) \
-    STATIC_KEY_VISIBILITY ::static_keys::static_key_false name = {.key = STATIC_KEY_FALSE_INIT}
+// Defining a key: the wrapper object, plus the descriptor that names it.
+//
+// The two are one macro because they must stay together. A descriptor separated
+// from its key is a name for something that may no longer exist, and a key
+// defined without one is invisible to list_static_keys() -- which would make
+// that listing "the keys someone remembered to register" rather than the keys
+// the process has.
+//
+// Both spellings are the same macro:
+//
+//     DEFINE_STATIC_KEY_FALSE(tracing);                  // named "tracing"
+//     DEFINE_STATIC_KEY_FALSE(tracing, "net.tracing");   // named "net.tracing"
+//
+// The identifier is the default because it is the name the code already uses,
+// and a name that has to be repeated is a name that will eventually disagree
+// with the key it labels. An explicit one is for the case where the two are
+// legitimately different: a key whose C++ identifier is scoped or abbreviated
+// but which is toggled by a name from a config file, a flag, or an RPC.
+#define STATIC_KEY_CAT_(a, b) a##b
+#define STATIC_KEY_CAT(a, b) STATIC_KEY_CAT_(a, b)
+
+#define STATIC_KEY_IDENT_OF_(first, ...) first
+#define STATIC_KEY_IDENT_OF(...) STATIC_KEY_IDENT_OF_(__VA_ARGS__, )
+
+// Argument-count dispatch: with one argument the third token of the expanded
+// list is _DEFAULT, with two it is _EXPLICIT.
+#define STATIC_KEY_NAME_DEFAULT(ident) #ident
+#define STATIC_KEY_NAME_EXPLICIT(ident, name) name
+#define STATIC_KEY_PICK_NAME(_1, _2, macro, ...) macro
+#define STATIC_KEY_NAME_OF(...)                                                                   \
+    STATIC_KEY_PICK_NAME(__VA_ARGS__, STATIC_KEY_NAME_EXPLICIT,                                   \
+                         STATIC_KEY_NAME_DEFAULT, )                                               \
+    (__VA_ARGS__)
+
+#define STATIC_KEY_DEFINE(vis, wrapper, init, ...)                                                \
+    vis ::static_keys::wrapper STATIC_KEY_IDENT_OF(__VA_ARGS__) = {.key = init};                  \
+    STATIC_KEY_DESC_ATTRS ::static_keys::static_key_desc                                          \
+        STATIC_KEY_CAT(STATIC_KEY_IDENT_OF(__VA_ARGS__), _static_key_desc) = {                    \
+            .name = STATIC_KEY_NAME_OF(__VA_ARGS__),                                              \
+            .file = __FILE__,                                                                     \
+            .line = __LINE__,                                                                     \
+            .key = &STATIC_KEY_IDENT_OF(__VA_ARGS__).key}
+
+#define DEFINE_STATIC_KEY_TRUE(...) \
+    STATIC_KEY_DEFINE(STATIC_KEY_VISIBILITY, static_key_true, STATIC_KEY_TRUE_INIT, __VA_ARGS__)
+#define DEFINE_STATIC_KEY_FALSE(...) \
+    STATIC_KEY_DEFINE(STATIC_KEY_VISIBILITY, static_key_false, STATIC_KEY_FALSE_INIT, __VA_ARGS__)
 
 #define DECLARE_STATIC_KEY_TRUE(name) \
     STATIC_KEY_VISIBILITY extern ::static_keys::static_key_true name
@@ -130,10 +241,10 @@ struct static_key_false {
 // to find it.
 #define STATIC_KEY_EXPORTED __attribute__((visibility("default")))
 
-#define DEFINE_STATIC_KEY_TRUE_EXPORTED(name) \
-    STATIC_KEY_EXPORTED ::static_keys::static_key_true name = {.key = STATIC_KEY_TRUE_INIT}
-#define DEFINE_STATIC_KEY_FALSE_EXPORTED(name) \
-    STATIC_KEY_EXPORTED ::static_keys::static_key_false name = {.key = STATIC_KEY_FALSE_INIT}
+#define DEFINE_STATIC_KEY_TRUE_EXPORTED(...) \
+    STATIC_KEY_DEFINE(STATIC_KEY_EXPORTED, static_key_true, STATIC_KEY_TRUE_INIT, __VA_ARGS__)
+#define DEFINE_STATIC_KEY_FALSE_EXPORTED(...) \
+    STATIC_KEY_DEFINE(STATIC_KEY_EXPORTED, static_key_false, STATIC_KEY_FALSE_INIT, __VA_ARGS__)
 
 #define DECLARE_STATIC_KEY_TRUE_EXPORTED(name) \
     STATIC_KEY_EXPORTED extern ::static_keys::static_key_true name
@@ -778,6 +889,170 @@ inline void jump_label_del_table(const jump_entry* start) {
 }
 
 // -------------------------------------------------------------------------
+// The key registry
+// -------------------------------------------------------------------------
+//
+// The same shape as the jump table registry above, and for the same reason: a
+// DSO's `__static_keys` brackets describe that DSO's section and nothing else,
+// so a process-wide view has to be a list of ranges, each registered by the
+// object it belongs to as that object loads.
+//
+// A second registry rather than two more fields on jump_table, because the two
+// sections do not line up. An object can define a key nothing branches on, and
+// jump_label_add_table() declines to register a table with no entries at all --
+// so a DSO holding only keys would have no jump_table to hang its descriptors
+// off. It can equally branch on keys it does not define, so a jump table is no
+// guide to what is described. The ranges are independent; the registries are
+// too.
+
+struct static_key_desc_table {
+    static_key_desc* start;
+    static_key_desc* stop;
+    int refs;  // translation units in this DSO that registered it
+    static_key_desc_table* next;
+};
+
+// Per-object storage, exactly as dso_jump_table is: hidden and inline, so
+// vague linkage folds the copies within an object and hidden keeps objects from
+// folding onto each other.
+[[gnu::visibility("hidden")]] inline static_key_desc_table dso_desc_table = {};
+
+// The registry head, process-wide for the same reason -- and subject to the
+// same requirement that an executable be linked with -Wl,--export-dynamic. See
+// "Modules" above.
+[[gnu::visibility("default")]] inline static_key_desc_table*& static_key_desc_tables() {
+    static static_key_desc_table* head = nullptr;
+    return head;
+}
+
+inline void static_key_add_desc_table(static_key_desc* start, static_key_desc* stop,
+                                      static_key_desc_table* storage) {
+    if (start == nullptr || start == stop) {
+        return;  // a DSO defining no keys has no section and no brackets
+    }
+    for (static_key_desc_table* table = static_key_desc_tables(); table != nullptr;
+         table = table->next) {
+        if (table->start == start) {
+            table->refs++;  // another translation unit in the same DSO
+            return;
+        }
+    }
+    *storage = {start, stop, 1, static_key_desc_tables()};
+    static_key_desc_tables() = storage;
+}
+
+inline void static_key_del_desc_table(const static_key_desc* start) {
+    static_key_desc_table** prev = &static_key_desc_tables();
+    for (static_key_desc_table* table = *prev; table != nullptr;
+         prev = &table->next, table = table->next) {
+        if (table->start != start) {
+            continue;
+        }
+        if (--table->refs > 0) {
+            return;
+        }
+        *prev = table->next;
+        return;
+    }
+}
+
+// One key, described from outside the object that owns it.
+//
+// `dso` and `offset` locate the key in the process as it is loaded now; `name`
+// and `file`/`line` are what the definition said. The two halves answer
+// different questions -- "which key is this address" and "which key is this" --
+// and a listing that had only one of them would not be much use for either.
+struct static_key_info {
+    // Path of the loaded object that defines the key, as dladdr reports it.
+    std::string dso;
+
+    // The key's address minus that object's load bias (dladdr's dli_fbase) --
+    // which is to say the address the object was *linked* at. That is exactly
+    // the value `nm` and `readelf -s` print for the symbol, and it lands inside
+    // the section `objdump -h` gives the enclosing VMA for, so the number is
+    // directly comparable with what the standard tools say about the file on
+    // disk.
+    //
+    // It is a virtual address and not a file offset. The two differ in general
+    // -- in a shared object here, `__static_keys` has VMA 0x6080 and file
+    // offset 0x5080 -- and a key in .bss has no file offset at all.
+    //
+    // "Offset" is the right word only because everything this is used with is
+    // position-independent, so the first PT_LOAD sits at vaddr 0, the load bias
+    // is the mapping base, and "linked at" and "offset into the mapping"
+    // coincide. A non-PIE executable linked at 0x400000 has a zero bias, and
+    // this would report that absolute address -- still the value nm prints,
+    // no longer an offset from anything.
+    std::uintptr_t offset;
+
+    std::string name;
+    std::string file;
+    int line;
+};
+
+// Every key defined by every loaded object, ordered by name, then by object,
+// then by offset within it.
+//
+// Sorted rather than left in registry order, which is load order: that puts the
+// answer at the mercy of when a library happened to be dlopen()ed, and makes
+// the listing of a process that loaded the same objects in a different sequence
+// a different listing. Offset rather than address for the same reason -- an
+// address is ASLR's answer, an offset is the object's.
+//
+// By name first, and not by object, because the name is the only field of the
+// three that the build cannot move. Ordering on the object path would order the
+// listing by where the linker put its outputs, and ordering on the offset would
+// reshuffle it whenever the link order within an object changed -- neither of
+// which is a change in what keys the process has. Object and offset stay in the
+// comparison only to break ties between two objects defining the same name.
+//
+// dladdr() is what resolves both, and it is the reason this is not something to
+// call on a hot path; it is also why a key whose object dladdr() cannot place
+// (which should not happen -- the key is in a section of a loaded object)
+// reports an empty path and a zero offset rather than a wrong one.
+//
+// The pair is deliberately the one a reader can act on: `dso` names a file and
+// `offset` is the address inside it that nm, readelf and addr2line agree on, so
+// a key in a listing can be looked up in the object it came from without
+// knowing where this process happened to map it.
+inline std::vector<static_key_info> list_static_keys() {
+    std::vector<static_key_info> keys;
+    for (const static_key_desc_table* table = static_key_desc_tables(); table != nullptr;
+         table = table->next) {
+        for (const static_key_desc* desc = table->start; desc < table->stop; desc++) {
+            static_key_info info = {
+                .dso = {},
+                .offset = 0,
+                .name = desc->name != nullptr ? desc->name : "",
+                .file = desc->file != nullptr ? desc->file : "",
+                .line = desc->line,
+            };
+            Dl_info found;
+            if (::dladdr(desc->key, &found) != 0) {
+                if (found.dli_fname != nullptr) {
+                    info.dso = found.dli_fname;
+                }
+                info.offset = reinterpret_cast<std::uintptr_t>(desc->key) -
+                              reinterpret_cast<std::uintptr_t>(found.dli_fbase);
+            }
+            keys.push_back(std::move(info));
+        }
+    }
+
+    std::sort(keys.begin(), keys.end(),
+              [](const static_key_info& a, const static_key_info& b) {
+                  if (a.name != b.name) {
+                      return a.name < b.name;
+                  }
+                  if (a.dso != b.dso) {
+                      return a.dso < b.dso;
+                  }
+                  return a.offset < b.offset;
+              });
+    return keys;
+}
+
+// -------------------------------------------------------------------------
 // Core
 // -------------------------------------------------------------------------
 
@@ -932,8 +1207,12 @@ namespace {
 struct jump_label_module {
     jump_label_module() {
         jump_label_add_table(__start___jump_table, __stop___jump_table, &dso_jump_table);
+        static_key_add_desc_table(__start___static_keys, __stop___static_keys, &dso_desc_table);
     }
-    ~jump_label_module() { jump_label_del_table(__start___jump_table); }
+    ~jump_label_module() {
+        static_key_del_desc_table(__start___static_keys);
+        jump_label_del_table(__start___jump_table);
+    }
 };
 
 [[maybe_unused]] __attribute__((init_priority(101))) const jump_label_module jump_label_module_registration;

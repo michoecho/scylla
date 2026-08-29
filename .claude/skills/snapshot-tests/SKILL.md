@@ -82,6 +82,67 @@ tools/snapshot-files --cleanup       # remove orphans, but only if nothing else 
 The validator reports duplicate or malformed literals, missing snapshot files,
 malformed storage paths, and orphans. Buck2 test runs the dry-run validator too.
 
+## Regex snapshots — for values with unreproducible parts
+
+When part of the value cannot be reproduced — a buck-out path, an address, a
+line number that moves whenever the file above it is edited — serialize to a
+`RegexText` instead of a string. It carries the text and a pattern describing
+its general form side by side:
+
+```cpp
+#include "snapshot/regex_text.h"
+
+using snapshot_testing::RegexText;
+
+RegexText serialize_offset(std::uintptr_t offset) {
+    RegexText out;
+    out.variable(std::format("{:#x}", offset), "0x[0-9a-f]+");   // varies
+    return out;
+}
+
+RegexText serialize_row(const Row& row) {
+    RegexText out;
+    out.literal("row ").literal(row.name).literal(" at ");       // asserted
+    out.append(serialize_offset(row.offset));
+    out.literal("\n");
+    return out;
+}
+
+TEST_CASE("...") {
+    check_snapshot(serialize_row(row), ""_snap);   // same call, same _snap
+}
+```
+
+The snapshot is **recorded from `text()`** — the file holds a full, readable
+sample, real paths and all — but **compared against `pattern()`**, by full
+match. So a rebuild that moves every offset stays green, while a row appearing,
+disappearing, or being renamed fails and is re-recorded.
+
+- `literal(s)` — contributes `s` to both halves, escaped (`RE2::QuoteMeta`) on
+  the pattern side, so a `.` in a path stays a `.`.
+- `variable(text, pattern)` — the sample and its form. `pattern` is wrapped in
+  `(?:...)`, so an alternation stays local.
+- `append(other)` — concatenate both halves, which is what lets a per-field
+  serializer be a function and the record serializer compose them.
+
+Patterns are **RE2**, not `std::regex`: matching is linear in the value, and a
+malformed pattern comes back as a failed assertion naming it rather than as an
+exception. A module using this needs `//modules/snapshot:snapshot` and nothing
+else — re2 arrives with it.
+
+Rules that follow from the design:
+
+- **A variable field is a sample, never an assertion.** It is not re-checked and
+  goes stale silently. Declare one only for a field that genuinely varies, and
+  give it the tightest pattern that admits every value it can take.
+- **Don't align columns across a variable field.** Padding is literal text, so
+  padding computed from a variable field's width is asserted against a width
+  that changes. One field per line instead.
+- **Keep record order independent of the variable fields.** Sorting a listing by
+  a path or an address orders it by something the snapshot does not assert.
+
+`modules/static_keys/static_key_list_test.cc` is the worked example.
+
 ## No macros — and why it matters
 
 `check_snapshot()` is an ordinary function, and `_snap` first produces an
@@ -259,12 +320,13 @@ one test.
 | File | What |
 |---|---|
 | `include/snapshot/snapshot.h` | `_snap` / `_filesnap`, their value types, comparison and diagnostics — no doctest dependency |
+| `include/snapshot/regex_text.h`, `regex_text.cc` | `RegexText` — text plus the pattern describing its general form |
 | `include/snapshot/check.h` | `check_snapshot()` — the assertion; include this from tests |
 | `include/snapshot/updater.h` | `apply_updates` — pure `(source, diffs) -> text \| error` |
 | `updater.cc` | the rewriter: anchoring, literal parsing, UTF-8 checks, bottom-up edits |
 | `flush_reporter.cc` | doctest listener; applies updates after the run |
 | `example_test.cc` | worked example — copy from here |
-| `updater_test.cc`, `compare_test.cc` | plain unit tests (**not** snapshot tests — see gotchas) |
+| `updater_test.cc`, `compare_test.cc`, `regex_text_test.cc` | plain unit tests (**not** snapshot tests — see gotchas) |
 
 The updater does not parse C++. It goes to the reported
 source location, verifies that it points to a supported `_snap` expression, checks the literals
@@ -285,6 +347,8 @@ still decode to the value the test saw, and rewrites only that span.
 | `cannot read .../x_test.cc` during an update | the test ran remotely, so there was no source tree to rewrite — update mode must come from `-c snapshot.update=1`, which selects a local executor |
 | `source file is not valid UTF-8` | fix the file's encoding; nothing was written |
 | `new snapshot value ... is not valid UTF-8` | the code under test emitted invalid UTF-8 — that's the bug |
+| `malformed snapshot pattern at ...` | a `variable()` pattern is not valid RE2; the message quotes the compound pattern |
+| A regex snapshot fails on every rebuild | a field that varies is being contributed with `literal()`, or column padding was computed from one |
 | Nothing rewritten, test still fails | `SNAPSHOT_UPDATE=1` not set and no `.update()`, or a filter excluded the case |
 | `matches but still has .update() on it` | the marker did its job — delete `.update()` |
 | Rewrote, but still fails on re-run | you didn't rebuild between the update run and the re-run |
