@@ -17,6 +17,7 @@
 #include <boost/lexical_cast.hpp>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/scylla_tracer.hh>
+#include <seastar/core/scylla_tracer_control.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/metrics_api.hh>
@@ -158,6 +159,30 @@ void set_system(http_context& ctx, routes& r) {
             throw bad_param_exception("Unknown logging level " + req.get_query_param("level"));
         }
         return json::json_void();
+    });
+
+    // Switch every binary tracepoint in the process on or off.
+    //
+    // Not a setter but a rendezvous: flipping a tracepoint's static key
+    // rewrites the branch instruction at its call site, and no shard may be
+    // executing that instruction while it changes. seastar's
+    // set_tracepoints_enabled() gathers every shard in its poll loop first and
+    // does the patching there; see seastar/include/seastar/core/rendezvous.hh.
+    //
+    // It is best-effort, because a shard busy with a long task does not reach
+    // its poll loop and the phase has a deadline. The result says which
+    // happened, and a false is a "try again" rather than a half-done switch.
+    hs::set_tracepoints_enabled.set(r, [](std::unique_ptr<request> req) -> future<json::json_return_type> {
+        const bool enabled = req->get_query_param("enabled") == "true";
+        apilog.info("{} all tracepoints", enabled ? "Enabling" : "Disabling");
+        // Shard 0's, and the API server may be on any shard.
+        const bool ok = co_await smp::submit_to(0, [enabled] {
+            return seastar::set_tracepoints_enabled(enabled);
+        });
+        if (!ok) {
+            apilog.warn("Tracepoint switch gave up: the shards never met at the rendezvous");
+        }
+        co_return json::json_return_type(ok);
     });
 
     // Snapshot the binary tracepoint rings of every shard into the workdir.

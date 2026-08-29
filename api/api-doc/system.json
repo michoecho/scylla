@@ -53,6 +53,30 @@
          ]
       },
       {
+         "path":"/system/tracepoints_enabled",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Enable or disable every binary tracepoint in the process",
+               "type":"boolean",
+               "nickname":"set_tracepoints_enabled",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"enabled",
+                     "description":"Whether the tracepoints should be on",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"boolean",
+                     "paramType":"query"
+                  }
+               ]
+            }
+         ]
+      },
+      {
          "path":"/system/trace_snapshot",
          "operations":[
             {
