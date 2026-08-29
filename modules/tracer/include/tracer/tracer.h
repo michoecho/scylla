@@ -23,10 +23,18 @@
 // TRACEPOINT() macro at the bottom of this header, and modules/static_keys.
 //
 // The description lives in a dedicated ELF section, `tracepoints`, so the
-// linker collects every tracepoint in the binary into one array bracketed by
-// `__start_tracepoints` / `__stop_tracepoints`. A record identifies its
-// tracepoint by *index* into that array, which is what makes a trace decodable
-// by something other than the process that wrote it.
+// linker collects every tracepoint of one loaded object into an array bracketed
+// by `__start_tracepoints` / `__stop_tracepoints`. There is one such array per
+// object -- the executable and each shared library have their own -- and each
+// registers itself as it loads, so the process has a list of tables rather than
+// a single one. See "the tracepoint registry" below.
+//
+// A record identifies its tracepoint by the *address* of its entry, and the
+// trace carries a header saying where each object's table was mapped. That pair
+// is what makes a trace decodable by something other than the process that
+// wrote it: subtracting the table's recorded address turns the address into an
+// offset within an object, and the object is named by its build ID rather than
+// by where it happened to land. See trace_header() below.
 //
 // Decoding is the other half, and it is not in this header: tracer/codegen.h
 // walks that same section and emits the C++ source of a decoder specialised to
@@ -45,6 +53,7 @@
 #include <cstring>
 #include <list>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -498,24 +507,147 @@ struct tracepoint_entry {
     ::static_keys::static_key_false* key;
 };
 
-// Synthesised by the linker around the `tracepoints` section.
-extern "C" const tracepoint_entry __start_tracepoints[];
-extern "C" const tracepoint_entry __stop_tracepoints[];
+// Synthesised by the linker around *this object's* `tracepoints` section.
+//
+// Weak, because a translation unit -- or a whole shared library -- may include
+// this header and write no tracepoint at all, in which case the section does
+// not exist and the brackets are null rather than undefined. The registration
+// below declines to register such a table.
+extern "C" {
+extern const tracepoint_entry __start_tracepoints[] __attribute__((weak));
+extern const tracepoint_entry __stop_tracepoints[] __attribute__((weak));
+}
 
-[[nodiscard]] std::span<const tracepoint_entry> tracepoints() noexcept;
+// --- the tracepoint registry -------------------------------------------------
+//
+// The brackets above describe one loaded object, so a process-wide view of the
+// tracepoints has to be a list of ranges, each registered by the object it
+// belongs to as that object is mapped. This is modules/static_keys' jump table
+// registry in miniature -- the same problem, the same shape of answer -- minus
+// everything that registry needs for patching, since nothing here has to reach
+// across an object boundary.
+//
+// Two details carry the whole thing, and both are borrowed from there:
+//
+//   - The registration object lives in an anonymous namespace, so each object
+//     gets a constructor that is genuinely its own and `__start_tracepoints`
+//     inside it resolves against the object being loaded. An inline function
+//     would collapse onto one definition and register one table many times.
+//   - The registry head is an inline function with default visibility, so all
+//     those copies *do* collapse onto one. That requires an executable to be
+//     linked with -Wl,--export-dynamic, which //modules/static_keys already
+//     exports as a linker flag to everything that uses a static key.
+
+struct tracepoint_table {
+    const tracepoint_entry* start;
+    const tracepoint_entry* stop;
+    int refs;  // translation units in this object that registered it
+    tracepoint_table* next;
+};
+
+// The registry head. Process-wide: every object's copy of this inline function
+// collapses onto one definition at load time.
+[[gnu::visibility("default")]] inline tracepoint_table*& tracepoint_tables() {
+    static tracepoint_table* head = nullptr;
+    return head;
+}
+
+// Per-object storage for the entry above. Hidden and inline, so vague linkage
+// folds the copies within one object and hidden keeps objects from folding onto
+// each other: exactly one of these per loaded object, which is exactly how many
+// tables there are.
+[[gnu::visibility("hidden")]] inline tracepoint_table dso_tracepoint_table = {};
+
+inline void add_tracepoint_table(const tracepoint_entry* start, const tracepoint_entry* stop,
+                                 tracepoint_table* storage) {
+    if (start == nullptr || start == stop) {
+        return;  // an object with no tracepoints has no section and no brackets
+    }
+    for (tracepoint_table* table = tracepoint_tables(); table != nullptr; table = table->next) {
+        if (table->start == start) {
+            table->refs++;  // another translation unit of the same object
+            return;
+        }
+    }
+    *storage = {start, stop, 1, tracepoint_tables()};
+    tracepoint_tables() = storage;
+}
+
+inline void del_tracepoint_table(const tracepoint_entry* start) {
+    tracepoint_table** prev = &tracepoint_tables();
+    for (tracepoint_table* table = *prev; table != nullptr;
+         prev = &table->next, table = table->next) {
+        if (table->start != start) {
+            continue;
+        }
+        if (--table->refs > 0) {
+            return;
+        }
+        *prev = table->next;
+        return;
+    }
+}
+
+namespace {
+
+struct tracepoint_module {
+    tracepoint_module() {
+        add_tracepoint_table(__start_tracepoints, __stop_tracepoints, &dso_tracepoint_table);
+    }
+    ~tracepoint_module() { del_tracepoint_table(__start_tracepoints); }
+};
+
+// Earliest a user constructor may ask for, so a table is registered before any
+// static initialiser that might enable one of its tracepoints. Destructors run
+// in reverse, and so after those same initialisers.
+[[maybe_unused]] __attribute__((init_priority(101)))
+const tracepoint_module tracepoint_module_registration;
+
+}  // namespace
+
+// Every tracepoint of every loaded object, in registry order.
+//
+// Pointers rather than a span: the tables are separate ranges in separate
+// mappings, and there is no array of all of them to hand out a view of.
+[[nodiscard]] std::vector<const tracepoint_entry*> tracepoints();
+
+// --- naming a loaded object ---------------------------------------------------
+
+// One object's table, as a trace has to describe it.
+//
+// `build_id` is the object's GNU build ID as lowercase hex. It is the identity a
+// trace carries, because it is the only one that is both stable across runs and
+// independent of where the object was mapped or what path it was loaded from --
+// a path names a file that may since have been rebuilt, and an address names
+// nothing at all once the process is gone.
+struct trace_object {
+    std::string build_id;
+    std::uintptr_t table_address;  // where this run mapped the object's table
+    std::span<const tracepoint_entry> table;
+};
+
+// Every registered table with the build ID of the object that owns it, ordered
+// by build ID so that two runs of the same program describe themselves the same
+// way whatever order their libraries happened to load in.
+//
+// Throws std::runtime_error if an object holding tracepoints has no build ID:
+// its tracepoints could be recorded but never attributed, so that is a link to
+// fix (-Wl,--build-id) rather than a trace to write half of.
+[[nodiscard]] std::vector<trace_object> trace_objects();
 
 // --- turning tracepoints on ---------------------------------------------------
 //
 // Tracepoints are off by default, so something has to switch them on, and the
 // handle it switches them on by is the name. That is the one thing about a
 // tracepoint that a config file, a flag or an RPC can carry: its key has no
-// linkage and its index is a fact about this build's link order.
+// linkage and its address is a fact about where this run mapped it.
 //
-// Nothing in this header makes a name unique -- two call sites may share one,
-// and both are meant when it is named, so these speak of however many
-// tracepoints matched rather than of "the" tracepoint. The code generator is
-// stricter: a decoder needs one struct per name, so it rejects a table in which
-// a name repeats.
+// Nothing here makes a name unique -- two call sites may share one, and a
+// tracepoint in a header shared by two libraries is *compiled twice*, once into
+// each -- and all of them are meant when the name is given, so these speak of
+// however many tracepoints matched rather than of "the" tracepoint. The code
+// generator agrees: it merges same-named tracepoints into one struct, and
+// objects only if two of them disagree about their parameters.
 
 [[nodiscard]] bool is_enabled(const tracepoint_entry& entry) noexcept;
 
@@ -524,20 +656,46 @@ extern "C" const tracepoint_entry __stop_tracepoints[];
 // report: a misspelt name is otherwise indistinguishable from a quiet one.
 std::size_t set_tracepoint_enabled(std::string_view name, bool enabled);
 
-// Every tracepoint in the binary at once. Patching is a syscall per page
+// Every tracepoint in the process at once. Patching is a syscall per page
 // touched, not per branch, so this is cheap enough to do at startup and far too
 // expensive to do in a loop.
 void set_all_tracepoints_enabled(bool enabled);
 
-// A record is: uint32 tracepoint index, uint64 timestamp, then packed arguments.
+// --- the wire format ----------------------------------------------------------
 //
-// The index rather than `&entry` -- which is what the original patch stored --
-// so that a trace does not depend on where the process happened to be mapped.
-// Under PIE the two runs that a build needs (one to emit the decoder, one to
-// emit a trace) land at different addresses, and absolute pointers would make
-// them disagree. The subtraction is also link-time constant, so this is if
-// anything cheaper.
-inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof(std::uint64_t);
+// A trace is a header followed by records.
+//
+// A record is: uint64 tracepoint entry address, uint64 timestamp, then packed
+// arguments. The address rather than an index -- which is what an earlier
+// version of this stored -- because an index is only meaningful against a table,
+// and with shared libraries in the picture there is no single table to index:
+// every object has one of its own, and an index into "the" table is a number
+// that two objects both claim.
+//
+// An address, being a fact about this run, is not decodable on its own either.
+// What makes it decodable is the header, which records where each object's table
+// was mapped, under that object's build ID:
+//
+//     uint32 magic
+//     uint32 object count
+//     per object: uint16 build ID length, that many bytes, uint64 table address
+//
+// A decoder finds the greatest table address not above a record's address --
+// which is the table of the object the record came from, since an entry lies at
+// or after the start of its own table and the next object's table is further up
+// -- subtracts it, and is left with an offset into a *named* object. That offset
+// is what its generated tables are keyed on. Nothing in the calculation depends
+// on where anything was mapped, so a trace outlives the process, ASLR, and the
+// order the libraries happened to load in.
+inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + sizeof(std::uint64_t);
+
+// "TRC1", little-endian. A trace that does not start with it is not one, which
+// is worth establishing before a stream of bytes is read as addresses.
+inline constexpr std::uint32_t trace_magic = 0x31435254;
+
+// The header described above, for the objects loaded right now. Prepend it to
+// the collected buffers to make a trace file.
+[[nodiscard]] std::vector<std::byte> trace_header();
 
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
 //
@@ -589,8 +747,8 @@ inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof
             std::byte* tracer_out_ = ::tracer::local_tracer->write(                       \
                 (level_), tracer_size_ + ::tracer::record_header_size);                   \
             ::tracer::write_raw(tracer_out_,                                              \
-                                static_cast<std::uint32_t>(                               \
-                                    &tracer_tp_ - ::tracer::__start_tracepoints));        \
+                                static_cast<std::uint64_t>(                               \
+                                    reinterpret_cast<std::uintptr_t>(&tracer_tp_)));      \
             ::tracer::write_raw(tracer_out_,                                              \
                                 static_cast<std::uint64_t>(TRACER_TIMESTAMP()));          \
             ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__);             \

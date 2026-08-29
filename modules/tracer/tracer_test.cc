@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <iterator>
@@ -8,7 +10,10 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include <dlfcn.h>
 
 #include <doctest/doctest.h>
 
@@ -45,12 +50,112 @@ std::string read_env_file(const char* variable) {
 
 // A tracepoint table assembled by hand, which is the only way to hand the code
 // generator a table it should reject: a malformed one cannot be written as a
-// TRACEPOINT(), and a duplicate name is a fact about two call sites at once.
+// TRACEPOINT(), and two tracepoints disagreeing under one name is a fact about
+// two call sites at once.
 //
 // The key is left null. Generating a decoder reads names, types and locations
 // and never touches a key.
-tracer::tracepoint_entry fake(const char* name, const char* signature) {
-    return {name, "fake.cc", 1, "void fake()", signature, nullptr};
+tracer::tracepoint_entry fake(const char* name, const char* signature, int line = 1) {
+    return {name, "fake.cc", line, "void fake()", signature, nullptr};
+}
+
+// That table as the one object of a program, under a made-up build ID. The
+// generator never loads an object; a build ID is only the name it files one
+// under.
+std::string generate_from(std::span<const tracer::tracepoint_entry> table) {
+    const tracer::codegen_object object{"00fake00", table};
+    return tracer::generate_decoder_source(std::span{&object, 1});
+}
+
+// The same, for two objects -- which is how a tracepoint written in a shared
+// header reaches the generator: once from each library that included it.
+std::string generate_from(std::span<const tracer::tracepoint_entry> first,
+                          std::span<const tracer::tracepoint_entry> second) {
+    const std::array<tracer::codegen_object, 2> objects{
+        tracer::codegen_object{"00first0", first}, tracer::codegen_object{"00second", second}};
+    return tracer::generate_decoder_source(objects);
+}
+
+// A trace header naming objects that are not this decoder's, for the cases
+// where what is being tested is the refusal rather than the decode.
+std::vector<std::byte> fake_trace(std::span<const std::pair<std::string_view, std::uint64_t>>
+                                      objects) {
+    std::vector<std::byte> out;
+    const auto put = [&out](const auto& value) {
+        const auto* bytes = reinterpret_cast<const std::byte*>(&value);
+        out.insert(out.end(), bytes, bytes + sizeof(value));
+    };
+    put(tracer::trace_magic);
+    put(static_cast<std::uint32_t>(objects.size()));
+    for (const auto& [build_id, address] : objects) {
+        put(static_cast<std::uint16_t>(build_id.size()));
+        const auto* bytes = reinterpret_cast<const std::byte*>(build_id.data());
+        out.insert(out.end(), bytes, bytes + build_id.size());
+        put(address);
+    }
+    return out;
+}
+
+// How long a trace's object header is, so that a test can cut a trace off in
+// the middle of its records rather than in the middle of its header.
+std::size_t header_length(std::span<const std::byte> trace) {
+    const auto read = [&trace](std::size_t at, std::size_t size) {
+        std::uint64_t value = 0;
+        REQUIRE(at + size <= trace.size());
+        std::memcpy(&value, trace.data() + at, size);
+        return value;
+    };
+    REQUIRE(read(0, sizeof(std::uint32_t)) == tracer::trace_magic);
+    std::size_t at = 2 * sizeof(std::uint32_t);
+    for (std::uint64_t left = read(sizeof(std::uint32_t), sizeof(std::uint32_t)); left > 0; --left) {
+        at += sizeof(std::uint16_t) + read(at, sizeof(std::uint16_t)) + sizeof(std::uint64_t);
+    }
+    return at;
+}
+
+// Opens the demo's shared library, whose path the build passes in the
+// environment. A guard object, so a failing CHECK cannot leak the handle into
+// the next test case -- which would leave its tracepoint table registered and
+// make the next count wrong.
+class plugin_handle {
+public:
+    plugin_handle() {
+        const char* const path = std::getenv("TRACER_PLUGIN");
+        REQUIRE_MESSAGE(path != nullptr, "TRACER_PLUGIN is not set");
+        handle_ = ::dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        REQUIRE_MESSAGE(handle_ != nullptr, ::dlerror());
+    }
+    ~plugin_handle() {
+        if (handle_ != nullptr) {
+            ::dlclose(handle_);
+        }
+    }
+    plugin_handle(const plugin_handle&) = delete;
+    plugin_handle& operator=(const plugin_handle&) = delete;
+
+    void close() {
+        REQUIRE(::dlclose(handle_) == 0);
+        handle_ = nullptr;
+    }
+
+    template <typename Fn>
+    Fn sym(const char* name) const {
+        void* const found = ::dlsym(handle_, name);
+        REQUIRE_MESSAGE(found != nullptr, "no symbol ", name);
+        return reinterpret_cast<Fn>(found);
+    }
+
+private:
+    void* handle_ = nullptr;
+};
+
+// The tracepoints of the process, by name.
+std::size_t count_named(std::string_view name) {
+    std::size_t found = 0;
+    for (const tracer::tracepoint_entry* entry : tracer::tracepoints()) {
+        found += static_cast<std::size_t>(entry->name == name);
+    }
+    return found;
 }
 
 // A trace consumer: one operator() per tracepoint it has something particular
@@ -117,9 +222,9 @@ TEST_CASE("tracer records land in the buffer with their header") {
     tracer::local_tracer = nullptr;
     const std::vector<std::byte> bytes = buffers.group(tracer::event_level::info).collect();
 
-    // index + timestamp + one u32, and nothing else: the parameter's name is
-    // not on the wire, and collect() must not return the unwritten tail of the
-    // live buffer.
+    // entry address + timestamp + one u32, and nothing else: the parameter's
+    // name is not on the wire, and collect() must not return the unwritten tail
+    // of the live buffer.
     CHECK(bytes.size() == tracer::record_header_size + sizeof(std::uint32_t));
 }
 
@@ -168,10 +273,10 @@ TEST_CASE("tracepoints are off until their key is enabled") {
     // The tracepoint above exists in the table even though it never fired: the
     // entry is emitted by the linker, not by the call.
     std::size_t found = 0;
-    for (const tracer::tracepoint_entry& entry : tracer::tracepoints()) {
-        if (entry.name == std::string_view("never_recorded")) {
-            CHECK_FALSE(tracer::is_enabled(entry));
-            CHECK(entry.signature == std::string_view("n:u32"));
+    for (const tracer::tracepoint_entry* entry : tracer::tracepoints()) {
+        if (entry->name == std::string_view("never_recorded")) {
+            CHECK_FALSE(tracer::is_enabled(*entry));
+            CHECK(entry->signature == std::string_view("n:u32"));
             ++found;
         }
     }
@@ -189,12 +294,13 @@ TEST_CASE("a tracepoint's key is named after the tracepoint") {
     // The key that static_keys reports under this name and the key the
     // tracepoint table points at are the same object, which is what makes the
     // name a usable handle on the tracepoint from outside the binary.
-    const std::span<const tracer::tracepoint_entry> table = tracer::tracepoints();
-    const auto entry = std::find_if(table.begin(), table.end(),
-                                    [](const tracer::tracepoint_entry& e) {
-                                        return e.name == std::string_view("keyed_tracepoint");
+    const std::vector<const tracer::tracepoint_entry*> table = tracer::tracepoints();
+    const auto found = std::find_if(table.begin(), table.end(),
+                                    [](const tracer::tracepoint_entry* e) {
+                                        return e->name == std::string_view("keyed_tracepoint");
                                     });
-    REQUIRE(entry != table.end());
+    REQUIRE(found != table.end());
+    const tracer::tracepoint_entry* const entry = *found;
 
     const std::vector<static_keys::static_key_info> keys = static_keys::list_static_keys();
     const auto key = std::find_if(keys.begin(), keys.end(),
@@ -262,14 +368,13 @@ TEST_CASE("buffer_group keeps whole records") {
 TEST_CASE("the code generator refuses a table it cannot turn into structs") {
     const auto rejects = [](std::vector<tracer::tracepoint_entry> table) {
         return [table] {
-            (void)tracer::generate_decoder_source(table);
+            (void)generate_from(table);
         };
     };
 
     CHECK_THROWS_AS(rejects({fake("hello world", "")})(), std::runtime_error);
     CHECK_THROWS_AS(rejects({fake("2fast", "")})(), std::runtime_error);
     CHECK_THROWS_AS(rejects({fake("", "")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("dup", "a:u32"), fake("dup", "b:u32")})(), std::runtime_error);
 
     CHECK_THROWS_AS(rejects({fake("tp", "a:u32,a:u32")})(), std::runtime_error);
     CHECK_THROWS_AS(rejects({fake("tp", "not an identifier:u32")})(), std::runtime_error);
@@ -277,22 +382,111 @@ TEST_CASE("the code generator refuses a table it cannot turn into structs") {
     CHECK_THROWS_AS(rejects({fake("tp", "a:")})(), std::runtime_error);
     CHECK_THROWS_AS(rejects({fake("tp", "a:u128")})(), std::runtime_error);
 
-    // The complaint says which tracepoint, and what is wrong with it.
-    try {
-        rejects({fake("tp", "a:u32"), fake("tp", "a:u32")})();
-        FAIL("a duplicate tracepoint name was accepted");
-    } catch (const std::runtime_error& e) {
-        CHECK(std::string_view(e.what()) ==
-              "fake.cc:1 (tracepoint \"tp\"): a tracepoint of this name is already defined "
-              "elsewhere");
-    }
-
     // And a table it does accept produces the struct it promised.
-    const std::string source = tracer::generate_decoder_source(
-        std::vector<tracer::tracepoint_entry>{fake("cache_hit", "key:str,age:u16")});
+    const std::vector<tracer::tracepoint_entry> table{fake("cache_hit", "key:str,age:u16")};
+    const std::string source = generate_from(table);
     CHECK(source.find("struct cache_hit {") != std::string::npos);
     CHECK(source.find("std::string_view key;") != std::string::npos);
     CHECK(source.find("std::uint16_t age;") != std::string::npos);
+}
+
+// One name is one struct, and several tracepoints may wear it.
+//
+// This is what a tracepoint written in a shared header looks like from the
+// outside: every object that includes it compiles its own, so the process holds
+// several entries that mean one event. They are merged rather than rejected --
+// but only while they agree, because the struct can only be one shape.
+TEST_CASE("the code generator merges tracepoints that share a name") {
+    const std::vector<tracer::tracepoint_entry> twice{fake("tp", "a:u32", 7),
+                                                      fake("tp", "a:u32", 7)};
+    const std::string source = generate_from(twice);
+
+    // One struct and one reader, but an entry apiece: each keeps its own
+    // metadata and its own id, so a record still says which copy fired.
+    CHECK(source.find("struct tp {") != std::string::npos);
+    CHECK(source.rfind("struct tp {") == source.find("struct tp {"));
+    CHECK(source.find("metadata_0") != std::string::npos);
+    CHECK(source.find("metadata_1") != std::string::npos);
+
+    // The same across two objects, which is the case that actually arises.
+    const std::vector<tracer::tracepoint_entry> first{fake("tp", "a:u32", 7)};
+    const std::vector<tracer::tracepoint_entry> second{fake("tp", "a:u32", 7),
+                                                       fake("other", "b:str", 9)};
+    const std::string shared = generate_from(first, second);
+    CHECK(shared.find("struct tp {") != std::string::npos);
+    CHECK(shared.rfind("struct tp {") == shared.find("struct tp {"));
+    CHECK(shared.find("\"00first0\", 0, 1") != std::string::npos);
+    CHECK(shared.find("\"00second\", 1, 2") != std::string::npos);
+
+    // Disagreeing about the parameters is still an error, and the complaint
+    // names both call sites -- neither of which is wrong on its own.
+    const std::vector<tracer::tracepoint_entry> disagreeing{fake("dup", "a:u32", 3),
+                                                            fake("dup", "b:u32", 4)};
+    try {
+        (void)generate_from(disagreeing);
+        FAIL("two shapes under one tracepoint name were accepted");
+    } catch (const std::runtime_error& e) {
+        CHECK(std::string_view(e.what()) ==
+              "fake.cc:4 (tracepoint \"dup\"): a tracepoint of this name is defined at "
+              "fake.cc:3 with a different parameter list (\"a:u32\" there, \"b:u32\" here)");
+    }
+}
+
+// A shared library's tracepoints are its own: its own section, its own
+// __start/__stop brackets, its own static keys. What makes them the process's
+// is the registration in tracer.h, which happens as the library is mapped and
+// is undone as it goes away.
+TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them away") {
+    const std::size_t before = tracer::tracepoints().size();
+    const std::size_t objects_before = tracer::trace_objects().size();
+    REQUIRE(count_named("plugin_loaded") == 0);
+
+    {
+        plugin_handle plugin;
+        const auto plugin_count = plugin.sym<std::size_t (*)()>("tracer_plugin_tracepoint_count");
+        const auto run = plugin.sym<void (*)(std::uint32_t)>("tracer_plugin_run");
+
+        // Exactly the library's own table arrived, and it is a second object as
+        // far as a trace is concerned -- with a build ID of its own.
+        CHECK(tracer::tracepoints().size() == before + plugin_count());
+        const std::vector<tracer::trace_object> objects = tracer::trace_objects();
+        REQUIRE(objects.size() == objects_before + 1);
+        CHECK(objects[0].build_id != objects[1].build_id);
+
+        // A name is a handle on a tracepoint wherever it was compiled, so this
+        // reaches into the library from outside it.
+        CHECK(count_named("plugin_loaded") == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", true) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_work", true) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("shared_event", true) == 1);
+
+        // And the library records into this process's tracer, through the
+        // thread_local it shares with the executable.
+        tracer::trace_buffers buffers(4096, 4096, 512);
+        tracer::local_tracer = &buffers;
+        run(2);
+        tracer::local_tracer = nullptr;
+
+        // plugin_loaded and shared_event carry a u32 each; the two plugin_work
+        // records are on the debug ring.
+        CHECK(buffers.group(tracer::event_level::info).collect().size() ==
+              2 * (tracer::record_header_size + sizeof(std::uint32_t)));
+        CHECK(buffers.group(tracer::event_level::debug).collect().size() ==
+              2 * (tracer::record_header_size + sizeof(std::uint32_t) + sizeof(std::uint16_t) +
+                   std::string_view("handshake").size()));
+
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", false) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("plugin_work", false) == 1);
+        REQUIRE(tracer::set_tracepoint_enabled("shared_event", false) == 1);
+
+        plugin.close();
+    }
+
+    // The table went with the library. Anything else would leave the registry
+    // pointing into an unmapped range for the rest of the process's life.
+    CHECK(tracer::tracepoints().size() == before);
+    CHECK(tracer::trace_objects().size() == objects_before);
+    CHECK(count_named("plugin_loaded") == 0);
 }
 
 // The end-to-end pipeline, asserted on its output.
@@ -307,16 +501,21 @@ TEST_CASE("the code generator refuses a table it cannot turn into structs") {
 // generated decoder, or the demo workload.
 TEST_CASE("decoded trace") {
     check_snapshot(read_env_file("TRACER_DECODED"), R"snap(
-        |               100 | modules/tracer/trace_producer.cc:47 | listening{port=8080}
-        |               800 | modules/tracer/trace_producer.cc:59 | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |               900 | modules/tracer/trace_producer.cc:62 | clock_skew{nanoseconds=-4200, retries=3}
-        |              1000 | modules/tracer/trace_producer.cc:64 | shutting_down{}
-        |               200 | modules/tracer/trace_producer.cc:50 | accepted_connection{conn=0, keepalive=true}
-        |               300 | modules/tracer/trace_producer.cc:52 | request_header{method=GET, path=/}
-        |               400 | modules/tracer/trace_producer.cc:50 | accepted_connection{conn=1, keepalive=false}
-        |               500 | modules/tracer/trace_producer.cc:52 | request_header{method=GET, path=/index.html}
-        |               600 | modules/tracer/trace_producer.cc:50 | accepted_connection{conn=2, keepalive=true}
-        |               700 | modules/tracer/trace_producer.cc:52 | request_header{method=GET, path=/}
+        |               100 | modules/tracer/trace_producer.cc:49           | listening{port=8080}
+        |               800 | modules/tracer/trace_producer.cc:61           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |               900 | modules/tracer/trace_producer.cc:64           | clock_skew{nanoseconds=-4200, retries=3}
+        |              1000 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
+        |              1300 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
+        |              1400 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
+        |              1500 | modules/tracer/trace_producer.cc:71           | shutting_down{}
+        |               200 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=0, keepalive=true}
+        |               300 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
+        |               400 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=1, keepalive=false}
+        |               500 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/index.html}
+        |               600 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=2, keepalive=true}
+        |               700 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
+        |              1100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
+        |              1200 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
         )snap"_snap);
 }
 
@@ -332,28 +531,58 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::decode(bytes, out);
 
     check_snapshot(out.text, R"snap(
-        |modules/tracer/trace_producer.cc:47 listening{port=8080}
-        |modules/tracer/trace_producer.cc:59 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |modules/tracer/trace_producer.cc:62 clock_skew{nanoseconds=-4200, retries=3}
-        |modules/tracer/trace_producer.cc:64 shutting_down{}
+        |modules/tracer/trace_producer.cc:49 listening{port=8080}
+        |modules/tracer/trace_producer.cc:61 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |modules/tracer/trace_producer.cc:64 clock_skew{nanoseconds=-4200, retries=3}
+        |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
+        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=2}
+        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=99}
+        |modules/tracer/trace_producer.cc:71 shutting_down{}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
         |accepted_connection: connection 1, keepalive false
         |request_header: GET /index.html
         |accepted_connection: connection 2, keepalive true
         |request_header: GET /
+        |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}
+        |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=1, label=handshake}
         )snap"_snap);
 }
 
 TEST_CASE("a trace that cannot be decoded stops the decode") {
     const auto ignore = [](const auto&, const trace::tracepoint_metadata&) {};
 
-    // A record header naming a tracepoint this decoder has never heard of.
-    const std::array<std::byte, tracer::record_header_size> bad_id{std::byte{0xFF}};
-    CHECK_THROWS_AS(trace::decode(bad_id, ignore), std::runtime_error);
-
-    // Fewer bytes than a header. Records are not self-delimiting, so there is
-    // nothing to resynchronise on.
+    // Fewer bytes than the object header, and then bytes that are not a trace
+    // at all. Neither is something to read addresses out of.
     const std::array<std::byte, 3> truncated{};
     CHECK_THROWS_AS(trace::decode(truncated, ignore), std::runtime_error);
+    const std::array<std::byte, 8> garbage{std::byte{0xFF}};
+    CHECK_THROWS_AS(trace::decode(garbage, ignore), std::runtime_error);
+
+    // A record from an object the trace names but this decoder was not
+    // generated from. Its address means nothing here, and guessing at the
+    // object below it would decode the wrong tracepoint rather than fail.
+    const std::array<std::pair<std::string_view, std::uint64_t>, 1> stranger{
+        std::pair<std::string_view, std::uint64_t>{"00stranger00", 0x1000}};
+    std::vector<std::byte> foreign = fake_trace(stranger);
+    foreign.resize(foreign.size() + tracer::record_header_size);
+    const auto address = std::uint64_t{0x1000};
+    std::memcpy(foreign.data() + foreign.size() - tracer::record_header_size, &address,
+                sizeof(address));
+    CHECK_THROWS_AS(trace::decode(foreign, ignore), std::runtime_error);
+
+    // A record below every object in the trace, which no offset can be taken
+    // from.
+    std::vector<std::byte> below = fake_trace(stranger);
+    below.resize(below.size() + tracer::record_header_size);
+    CHECK_THROWS_AS(trace::decode(below, ignore), std::runtime_error);
+
+    // A real trace cut off in the middle of its first record. Its object header
+    // is intact, so this is the record stream and not the header failing.
+    const std::string raw = read_env_file("TRACER_TRACE");
+    const std::span<const std::byte> whole{reinterpret_cast<const std::byte*>(raw.data()),
+                                           raw.size()};
+    CHECK_NOTHROW(trace::decode(whole, ignore));
+    CHECK_THROWS_AS(trace::decode(whole.first(header_length(whole) + 4), ignore),
+                    std::runtime_error);
 }

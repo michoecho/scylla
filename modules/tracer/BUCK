@@ -23,7 +23,58 @@ cxx_library(
     # header is unusable without static_keys' own header -- and without the
     # -Wl,--export-dynamic and -ldl that target carries.
     exported_deps = ["//modules/static_keys:static_keys_headers"],
+    exported_linker_flags = [
+        # A trace names the objects it came from by build ID, which is the only
+        # identity that survives the process. Nothing here has one by default.
+        "-Wl,--build-id=sha1",
+    ],
     preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
+# The demo's shared library, and the two headers it shares with the executable.
+#
+# Its reason to exist is that a trace has to survive coming from more than one
+# loaded object: the library has its own `tracepoints` section, its own
+# __start/__stop brackets and its own static keys, and its records are only
+# decodable because the trace says where its table was mapped.
+#
+# `preferred_linkage = "shared"` is load-bearing. Linked statically its table
+# would merge into the executable's and the whole thing would prove nothing.
+
+cxx_library(
+    name = "demo_clock",
+    exported_headers = {
+        "tracer_demo/demo_clock.h": "plugin/demo_clock.h",
+    },
+    header_namespace = "",
+    visibility = ["PUBLIC"],
+)
+
+# A tracepoint written in a header, compiled once into every object that
+# includes it. Both the executable and the library below do.
+cxx_library(
+    name = "common_tracepoints",
+    exported_headers = {
+        "tracer_demo/common_tracepoints.h": "plugin/common_tracepoints.h",
+    },
+    header_namespace = "",
+    exported_deps = [
+        ":demo_clock",
+        ":tracer_core",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+cxx_library(
+    name = "trace_plugin",
+    srcs = ["plugin/trace_plugin.cc"],
+    exported_headers = {
+        "tracer_demo/trace_plugin.h": "plugin/trace_plugin.h",
+    },
+    header_namespace = "",
+    exported_deps = [":common_tracepoints"],
+    preferred_linkage = "shared",
     visibility = ["PUBLIC"],
 )
 
@@ -33,7 +84,10 @@ cxx_binary(
     name = "trace_producer",
     srcs = ["trace_producer.cc"],
     header_namespace = "",
-    deps = [":tracer_core"],
+    deps = [
+        ":trace_plugin",
+        ":tracer_core",
+    ],
 )
 
 # Step 2: generate the decoder's source from that binary's tracepoint table.
@@ -58,8 +112,10 @@ cxx_library(
 )
 
 # Step 3: separately, run the workload and dump a trace. Independent of step 2
-# only because a record identifies its tracepoint by index rather than by
-# address -- otherwise these two runs of a PIE binary would disagree.
+# because a record is decoded through the object header the trace carries, not
+# through the addresses this particular run happened to be given -- otherwise
+# these two runs of a PIE binary, with a shared library each mapped somewhere
+# else again, would disagree.
 genrule(
     name = "trace_bin",
     out = "trace.bin",
@@ -94,10 +150,15 @@ add_module(
     ],
     resources = {
         "decoded.txt": ":decoded_trace",
+        # The library is never linked into the test: it is dlopen()ed by the
+        # DSO test, which wants to watch the process's view of the tracepoint
+        # tables change as it arrives and leaves.
+        "trace_plugin": ":trace_plugin",
         "trace.bin": ":trace_bin",
     },
     env = {
         "TRACER_DECODED": "$(location :decoded_trace)",
+        "TRACER_PLUGIN": "$(location :trace_plugin)",
         "TRACER_TRACE": "$(location :trace_bin)",
     },
     module_source_dir = "modules/tracer",

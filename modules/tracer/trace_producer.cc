@@ -8,6 +8,11 @@
 //     trace_producer --emit-trace FILE     a trace of the demo workload
 //
 // -- and see modules/tracer/BUCK for how those become build steps.
+//
+// It is linked against a shared library that has tracepoints of its own, so both
+// jobs cover the case that motivates the object header in a trace: records from
+// two objects, each with a `tracepoints` section of its own, and neither
+// decodable from an address alone.
 
 #include <cstdint>
 #include <cstring>
@@ -18,16 +23,13 @@
 #include <string_view>
 #include <vector>
 
-// Before tracer.h, so it wins the #ifndef. rdtsc would make every byte of the
-// trace -- and so the snapshot of the decoded output -- different on every run.
-namespace demo {
-inline std::uint64_t tick() noexcept {
-    static std::uint64_t t = 0;
-    t += 100;
-    return t;
-}
-}  // namespace demo
-#define TRACER_TIMESTAMP() ::demo::tick()
+// Before tracer.h, so its TRACER_TIMESTAMP wins the #ifndef. rdtsc would make
+// every byte of the trace -- and so the snapshot of the decoded output --
+// different on every run. The clock lives in the plugin, so that the two objects
+// share one counter rather than each starting from zero; see demo_clock.h.
+#include "tracer_demo/common_tracepoints.h"
+#include "tracer_demo/demo_clock.h"
+#include "tracer_demo/trace_plugin.h"
 
 #include "tracer/codegen.h"
 #include "tracer/tracer.h"
@@ -61,6 +63,11 @@ void run_demo() {
     TRACEPOINT(event_level::info, "clock_skew", "nanoseconds", static_cast<std::int64_t>(-4200),
                "retries", static_cast<std::uint8_t>(3));
 
+    // The library's tracepoints, and -- through the header both objects include
+    // -- a second copy of "shared_event" beside the one just below.
+    demo::run_plugin_workload(2);
+    demo::trace_shared_event(99);
+
     TRACEPOINT(event_level::info, "shutting_down");
 }
 
@@ -82,8 +89,14 @@ int emit_trace(const char* path) {
         std::cerr << "cannot write " << path << "\n";
         return 1;
     }
-    // Both rings into one stream, info first. Records are self-describing, so
-    // the decoder does not need to know where one ring ends.
+    // The object header first: it is what turns the addresses in the records
+    // below into offsets into named objects.
+    const std::vector<std::byte> header = tracer::trace_header();
+    out.write(reinterpret_cast<const char*>(header.data()),
+              static_cast<std::streamsize>(header.size()));
+
+    // Then both rings into one stream, info first. Records are self-describing,
+    // so the decoder does not need to know where one ring ends.
     for (event_level level : {event_level::info, event_level::debug}) {
         const std::vector<std::byte> bytes = buffers.group(level).collect();
         out.write(reinterpret_cast<const char*>(bytes.data()),
