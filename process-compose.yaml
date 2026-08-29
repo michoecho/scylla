@@ -21,7 +21,7 @@ processes:
     # after it has forked, and buck2 gets connection-refused in that window.
     readiness_probe:
       exec:
-        command: "bash -c '< /dev/tcp/127.0.0.1/50051'"
+        command: "curl 127.0.0.1:50051/status"
       initial_delay_seconds: 1
       period_seconds: 1
       failure_threshold: 10

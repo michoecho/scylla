@@ -198,6 +198,10 @@
             cas_store: "WORKER_FAST_SLOW_STORE",
           },
         ],
+        health: {
+          path: "/status",
+          timeout_seconds: 5
+        }
       },
     },
     {
