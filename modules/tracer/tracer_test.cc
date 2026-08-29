@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -9,6 +10,7 @@
 #include <doctest/doctest.h>
 
 #include "snapshot/check.h"
+#include "static_keys/static_keys.h"
 #include "tracer/tracer.h"
 
 namespace {
@@ -45,7 +47,9 @@ TEST_CASE("tracer records land in the buffer with their header") {
     tracer::trace_buffers buffers(4096, 4096, 512);
     tracer::local_tracer = &buffers;
 
+    REQUIRE(tracer::set_tracepoint_enabled("value {}", true) == 1);
     TRACEPOINT(tracer::event_level::info, "value {}", tracer::log_level::info, std::uint32_t{7});
+    REQUIRE(tracer::set_tracepoint_enabled("value {}", false) == 1);
 
     tracer::local_tracer = nullptr;
     const std::vector<std::byte> bytes = buffers.group(tracer::event_level::info).collect();
@@ -53,6 +57,67 @@ TEST_CASE("tracer records land in the buffer with their header") {
     // index + timestamp + one u32, and nothing else: collect() must not return
     // the unwritten tail of the live buffer.
     CHECK(bytes.size() == tracer::record_header_size + sizeof(std::uint32_t));
+}
+
+// The point of the key: an untouched tracepoint costs a nop and writes nothing.
+//
+// local_tracer is deliberately left null. A disabled tracepoint must not reach
+// the recording code at all, and there is no null check on that path -- so if
+// the branch were taken this would not merely record, it would crash, which is
+// a sharper assertion than an empty buffer.
+TEST_CASE("tracepoints are off until their key is enabled") {
+    tracer::local_tracer = nullptr;
+
+    TRACEPOINT(tracer::event_level::info, "never recorded {}", tracer::log_level::info,
+               std::uint32_t{1});
+
+    // The tracepoint above exists in the table even though it never fired: the
+    // entry is emitted by the linker, not by the call.
+    std::size_t found = 0;
+    for (const tracer::tracepoint_entry& entry : tracer::tracepoints()) {
+        if (entry.name == std::string_view("never recorded {}")) {
+            CHECK_FALSE(tracer::is_enabled(entry));
+            ++found;
+        }
+    }
+    CHECK(found == 1);
+}
+
+TEST_CASE("a tracepoint's key is named after the tracepoint") {
+    tracer::trace_buffers buffers(4096, 4096, 512);
+    tracer::local_tracer = &buffers;
+
+    TRACEPOINT(tracer::event_level::info, "keyed tracepoint", tracer::log_level::info);
+
+    tracer::local_tracer = nullptr;
+
+    // The key that static_keys reports under this name and the key the
+    // tracepoint table points at are the same object, which is what makes the
+    // name a usable handle on the tracepoint from outside the binary.
+    const std::span<const tracer::tracepoint_entry> table = tracer::tracepoints();
+    const auto entry = std::find_if(table.begin(), table.end(),
+                                    [](const tracer::tracepoint_entry& e) {
+                                        return e.name == std::string_view("keyed tracepoint");
+                                    });
+    REQUIRE(entry != table.end());
+
+    const std::vector<static_keys::static_key_info> keys = static_keys::list_static_keys();
+    const auto key = std::find_if(keys.begin(), keys.end(),
+                                  [](const static_keys::static_key_info& k) {
+                                      return k.name == "keyed tracepoint";
+                                  });
+    REQUIRE(key != keys.end());
+    CHECK(key->file == std::string_view(entry->file));
+
+    CHECK_FALSE(tracer::is_enabled(*entry));
+    REQUIRE(tracer::set_tracepoint_enabled("keyed tracepoint", true) == 1);
+    CHECK(tracer::is_enabled(*entry));
+    REQUIRE(tracer::set_tracepoint_enabled("keyed tracepoint", false) == 1);
+    CHECK_FALSE(tracer::is_enabled(*entry));
+
+    // A name nothing was compiled under matches nothing, rather than silently
+    // succeeding.
+    CHECK(tracer::set_tracepoint_enabled("no such tracepoint", true) == 0);
 }
 
 TEST_CASE("buffer_group rotates and evicts the oldest records") {

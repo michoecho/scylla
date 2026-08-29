@@ -8,6 +8,12 @@
 // never even reaches the buffer. What lands there is roughly a store, a
 // timestamp read, and a memcpy per argument.
 //
+// A tracepoint that is switched off costs less than that: each one carries a
+// static key of its own, named after the tracepoint and disabled at startup, so
+// an untraced call site is a five-byte nop with the recording code laid out
+// elsewhere. tracer::set_tracepoint_enabled() turns one on by name. See the
+// TRACEPOINT() macro at the bottom of this header, and modules/static_keys.
+//
 // The description lives in a dedicated ELF section, `tracepoints`, so the
 // linker collects every tracepoint in the binary into one array bracketed by
 // `__start_tracepoints` / `__stop_tracepoints`. A record identifies its
@@ -34,6 +40,8 @@
 #include <string_view>
 #include <type_traits>
 #include <vector>
+
+#include "static_keys/static_keys.h"
 
 namespace tracer {
 
@@ -309,6 +317,12 @@ struct tracepoint_entry {
     int level;
     const char* function;
     const char* signature;
+
+    // The static key gating this tracepoint, named after `name`. Not something
+    // the hot path reads -- the branch is patched into the instruction stream,
+    // not tested -- but what lets a tracepoint be found and flipped by name;
+    // see set_tracepoint_enabled() below.
+    ::static_keys::static_key_false* key;
 };
 
 // Synthesised by the linker around the `tracepoints` section.
@@ -316,6 +330,29 @@ extern "C" const tracepoint_entry __start_tracepoints[];
 extern "C" const tracepoint_entry __stop_tracepoints[];
 
 [[nodiscard]] std::span<const tracepoint_entry> tracepoints() noexcept;
+
+// --- turning tracepoints on ---------------------------------------------------
+//
+// Tracepoints are off by default, so something has to switch them on, and the
+// handle it switches them on by is the name -- the format string. That is the
+// one thing about a tracepoint that a config file, a flag or an RPC can carry:
+// its key has no linkage and its index is a fact about this build's link order.
+//
+// A name is not unique. Two call sites may share a format string, and both are
+// meant when it is named, so these speak of however many tracepoints matched
+// rather than of "the" tracepoint.
+
+[[nodiscard]] bool is_enabled(const tracepoint_entry& entry) noexcept;
+
+// Enable or disable every tracepoint whose name is exactly `name`, and return
+// how many that was. Zero means no such tracepoint, which is the caller's to
+// report: a misspelt name is otherwise indistinguishable from a quiet one.
+std::size_t set_tracepoint_enabled(std::string_view name, bool enabled);
+
+// Every tracepoint in the binary at once. Patching is a syscall per page
+// touched, not per branch, so this is cheap enough to do at startup and far too
+// expensive to do in a loop.
+void set_all_tracepoints_enabled(bool enabled);
 
 // A record is: uint32 tracepoint index, uint64 timestamp, then packed arguments.
 //
@@ -332,8 +369,24 @@ inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof
 // `format` is both the tracepoint's name and the format string the decoder
 // applies to the arguments; it must be a literal, and its placeholders must
 // match the arguments, which the *generated decoder* checks at compile time.
+//
+// Every tracepoint is compiled behind a static key of its own, named after the
+// tracepoint and disabled at startup. A tracepoint that nobody has turned on is
+// therefore not a load-and-test but a five-byte nop, and the recording code is
+// laid out off the fallthrough path -- so the cost of a tracepoint in a hot
+// function that is not being traced is the nop, and the instruction cache lines
+// it does not touch. Enabling one rewrites that nop into a jmp; see
+// set_tracepoint_enabled() below, and modules/static_keys for how the patching
+// works.
+//
+// The key is block-scope, so the only thing that can name it is this expansion.
+// It reaches the outside world twice over: through the `tracepoints` entry
+// below, which is how the tracer finds it by name, and through the descriptor
+// DEFINE_STATIC_KEY_FALSE_LOCAL() emits, which is how static_keys' own listing
+// does.
 #define TRACEPOINT(level_, format_, severity_, ...)                                       \
     do {                                                                                  \
+        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, format_);                              \
         static constexpr auto tracer_sig_ __attribute__((                                 \
             section("tracepoint_signatures"), used)) =                                    \
             decltype(::tracer::signature_probe(__VA_ARGS__))::value;                       \
@@ -347,15 +400,19 @@ inline constexpr std::size_t record_header_size = sizeof(std::uint32_t) + sizeof
                                               __LINE__,                                   \
                                               static_cast<int>(severity_),                \
                                               __PRETTY_FUNCTION__,                        \
-                                              tracer_sig_.data()};                        \
-        const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);                \
-        std::byte* tracer_out_ = ::tracer::local_tracer->write(                           \
-            (level_), tracer_size_ + ::tracer::record_header_size);                       \
-        ::tracer::write_raw(tracer_out_,                                                  \
-                            static_cast<std::uint32_t>(&tracer_tp_ -                      \
-                                                       ::tracer::__start_tracepoints));   \
-        ::tracer::write_raw(tracer_out_, static_cast<std::uint64_t>(TRACER_TIMESTAMP())); \
-        ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__);                 \
+                                              tracer_sig_.data(),                         \
+                                              &tracer_key_};                              \
+        if (static_branch_unlikely(&tracer_key_)) {                                       \
+            const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);            \
+            std::byte* tracer_out_ = ::tracer::local_tracer->write(                       \
+                (level_), tracer_size_ + ::tracer::record_header_size);                   \
+            ::tracer::write_raw(tracer_out_,                                              \
+                                static_cast<std::uint32_t>(                               \
+                                    &tracer_tp_ - ::tracer::__start_tracepoints));        \
+            ::tracer::write_raw(tracer_out_,                                              \
+                                static_cast<std::uint64_t>(TRACER_TIMESTAMP()));          \
+            ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__);             \
+        }                                                                                 \
     } while (0)
 
 }  // namespace tracer

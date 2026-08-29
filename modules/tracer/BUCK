@@ -19,6 +19,10 @@ cxx_library(
         "tracer/tracer.h": "include/tracer/tracer.h",
     },
     header_namespace = "",
+    # Exported: tracer.h expands a static key into every TRACEPOINT(), so the
+    # header is unusable without static_keys' own header -- and without the
+    # -Wl,--export-dynamic and -ldl that target carries.
+    exported_deps = ["//modules/static_keys:static_keys_headers"],
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
 )

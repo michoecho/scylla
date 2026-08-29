@@ -37,6 +37,10 @@
 //     DEFINE_STATIC_KEY_FALSE(tracing);                 // named "tracing"
 //     DEFINE_STATIC_KEY_FALSE(tracing, "net.tracing");  // named "net.tracing"
 //
+// A key defined inside a function -- one per expansion of some macro, rather
+// than one per identifier -- uses the DEFINE_STATIC_KEY_*_LOCAL forms beside
+// those. modules/tracer's TRACEPOINT() is what they exist for.
+//
 // static_keys::list_static_keys() walks those sections -- every loaded object's
 // -- and answers what keys the process holds, each with its defining object,
 // its offset within it, its name, and its source location. See "Key metadata"
@@ -143,24 +147,27 @@ struct static_key_desc {
 // only by walking the section, which the compiler cannot see -- and `retain`,
 // where the compiler has it, so that --gc-sections does not drop it either.
 //
-// Hidden, so each object's descriptors are its own even for a key that is
-// exported: what the section describes is what this object defined.
-//
 // Deliberately not `const`. A const object lands in a read-only section, and
 // this one's initialiser holds pointers, so it would need dynamic relocations
 // applied to read-only memory -- which is what `-z relro` exists to refuse.
 #if defined(__has_attribute)
 #  if __has_attribute(retain)
-#    define STATIC_KEY_DESC_ATTRS \
-        __attribute__((used, retain, section("__static_keys"), visibility("hidden")))
+#    define STATIC_KEY_DESC_SECTION_ATTRS __attribute__((used, retain, section("__static_keys")))
 #  else
-#    define STATIC_KEY_DESC_ATTRS \
-        __attribute__((used, section("__static_keys"), visibility("hidden")))
+#    define STATIC_KEY_DESC_SECTION_ATTRS __attribute__((used, section("__static_keys")))
 #  endif
 #else
-#  define STATIC_KEY_DESC_ATTRS \
-      __attribute__((used, section("__static_keys"), visibility("hidden")))
+#  define STATIC_KEY_DESC_SECTION_ATTRS __attribute__((used, section("__static_keys")))
 #endif
+
+// Hidden, so each object's descriptors are its own even for a key that is
+// exported: what the section describes is what this object defined.
+//
+// Only namespace-scope descriptors need saying so. A descriptor declared inside
+// a function has no linkage at all, and the attribute on one is not merely
+// redundant but diagnosed ("visibility attribute ignored"), which is why
+// STATIC_KEY_DESC_SECTION_ATTRS above exists separately for the local forms.
+#define STATIC_KEY_DESC_ATTRS STATIC_KEY_DESC_SECTION_ATTRS __attribute__((visibility("hidden")))
 
 extern "C" {
 extern static_key_desc __start___static_keys[] __attribute__((weak));
@@ -233,6 +240,33 @@ extern static_key_desc __stop___static_keys[] __attribute__((weak));
     STATIC_KEY_VISIBILITY extern ::static_keys::static_key_true name
 #define DECLARE_STATIC_KEY_FALSE(name) \
     STATIC_KEY_VISIBILITY extern ::static_keys::static_key_false name
+
+// Defining a key inside a function.
+//
+// The key is a block-scope static, so it still has static storage duration and
+// a link-time-constant address -- which is what the branch site needs, and the
+// only thing it needs. What it does not have is linkage, so it takes no
+// visibility attribute (see STATIC_KEY_DESC_SECTION_ATTRS) and cannot be
+// declared elsewhere: a local key is reachable only through its descriptor, or
+// through whatever table the surrounding macro records it in.
+//
+// This is for keys a macro defines at its expansion site -- one key per call
+// site, named after the call site rather than after any identifier. The
+// tracer's TRACEPOINT() is the case it was added for: see
+// modules/tracer/include/tracer/tracer.h.
+#define STATIC_KEY_DEFINE_LOCAL(wrapper, init, ...)                                               \
+    static ::static_keys::wrapper STATIC_KEY_IDENT_OF(__VA_ARGS__) = {.key = init};               \
+    static STATIC_KEY_DESC_SECTION_ATTRS ::static_keys::static_key_desc                           \
+        STATIC_KEY_CAT(STATIC_KEY_IDENT_OF(__VA_ARGS__), _static_key_desc) = {                    \
+            .name = STATIC_KEY_NAME_OF(__VA_ARGS__),                                              \
+            .file = __FILE__,                                                                     \
+            .line = __LINE__,                                                                     \
+            .key = &STATIC_KEY_IDENT_OF(__VA_ARGS__).key}
+
+#define DEFINE_STATIC_KEY_TRUE_LOCAL(...) \
+    STATIC_KEY_DEFINE_LOCAL(static_key_true, STATIC_KEY_TRUE_INIT, __VA_ARGS__)
+#define DEFINE_STATIC_KEY_FALSE_LOCAL(...) \
+    STATIC_KEY_DEFINE_LOCAL(static_key_false, STATIC_KEY_FALSE_INIT, __VA_ARGS__)
 
 // A key other objects may branch on, which is to say one whose address is not
 // settled until load time. key_ref absorbs that; nothing else here changes.

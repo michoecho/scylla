@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <vector>
 
 #include "static_keys/static_keys.h"
 
@@ -144,6 +146,46 @@ TEST_CASE("static_keys: refcounting only patches on the 0<->1 transitions") {
 
     static_keys::static_key_slow_dec(&false_key_unlikely.key);
     CHECK(probe_false_unlikely() == 7);
+}
+
+// A key defined inside a function, which is what DEFINE_STATIC_KEY_*_LOCAL is
+// for. Returning the key's address as well as the branch's answer is the point:
+// a block-scope static is still one object across every call, so the caller can
+// flip the very key the branch was compiled against.
+[[gnu::noinline]] int probe_local_key(static_keys::static_key_false** out) {
+    DEFINE_STATIC_KEY_FALSE_LOCAL(local_key, "static_keys_test.local");
+    *out = &local_key;
+    if (static_branch_unlikely(&local_key)) {
+        return 42;
+    }
+    return 7;
+}
+
+TEST_CASE("static_keys: a key can be defined inside a function") {
+    static_keys::static_key_false* key = nullptr;
+    CHECK(probe_local_key(&key) == 7);
+    REQUIRE(key != nullptr);
+
+    static_keys::static_key_enable(&key->key);
+    CHECK(probe_local_key(&key) == 42);
+    static_keys::static_key_disable(&key->key);
+    CHECK(probe_local_key(&key) == 7);
+}
+
+TEST_CASE("static_keys: a local key is listed like any other") {
+    static_keys::static_key_false* key = nullptr;
+    probe_local_key(&key);
+
+    // The descriptor is what makes a key with no linkage visible at all: it is
+    // in the same __static_keys section as every namespace-scope one, so the
+    // listing does not distinguish them.
+    const std::vector<static_keys::static_key_info> keys = static_keys::list_static_keys();
+    const auto found = std::find_if(keys.begin(), keys.end(),
+                                    [](const static_keys::static_key_info& info) {
+                                        return info.name == "static_keys_test.local";
+                                    });
+    REQUIRE(found != keys.end());
+    CHECK(found->line > 0);
 }
 
 TEST_CASE("static_keys: the jump table is sorted by key") {

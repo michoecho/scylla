@@ -71,7 +71,12 @@ int emit_trace(const char* path) {
     // budget would only slow the build down.
     tracer::trace_buffers buffers(64 * 1024, 64 * 1024, 4096);
     tracer::local_tracer = &buffers;
+    // Tracepoints are nops until their keys are flipped, so a run that turned
+    // nothing on would write an empty trace. The demo wants all of them; a real
+    // program would name the ones it wants with set_tracepoint_enabled().
+    tracer::set_all_tracepoints_enabled(true);
     run_demo();
+    tracer::set_all_tracepoints_enabled(false);
     tracer::local_tracer = nullptr;
 
     std::ofstream out(path, std::ios::binary);

@@ -1,6 +1,17 @@
 #include "tracer/tracer.h"
 
 namespace tracer {
+namespace {
+
+void set_enabled(const tracepoint_entry& entry, bool enabled) {
+    if (enabled) {
+        ::static_keys::static_key_enable(&entry.key->key);
+    } else {
+        ::static_keys::static_key_disable(&entry.key->key);
+    }
+}
+
+}  // namespace
 
 thread_local trace_buffers* local_tracer = nullptr;
 
@@ -59,6 +70,27 @@ std::vector<std::byte> buffer_group::collect() const {
 std::span<const tracepoint_entry> tracepoints() noexcept {
     return {__start_tracepoints,
             static_cast<std::size_t>(__stop_tracepoints - __start_tracepoints)};
+}
+
+bool is_enabled(const tracepoint_entry& entry) noexcept {
+    return static_key_enabled(entry.key);
+}
+
+std::size_t set_tracepoint_enabled(std::string_view name, bool enabled) {
+    std::size_t matched = 0;
+    for (const tracepoint_entry& entry : tracepoints()) {
+        if (entry.name == name) {
+            set_enabled(entry, enabled);
+            ++matched;
+        }
+    }
+    return matched;
+}
+
+void set_all_tracepoints_enabled(bool enabled) {
+    for (const tracepoint_entry& entry : tracepoints()) {
+        set_enabled(entry, enabled);
+    }
 }
 
 }  // namespace tracer
