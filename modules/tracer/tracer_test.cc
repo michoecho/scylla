@@ -93,7 +93,7 @@ TEST_CASE("a signature names and types every parameter") {
     CHECK(SIGNATURE_OF("path", std::string_view{}) == "path:str");
 
     // Types are selected by width, so the three distinct 64-bit integer types
-    // all agree rather than falling through to the opaque slot.
+    // all agree rather than each needing its own case.
     CHECK(SIGNATURE_OF("n", 1L) == "n:i64");
     CHECK(SIGNATURE_OF("n", 1LL) == "n:i64");
     CHECK(SIGNATURE_OF("n", std::uint8_t{1}, "at", static_cast<const void*>(nullptr)) ==

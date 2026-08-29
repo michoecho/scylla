@@ -72,9 +72,9 @@ std::vector<field> parse_signature(const tracepoint_entry& entry) {
     return fields;
 }
 
-// The C++ type a signature token decodes into. Unrecognised and oversized
-// arguments were written as opaque fixed-width slots, so they come back as
-// spans of the bytes that were copied.
+// The C++ type a signature token decodes into, or "" for a token this
+// generator does not know -- which is a table it must refuse rather than guess
+// at.
 std::string_view decoded_type(std::string_view type) {
     if (type == "u64") return "std::uint64_t";
     if (type == "i64") return "std::int64_t";
@@ -87,9 +87,7 @@ std::string_view decoded_type(std::string_view type) {
     if (type == "bool") return "bool";
     if (type == "ptr") return "const void*";
     if (type == "str") return "std::string_view";
-    if (type == "bytes" || type == "unknown64" || type == "unknown128") {
-        return "std::span<const std::byte>";
-    }
+    if (type == "bytes") return "std::span<const std::byte>";
     return {};
 }
 
@@ -109,10 +107,6 @@ std::string read_field(const field& f) {
     }
     if (f.type == "bytes") {
         return std::format("    out.{} = detail::read_bytes(p);\n", f.name);
-    }
-    if (f.type == "unknown64" || f.type == "unknown128") {
-        return std::format("    out.{} = detail::read_opaque(p, {});\n", f.name,
-                           f.type == "unknown64" ? 8 : 16);
     }
     if (f.type == "ptr") {
         return std::format(
@@ -176,14 +170,6 @@ inline std::span<const std::byte> read_bytes(const std::byte*& p) {
 inline std::string_view read_str(const std::byte*& p) {
     const std::span<const std::byte> raw = read_bytes(p);
     return {reinterpret_cast<const char*>(raw.data()), raw.size()};
-}
-
-// An argument the tracer had no wire type for: a fixed-width slot of whatever
-// bytes the value occupied.
-inline std::span<const std::byte> read_opaque(const std::byte*& p, std::size_t width) {
-    const std::span<const std::byte> out(p, width);
-    p += width;
-    return out;
 }
 
 // How to_string() renders one field. Free functions rather than a formatter

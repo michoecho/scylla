@@ -37,7 +37,6 @@
 // Derived from the Seastar tracer patch in references/tracer.patch, with the
 // bugs noted there fixed and the argument-list macro machinery replaced.
 
-#include <algorithm>
 #include <array>
 #include <cassert>
 #include <concepts>
@@ -171,6 +170,13 @@ extern thread_local trace_buffers* local_tracer;
 // `#__VA_ARGS__` -- the argument list as written -- as a template parameter,
 // and the two halves are interleaved at compile time below.
 
+template <typename...>
+inline constexpr bool always_false = false;
+
+// The wire type of one parameter, or a compile error naming the parameter's
+// type. A tracepoint's arguments are the fields of a struct someone will read
+// by name, so a type this does not recognise is a call site to fix, not bytes
+// to copy blindly.
 template <typename T>
 consteval std::string_view type_to_sig() {
     if constexpr (std::is_same_v<T, bool>) {
@@ -202,10 +208,12 @@ consteval std::string_view type_to_sig() {
             else if constexpr (sizeof(T) == 2) return "u16";
             else return "u8";
         }
-    } else if constexpr (sizeof(T) <= 8) {
-        return "unknown64";
     } else {
-        return "unknown128";
+        static_assert(always_false<T>,
+                      "a TRACEPOINT parameter has no wire type. Convert it at the call site: "
+                      "an integer, a bool, a pointer, a string, or std::as_bytes() over its "
+                      "representation. There is deliberately no catch-all -- a trace of bytes "
+                      "nothing can name is not structured tracing.");
     }
 }
 
@@ -372,6 +380,9 @@ struct signature_builder<Raw, arg_types<Args...>> {
 //
 // Only the values are written; a parameter's name is in the signature and never
 // on the wire.
+//
+// There is an overload per wire type and no fallback, so the set of types that
+// can be traced is exactly the set type_to_sig() can name.
 
 template <typename T>
 concept string_like =
@@ -393,17 +404,6 @@ constexpr std::string_view as_view(const T& x) {
     } else {
         return x;
     }
-}
-
-template <typename T>
-consteval std::size_t unknown_size() {
-    return sizeof(T) <= 8 ? 8 : 16;
-}
-
-template <typename T>
-    requires(!std::integral<T> && !string_like<T>)
-constexpr std::size_t arg_size(const T&) {
-    return unknown_size<T>();
 }
 
 template <std::integral T>
@@ -439,20 +439,6 @@ inline void write_bytes(std::byte*& out, const void* data, std::size_t size) {
     write_raw(out, static_cast<std::uint16_t>(size));
     std::memcpy(out, data, size);
     out += size;
-}
-
-template <typename T>
-    requires(!std::integral<T> && !string_like<T>)
-inline void serialize_arg(std::byte*& out, const T& x) {
-    constexpr std::size_t sz = unknown_size<T>();
-    std::memcpy(out, &x, std::min(sizeof(x), sz));
-    if constexpr (sizeof(T) < sz) {
-        // The slot is a fixed 8 or 16 bytes wide. Zero the remainder rather
-        // than leaving it whatever the buffer held last time round the ring:
-        // the decoder hands the whole slot to the caller as bytes.
-        std::memset(out + sizeof(T), 0, sz - sizeof(T));
-    }
-    out += sz;
 }
 
 template <std::integral T>
