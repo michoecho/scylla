@@ -92,6 +92,20 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
 )
 
+flake.prebuilt_pkgconfig_library(
+    name = "fmt",
+    path = "root//:flake",
+)
+
+# SDL3 creates the window/context, while Dear ImGui's OpenGL3 renderer calls
+# the OpenGL entry points. Both are provided by the flake rather than the host.
+flake.prebuilt_pkgconfig_library(
+    name = "opengl",
+    package = "libGL",
+    module = "gl",
+    path = "root//:flake",
+)
+
 flake.package(
     name = "boost_package",
     package = "boost",

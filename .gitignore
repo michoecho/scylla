@@ -25,6 +25,11 @@ buck-out/
 # our Buck2 build), cloned here and wired in as the `fuzztest` buck cell. It is
 # pushed and versioned separately, so the parent repo does not track it.
 /third-party/fuzztest
+
+# Dear ImGui and ImPlot are separate upstream repositories, with their small
+# Buck2 integration commits kept in the nested clones and wired as cells.
+/third-party/imgui
+/third-party/implot
 /references
 
 # Lock file written by snapshot update runs; not a snapshot.

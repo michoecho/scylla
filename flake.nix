@@ -279,6 +279,11 @@
 
           doctest = pkgs.doctest;
 
+          fmt = pkgs.fmt;
+          # The OpenGL loader and development headers used by SDL's GL
+          # context and Dear ImGui's OpenGL3 renderer.
+          libGL = pkgs.libglvnd;
+
           inherit (pkgs)
             python3
             sdl3
@@ -471,6 +476,7 @@
               vulkan-memory-allocator
               glslang
               freetype
+              libglvnd
               libxkbcommon
               wayland
               wayland-protocols

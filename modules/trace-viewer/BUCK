@@ -1,0 +1,16 @@
+# Latency trace viewer.  The UI sources are source-backed external cells so
+# updating them does not require a nixpkgs package for either library.
+
+cxx_binary(
+    name = "trace_viewer",
+    srcs = ["main.cc"],
+    header_namespace = "",
+    deps = [
+        "//:fmt",
+        "//:opengl",
+        "//:sdl3",
+        "imgui//:imgui",
+        "imgui//:imgui_sdl3_opengl3",
+        "implot//:implot",
+    ],
+)
