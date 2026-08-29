@@ -10,8 +10,8 @@
 // -- and see modules/tracer/BUCK for how those become build steps.
 //
 // It is linked against a shared library that has tracepoints of its own, so both
-// jobs cover the case that motivates the object header in a trace: records from
-// two objects, each with a `tracepoints` section of its own, and neither
+// jobs cover the case that motivates the metadata stream in a trace: records
+// from two objects, each with a `tracepoints` section of its own, and neither
 // decodable from an address alone.
 
 #include <cstdint>
@@ -74,7 +74,9 @@ void run_demo() {
 int emit_trace(const char* path) {
     // Small rings: the demo writes a few hundred bytes, and the default 68 MiB
     // budget would only slow the build down.
-    tracer::trace_buffers buffers(64 * 1024, 64 * 1024, 4096);
+    // Constructing it writes the metadata prologue -- the two objects this
+    // binary is, as load events -- into its own metadata ring.
+    tracer::trace_buffers buffers(64 * 1024, 64 * 1024, 4096, 4096);
     tracer::local_tracer = &buffers;
     // Tracepoints are nops until their keys are flipped, so a run that turned
     // nothing on would write an empty trace. The demo wants all of them; a real
@@ -89,22 +91,13 @@ int emit_trace(const char* path) {
         std::cerr << "cannot write " << path << "\n";
         return 1;
     }
-    // The object header first: it is what turns the addresses in the records
-    // below into offsets into named objects.
-    const std::vector<std::byte> header = tracer::trace_header();
-    out.write(reinterpret_cast<const char*>(header.data()),
-              static_cast<std::streamsize>(header.size()));
-
-    // Then every ring into one stream, info first. Records are self-describing,
-    // so the decoder does not need to know where one ring ends.
-    //
-    // Drained rather than collected, which for a program that dumps once at the
-    // end is the same thing -- but it is the order the reload protocol wants
-    // (header while everything is still mapped, then the records out of the
-    // ring), and this is the example of writing a trace.
-    const std::vector<std::byte> records = buffers.drain();
-    out.write(reinterpret_cast<const char*>(records.data()),
-              static_cast<std::streamsize>(records.size()));
+    // Every ring as a chunk of its own. Which ring a record was in does not
+    // survive -- the decoder merges them back into one timestamp order -- but
+    // where each one ends does, because the merge has to know how far each
+    // stream runs.
+    const std::vector<std::byte> trace = tracer::collect_trace(buffers);
+    out.write(reinterpret_cast<const char*>(trace.data()),
+              static_cast<std::streamsize>(trace.size()));
     return out ? 0 : 1;
 }
 

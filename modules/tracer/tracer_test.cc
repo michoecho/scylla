@@ -76,41 +76,43 @@ std::string generate_from(std::span<const tracer::tracepoint_entry> first,
     return tracer::generate_decoder_source(objects);
 }
 
-// A trace header naming objects that are not this decoder's, for the cases
-// where what is being tested is the refusal rather than the decode.
-std::vector<std::byte> fake_trace(std::span<const std::pair<std::string_view, std::uint64_t>>
-                                      objects) {
-    std::vector<std::byte> out;
-    const auto put = [&out](const auto& value) {
+// A trace naming objects that are not this decoder's, plus whatever bytes the
+// caller wants read as records -- for the cases where what is being tested is
+// the refusal rather than the decode.
+//
+// The metadata records are written out by hand, which is the point: the entry
+// addresses in them are zero, and a decoder reads the prologue anyway, because
+// the first N+1 records of a metadata stream are read by the invariant rather
+// than by their addresses.
+std::vector<std::byte> fake_trace(
+    std::span<const std::pair<std::string_view, std::uint64_t>> objects,
+    std::span<const std::byte> records = {}) {
+    std::vector<std::byte> metadata;
+    const auto put = [&metadata](const auto& value) {
         const auto* bytes = reinterpret_cast<const std::byte*>(&value);
-        out.insert(out.end(), bytes, bytes + sizeof(value));
+        metadata.insert(metadata.end(), bytes, bytes + sizeof(value));
     };
-    put(tracer::trace_magic);
+    const auto record_header = [&put] {
+        put(std::uint64_t{0});  // the entry address, which the prologue does not need
+        put(std::uint64_t{0});  // and the timestamp, which comes before everything
+    };
+
+    record_header();
     put(static_cast<std::uint32_t>(objects.size()));
     for (const auto& [build_id, address] : objects) {
+        record_header();
         put(static_cast<std::uint16_t>(build_id.size()));
         const auto* bytes = reinterpret_cast<const std::byte*>(build_id.data());
-        out.insert(out.end(), bytes, bytes + build_id.size());
+        metadata.insert(metadata.end(), bytes, bytes + build_id.size());
         put(address);
     }
-    return out;
-}
 
-// How long a trace's object header is, so that a test can cut a trace off in
-// the middle of its records rather than in the middle of its header.
-std::size_t header_length(std::span<const std::byte> trace) {
-    const auto read = [&trace](std::size_t at, std::size_t size) {
-        std::uint64_t value = 0;
-        REQUIRE(at + size <= trace.size());
-        std::memcpy(&value, trace.data() + at, size);
-        return value;
-    };
-    REQUIRE(read(0, sizeof(std::uint32_t)) == tracer::trace_magic);
-    std::size_t at = 2 * sizeof(std::uint32_t);
-    for (std::uint64_t left = read(sizeof(std::uint32_t), sizeof(std::uint32_t)); left > 0; --left) {
-        at += sizeof(std::uint16_t) + read(at, sizeof(std::uint16_t)) + sizeof(std::uint64_t);
-    }
-    return at;
+    std::vector<std::byte> out;
+    const auto* magic = reinterpret_cast<const std::byte*>(&tracer::trace_magic);
+    out.insert(out.end(), magic, magic + sizeof(tracer::trace_magic));
+    tracer::append_chunk(out, tracer::event_level::metadata, metadata);
+    tracer::append_chunk(out, tracer::event_level::info, records);
+    return out;
 }
 
 // Opens the demo's shared library, whose path the build passes in the
@@ -226,7 +228,7 @@ TEST_CASE("a signature names and types every parameter") {
 }
 
 TEST_CASE("tracer records land in the buffer with their header") {
-    tracer::trace_buffers buffers(4096, 4096, 512);
+    tracer::trace_buffers buffers(4096, 4096, 4096, 512);
     tracer::local_tracer = &buffers;
 
     REQUIRE(tracer::set_tracepoint_enabled("value_seen", true) == 1);
@@ -244,7 +246,7 @@ TEST_CASE("tracer records land in the buffer with their header") {
 
 TEST_CASE("a string parameter is recorded as its bytes, however it arrives") {
     const auto recorded_size = [](auto&& record) {
-        tracer::trace_buffers buffers(4096, 4096, 512);
+        tracer::trace_buffers buffers(4096, 4096, 4096, 512);
         tracer::local_tracer = &buffers;
         record();
         tracer::local_tracer = nullptr;
@@ -298,7 +300,7 @@ TEST_CASE("tracepoints are off until their key is enabled") {
 }
 
 TEST_CASE("a tracepoint's key is named after the tracepoint") {
-    tracer::trace_buffers buffers(4096, 4096, 512);
+    tracer::trace_buffers buffers(4096, 4096, 4096, 512);
     tracer::local_tracer = &buffers;
 
     TRACEPOINT(tracer::event_level::info, "keyed_tracepoint");
@@ -476,7 +478,7 @@ TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them aw
 
         // And the library records into this process's tracer, through the
         // thread_local it shares with the executable.
-        tracer::trace_buffers buffers(4096, 4096, 512);
+        tracer::trace_buffers buffers(4096, 4096, 4096, 512);
         tracer::local_tracer = &buffers;
         run(2);
         tracer::local_tracer = nullptr;
@@ -503,103 +505,100 @@ TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them aw
     CHECK(count_named("plugin_loaded") == 0);
 }
 
-// The header is expensive to build and almost never different, so it is cached
-// against a counter the loader bumps. The sharp edge of that bargain is that a
-// load nobody reported is a load the header does not have.
-TEST_CASE("the trace header is rebuilt only when the loader says the objects changed") {
-    const std::vector<std::byte> before = tracer::trace_header();
-    CHECK(tracer::trace_header() == before);
+// A tracer describes the objects into its own metadata ring, at the level of
+// the records it is describing and through the same macro. What it says is a
+// history rather than a snapshot -- a record that outlives its object is only
+// decodable against what the ring said at the time it was written -- so the
+// ring is only ever added to.
+//
+// The sharp edge of that bargain is that a load nobody reported is a load the
+// ring does not have.
+TEST_CASE("a tracer records the objects it was built with, and the changes it is told about") {
+    const auto metadata = [](const tracer::trace_buffers& buffers) {
+        return buffers.group(tracer::event_level::metadata).collect();
+    };
 
-    {
-        plugin_handle plugin;
+    // One object, so: a count, and one load event. Both carry a build ID, whose
+    // length is what makes the size worth asserting relatively rather than
+    // exactly.
+    tracer::trace_buffers buffers(4096, 4096, 4096, 512);
+    const std::vector<std::byte> alone = metadata(buffers);
+    CHECK(alone.size() > 2 * tracer::record_header_size);
 
-        // Loaded, registered, and genuinely part of the process -- but not yet
-        // reported, so the cached header still describes the process as it was.
-        REQUIRE(tracer::trace_objects().size() == 2);
-        CHECK(tracer::trace_header() == before);
+    // Nothing has changed, so there is nothing to say.
+    buffers.note_objects_changed();
+    CHECK(metadata(buffers) == alone);
 
-        tracer::note_objects_changed();
-        const std::vector<std::byte> after = tracer::trace_header();
-        CHECK(after != before);
-        CHECK(after.size() > before.size());  // one more object in it
-        CHECK(tracer::trace_header() == after);
+    plugin_handle plugin;
 
-        plugin.close();
-        tracer::note_objects_changed();
-    }
+    // Loaded, registered, and genuinely part of the process -- but not yet
+    // reported, so the ring still describes the process as it was.
+    REQUIRE(tracer::trace_objects().size() == 2);
+    CHECK(metadata(buffers) == alone);
 
-    CHECK(tracer::trace_header() == before);
+    buffers.note_objects_changed();
+    const std::vector<std::byte> loaded = metadata(buffers);
+    CHECK(loaded.size() > alone.size());
+    CHECK(std::equal(alone.begin(), alone.end(), loaded.begin()));
+
+    plugin.close();
+    buffers.note_objects_changed();
+    const std::vector<std::byte> unloaded = metadata(buffers);
+    CHECK(unloaded.size() > loaded.size());
+    CHECK(std::equal(loaded.begin(), loaded.end(), unloaded.begin()));
+
+    // A tracer built now describes what is loaded now, which is one object
+    // again -- the prologue is the same shape whenever it is written, down to
+    // the timestamps that are the only thing separating these two.
+    const tracer::trace_buffers fresh(4096, 4096, 4096, 512);
+    CHECK(metadata(fresh).size() == alone.size());
 }
 
-// Unloading a plugin and loading another over it, by the protocol in tracer.h.
+// Unloading a plugin and loading another over it.
 //
 // The hazard is that a record names its tracepoint by address: a record left in
 // a ring when its object goes away points into a range that the next dlopen()
-// may well be given -- and it would then decode, plausibly and wrongly, as a
-// tracepoint of the new object. Nothing can detect that afterwards, so the
-// protocol is what prevents it: the records leave the ring, under a header
-// taken while the object is still mapped, before the object does.
+// may well be given -- and it would decode, plausibly and wrongly, as a
+// tracepoint of the new object, if a trace said only where objects are rather
+// than which ones were there. Each tracer says what it was built with, so a
+// record is read against the mapping its own trace describes.
 //
 // The traces below are decoded with this build's generated decoder, which knows
 // the plugin (it is the same library the pipeline was generated from) and does
 // not know this test binary. So only the plugin's tracepoint is switched on:
 // what is being tested is that the plugin's records survive its own reload.
 TEST_CASE("a plugin can be replaced without its records being misread") {
-    tracer::trace_buffers buffers(4096, 4096, 512);
-    tracer::local_tracer = &buffers;
-
     // Taken before anything is loaded, so that "the object that is not this
     // one" means the plugin for the rest of the test.
     const std::vector<tracer::trace_object> alone = tracer::trace_objects();
     REQUIRE(alone.size() == 1);
     const std::string self = alone.front().build_id;
 
-    // One pass of the protocol: record through the plugin, then take the whole
-    // trace out from under it while it is still mapped.
-    const auto record_and_dump = [&buffers](const plugin_handle& plugin) {
+    // One pass: open the plugin, build a tracer -- which describes what is
+    // loaded now, the plugin included -- and record through it.
+    const auto record_one = [](std::uintptr_t& address, const std::string& us) {
+        const plugin_handle plugin;
+        tracer::trace_buffers buffers(4096, 4096, 4096, 512);
+        tracer::local_tracer = &buffers;
+        address = plugin_table_address(us);
+
         REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", true) == 1);
         plugin.sym<void (*)(std::uint32_t)>("tracer_plugin_run")(1);
         REQUIRE(tracer::set_tracepoint_enabled("plugin_loaded", false) == 1);
 
-        // Step 2, in the order the protocol gives: the header first, because
-        // after the unload there is no header that can name the plugin.
-        std::vector<std::byte> trace = tracer::trace_header();
-        const std::vector<std::byte> records = buffers.drain();
-        trace.insert(trace.end(), records.begin(), records.end());
+        std::vector<std::byte> trace = tracer::collect_trace(buffers);
+        tracer::local_tracer = nullptr;
         return trace;
     };
 
-    std::vector<std::byte> first;
     std::uintptr_t first_address = 0;
-    {
-        plugin_handle plugin;
-        tracer::note_objects_changed();
-        first = record_and_dump(plugin);
-        first_address = plugin_table_address(self);
-
-        plugin.close();                   // step 3
-        tracer::note_objects_changed();   // step 4
-    }
-
-    // Nothing the first plugin wrote is still in the rings, which is what makes
-    // the address it used free to be handed to somebody else.
-    CHECK(buffers.drain().empty());
-
-    std::vector<std::byte> second;
     std::uintptr_t second_address = 0;
-    {
-        plugin_handle plugin;             // step 5
-        tracer::note_objects_changed();
-        second = record_and_dump(plugin);
-        second_address = plugin_table_address(self);
-        plugin.close();
-        tracer::note_objects_changed();
-    }
-    tracer::local_tracer = nullptr;
+    const std::vector<std::byte> first = record_one(first_address, self);
+    const std::vector<std::byte> second = record_one(second_address, self);
 
     // Both decode, and to the same thing -- which is the point, whether or not
     // the second load happened to be given the first one's address. It usually
-    // is, and that is exactly the case the protocol exists for.
+    // is, and that is exactly the case this exists for.
     MESSAGE("plugin table at ", first_address, " then ", second_address);
     const auto decoded = [](std::span<const std::byte> trace) {
         std::string text;
@@ -608,12 +607,9 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
         });
         return text;
     };
-    CHECK(decoded(first) == "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n");
+    CHECK(decoded(first) ==
+          "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n");
     CHECK(decoded(second) == decoded(first));
-
-    // And the two traces differ only where they should: the header records
-    // where the plugin was this time round, so the records can be addresses.
-    CHECK((first == second) == (first_address == second_address));
 }
 
 // The end-to-end pipeline, asserted on its output.
@@ -628,21 +624,21 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
 // generated decoder, or the demo workload.
 TEST_CASE("decoded trace") {
     check_snapshot(read_env_file("TRACER_DECODED"), R"snap(
-        |               100 | modules/tracer/trace_producer.cc:49           | listening{port=8080}
-        |               800 | modules/tracer/trace_producer.cc:61           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |               900 | modules/tracer/trace_producer.cc:64           | clock_skew{nanoseconds=-4200, retries=3}
-        |              1000 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
-        |              1300 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
-        |              1400 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
-        |              1500 | modules/tracer/trace_producer.cc:71           | shutting_down{}
-        |               200 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=0, keepalive=true}
-        |               300 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
-        |               400 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=1, keepalive=false}
-        |               500 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/index.html}
-        |               600 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=2, keepalive=true}
-        |               700 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
-        |              1100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
-        |              1200 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
+        |               400 | modules/tracer/trace_producer.cc:49           | listening{port=8080}
+        |               500 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=0, keepalive=true}
+        |               600 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
+        |               700 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=1, keepalive=false}
+        |               800 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/index.html}
+        |               900 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=2, keepalive=true}
+        |              1000 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
+        |              1100 | modules/tracer/trace_producer.cc:61           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              1200 | modules/tracer/trace_producer.cc:64           | clock_skew{nanoseconds=-4200, retries=3}
+        |              1300 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
+        |              1400 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
+        |              1500 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
+        |              1600 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
+        |              1700 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
+        |              1800 | modules/tracer/trace_producer.cc:71           | shutting_down{}
         )snap"_snap);
 }
 
@@ -659,28 +655,28 @@ TEST_CASE("a decoded trace is structs, not text") {
 
     check_snapshot(out.text, R"snap(
         |modules/tracer/trace_producer.cc:49 listening{port=8080}
-        |modules/tracer/trace_producer.cc:61 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |modules/tracer/trace_producer.cc:64 clock_skew{nanoseconds=-4200, retries=3}
-        |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
-        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=2}
-        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=99}
-        |modules/tracer/trace_producer.cc:71 shutting_down{}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
         |accepted_connection: connection 1, keepalive false
         |request_header: GET /index.html
         |accepted_connection: connection 2, keepalive true
         |request_header: GET /
+        |modules/tracer/trace_producer.cc:61 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |modules/tracer/trace_producer.cc:64 clock_skew{nanoseconds=-4200, retries=3}
+        |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=1, label=handshake}
+        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=2}
+        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=99}
+        |modules/tracer/trace_producer.cc:71 shutting_down{}
         )snap"_snap);
 }
 
 TEST_CASE("a trace that cannot be decoded stops the decode") {
     const auto ignore = [](const auto&, const trace::tracepoint_metadata&) {};
 
-    // Fewer bytes than the object header, and then bytes that are not a trace
-    // at all. Neither is something to read addresses out of.
+    // Fewer bytes than the magic, and then bytes that are not a trace at all.
+    // Neither is something to read addresses out of.
     const std::array<std::byte, 3> truncated{};
     CHECK_THROWS_AS(trace::decode(truncated, ignore), std::runtime_error);
     const std::array<std::byte, 8> garbage{std::byte{0xFF}};
@@ -691,25 +687,28 @@ TEST_CASE("a trace that cannot be decoded stops the decode") {
     // object below it would decode the wrong tracepoint rather than fail.
     const std::array<std::pair<std::string_view, std::uint64_t>, 1> stranger{
         std::pair<std::string_view, std::uint64_t>{"00stranger00", 0x1000}};
-    std::vector<std::byte> foreign = fake_trace(stranger);
-    foreign.resize(foreign.size() + tracer::record_header_size);
+    std::array<std::byte, tracer::record_header_size> record{};
     const auto address = std::uint64_t{0x1000};
-    std::memcpy(foreign.data() + foreign.size() - tracer::record_header_size, &address,
-                sizeof(address));
-    CHECK_THROWS_AS(trace::decode(foreign, ignore), std::runtime_error);
+    std::memcpy(record.data(), &address, sizeof(address));
+    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, record), ignore), std::runtime_error);
 
-    // A record below every object in the trace, which no offset can be taken
-    // from.
-    std::vector<std::byte> below = fake_trace(stranger);
-    below.resize(below.size() + tracer::record_header_size);
-    CHECK_THROWS_AS(trace::decode(below, ignore), std::runtime_error);
+    // A record below every object loaded at its timestamp, which no offset can
+    // be taken from.
+    const std::array<std::byte, tracer::record_header_size> below{};
+    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, below), ignore), std::runtime_error);
 
-    // A real trace cut off in the middle of its first record. Its object header
-    // is intact, so this is the record stream and not the header failing.
+    // Half a record: its address and timestamp are there and its arguments are
+    // not, which cannot be told from a record that has not been reached yet
+    // until it is read.
+    const std::array<std::byte, tracer::record_header_size / 2> half{};
+    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, half), ignore), std::runtime_error);
+
+    // And a real trace with its last chunk cut short. A chunk says how long it
+    // is, so this is caught where the streams are laid out rather than in the
+    // middle of a record.
     const std::string raw = read_env_file("TRACER_TRACE");
     const std::span<const std::byte> whole{reinterpret_cast<const std::byte*>(raw.data()),
                                            raw.size()};
     CHECK_NOTHROW(trace::decode(whole, ignore));
-    CHECK_THROWS_AS(trace::decode(whole.first(header_length(whole) + 4), ignore),
-                    std::runtime_error);
+    CHECK_THROWS_AS(trace::decode(whole.first(whole.size() - 4), ignore), std::runtime_error);
 }

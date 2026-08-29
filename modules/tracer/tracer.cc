@@ -11,6 +11,9 @@ namespace tracer {
 namespace {
 
 void set_enabled(const tracepoint_entry& entry, bool enabled) {
+    if (entry.key == nullptr) {
+        return;  // a metadata tracepoint; see "the metadata stream" in tracer.h
+    }
     if (enabled) {
         ::static_keys::static_key_enable(&entry.key->key);
     } else {
@@ -45,21 +48,6 @@ void buffer_group::rotate() {
     }
     current_.resize(buffer_size_);
     cur_pos_ = 0;
-}
-
-std::vector<std::byte> buffer_group::drain() {
-    std::vector<std::byte> out = collect();
-    // The buffers stay, their contents do not. Clearing rather than freeing is
-    // the point: a drained ring is as ready to be written into as a fresh one,
-    // and draining is something a program may do on a timer.
-    //
-    // used_ is untouched because it counts capacity, not records, and none of
-    // that capacity has gone anywhere.
-    for (buffer& b : old_) {
-        b.clear();
-    }
-    cur_pos_ = 0;
-    return out;
 }
 
 std::vector<std::byte> buffer_group::collect() const {
@@ -187,62 +175,38 @@ std::vector<trace_object> trace_objects() {
     return objects;
 }
 
-std::vector<std::byte> trace_buffers::drain() {
+// --- writing a trace ----------------------------------------------------------
+
+void append_chunk(std::vector<std::byte>& out, event_level level,
+                  std::span<const std::byte> records) {
+    const auto put = [&out](const auto& value) {
+        const auto* bytes = reinterpret_cast<const std::byte*>(&value);
+        out.insert(out.end(), bytes, bytes + sizeof(value));
+    };
+    put(static_cast<std::uint8_t>(level));
+    put(static_cast<std::uint64_t>(records.size()));
+    out.insert(out.end(), records.begin(), records.end());
+}
+
+std::vector<std::byte> collect_trace(const trace_buffers& buffers) {
     std::vector<std::byte> out;
-    for (buffer_group& group : groups_) {
-        const std::vector<std::byte> bytes = group.drain();
-        out.insert(out.end(), bytes.begin(), bytes.end());
+    const auto* magic = reinterpret_cast<const std::byte*>(&trace_magic);
+    out.insert(out.end(), magic, magic + sizeof(trace_magic));
+    for (std::size_t i = 0; i < trace_buffers::level_count; ++i) {
+        const auto level = static_cast<event_level>(i);
+        append_chunk(out, level, buffers.group(level).collect());
     }
     return out;
 }
 
-std::vector<std::byte> trace_header() {
-    // Cached against the generation the loader last reported. Thread_local, so
-    // two threads dumping at once are two caches and no race; see
-    // note_objects_changed() in the header for what a program owes this.
-    static thread_local std::vector<std::byte> cached;
-    static thread_local std::uint64_t built_at = 0;
-    static thread_local bool built = false;
-
-    const std::uint64_t generation = object_generation().load(std::memory_order_acquire);
-    if (built && generation == built_at) {
-        return cached;
-    }
-
-    std::vector<std::byte> out;
-    auto put = [&out](const auto& value) {
-        const auto* bytes = reinterpret_cast<const std::byte*>(&value);
-        out.insert(out.end(), bytes, bytes + sizeof(value));
-    };
-
-    const std::vector<trace_object> objects = trace_objects();
-    put(trace_magic);
-    put(static_cast<std::uint32_t>(objects.size()));
-    for (const trace_object& object : objects) {
-        put(static_cast<std::uint16_t>(object.build_id.size()));
-        const auto* bytes = reinterpret_cast<const std::byte*>(object.build_id.data());
-        out.insert(out.end(), bytes, bytes + object.build_id.size());
-        put(static_cast<std::uint64_t>(object.table_address));
-    }
-
-    // The copy out is deliberate. What this caches is the walk of every loaded
-    // object and the note parsing, which is the expensive half; handing back a
-    // view into the cache would save a few dozen bytes of memcpy and hand the
-    // caller a pointer the next rebuild invalidates.
-    cached = std::move(out);
-    built_at = generation;
-    built = true;
-    return cached;
-}
-
 bool is_enabled(const tracepoint_entry& entry) noexcept {
-    return static_key_enabled(entry.key);
+    return entry.key != nullptr && static_key_enabled(entry.key);
 }
 
 std::size_t set_tracepoint_enabled(std::string_view name, bool enabled) {
     std::size_t matched = 0;
     for (const tracepoint_entry* entry : tracepoints()) {
-        if (entry->name == name) {
+        if (entry->key != nullptr && entry->name == name) {
             set_enabled(*entry, enabled);
             ++matched;
         }

@@ -149,11 +149,33 @@ struct object_plan {
     std::size_t first_id;  // the id of this object's entry 0
 };
 
+// The names of the tracer's own tracepoints, which a generated decoder has to
+// read before it can read anything else. See "the metadata stream" in tracer.h.
+constexpr std::string_view objects_loaded_kind = "trace_objects_loaded";
+constexpr std::string_view object_loaded_kind = "trace_object_loaded";
+constexpr std::string_view object_unloaded_kind = "trace_object_unloaded";
+
 struct plan {
     std::vector<tracepoint_kind> kinds;
     std::vector<object_plan> objects;
     std::vector<const tracepoint_entry*> by_id;  // every entry, in id order
     std::size_t fileline_width = 0;
+
+    // Whether the tables carried the tracer's own tracepoints. A table that
+    // does not is not an object's -- it is one somebody assembled -- and the
+    // decoder generated from it can describe its structs but cannot read a
+    // trace, because a trace begins with events of those three shapes.
+    [[nodiscard]] bool has_metadata_kinds() const {
+        for (std::string_view name : {objects_loaded_kind, object_loaded_kind,
+                                      object_unloaded_kind}) {
+            if (std::ranges::none_of(kinds, [name](const tracepoint_kind& kind) {
+                    return kind.name == name;
+                })) {
+                return false;
+            }
+        }
+        return true;
+    }
 };
 
 plan make_plan(std::span<const codegen_object> objects) {
@@ -365,14 +387,16 @@ std::string generate_objects(const plan& planned) {
         "// belongs to id `first_id + n`.\n"
         "inline constexpr std::size_t entry_stride = {};\n"
         "inline constexpr std::uint32_t trace_magic = {:#x};\n"
-        "inline constexpr std::size_t record_header_size = {};\n\n"
+        "inline constexpr std::size_t record_header_size = {};\n"
+        "inline constexpr std::uint8_t metadata_level = {};\n\n"
         "struct object_descriptor {{\n"
         "    std::string_view build_id;\n"
         "    std::uint32_t first_id;\n"
         "    std::uint32_t count;\n"
         "}};\n\n"
         "inline constexpr object_descriptor objects[] = {{\n",
-        sizeof(tracepoint_entry), trace_magic, record_header_size);
+        sizeof(tracepoint_entry), trace_magic, record_header_size,
+        static_cast<unsigned>(event_level::metadata));
     for (const object_plan& object : planned.objects) {
         code += std::format("    {{\"{}\", {}, {}}},\n", escape(object.build_id), object.first_id,
                             object.entries.size());
@@ -388,12 +412,42 @@ std::string generate_decode(const plan& planned) {
         "inline constexpr std::size_t fileline_width = {};\n\n",
         planned.fileline_width);
 
-    code += R"cpp(// Decode every record in `trace`, in order, calling cb(event, metadata) for each.
+    if (!planned.has_metadata_kinds()) {
+        // Not a build failure: what these tables cannot describe is a *trace*,
+        // and the structs above are still worth having -- they are what a
+        // caller of the generator is usually looking at. So the refusal is
+        // where the impossibility is, in the one function that would have to
+        // read a metadata stream that nothing in these tables can write.
+        return code + std::format(
+            R"cpp(// Not decodable. The tables this was generated from carry no "{}"
+// tracepoint, so nothing in them can say which object a record's address
+// belongs to, and every trace begins with exactly that.
+template <typename Callback>
+void decode(std::span<const std::byte> trace, Callback&& cb) {{
+    (void)trace;
+    (void)cb;
+    throw std::runtime_error(
+        "this decoder was generated from tracepoint tables without the tracer's own "
+        "metadata tracepoints, and a trace cannot be read without them");
+}}
+
+}}  // namespace trace
+)cpp",
+            object_loaded_kind);
+    }
+
+    code += R"cpp(// Decode every record in `trace`, in timestamp order, calling cb(event, metadata)
+// for each.
 //
-// `trace` is a whole trace: the object header, then the records. `cb` is
-// expected to have an operator() per tracepoint struct it cares about -- plus,
-// usually, a template one for the rest. A struct's string and byte fields point
-// into `trace`, so they outlive the call only as long as it does.
+// `trace` is a whole trace: the magic, then a chunk per level. `cb` is expected
+// to have an operator() per tracepoint struct it cares about -- plus, usually, a
+// template one for the rest. A struct's string and byte fields point into
+// `trace`, so they outlive the call only as long as it does.
+//
+// The metadata level is not delivered. Its events are how this function knows
+// which object an address belongs to at the moment a record was written, so it
+// consumes them: they are the frame the rest of the trace is read in rather
+// than events of the program's own.
 //
 // Throws std::runtime_error on anything that cannot be decoded. A record is not
 // self-delimiting, so a truncated or corrupt stream cannot be resynchronised
@@ -403,10 +457,44 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
     const std::byte* p = trace.data();
     const std::byte* const end = p + trace.size();
 
-    // One object as the producing run saw it. `object` is null for a build ID
-    // this decoder was not generated from: the mapping is still kept, because it
-    // is what stops that object's records being attributed to the object below
-    // it -- they are refused by name instead.
+    if (const auto magic = detail::read_unaligned<std::uint32_t>(p, end); magic != trace_magic) {
+        throw std::runtime_error(std::format("not a trace: magic {:#x}", magic));
+    }
+
+    // One level's records. The metadata stream is put first because the merge
+    // below breaks ties towards the earlier stream: a load event stamped with
+    // the same timestamp as the first record from the object it loads has to be
+    // read before it, not after.
+    struct stream {
+        const std::byte* p;
+        const std::byte* end;
+    };
+    std::vector<stream> streams;
+    bool have_metadata = false;
+    while (p < end) {
+        const auto level = detail::read_unaligned<std::uint8_t>(p, end);
+        const auto length = detail::read_unaligned<std::uint64_t>(p, end);
+        detail::require(p, end, length);
+        if (level == metadata_level) {
+            if (have_metadata) {
+                throw std::runtime_error("a trace has one metadata stream; this one has two");
+            }
+            have_metadata = true;
+            streams.insert(streams.begin(), {p, p + length});
+        } else {
+            streams.push_back({p, p + length});
+        }
+        p += length;
+    }
+    if (!have_metadata) {
+        throw std::runtime_error(
+            "a trace with no metadata stream: nothing in it says where its objects were mapped");
+    }
+
+    // Where an object is mapped, for as long as it is. `object` is null for a
+    // build ID this decoder was not generated from: the mapping is still kept,
+    // because it is what stops that object's records being attributed to the
+    // object below it -- they are refused by name instead.
     struct mapping {
         std::uint64_t address;
         const object_descriptor* object;
@@ -414,39 +502,80 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
     };
     std::vector<mapping> mappings;
 
-    if (const auto magic = detail::read_unaligned<std::uint32_t>(p, end); magic != trace_magic) {
-        throw std::runtime_error(std::format("not a trace: magic {:#x}", magic));
-    }
-    const auto object_count = detail::read_unaligned<std::uint32_t>(p, end);
-    for (std::uint32_t i = 0; i < object_count; i++) {
-        const std::span<const std::byte> raw = detail::read_bytes(p, end);
-        const std::string_view build_id(reinterpret_cast<const char*>(raw.data()), raw.size());
-        const auto address = detail::read_unaligned<std::uint64_t>(p, end);
-
+    const auto load = [&mappings](const trace_object_loaded& event) {
         const object_descriptor* found = nullptr;
         for (const object_descriptor& object : objects) {
-            if (object.build_id == build_id) {
+            if (object.build_id == event.build_id) {
                 found = &object;
             }
         }
-        mappings.push_back({address, found, build_id});
+        mappings.push_back({event.table_address, found, event.build_id});
+        // Sorted so that "the object an address is in" is a binary search for
+        // the greatest table address not above it.
+        std::sort(mappings.begin(), mappings.end(),
+                  [](const mapping& a, const mapping& b) { return a.address < b.address; });
+    };
+
+    const auto unload = [&mappings](const trace_object_unloaded& event) {
+        for (auto it = mappings.begin(); it != mappings.end(); ++it) {
+            if (it->address == event.table_address) {
+                mappings.erase(it);
+                return;
+            }
+        }
+        throw std::runtime_error(
+            std::format("object {} was unloaded without having been loaded", event.build_id));
+    };
+
+    // The prologue: a count, and that many load events. Read by that invariant
+    // rather than by their addresses, because until they have been read there
+    // is no object for an address to be in. See "the metadata stream" in
+    // tracer.h.
+    {
+        stream& meta = streams.front();
+        detail::read_unaligned<std::uint64_t>(meta.p, meta.end);  // entry address, not yet placeable
+        detail::read_unaligned<std::uint64_t>(meta.p, meta.end);  // timestamp: zero, by construction
+        const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
+        for (std::uint32_t i = 0; i < counted.count; i++) {
+            detail::read_unaligned<std::uint64_t>(meta.p, meta.end);
+            detail::read_unaligned<std::uint64_t>(meta.p, meta.end);
+            load(detail::read_trace_object_loaded(meta.p, meta.end));
+        }
     }
 
-    // Sorted so that "the object a record came from" is a binary search for the
-    // greatest table address not above it.
-    std::sort(mappings.begin(), mappings.end(),
-              [](const mapping& a, const mapping& b) { return a.address < b.address; });
+    while (true) {
+        // The earliest record still unread, over every stream. A record's
+        // address and timestamp are fixed-width and come first, so how long it
+        // is may be unknown but when it happened is not.
+        stream* next = nullptr;
+        std::uint64_t earliest = 0;
+        for (stream& candidate : streams) {
+            if (candidate.p == candidate.end) {
+                continue;
+            }
+            detail::require(candidate.p, candidate.end, record_header_size);
+            std::uint64_t at = 0;
+            std::memcpy(&at, candidate.p + sizeof(std::uint64_t), sizeof(at));
+            if (next == nullptr || at < earliest) {
+                next = &candidate;
+                earliest = at;
+            }
+        }
+        if (next == nullptr) {
+            break;
+        }
 
-    while (p < end) {
-        const auto address = detail::read_unaligned<std::uint64_t>(p, end);
-        const auto timestamp = detail::read_unaligned<std::uint64_t>(p, end);
+        const std::byte*& q = next->p;
+        const std::byte* const q_end = next->end;
+        const auto address = detail::read_unaligned<std::uint64_t>(q, q_end);
+        const auto timestamp = detail::read_unaligned<std::uint64_t>(q, q_end);
 
         const auto above = std::upper_bound(
             mappings.begin(), mappings.end(), address,
             [](std::uint64_t value, const mapping& m) { return value < m.address; });
         if (above == mappings.begin()) {
-            throw std::runtime_error(
-                std::format("tracepoint address {:#x} is below every object in the trace", address));
+            throw std::runtime_error(std::format(
+                "tracepoint address {:#x} is below every object loaded at {}", address, timestamp));
         }
         const mapping& from = *(above - 1);
         if (from.object == nullptr) {
@@ -457,9 +586,10 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
         }
         const std::uint64_t offset = address - from.address;
         if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
-            throw std::runtime_error(
-                std::format("tracepoint address {:#x} is not an entry of object {}", address,
-                            from.build_id));
+            throw std::runtime_error(std::format(
+                "tracepoint address {:#x} is not an entry of object {}, which is what was at "
+                "{:#x} at {}",
+                address, from.build_id, from.address, timestamp));
         }
         const std::uint32_t id =
             from.object->first_id + static_cast<std::uint32_t>(offset / entry_stride);
@@ -470,14 +600,34 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
     for (const object_plan& object : planned.objects) {
         for (std::size_t i = 0; i < object.entries.size(); ++i) {
             const std::size_t id = object.first_id + i;
+            const std::string_view kind = planned.kinds[object.entries[i].kind].name;
+
+            // The tracer's own events are not the program's, so they are
+            // applied rather than delivered.
+            if (kind == object_loaded_kind || kind == object_unloaded_kind) {
+                code += std::format(
+                    "            case {}:\n"
+                    "                {}(detail::read_{}(q, q_end));\n"
+                    "                break;\n",
+                    id, kind == object_loaded_kind ? "load" : "unload", kind);
+                continue;
+            }
+            if (kind == objects_loaded_kind) {
+                code += std::format(
+                    "            case {}:\n"
+                    "                throw std::runtime_error(\n"
+                    "                    \"a {} event past the start of the metadata stream\");\n",
+                    id, kind);
+                continue;
+            }
             code += std::format(
                 "            case {}: {{\n"
                 "                tracepoint_metadata meta = detail::metadata_{};\n"
                 "                meta.timestamp = timestamp;\n"
-                "                cb(detail::read_{}(p, end), meta);\n"
+                "                cb(detail::read_{}(q, q_end), meta);\n"
                 "                break;\n"
                 "            }}\n",
-                id, id, planned.kinds[object.entries[i].kind].name);
+                id, id, kind);
         }
     }
 

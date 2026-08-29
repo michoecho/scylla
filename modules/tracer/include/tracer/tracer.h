@@ -29,12 +29,13 @@
 // registers itself as it loads, so the process has a list of tables rather than
 // a single one. See "the tracepoint registry" below.
 //
-// A record identifies its tracepoint by the *address* of its entry, and the
-// trace carries a header saying where each object's table was mapped. That pair
-// is what makes a trace decodable by something other than the process that
-// wrote it: subtracting the table's recorded address turns the address into an
-// offset within an object, and the object is named by its build ID rather than
-// by where it happened to land. See trace_header() below.
+// A record identifies its tracepoint by the *address* of its entry, and a trace
+// carries a second stream of records -- the metadata level -- saying which
+// object was mapped where, and when. That pair is what makes a trace decodable
+// by something other than the process that wrote it: a record is read against
+// the objects that were loaded at its timestamp, so subtracting the table's
+// address turns it into an offset within an object named by its build ID rather
+// than by where it happened to land. See "the metadata stream" below.
 //
 // Decoding is the other half, and it is not in this header: tracer/codegen.h
 // walks that same section and emits the C++ source of a decoder specialised to
@@ -45,8 +46,8 @@
 // Derived from the Seastar tracer patch in references/tracer.patch, with the
 // bugs noted there fixed and the argument-list macro machinery replaced.
 
+#include <algorithm>
 #include <array>
-#include <atomic>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -78,11 +79,16 @@ inline std::uint64_t rdtsc() noexcept {
 #define TRACER_TIMESTAMP() ::tracer::rdtsc()
 #endif
 
-// Which ring a tracepoint is recorded into. Separate rings so that a flood of
-// debug events cannot evict the sparse, important ones.
+// Which stream a record is written to. Separate rings so that a flood of debug
+// events cannot evict the sparse, important ones.
+//
+// `metadata` is the tracer's own: which object was mapped where, and when. It
+// is a ring like the others, written by the same macro -- see "the metadata
+// stream" below.
 enum class event_level : std::size_t {
     info,
     debug,
+    metadata,
     count,
 };
 
@@ -120,17 +126,6 @@ public:
     // so collecting the tail is this function's job and not the caller's.
     [[nodiscard]] std::vector<std::byte> collect() const;
 
-    // collect(), and then forget: the ring keeps its memory and loses its
-    // records.
-    //
-    // rotate() is not this. Rotating retires the live buffer *into* the ring,
-    // where collect() still finds it -- the ring only forgets under pressure,
-    // when the byte budget evicts the oldest buffer. Draining is how a program
-    // gets records out on purpose, and it is what the reload protocol below
-    // turns on: a record naming an object is only decodable while that object
-    // is still mapped, so the records have to leave the ring before it goes.
-    [[nodiscard]] std::vector<std::byte> drain();
-
     [[nodiscard]] std::size_t buffer_size() const noexcept { return buffer_size_; }
 
 private:
@@ -147,15 +142,20 @@ private:
 };
 
 // One ring per event level.
+//
+// Constructing one writes the metadata prologue into its own metadata ring --
+// the objects loaded now, as load events -- so that a tracer is decodable from
+// the moment it exists. See "the metadata stream" below.
 class trace_buffers {
 public:
     static constexpr std::size_t level_count = static_cast<std::size_t>(event_level::count);
 
+    // Defined at the bottom of this header, with the other members that record:
+    // they expand TRACEPOINT_UNGATED(), which is declared there.
     explicit trace_buffers(std::size_t info_capacity = 4 * 1024 * 1024,
                            std::size_t debug_capacity = 64 * 1024 * 1024,
-                           std::size_t buffer_size = buffer_group::default_buffer_size)
-        : groups_{buffer_group(info_capacity, buffer_size),
-                  buffer_group(debug_capacity, buffer_size)} {}
+                           std::size_t metadata_capacity = 1024 * 1024,
+                           std::size_t buffer_size = buffer_group::default_buffer_size);
 
     [[gnu::always_inline]] std::byte* write(event_level level, std::size_t n) {
         return groups_[static_cast<std::size_t>(level)].write(n);
@@ -169,13 +169,32 @@ public:
         return groups_[static_cast<std::size_t>(level)];
     }
 
-    // Every ring drained into one stream, in level order -- which is the whole
-    // of a thread's records, and what the reload protocol wants a thread to do
-    // before an object it may have traced is unloaded.
-    [[nodiscard]] std::vector<std::byte> drain();
+    // Record what has been loaded or unloaded since this tracer last looked, as
+    // load and unload events on the metadata ring.
+    //
+    // The *loader's* to call -- the thread that dlopen()s and dlclose()s objects
+    // with tracepoints in them -- and its whole obligation to the tracer. It
+    // costs a walk of every loaded object and a parse of each one's build note,
+    // which is why no registration constructor does it: it belongs where the
+    // program already knows that an object came or went.
+    //
+    // The cost of forgetting is a range of addresses this ring still attributes
+    // to the object that used to be there -- silently, because a plausible
+    // address decodes to a plausible tracepoint. Call it after every load and
+    // every unload, before the threads that trace are let back in.
+    void note_objects_changed();
 
 private:
+    // The objects this ring has already described, so that what has gone can be
+    // named after it is gone.
+    struct known_object {
+        std::string build_id;
+        std::uintptr_t table_address;
+    };
+
     std::array<buffer_group, level_count> groups_;
+    std::vector<known_object> known_;
+    bool described_ = false;  // whether the count has been written
 };
 
 // The tracer TRACEPOINT() writes to. Every thread that traces must have one
@@ -669,6 +688,10 @@ struct trace_object {
 // however many tracepoints matched rather than of "the" tracepoint. The code
 // generator agrees: it merges same-named tracepoints into one struct, and
 // objects only if two of them disagree about their parameters.
+//
+// The tracer's own metadata tracepoints have no key and are passed over here:
+// they are the frame a trace is read in, not something to switch off. See "the
+// metadata stream" below.
 
 [[nodiscard]] bool is_enabled(const tracepoint_entry& entry) noexcept;
 
@@ -684,7 +707,14 @@ void set_all_tracepoints_enabled(bool enabled);
 
 // --- the wire format ----------------------------------------------------------
 //
-// A trace is a header followed by records.
+// A trace is a magic number followed by chunks:
+//
+//     uint32 magic
+//     per chunk: uint8 level, uint64 length, that many bytes of records
+//
+// A chunk is one level's records, oldest first. There may be several chunks of
+// a level -- one ring per thread, say -- and there is exactly one chunk of the
+// metadata level, which is the process's stream rather than any thread's.
 //
 // A record is: uint64 tracepoint entry address, uint64 timestamp, then packed
 // arguments. The address rather than an index -- which is what an earlier
@@ -693,99 +723,99 @@ void set_all_tracepoints_enabled(bool enabled);
 // every object has one of its own, and an index into "the" table is a number
 // that two objects both claim.
 //
-// An address, being a fact about this run, is not decodable on its own either.
-// What makes it decodable is the header, which records where each object's table
-// was mapped, under that object's build ID:
-//
-//     uint32 magic
-//     uint32 object count
-//     per object: uint16 build ID length, that many bytes, uint64 table address
-//
-// A decoder finds the greatest table address not above a record's address --
-// which is the table of the object the record came from, since an entry lies at
-// or after the start of its own table and the next object's table is further up
-// -- subtracts it, and is left with an offset into a *named* object. That offset
-// is what its generated tables are keyed on. Nothing in the calculation depends
-// on where anything was mapped, so a trace outlives the process, ASLR, and the
-// order the libraries happened to load in.
+// An address, being a fact about this run, is not decodable on its own -- and
+// not against a fixed table of objects either, because a library can be
+// unloaded and another mapped over the range it had, so one address is two
+// tracepoints at two different moments. What makes it decodable is the metadata
+// stream below, read alongside the timestamp.
 inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + sizeof(std::uint64_t);
 
-// "TRC1", little-endian. A trace that does not start with it is not one, which
+// "TRC2", little-endian. A trace that does not start with it is not one, which
 // is worth establishing before a stream of bytes is read as addresses.
-inline constexpr std::uint32_t trace_magic = 0x31435254;
+inline constexpr std::uint32_t trace_magic = 0x32435254;
 
-// --- telling the tracer that the objects changed ------------------------------
+// --- the metadata stream ------------------------------------------------------
 //
-// Building the header means asking the loader where every table is and reading
-// each object's build note, which is a walk of every loaded object per table.
-// That is far too much to do on every dump, and almost always a walk to the
-// same answer: the set of loaded objects changes when something is dlopen()ed
-// and at no other time.
+// Which object is mapped where is not a property of a trace but of a *moment*
+// in it, so it is recorded the way everything else here is: as tracepoints, at
+// a level of their own.
 //
-// So the header is cached, and this is what invalidates the cache. It is the
-// *loader's* to call -- the thread that dlopen()s and dlclose()s objects with
-// tracepoints in them -- rather than something a registration constructor does
-// on its own. That is deliberate: it keeps the atomic out of the load path, and
-// it puts the invalidation where the program already knows the answer.
+//     trace_objects_loaded{count}
+//     trace_object_loaded{build_id, table_address}
+//     trace_object_unloaded{build_id, table_address}
 //
-// The cost of forgetting is a stale header, which is a trace whose records are
-// attributed to whatever the old header said was at their address -- silently,
-// because a plausible address decodes to a plausible tracepoint. Call it after
-// every load and every unload of an object that has tracepoints.
+// They are written by TRACEPOINT_UNGATED() like any other record, into the
+// metadata ring of the tracer that is recording. There is no second writer, no
+// second clock and no second buffer: a metadata event is a tracepoint, and the
+// only thing unusual about it is that it has no key, because a trace missing
+// these is not a trace but a heap of addresses.
+//
+// A decoder reads the metadata ring interleaved with the record rings, in
+// timestamp order, keeping a table of the objects loaded *as of the record it
+// is looking at*. A record whose object has since been unloaded still decodes,
+// against the object that was there when it was written; a record from an
+// object mapped over that range afterwards decodes as the new object's.
+//
+// What makes the ring decodable from its own first byte is where it starts. A
+// tracer writes trace_objects_loaded{count = N} and then N load events as the
+// last thing its constructor does, so those N+1 records are always the first in
+// the ring -- and a decoder reads them by that invariant rather than by their
+// addresses, which is the only way round the circle: an address means nothing
+// until some load event has said where an object is.
+//
+// A ring per tracer, and so per thread, rather than one for the process: it is
+// the same ring, written by the same macro, as everything else. The cost is
+// that a thread learns about a dlopen() only if it is told -- see
+// note_objects_changed() -- and that the objects are described once per thread
+// rather than once. Both are cheap beside a second machine for one kind of
+// record.
 
-// Bumped by note_objects_changed(), read by trace_header(). Exposed so that a
-// program with a cache of its own -- a header it stamps into its own container
-// format, say -- can invalidate it on the same signal.
-[[gnu::visibility("default")]] inline std::atomic<std::uint64_t>& object_generation() {
-    static std::atomic<std::uint64_t> generation{0};
-    return generation;
-}
+// --- writing a trace ----------------------------------------------------------
 
-inline void note_objects_changed() {
-    object_generation().fetch_add(1, std::memory_order_release);
-}
+// One chunk: a level, a length, and that level's records.
+void append_chunk(std::vector<std::byte>& out, event_level level,
+                  std::span<const std::byte> records);
 
-// The header described above, for the objects loaded as of the last
-// note_objects_changed(). Prepend it to the drained buffers to make a trace
-// file.
-//
-// Cached per thread against object_generation(), so a program that dumps in a
-// loop pays for the walk once per change rather than once per dump. Per thread
-// rather than once for the process because a dumping thread is exactly what
-// this module already has -- local_tracer is thread_local -- and a shared cache
-// would need a lock on the path this exists to make cheap.
-[[nodiscard]] std::vector<std::byte> trace_header();
+// A whole trace of one tracer's rings: the magic, then a chunk per level.
+[[nodiscard]] std::vector<std::byte> collect_trace(const trace_buffers& buffers);
 
-// --- unloading an object ------------------------------------------------------
+// The static description of a tracepoint: everything about it that is known at
+// compile time, in the sections the linker collects.
 //
-// A record names its tracepoint by address, and the header turns that address
-// into an object. Both halves are facts about the process as it is *now*, so a
-// record outlives its object only as far as the next header: once a library is
-// unloaded it is gone from the header, and a record still sitting in a ring
-// pointing into where it used to be will be read as belonging to whatever
-// object is below that address -- or, if the range has been reused by a later
-// dlopen(), as belonging to the object now sitting on top of it.
-//
-// Nothing here can detect that after the fact. What makes it a non-problem is
-// ordering, and the program doing the unloading is the only thing that can
-// impose it:
-//
-//   1. Stop the threads that can reach the plugin's tracepoints from running
-//      them. Turning the tracepoints off is not enough on its own; a thread
-//      already inside the recording code has already written.
-//   2. Have every tracing thread build a trace out of trace_header() and
-//      trace_buffers::drain(), in that order and both before the unload. The
-//      header still names the plugin, and after the drain no live ring holds a
-//      record that points into it.
-//   3. dlclose().
-//   4. note_objects_changed().
-//   5. dlopen() the replacement, and note_objects_changed() again. The new
-//      object may well land on the address the old one had; nothing after step
-//      2 refers to that address any more, so it does not matter.
-//   6. Let the threads back in.
-//
-// Steps 2 and 4 are the load-bearing ones. Everything else is the quiescence
-// any program unloading code out from under its threads needs anyway.
+// `key_` is the address of the static key gating it, or nullptr for a
+// tracepoint that is never gated. Only the entry itself goes in `tracepoints`,
+// so that the section stays an array the code generator can index; the strings
+// live in sections of their own.
+#define TRACER_TRACEPOINT_ENTRY(name_, key_, ...)                                         \
+    static constexpr auto tracer_sig_ __attribute__((                                     \
+        section("tracepoint_signatures"), used)) =                                        \
+        ::tracer::signature_builder<                                                      \
+            ::tracer::fixed_string{#__VA_ARGS__},                                         \
+            decltype(::tracer::sig_probe(__VA_ARGS__))>::value;                           \
+    static constexpr char tracer_name_[] __attribute__((                                  \
+        section("tracepoint_names"), used)) = name_;                                      \
+    static constexpr char tracer_file_[] __attribute__((                                  \
+        section("tracepoint_files"), used)) = __FILE__;                                   \
+    static constexpr ::tracer::tracepoint_entry tracer_tp_ __attribute__((                \
+        section("tracepoints"), used)) = {tracer_name_,                                   \
+                                          tracer_file_,                                   \
+                                          __LINE__,                                       \
+                                          __PRETTY_FUNCTION__,                            \
+                                          tracer_sig_.data(),                             \
+                                          key_}
+
+// The record: the entry's address, the timestamp, and the arguments. Named
+// after the entry TRACER_TRACEPOINT_ENTRY() just defined, so the two only ever
+// appear together.
+#define TRACER_RECORD(level_, ...)                                                        \
+    const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);                    \
+    std::byte* tracer_out_ = ::tracer::local_tracer->write(                               \
+        (level_), tracer_size_ + ::tracer::record_header_size);                           \
+    ::tracer::write_raw(tracer_out_,                                                      \
+                        static_cast<std::uint64_t>(                                       \
+                            reinterpret_cast<std::uintptr_t>(&tracer_tp_)));              \
+    ::tracer::write_raw(tracer_out_, static_cast<std::uint64_t>(TRACER_TIMESTAMP()));     \
+    ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__)
 
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
 //
@@ -816,33 +846,93 @@ inline void note_objects_changed() {
 #define TRACEPOINT(level_, name_, ...)                                                    \
     do {                                                                                  \
         DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
-        static constexpr auto tracer_sig_ __attribute__((                                 \
-            section("tracepoint_signatures"), used)) =                                    \
-            ::tracer::signature_builder<                                                  \
-                ::tracer::fixed_string{#__VA_ARGS__},                                     \
-                decltype(::tracer::sig_probe(__VA_ARGS__))>::value;                       \
-        static constexpr char tracer_name_[] __attribute__((                              \
-            section("tracepoint_names"), used)) = name_;                                  \
-        static constexpr char tracer_file_[] __attribute__((                              \
-            section("tracepoint_files"), used)) = __FILE__;                               \
-        static constexpr ::tracer::tracepoint_entry tracer_tp_ __attribute__((            \
-            section("tracepoints"), used)) = {tracer_name_,                               \
-                                              tracer_file_,                               \
-                                              __LINE__,                                   \
-                                              __PRETTY_FUNCTION__,                        \
-                                              tracer_sig_.data(),                         \
-                                              &tracer_key_};                              \
+        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_ __VA_OPT__(, ) __VA_ARGS__);          \
         if (static_branch_unlikely(&tracer_key_)) {                                       \
-            const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);            \
-            std::byte* tracer_out_ = ::tracer::local_tracer->write(                       \
-                (level_), tracer_size_ + ::tracer::record_header_size);                   \
-            ::tracer::write_raw(tracer_out_,                                              \
-                                static_cast<std::uint64_t>(                               \
-                                    reinterpret_cast<std::uintptr_t>(&tracer_tp_)));      \
-            ::tracer::write_raw(tracer_out_,                                              \
-                                static_cast<std::uint64_t>(TRACER_TIMESTAMP()));          \
-            ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__);             \
+            TRACER_RECORD(level_ __VA_OPT__(, ) __VA_ARGS__);                              \
         }                                                                                 \
     } while (0)
+
+// The same, without a key: a tracepoint that is always recorded.
+//
+// For records a trace cannot be read without, which is to say the metadata
+// events and nothing else. A tracepoint that can be switched off is one a trace
+// can be missing, and there is nothing to be gained from being able to switch
+// off the events that say what an address means.
+//
+// The entry's key is null, which is how is_enabled() and the two functions that
+// flip keys by name know to pass it over.
+#define TRACEPOINT_UNGATED(level_, name_, ...)                                            \
+    do {                                                                                  \
+        TRACER_TRACEPOINT_ENTRY(name_, nullptr __VA_OPT__(, ) __VA_ARGS__);               \
+        TRACER_RECORD(level_ __VA_OPT__(, ) __VA_ARGS__);                                 \
+    } while (0)
+
+// --- a tracer's own records ---------------------------------------------------
+//
+// Down here because they expand the macros above, which need everything else in
+// this header. They are ordinary tracepoints; what is particular about them is
+// only when they are written.
+
+inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug_capacity,
+                                    std::size_t metadata_capacity, std::size_t buffer_size)
+    : groups_{buffer_group(info_capacity, buffer_size),
+              buffer_group(debug_capacity, buffer_size),
+              buffer_group(metadata_capacity, buffer_size)} {
+    // The prologue is the first difference this ring sees: everything loaded,
+    // against the nothing it knows. One path rather than two, so that a tracer
+    // built while a library is open describes it exactly as it would describe
+    // one opened a moment later.
+    note_objects_changed();
+}
+
+inline void trace_buffers::note_objects_changed() {
+    const std::vector<trace_object> objects = trace_objects();
+    const auto same = [](const known_object& a, const trace_object& b) {
+        return a.build_id == b.build_id && a.table_address == b.table_address;
+    };
+
+    // The records below go through TRACEPOINT_UNGATED(), which writes to
+    // whichever tracer is installed -- so this one is, for as long as it takes
+    // to describe itself. Restoring rather than clearing: a thread describing a
+    // second tracer keeps the one it was recording into.
+    trace_buffers* const previous = local_tracer;
+    local_tracer = this;
+
+    if (!described_) {
+        // How many load events follow, which is what lets a decoder read them
+        // before it can read anything by address. See "the metadata stream".
+        TRACEPOINT_UNGATED(event_level::metadata, "trace_objects_loaded", "count",
+                           static_cast<std::uint32_t>(objects.size()));
+        described_ = true;
+    }
+
+    // Unloads first, so that an object mapped over the range of the one that
+    // went is a load over a range this ring has already given up -- which is the
+    // order it happened in, and the only order a decoder can read.
+    for (auto it = known_.begin(); it != known_.end();) {
+        if (std::any_of(objects.begin(), objects.end(),
+                        [&](const trace_object& o) { return same(*it, o); })) {
+            ++it;
+            continue;
+        }
+        TRACEPOINT_UNGATED(event_level::metadata, "trace_object_unloaded", "build_id",
+                           std::string_view(it->build_id), "table_address",
+                           static_cast<std::uint64_t>(it->table_address));
+        it = known_.erase(it);
+    }
+
+    for (const trace_object& object : objects) {
+        if (std::any_of(known_.begin(), known_.end(),
+                        [&](const known_object& o) { return same(o, object); })) {
+            continue;
+        }
+        TRACEPOINT_UNGATED(event_level::metadata, "trace_object_loaded", "build_id",
+                           std::string_view(object.build_id), "table_address",
+                           static_cast<std::uint64_t>(object.table_address));
+        known_.push_back({object.build_id, object.table_address});
+    }
+
+    local_tracer = previous;
+}
 
 }  // namespace tracer

@@ -5,8 +5,8 @@
 // It exists so that the pipeline in modules/tracer/BUCK covers a trace whose
 // records come from more than one loaded object: the library has tracepoints of
 // its own, in a `tracepoints` section of its own, mapped wherever the loader put
-// it. Nothing about the trace it writes is decodable without the object header
-// that names it.
+// it. Nothing about the trace it writes is decodable without the metadata
+// stream that says where it was mapped, and when.
 
 #include <cstddef>
 #include <cstdint>
