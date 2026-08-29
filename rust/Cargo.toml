@@ -40,3 +40,5 @@ incremental = false
 inherits = "dev"
 opt-level = 1
 incremental = false
+
+[workspace]
