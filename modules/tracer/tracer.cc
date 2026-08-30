@@ -1,9 +1,13 @@
 #include "tracer/tracer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <format>
 #include <stdexcept>
+#include <thread>
+
+#include <ctime>
 
 #include <elf.h>
 #include <link.h>
@@ -24,6 +28,68 @@ void set_enabled(const tracepoint_entry& entry, bool enabled) {
 }  // namespace
 
 thread_local trace_buffers* local_tracer = nullptr;
+
+namespace {
+
+// Process-wide, and written from a calibration that may run on any thread while
+// others are already tracing. Relaxed: a sync record wants a rate, not a
+// happens-before edge, and either the old or the new one is a good answer.
+std::atomic<std::uint64_t> tsc_rate{default_tsc_ticks_per_second};
+std::atomic<bool> clock_sync_on{true};
+
+}  // namespace
+
+std::uint64_t realtime_nanoseconds() noexcept {
+    timespec now{};
+    ::clock_gettime(CLOCK_REALTIME, &now);
+    return static_cast<std::uint64_t>(now.tv_sec) * 1'000'000'000U +
+           static_cast<std::uint64_t>(now.tv_nsec);
+}
+
+std::uint64_t tsc_ticks_per_second() noexcept {
+    return tsc_rate.load(std::memory_order_relaxed);
+}
+
+void set_tsc_ticks_per_second(std::uint64_t ticks) noexcept {
+    tsc_rate.store(ticks, std::memory_order_relaxed);
+}
+
+bool clock_sync_enabled() noexcept { return clock_sync_on.load(std::memory_order_relaxed); }
+
+void set_clock_sync_enabled(bool enabled) noexcept {
+    clock_sync_on.store(enabled, std::memory_order_relaxed);
+}
+
+std::uint64_t calibrate_tsc(std::chrono::nanoseconds interval) {
+    // The wall clock is read *around* each rdtsc rather than beside it, and the
+    // midpoints are what the division uses: the two reads bracket the tick
+    // count, so the error in placing it is half the cost of a clock_gettime()
+    // rather than the whole of it, in either direction.
+    const auto sample = [](std::uint64_t& ticks) {
+        const std::uint64_t before = realtime_nanoseconds();
+        ticks = rdtsc();
+        const std::uint64_t after = realtime_nanoseconds();
+        return before / 2 + after / 2;
+    };
+
+    std::uint64_t first_ticks = 0;
+    const std::uint64_t first_ns = sample(first_ticks);
+    std::this_thread::sleep_for(interval);
+    std::uint64_t second_ticks = 0;
+    const std::uint64_t second_ns = sample(second_ticks);
+
+    // A clock that did not move -- a coarse wall clock against too short an
+    // interval -- would divide by zero and install a nonsense rate. Keeping
+    // what was there is the honest answer: this measured nothing.
+    if (second_ns <= first_ns || second_ticks <= first_ticks) {
+        return tsc_ticks_per_second();
+    }
+    const auto measured = static_cast<std::uint64_t>(
+        static_cast<double>(second_ticks - first_ticks) /
+        static_cast<double>(second_ns - first_ns) * 1e9);
+    set_tsc_ticks_per_second(measured);
+    return measured;
+}
 
 // The one definition of the registry head; see "the tracepoint registry" in
 // tracer.h for why it is here rather than inline in the header.

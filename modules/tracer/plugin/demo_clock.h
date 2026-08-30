@@ -25,3 +25,10 @@ std::uint64_t tick() noexcept;
 #ifndef TRACER_TIMESTAMP
 #define TRACER_TIMESTAMP() ::demo::tick()
 #endif
+
+// And the wall clock the sync records carry, for the same reason: a real time
+// differs between the two runs the build takes. A round number, so that a
+// decoded sync record reads as the fixed thing it is.
+#ifndef TRACER_REALTIME_NS
+#define TRACER_REALTIME_NS() (::std::uint64_t{1'700'000'000'000'000'000})
+#endif

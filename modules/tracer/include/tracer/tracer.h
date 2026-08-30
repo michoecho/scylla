@@ -57,6 +57,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -87,6 +88,68 @@ inline std::uint64_t rdtsc() noexcept {
 #ifndef TRACER_TIMESTAMP
 #define TRACER_TIMESTAMP() ::tracer::rdtsc()
 #endif
+
+// --- turning ticks into times -------------------------------------------------
+//
+// rdtsc counts ticks of an invariant clock nobody has calibrated: it says how
+// far apart two records are only once something says how many of its ticks go
+// in a second, and it says *when* a record happened only once something pairs a
+// tick count with a wall clock reading. That something is the clock_sync
+// tracepoint, written to every level (bar the metadata one) whenever a ring
+// rotates, and once right after a tracer is built -- so a trace that has been
+// running long enough to evict its oldest buffer still begins with one.
+//
+// A sync record carries both halves: the wall clock at the moment it was
+// written, and the ticks-per-second the process believes in. See
+// "reading a sync record back" below for what a decoder is expected to do with
+// a pair of them.
+
+// Nanoseconds since the epoch, from the clock a sync record pairs with the
+// timestamp in its own header.
+[[nodiscard]] std::uint64_t realtime_nanoseconds() noexcept;
+
+// The wall clock source, overridable exactly as TRACER_TIMESTAMP is and for the
+// same reason: a sync record holds a real time, and a real time is different on
+// every run. modules/tracer/plugin/demo_clock.h pins it to a constant so that
+// the demo's trace -- and the snapshot of its decoded output -- stays stable.
+#ifndef TRACER_REALTIME_NS
+#define TRACER_REALTIME_NS() ::tracer::realtime_nanoseconds()
+#endif
+
+// What ticks_per_second is until somebody measures it: the rate of the machine
+// this was written on, which is the right order of magnitude everywhere and
+// exact nowhere.
+//
+// A default rather than a required calibration because calibrating costs a
+// sleep, and a sleep is not something every program -- or every test -- should
+// have to pay to be traceable. The cost of the default is that a trace with one
+// sync record in it converts ticks to times with a rate that may be a percent
+// or two out; a trace with two, which is the usual case, does not use the rate
+// at all. See below.
+inline constexpr std::uint64_t default_tsc_ticks_per_second = 3'187'000'000;
+
+// The rate the next sync record will carry. Process-wide -- it is a property of
+// the machine, not of a thread's ring -- and readable and writable from any
+// thread.
+[[nodiscard]] std::uint64_t tsc_ticks_per_second() noexcept;
+void set_tsc_ticks_per_second(std::uint64_t ticks) noexcept;
+
+// Measure the rate and install it, returning what was measured.
+//
+// Reads the pair of clocks, sleeps, reads them again, and divides. **This
+// sleeps**, for `interval` -- 1ms by default, which is enough for the two
+// readings to be far enough apart to divide and short enough not to be felt at
+// startup. Nothing requires it to be called: a program that never does traces
+// with default_tsc_ticks_per_second above.
+std::uint64_t calibrate_tsc(std::chrono::nanoseconds interval = std::chrono::milliseconds(1));
+
+// Whether clock sync records are written at all; true unless something says
+// otherwise. The one reason to turn them off is a program whose records are
+// decoded by a decoder generated from *another* object's tracepoint table --
+// which cannot read the sync records this object writes any more than it could
+// read any other of its records. modules/tracer/tracer_test.cc is that case.
+[[nodiscard]] bool clock_sync_enabled() noexcept;
+void set_clock_sync_enabled(bool enabled) noexcept;
 
 // Which stream a record is written to. Separate rings so that a flood of debug
 // events cannot evict the sparse, important ones.
@@ -135,10 +198,22 @@ public:
     // so collecting the tail is this function's job and not the caller's.
     [[nodiscard]] std::vector<std::byte> collect() const;
 
+    // Whether n more bytes would fit without retiring the live buffer. What
+    // trace_buffers::write() asks so that it can write a clock sync record into
+    // the fresh buffer *before* the record that forced the rotation, rather
+    // than after it; see below.
+    [[nodiscard, gnu::always_inline]] bool fits(std::size_t n) const {
+        return current_.size() - cur_pos_ >= n;
+    }
+
+    // Retire the live buffer and recycle the oldest in its place. write() does
+    // this itself when it has to; it is public for the one caller that wants to
+    // know that it is about to happen.
+    [[gnu::noinline]] void rotate();
+
     [[nodiscard]] std::size_t buffer_size() const noexcept { return buffer_size_; }
 
 private:
-    [[gnu::noinline]] void rotate();
 
     using buffer = std::vector<std::byte>;
 
@@ -167,7 +242,20 @@ public:
                            std::size_t buffer_size = buffer_group::default_buffer_size);
 
     [[gnu::always_inline]] std::byte* write(event_level level, std::size_t n) {
-        return groups_[static_cast<std::size_t>(level)].write(n);
+        buffer_group& group = groups_[static_cast<std::size_t>(level)];
+        if (!group.fits(n)) [[unlikely]] {
+            // Rotating drops the oldest buffer, and with it whatever sync
+            // record used to be the first thing in this ring -- so the fresh
+            // buffer is opened with a new one. Done here rather than inside
+            // buffer_group::rotate() because the record about to be written has
+            // not been written yet: this way the sync lands in front of it, and
+            // the ring stays in timestamp order.
+            group.rotate();
+            if (level != event_level::metadata) {
+                write_clock_sync(level);
+            }
+        }
+        return group.write(n);
     }
 
     [[nodiscard]] const buffer_group& group(event_level level) const {
@@ -193,6 +281,11 @@ public:
     // every unload, before the threads that trace are let back in.
     void note_objects_changed();
 
+    // A clock_sync record on one level: the wall clock now, and the rate that
+    // turns this trace's ticks into seconds. Defined at the bottom of this
+    // header, with the other members that record.
+    [[gnu::noinline]] void write_clock_sync(event_level level);
+
 private:
     // The objects this ring has already described, so that what has gone can be
     // named after it is gone.
@@ -204,6 +297,7 @@ private:
     std::array<buffer_group, level_count> groups_;
     std::vector<known_object> known_;
     bool described_ = false;  // whether the count has been written
+    bool syncing_ = false;    // guards write_clock_sync() against itself
 };
 
 // The tracer TRACEPOINT() writes to. Every thread that traces must have one
@@ -864,6 +958,27 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 // rather than once. Both are cheap beside a second machine for one kind of
 // record.
 
+// --- reading a sync record back -----------------------------------------------
+//
+// A clock_sync record is a tick count (its own header timestamp) beside a wall
+// clock reading, plus the rate the process believed in when it was written. Two
+// of them bracket most of a trace, and that is the case worth writing code for:
+// between two syncs the conversion is an *interpolation* -- the two (tick,
+// time) pairs give a rate measured over exactly this trace, on exactly this
+// machine, with no reliance on the rate field at all -- while outside them it
+// is an extrapolation from the rate, which is an estimate and may be a default
+// nobody measured. Extrapolate only where there is no sync on both sides.
+//
+// So a consumer that wants wall clock times is a two-pass one: the first pass
+// walks the trace collecting the sync records, the second converts each record
+// against the syncs either side of it. A single-pass converter can only ever
+// extrapolate forwards from the last sync it saw, which is the one arrangement
+// this format makes avoidable.
+//
+// Nothing here does that yet: the tracer writes the sync records and the
+// generated decoder delivers them as clock_sync events like any other. The
+// consumer that will need it is the trace-viewer export, which is not written.
+
 // --- writing a trace ----------------------------------------------------------
 
 // One chunk: a level, a length, and that level's records.
@@ -981,6 +1096,35 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
     // built while a library is open describes it exactly as it would describe
     // one opened a moment later.
     note_objects_changed();
+
+    // And a sync record at the head of every ring that is not the metadata one,
+    // so that a trace collected from a tracer that never filled a buffer still
+    // says what its ticks mean.
+    for (std::size_t i = 0; i < level_count; ++i) {
+        const auto level = static_cast<event_level>(i);
+        if (level != event_level::metadata) {
+            write_clock_sync(level);
+        }
+    }
+}
+
+inline void trace_buffers::write_clock_sync(event_level level) {
+    // syncing_ because the record below goes through this tracer's own write(),
+    // which is the function that calls this one. It cannot rotate a buffer it
+    // has just been given -- a sync record is a few dozen bytes -- but a ring
+    // whose buffers were sized smaller than one record would recurse forever,
+    // and that is not a stack to overflow to find out about.
+    if (syncing_ || !clock_sync_enabled()) {
+        return;
+    }
+    syncing_ = true;
+    trace_buffers* const previous = local_tracer;
+    local_tracer = this;
+    TRACEPOINT_UNGATED(level, "clock_sync", "realtime_ns",
+                       static_cast<std::uint64_t>(TRACER_REALTIME_NS()), "ticks_per_second",
+                       tsc_ticks_per_second());
+    local_tracer = previous;
+    syncing_ = false;
 }
 
 inline void trace_buffers::note_objects_changed() {

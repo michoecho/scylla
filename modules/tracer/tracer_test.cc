@@ -248,7 +248,18 @@ TEST_CASE("a signature names and types every parameter") {
     CHECK(SIGNATURE_OF("attempts", value + 1) == "attempts:u32");
 }
 
+// Clock sync records are ordinary records in every ring but the metadata one:
+// a tracer writes one when it is built and one whenever a ring rotates. The
+// cases that count a ring's bytes, or decode this binary's records with a
+// decoder generated from another object's table, switch them off for their
+// duration and say so by using this.
+struct without_clock_sync {
+    without_clock_sync() { tracer::set_clock_sync_enabled(false); }
+    ~without_clock_sync() { tracer::set_clock_sync_enabled(true); }
+};
+
 TEST_CASE("tracer records land in the buffer with their header") {
+    const without_clock_sync quiet;
     tracer::trace_buffers buffers(4096, 4096, 4096, 512);
     tracer::local_tracer = &buffers;
 
@@ -266,6 +277,7 @@ TEST_CASE("tracer records land in the buffer with their header") {
 }
 
 TEST_CASE("a string parameter is recorded as its bytes, however it arrives") {
+    const without_clock_sync quiet;
     const auto recorded_size = [](auto&& record) {
         tracer::trace_buffers buffers(4096, 4096, 4096, 512);
         tracer::local_tracer = &buffers;
@@ -405,6 +417,93 @@ TEST_CASE("buffer_group keeps whole records") {
     CHECK(group.collect().size() == 80);
 }
 
+
+// --- clock sync ---------------------------------------------------------------
+
+// The rate is an estimate that nothing is obliged to improve on: a program that
+// never calibrates traces with the default, which is the machine this was
+// written on and so the right order of magnitude anywhere. Both it and a fresh
+// measurement have to land in the range a CPU's tick rate can be -- 10 MHz to
+// 10 GHz -- because a rate outside that would turn every converted timestamp
+// into nonsense without anything else noticing.
+TEST_CASE("the tick rate is a plausible one, measured or not") {
+    constexpr std::uint64_t slowest = 10'000'000;
+    constexpr std::uint64_t fastest = 10'000'000'000;
+
+    CHECK(tracer::tsc_ticks_per_second() >= slowest);
+    CHECK(tracer::tsc_ticks_per_second() <= fastest);
+
+    // The one thing here that sleeps, which is why calibration is optional.
+    const std::uint64_t measured = tracer::calibrate_tsc();
+    CHECK(measured >= slowest);
+    CHECK(measured <= fastest);
+    MESSAGE("measured ", measured, " ticks per second");
+
+    // And it is installed, so the sync records written after it carry it.
+    CHECK(tracer::tsc_ticks_per_second() == measured);
+
+    // A second measurement of the same clock agrees with the first to within a
+    // percent: what would not is a calibration reading two unrelated clocks.
+    const std::uint64_t again = tracer::calibrate_tsc();
+    CHECK(std::max(measured, again) - std::min(measured, again) < measured / 100);
+
+    tracer::set_tsc_ticks_per_second(tracer::default_tsc_ticks_per_second);
+}
+
+// What a sync record is for: a trace is a stream of tick counts, and a tick
+// count is only a time beside a wall clock reading taken at the same moment.
+//
+// One at the head of every ring is not enough on its own, because a ring is
+// bounded: the buffer holding the first sync is eventually retired and dropped,
+// and a trace collected after that would have none at all. So a rotation writes
+// another, into the fresh buffer and ahead of the record that forced it.
+//
+// Asserted on the demo trace, read back with the generated decoder -- the same
+// pair of build steps the snapshot at the bottom of this file covers. It has to
+// be that trace and not one taken here: a sync record is written by code
+// inlined from tracer.h into whichever object built the tracer, this binary is
+// that object for a tracer built here, and a record of this binary's is one the
+// generated decoder refuses. The producer sizes its buffers below the size of
+// its workload, so a ring rotates part way through it; see emit_trace().
+TEST_CASE("every ring opens with a clock sync, and gets another one on rotation") {
+    const std::string raw = read_env_file("TRACER_TRACE");
+    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
+                                           raw.size()};
+
+    std::vector<trace::clock_sync> syncs;
+    std::size_t events = 0;  // everything the trace holds, syncs included
+    std::size_t opening_run = 0;  // syncs before the first record of the workload
+    trace::decode(bytes, overloaded{
+                             [&](const trace::clock_sync& event,
+                                 const trace::tracepoint_metadata&) {
+                                 ++events;
+                                 syncs.push_back(event);
+                                 if (syncs.size() == events) {
+                                     ++opening_run;
+                                 }
+                             },
+                             [&](const auto&, const trace::tracepoint_metadata&) { ++events; },
+                         });
+
+    // Two openers -- the info ring's and the debug ring's, and not the metadata
+    // ring's, which never gets one -- ahead of any record the workload wrote.
+    CHECK(opening_run == 2);
+
+    // And more than that in total, which is the rotations: a trace whose rings
+    // had never rotated would hold exactly the two.
+    CHECK(syncs.size() > 2);
+    CHECK(syncs.size() < events);
+
+    // Every one carries both halves of the conversion. The wall clock is the
+    // demo's fixed one -- its records have to be reproducible for the snapshot
+    // the build takes of them -- and the rate is the uncalibrated default,
+    // since nothing in the producer calibrates.
+    for (const trace::clock_sync& sync : syncs) {
+        CHECK(sync.ticks_per_second == tracer::default_tsc_ticks_per_second);
+        CHECK(sync.realtime_ns == syncs.front().realtime_ns);
+    }
+}
+
 // A tracepoint's name becomes a struct's name and its parameters become that
 // struct's members, so a table the generator accepts is one C++ will too. What
 // it cannot express, it refuses -- naming the call site, because a build step's
@@ -481,6 +580,7 @@ TEST_CASE("the code generator merges tracepoints that share a name") {
 // is the registration in tracer.h, which happens as the library is mapped and
 // is undone as it goes away.
 TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them away") {
+    const without_clock_sync quiet;
     const std::size_t before = tracer::tracepoints().size();
     const std::size_t objects_before = tracing_objects().size();
     REQUIRE(count_named("plugin_loaded") == 0);
@@ -596,6 +696,11 @@ TEST_CASE("a tracer records the objects it was built with, and the changes it is
 // not know this test binary. So only the plugin's tracepoint is switched on:
 // what is being tested is that the plugin's records survive its own reload.
 TEST_CASE("a plugin can be replaced without its records being misread") {
+    // This binary's own records -- which a sync record is -- are not decodable
+    // by the generated decoder: it was generated from the producer's table and
+    // the plugin's, and this executable is neither.
+    const without_clock_sync quiet;
+
     // Taken before anything is loaded, so that "the object that is not this
     // one" means the plugin for the rest of the test.
     const std::vector<tracer::trace_object> alone = tracing_objects();
@@ -744,24 +849,27 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 // generated decoder, or the demo workload.
 TEST_CASE("decoded trace") {
     check_snapshot(read_env_file("TRACER_DECODED"), R"snap(
-        |               900 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
-        |              1000 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
-        |              1100 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |              1200 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
-        |              1300 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
-        |              1400 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
-        |              1500 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |              1600 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |              1700 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
-        |              1800 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
-        |              1900 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
-        |              2000 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
-        |              2100 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
-        |              2200 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
-        |              2300 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
-        |              2400 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
-        |              2500 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
-        |              2600 | modules/tracer/trace_producer.cc:88           | shutting_down{}
+        |               900 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              1000 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              1100 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
+        |              1200 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
+        |              1300 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1400 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
+        |              1500 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
+        |              1600 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
+        |              1700 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1800 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              1900 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
+        |              2000 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
+        |              2100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
+        |              2200 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
+        |              2300 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
+        |              2400 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
+        |              2500 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
+        |              2600 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
+        |              2700 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              2800 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
+        |              2900 | modules/tracer/trace_producer.cc:88           | shutting_down{}
         )snap"_snap);
 }
 
@@ -778,6 +886,8 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::decode(bytes, out, dsos);
 
     check_snapshot(out.text, R"snap(
+        |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:58 listening{port=8080}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
@@ -794,6 +904,7 @@ TEST_CASE("a decoded trace is structs, not text") {
         |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=99}
         |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
         |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
+        |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:86 table_opened{name=anonymous, opened_at=<none>}
         |modules/tracer/trace_producer.cc:88 shutting_down{}
         )snap"_snap);

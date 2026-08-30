@@ -92,8 +92,15 @@ int emit_trace(const char* path) {
     // Small rings: the demo writes a few hundred bytes, and the default 68 MiB
     // budget would only slow the build down.
     // Constructing it writes the metadata prologue -- the two objects this
-    // binary is, as load events -- into its own metadata ring.
-    tracer::trace_buffers buffers(64 * 1024, 64 * 1024, 4096, 4096);
+    // binary is, as load events -- into its own metadata ring, and a clock sync
+    // into each of the others.
+    //
+    // 256-byte buffers, which is smaller than the workload: the info ring
+    // rotates part way through it, so the trace carries a clock sync record
+    // written by a rotation as well as the two the constructor wrote. The
+    // capacity is far larger, so nothing is evicted and the trace is still the
+    // whole workload.
+    tracer::trace_buffers buffers(64 * 1024, 64 * 1024, 4096, 256);
     tracer::local_tracer = &buffers;
     // Tracepoints are nops until their keys are flipped, so a run that turned
     // nothing on would write an empty trace. The demo wants all of them; a real
