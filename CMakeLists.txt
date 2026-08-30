@@ -35,7 +35,8 @@ option(Scylla_ENABLE_LTO "Turn on link-time optimization for the 'release' mode.
 # sites in transport/server.cc and the snapshot API in api/system.cc.
 include_directories(
     /home/michal/projects/cpp_template/modules/tracer/include
-    /home/michal/projects/cpp_template/modules/static_keys/include)
+    /home/michal/projects/cpp_template/modules/static_keys/include
+    /home/michal/projects/cpp_template/modules/source_location/include)
 
 include(mode.common)
 get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
