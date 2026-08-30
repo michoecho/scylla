@@ -412,6 +412,12 @@
         {
           default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
             packages = with pkgs; [
+              # An interactive bash, so running `bash` inside the shell gets a
+              # readline build. Without it PATH resolves to the minimal bash
+              # pulled in as a build dependency, which has no readline and so
+              # prints PS1's \[ \] non-printing markers literally instead of
+              # honouring them -- a visibly mangled prompt.
+              bashInteractive
               aflplusplus
               cli11
               doctest
