@@ -483,7 +483,7 @@ struct io_end {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1007
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1151
 struct trace_objects_loaded {
     std::uint32_t count;
 
@@ -493,7 +493,7 @@ struct trace_objects_loaded {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1022
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1166
 struct trace_object_unloaded {
     std::string_view build_id;
     std::uint64_t base_address;
@@ -505,7 +505,7 @@ struct trace_object_unloaded {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1035
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1179
 struct trace_object_loaded {
     std::string_view build_id;
     std::uint64_t table_address;
@@ -518,6 +518,18 @@ struct trace_object_loaded {
                            detail::field_to_string(table_address),
                            detail::field_to_string(base_address),
                            detail::field_to_string(mapping_size));
+    }
+};
+
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1125
+struct clock_sync {
+    std::uint64_t realtime_ns;
+    std::uint64_t ticks_per_second;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("clock_sync{{realtime_ns={}, ticks_per_second={}}}",
+                           detail::field_to_string(realtime_ns),
+                           detail::field_to_string(ticks_per_second));
     }
 };
 
@@ -588,15 +600,23 @@ inline trace_object_loaded read_trace_object_loaded(const std::byte*& p, const s
     return out;
 }
 
+inline clock_sync read_clock_sync(const std::byte*& p, const std::byte* end) {
+    clock_sync out{};
+    out.realtime_ns = detail::read_unaligned<std::uint64_t>(p, end);
+    out.ticks_per_second = detail::read_unaligned<std::uint64_t>(p, end);
+    return out;
+}
+
 inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/scylla_tracer.cc", 81, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
 inline constexpr tracepoint_metadata metadata_1{"execution_stage", "seastar/src/core/scylla_tracer.cc", 86, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
 inline constexpr tracepoint_metadata metadata_2{"cql_request", "seastar/src/core/scylla_tracer.cc", 91, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
 inline constexpr tracepoint_metadata metadata_3{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 96, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
 inline constexpr tracepoint_metadata metadata_4{"io_begin", "seastar/src/core/scylla_tracer.cc", 101, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
 inline constexpr tracepoint_metadata metadata_5{"io_end", "seastar/src/core/scylla_tracer.cc", 106, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_6{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1007, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_7{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1022, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_8{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1035, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_6{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1151, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_7{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1166, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_8{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1179, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_9{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1125, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
 
 }  // namespace detail
 
@@ -615,6 +635,7 @@ struct object_descriptor {
 };
 
 inline constexpr object_descriptor objects[] = {
+    {"0309a3e75625998508004d6557d78f3de5e99d79", 0, 0},
     {"031d8c981cc111d747835b88605ef2a7cd183841", 0, 0},
     {"14ab4e5d89a6726d00357ff52f5430030e0741f8", 0, 0},
     {"2336665dcde4b83ab92e76e2de9df087e4d9d52f", 0, 0},
@@ -622,17 +643,16 @@ inline constexpr object_descriptor objects[] = {
     {"341e289fdd8a934c5ec6359ac67bc10efd15b21e", 0, 0},
     {"37d40ae813bd56440d2e4b796177d94b70e6f5b1", 0, 0},
     {"3890fe5da8e54c0ebce0c03d20e72836424d8f94", 0, 0},
-    {"38fed599a03f0cf8ad8375518ed3e91395f2cfe1", 0, 0},
     {"48f14782322a959c65ae96b2ce9d6b5919180831", 0, 0},
     {"7b4d84838262e842fbf03a46d3e3d60135b8a20a", 0, 0},
     {"812dbcc86f2a2d6a6ec964d488cc071e17d0bcf6", 0, 0},
     {"b4ccadde6bdd8a27427bde094488cb299d811bae", 0, 0},
-    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 0, 0},
-    {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 0, 0},
-    {"eab16d42136776e092b375ec994661ecf3de14b9", 0, 0},
-    {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 0, 0},
-    {"f3913ad02a74bdec9fd138a9870faac2851b805c", 0, 9},
-    {"ff15fcce562be56ef6db5d0883b9e7fc72362292", 9, 0},
+    {"b9e4cdc2669c6819b262ae705fa5631ba3b50dbf", 0, 10},
+    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 10, 0},
+    {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 10, 0},
+    {"eab16d42136776e092b375ec994661ecf3de14b9", 10, 0},
+    {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 10, 0},
+    {"ff15fcce562be56ef6db5d0883b9e7fc72362292", 10, 0},
 };
 
 namespace detail {
@@ -939,6 +959,13 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             case 8:
                 load(detail::read_trace_object_loaded(q, q_end));
                 break;
+            case 9: {
+                tracepoint_metadata meta = detail::metadata_9;
+                meta.timestamp = timestamp;
+                clock_sync event = detail::read_clock_sync(q, q_end);
+                cb(event, meta);
+                break;
+            }
             default:
                 throw std::runtime_error(std::format("bad tracepoint id {}", id));
         }

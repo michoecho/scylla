@@ -23,6 +23,8 @@
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 #include <cstdint>
+#include <ctime>
+#include <optional>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -30,7 +32,141 @@
 #include <unordered_map>
 #include "decoder.h"
 
-const double MULTIPLIER = 0.2941171840072451;
+// Nanoseconds per rdtsc tick.  A fallback: the rate of the machine the original
+// experiment ran on, used only for a trace that carries no clock_sync records
+// at all.  A trace that does carries a better one -- see wall_clock below --
+// measured over the trace itself, and main() installs that over this.
+double MULTIPLIER = 0.2941171840072451;
+
+// --- turning ticks into wall clock times --------------------------------------
+//
+// A record's timestamp is an rdtsc reading: a tick count, which is a duration
+// away from another tick count and nothing at all on its own.  What dates it is
+// the clock_sync record -- a tick count (its own header timestamp) beside a
+// wall clock reading, plus the ticks-per-second the process believed in -- which
+// the tracer writes into the head of every ring and again at every rotation.
+//
+// This is the two-pass consumer that "reading a sync record back" in
+// modules/tracer/include/tracer/tracer.h asks for.  Pass one is load_trace(),
+// which collects every sync record as it decodes; pass two is realtime_ns()
+// below, which converts a record against the syncs on *either side* of it.
+// Between two syncs that is an interpolation, and its rate is one measured over
+// exactly this trace on exactly this machine -- the rate field is not consulted
+// at all.  Only outside the outermost pair does it extrapolate with that field,
+// which may well be a default nobody ever calibrated.
+struct clock_sync_point {
+    int64_t ticks;
+    uint64_t realtime_ns;
+    uint64_t ticks_per_second;
+};
+
+// Every shard's rings are stamped by the same rdtsc and the same wall clock, so
+// the syncs out of all the files go into one list rather than one per shard.
+static std::vector<clock_sync_point> clock_syncs;
+
+class wall_clock {
+public:
+    // Sort and dedupe the syncs collected during the decode.  Ticks are the key:
+    // two syncs written at the same tick (one per level, at construction) are one
+    // point, and a sync is useless until it can be ordered against the records.
+    void build(std::vector<clock_sync_point> points) {
+        std::ranges::sort(points, {}, &clock_sync_point::ticks);
+        const auto dup = std::ranges::unique(points, {}, &clock_sync_point::ticks);
+        points.erase(dup.begin(), dup.end());
+        points_ = std::move(points);
+    }
+
+    bool empty() const { return points_.empty(); }
+    size_t size() const { return points_.size(); }
+
+    // When a record whose timestamp is `ticks` was taken, in nanoseconds since
+    // the epoch, or nothing at all if the trace said nothing about its clock.
+    //
+    // The arithmetic is 128-bit and relative to a sync rather than double: a
+    // nanosecond count since 1970 is ~2^61, so a double holds it only to a few
+    // hundred nanoseconds -- which is coarser than the column this ends up in.
+    std::optional<uint64_t> realtime_ns(int64_t ticks) const {
+        if (points_.empty()) {
+            return std::nullopt;
+        }
+        const auto after = std::ranges::lower_bound(points_, ticks, {}, &clock_sync_point::ticks);
+        if (after == points_.begin()) {
+            // Before the first sync, or exactly on it: extrapolate backwards.
+            return extrapolate(points_.front(), ticks);
+        }
+        const clock_sync_point& before = *(after - 1);
+        if (after == points_.end()) {
+            return extrapolate(before, ticks);
+        }
+        // Bracketed, which is the case worth having written this for.
+        const __int128 span_ticks = __int128(after->ticks) - before.ticks;
+        const __int128 span_ns = __int128(after->realtime_ns) - before.realtime_ns;
+        const __int128 offset = (__int128(ticks - before.ticks) * span_ns) / span_ticks;
+        return uint64_t(__int128(before.realtime_ns) + offset);
+    }
+
+    // What a tick is worth in nanoseconds, for the durations everything else in
+    // here measures.  The outermost pair of syncs, because that is the longest
+    // baseline the trace offers; the recorded rate if there is only one sync;
+    // and nothing if there are none, leaving MULTIPLIER as it was.
+    std::optional<double> ns_per_tick() const {
+        if (points_.size() >= 2) {
+            const auto& first = points_.front();
+            const auto& last = points_.back();
+            return double(last.realtime_ns - first.realtime_ns) / double(last.ticks - first.ticks);
+        }
+        if (points_.size() == 1 && points_.front().ticks_per_second != 0) {
+            return 1e9 / double(points_.front().ticks_per_second);
+        }
+        return std::nullopt;
+    }
+
+private:
+    // Outside the syncs: the recorded rate is all there is, and it is an
+    // estimate.  A trace normally has a sync at each end, so this is the path
+    // taken only by the handful of records before the opening one.
+    static std::optional<uint64_t> extrapolate(const clock_sync_point& sync, int64_t ticks) {
+        if (sync.ticks_per_second == 0) {
+            return std::nullopt;
+        }
+        const __int128 offset =
+            (__int128(ticks - sync.ticks) * 1'000'000'000) / __int128(sync.ticks_per_second);
+        const __int128 ns = __int128(sync.realtime_ns) + offset;
+        if (ns < 0) {
+            return std::nullopt;
+        }
+        return uint64_t(ns);
+    }
+
+    std::vector<clock_sync_point> points_;
+};
+
+static wall_clock the_clock;
+
+// The width of what format_realtime() returns, so a trace without a clock can
+// leave the column blank and keep the rest of the line where it was.
+inline constexpr size_t realtime_width = 29;
+
+// "YYYY-MM-DD HH:MM:SS.NNNNNNNNN", in UTC -- which is what Scylla's own logs
+// are stamped in, and the only reading of a wall clock that means the same
+// thing on the node and on the machine looking at its trace.
+static std::string format_realtime(uint64_t ns) {
+    const std::time_t seconds = std::time_t(ns / 1'000'000'000ull);
+    const uint64_t fraction = ns % 1'000'000'000ull;
+    std::tm tm{};
+    gmtime_r(&seconds, &tm);
+    return fmt::format("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:09}", tm.tm_year + 1900,
+                       tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, fraction);
+}
+
+// The wall clock column for one record: the time, or blanks of the same width
+// for a record no sync could date.
+static std::string realtime_column(int64_t ticks) {
+    if (const auto ns = the_clock.realtime_ns(ticks)) {
+        return format_realtime(*ns);
+    }
+    return std::string(realtime_width, ' ');
+}
 
 inline int64_t rdtsc() {
     uint64_t rax, rdx;
@@ -171,10 +307,15 @@ struct full_log_cache {
 static std::string log_line_text(const entry& e, int64_t start_ts, bool include_task_id) {
     auto dt_nano = std::chrono::duration<double, std::nano>(double(e.ts - start_ts) * MULTIPLIER);
     auto dt = std::chrono::duration<double, std::milli>(dt_nano);
+    // The wall clock first and the offset from the start of the request second:
+    // one says when this happened, the other how far into the request it is, and
+    // a line reading a latency breakdown wants both.
+    const std::string when = realtime_column(e.ts);
     if (include_task_id) {
-        return fmt::format("{:12.9f}: {:16x}: {}", dt.count(), e.query(), entry_message(e));
+        return fmt::format("{}  {:12.9f}: {:16x}: {}", when, dt.count(), e.query(),
+                           entry_message(e));
     }
-    return fmt::format("{:12.9f}: {}", dt.count(), entry_message(e));
+    return fmt::format("{}  {:12.9f}: {}", when, dt.count(), entry_message(e));
 }
 
 static void render_truncation_warning(size_t count, int threshold, bool spanned) {
@@ -314,6 +455,12 @@ struct sink {
     void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
         out.push_back({0x5, e.task, e.io, int64_t(m.timestamp)});
     }
+    // Pass one of the wall clock conversion: a sync record is not an event of
+    // the program's own, so it never becomes an entry -- it is put aside, and
+    // the whole collection is handed to the_clock once every file is decoded.
+    void operator()(const trace::clock_sync& e, const trace::tracepoint_metadata& m) const {
+        clock_syncs.push_back({int64_t(m.timestamp), e.realtime_ns, e.ticks_per_second});
+    }
     template <typename Event>
     void operator()(const Event&, const trace::tracepoint_metadata&) const {}
 };
@@ -381,6 +528,19 @@ int main(int argc, char** argv) {
         fprintf(stderr, "no records in %s\n", argv[1]);
         return 1;
     }
+
+    // Every file has been read, so every sync record in the trace is in hand:
+    // pass two can now convert any record against the syncs either side of it.
+    // A trace from a tracer older than the sync records -- or from one with them
+    // switched off -- simply has none, and the log columns come out blank while
+    // everything else works as before.
+    the_clock.build(std::move(clock_syncs));
+    if (const auto ns_per_tick = the_clock.ns_per_tick()) {
+        MULTIPLIER = *ns_per_tick;
+    }
+    fmt::print("{} clock sync records, {:.6f} ns/tick ({:.4f} GHz){}\n", the_clock.size(),
+               MULTIPLIER, 1.0 / MULTIPLIER,
+               the_clock.empty() ? " -- no sync records, times unavailable" : "");
 
     // The analysis below walks `span` as a global timeline -- it was reading a
     // single thread's ring in file order -- so the shards have to be merged
