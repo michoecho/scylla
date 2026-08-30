@@ -573,32 +573,34 @@ int main(int argc, char** argv) {
             static uint64_t id_log = queries[0].id;
             {
             ImGui::Begin("Graph");
-            ImPlot::BeginPlot("HdrHistogram", ImVec2(-1,0));
-            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
-            ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-            ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-            ImPlot::SetupAxesLimits(1, 100000, 0.0001, queries.back().latency.count());
-            ImPlot::PlotLine("Latency", xx.data(), yy.data(), 1001);
             static double line_x;
             static size_t w = 0;
             static uint64_t id_full_log = id_log;
-
-            if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(0)) {
-                ImPlotPoint pt = ImPlot::GetPlotMousePos();
-                line_x = std::clamp(pt.x, 1.0, 100000.0);
-                w = std::clamp(queries.size() - size_t(1.0 / line_x * queries.size()), size_t(0), size_t(queries.size() - 1));
-                id_log = queries[w].id;
-                id_full_log = id_log;
-            }
-            ImPlotDragToolFlags flags = ImPlotDragToolFlags_NoCursors | ImPlotDragToolFlags_NoFit | ImPlotDragToolFlags_NoInputs;
-            ImPlot::DragLineX(0, &line_x, ImVec4(1,1,1,1), 1, flags);
-
             static double rect[] = {100.0, 0.001, 141.2, 0.003};
-            rect[1] = 0.0001;
-            rect[3] = 0.001;
-            ImPlot::DragRect(0,&rect[0],&rect[1],&rect[2],&rect[3],ImVec4(1,0,1,1), ImPlotDragToolFlags_Delayed);
 
-            ImPlot::EndPlot();
+            if (ImPlot::BeginPlot("HdrHistogram", ImVec2(-1,0))) {
+                ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_Lock, ImPlotAxisFlags_Lock);
+                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+                ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+                ImPlot::SetupAxesLimits(1, 100000, 0.0001, queries.back().latency.count());
+                ImPlot::PlotLine("Latency", xx.data(), yy.data(), 1001);
+
+                if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(0)) {
+                    ImPlotPoint pt = ImPlot::GetPlotMousePos();
+                    line_x = std::clamp(pt.x, 1.0, 100000.0);
+                    w = std::clamp(queries.size() - size_t(1.0 / line_x * queries.size()), size_t(0), size_t(queries.size() - 1));
+                    id_log = queries[w].id;
+                    id_full_log = id_log;
+                }
+                ImPlotDragToolFlags flags = ImPlotDragToolFlags_NoCursors | ImPlotDragToolFlags_NoFit | ImPlotDragToolFlags_NoInputs;
+                ImPlot::DragLineX(0, &line_x, ImVec4(1,1,1,1), 1, flags);
+
+                rect[1] = 0.0001;
+                rect[3] = 0.001;
+                ImPlot::DragRect(0,&rect[0],&rect[1],&rect[2],&rect[3],ImVec4(1,0,1,1), ImPlotDragToolFlags_Delayed);
+
+                ImPlot::EndPlot();
+            }
 
             ImGui::End();
 
