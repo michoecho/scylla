@@ -50,12 +50,18 @@ numeric event ids its analysis keys off.
 
 | tracepoint | meaning | viewer id |
 |---|---|---|
-| `run_task{prev, task}` | the reactor picked a task off a run queue | `0` |
+| `run_task{prev, task, at}` | the reactor picked a task off a run queue, and where that task was created | `0` |
 | `cql_request{prev, task}` | a CQL frame arrived and opened a new chain | `1` |
 | `io_begin{task, io}` | a task submitted an I/O and is now waiting | `0x4` |
 | `io_end{task, io}` | that I/O completed | `0x5` |
 | `semaphore_execute{prev, task}` | the reader semaphore's loop ran a queued read | `0xa` |
 | `execution_stage{prev, task}` | an execution stage ran a queued work item | `0xb` |
+
+`at` is `seastar::task::location()` -- the `then()` call site, or the `co_await`
+a coroutine suspended at, which Seastar was already storing on every task as its
+"resume point". It is one address rather than a string (see below), so the viewer
+prints it next to each `SWITCH` line only when it has the objects to resolve it
+against.
 
 The viewer also has a formatter for `0x3`, a reader-semaphore admission
 decision, which nothing currently emits.
@@ -136,6 +142,17 @@ decoder.h        generated from this binary's tracepoint table
 shard-0.trace    one file per shard
 shard-1.trace
 ```
+
+The `run_task` locations need the objects they point into, and **the node does
+not write them** -- see "Source locations" below. Gather them beside the traces
+afterwards:
+
+```sh
+tools/gather-dsos third-party/scylladb/build/Dev/scylla \
+    third-party/scylladb/ignored/workdir_01/traces/<stamp>/dsos --strip-debug
+```
+
+from the binary the trace came from, before rebuilding it.
 
 `load.py` flushes the memtable through
 `POST /storage_service/keyspace_flush/tr` and reads back with `BYPASS CACHE`.
@@ -233,8 +250,10 @@ stream is itself made of tracepoints, so its shape is part of what a decoder is
 generated from: a load event now carries the object's base address and extent
 beside its tracepoint table's, which is what lets a source location be read back.
 An old decoder reads old traces and a new one reads new traces; neither reads the
-other's, and the copy checked in here is the one that matches `smoke.trace`.
-Regenerate both together after rebuilding Scylla against a newer `modules/tracer`.
+other's, and the copy checked in here is the one that matches the current Scylla
+build. Regenerate it after rebuilding Scylla against a newer `modules/tracer`.
+(`smoke.trace` predates all of this and no longer decodes against it; nothing
+reads it.)
 
 ### Source locations
 
@@ -247,10 +266,50 @@ object files themselves, found by build ID under
 $TRACE_DSO_DIR/.build-id/<first two hex digits>/<the rest>.debug
 ```
 
-which is the layout `gdb --debug-file-directory` and `llvm-cov` already use, and
-which `tracer::write_dso_directory()` writes. Without it the rest of the trace
-still decodes and each location comes out as `<unresolved 0x...>` rather than as
-a guess.
+which is the layout `gdb --debug-file-directory` and `llvm-cov` already use.
+Without it the rest of the trace still decodes and each location comes out as
+`<unresolved 0x...>` rather than as a guess.
+
+**Filling that directory is not the traced process's job.** A node has no
+business copying its own text into its workdir on every snapshot, and in a real
+deployment it would not: a trace names its objects by build ID, and a build-ID
+server -- debuginfod serves exactly this namespace -- hands them to whoever is
+reading the trace. Here it is `tools/gather-dsos`, run by hand:
+
+```sh
+tools/gather-dsos BINARY OUTDIR [--strip-debug] [--link]
+```
+
+It resolves the binary's libraries with `ldd` -- DT_NEEDED transitively, under
+the same RUNPATH rules the loader will use -- rather than looking at a running
+process, because a program that never `dlopen`s maps exactly that set, and Scylla
+does not. Something arriving only through `dlopen` would be missing, and a
+location inside it would read `<unresolved 0x...>` while everything else decoded.
+
+`--strip-debug` is worth taking: a decoder reads program headers, `.rodata` and
+the dynamic relocations and never touches debug info, which on the `Dev` binary
+is 564 MB down to 162 MB for the same 357 resolved call sites.
+
+The viewer picks up a `dsos/` directory inside the snapshot on its own;
+`$TRACE_DSO_DIR` overrides, for a directory kept somewhere else.
+
+`run_task` carries a location per record, and the same call site turns up
+thousands of times, so the viewer interns them by address and each record holds
+an index.
+
+Two things a location needs that the obvious reading of "just look it up in the
+object" misses, both handled by the generated decoder:
+
+- The `file` and `function` of a `std::source_location` in a **shared** object
+  are not in its file. x86-64 uses RELA, so the place holds zero and the value
+  is the addend in `.rela.dyn`; the decoder applies those relocations. Without
+  that every location in `libseastar.so` reads its strings from offset zero and
+  comes out as `ELF:3141:41`.
+- Most locations are **not** in an object that traces. Scylla's tracepoints all
+  live in `libseastar.so`, while the `then()` call sites are all over the
+  executable, so `tracer::trace_objects()` describes every loaded object and not
+  only the ones holding a tracepoint table. An object nothing describes is an
+  address a decoder cannot even name.
 
 ## Debugging a trace without the GUI
 

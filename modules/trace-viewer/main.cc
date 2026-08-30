@@ -27,6 +27,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <unordered_map>
 #include "decoder.h"
 
 const double MULTIPLIER = 0.2941171840072451;
@@ -60,6 +61,11 @@ struct entry {
     uint64_t arg;
     int64_t ts;
 
+    // Where the task this record is about was created, as an index into
+    // locations() below. Zero is "none" -- most events carry no location at all,
+    // and a task nobody gave a resume point to does not either.
+    uint32_t loc = 0;
+
     // Which request this record belongs to. For a *switch* that is the task
     // being switched to; for everything else, the task it happened under.
     uint64_t query() const {
@@ -70,6 +76,42 @@ struct entry {
         }
     }
 };
+
+// The decoded source locations, interned.
+//
+// run_task carries one per record and the same call site turns up thousands of
+// times -- every continuation the reactor runs off one `then()` -- so the entries
+// hold an index into this and not a string. Index 0 is the empty location, which
+// is what an unlocated event and a task with no resume point both get.
+static std::vector<std::string> location_strings{""};
+
+static uint32_t intern_location(const trace::source_location& loc) {
+    if (!loc.resolved && loc.address == 0) {
+        return 0;
+    }
+    // By address, because that is the identity of a location -- two records of
+    // the same call site are the same word -- and it is one integer compare
+    // instead of a string one.
+    static std::unordered_map<uint64_t, uint32_t> seen;
+    const auto [it, fresh] = seen.emplace(loc.address, uint32_t(location_strings.size()));
+    if (fresh) {
+        // Just the tail of the path and the function: the log line this ends up
+        // on is already wide, and "reactor.cc:1234" is what identifies a call
+        // site to someone reading it.
+        std::string file = loc.file;
+        if (const auto slash = file.rfind('/'); slash != std::string::npos) {
+            file = file.substr(slash + 1);
+        }
+        location_strings.push_back(loc.resolved
+                                       ? fmt::format("{}:{}", file, loc.line)
+                                       : loc.to_string());
+    }
+    return it->second;
+}
+
+static const std::string& location_string(uint32_t index) {
+    return location_strings[index];
+}
 
 // Task ids are *not* namespaced by shard here, deliberately. A request
 // coordinated on one shard reaches a tablet on another, and the continuations
@@ -85,7 +127,7 @@ struct sink {
     std::vector<entry>& out;
 
     void operator()(const trace::run_task& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0, e.prev, e.task, int64_t(m.timestamp)});
+        out.push_back({0, e.prev, e.task, int64_t(m.timestamp), intern_location(e.at)});
     }
     void operator()(const trace::cql_request& e, const trace::tracepoint_metadata& m) const {
         out.push_back({1, e.prev, e.task, int64_t(m.timestamp)});
@@ -104,7 +146,8 @@ struct sink {
 };
 
 // One shard's trace file, decoded into the records above.
-static void load_trace(const std::filesystem::path& path, std::vector<entry>& out) {
+static void load_trace(const std::filesystem::path& path, std::vector<entry>& out,
+                       trace::dso_directory& dsos) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::system_error(errno, std::generic_category(), path.string());
@@ -112,7 +155,7 @@ static void load_trace(const std::filesystem::path& path, std::vector<entry>& ou
     const std::vector<char> raw{std::istreambuf_iterator<char>(in),
                                 std::istreambuf_iterator<char>()};
     trace::decode({reinterpret_cast<const std::byte*>(raw.data()), raw.size()},
-                  sink{out});
+                  sink{out}, dsos);
 }
 template <> struct fmt::formatter<entry> : formatter<string_view> {
     auto format(const entry& e, auto& ctx) const -> decltype(ctx.out()) {
@@ -144,9 +187,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // The objects the trace's source locations point into, as gathered beside
+    // the traces by tools/gather-dsos. Nothing in the traced process writes
+    // them: an address is read back against the object it is in, and finding
+    // that object is the reader's job, not the writer's. $TRACE_DSO_DIR
+    // overrides; without either, every location decodes as <unresolved 0x...>
+    // and the rest of the trace is unaffected.
+    const std::filesystem::path dso_dir = std::filesystem::path(argv[1]) / "dsos";
+    trace::dso_directory dsos =
+        std::getenv("TRACE_DSO_DIR") != nullptr || !std::filesystem::exists(dso_dir)
+            ? trace::dso_directory()
+            : trace::dso_directory(dso_dir.string());
+
     std::vector<entry> entries;
     for (const auto& file : files) {
-        load_trace(file, entries);
+        load_trace(file, entries, dsos);
         fmt::print("{}: {} records so far\n", file.string(), entries.size());
     }
     if (entries.empty()) {
@@ -648,7 +703,7 @@ int main(int argc, char** argv) {
                     auto message = std::invoke([&] () -> std::string {
                         const auto e = sorted[i];
                         switch (e.event) {
-                        case 0: return fmt::format("{:10s}", "SWITCH");
+                        case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
                         case 1: return "START";
                         case 0xa: return "PERMIT";
                         case 0xb: return "ES";
@@ -705,7 +760,7 @@ int main(int argc, char** argv) {
                     auto message = std::invoke([&] () -> std::string {
                         const auto e = span[i];
                         switch (e.event) {
-                        case 0: return fmt::format("{:10s}", "SWITCH");
+                        case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
                         case 1: return "START";
                         case 0xa: return "PERMIT";
                         case 0xb: return "ES";
