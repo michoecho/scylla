@@ -536,8 +536,8 @@ static std::string log_line_text(const entry& e, int64_t start_ts, bool include_
     // a line reading a latency breakdown wants both.
     const std::string when = realtime_column(e.ts);
     if (include_task_id) {
-        return fmt::format("{}  {:12.9f}: {:16x}: {}", when, dt.count(), e.query(),
-                           entry_message(e));
+        return fmt::format("{}  {:12.9f}: cpu{} {:16x}: {}", when, dt.count(), e.shard,
+                           e.query(), entry_message(e));
     }
     return fmt::format("{}  {:12.9f}: {}", when, dt.count(), entry_message(e));
 }
@@ -1132,6 +1132,34 @@ int main(int argc, char** argv) {
     log_cache log_cache_state;
     full_log_cache full_log_cache_state;
 
+    // Keep all views of the selected task in sync.  In particular, the
+    // histogram index is what drives the timing header in the log window.
+    uint64_t id_log = queries.empty() ? 0 : queries.front().id;
+    uint64_t id_full_log = id_log;
+    size_t w = 0;
+    double line_x = 1.0;
+    auto select_task = [&] (uint64_t task_id, bool update_full_log) {
+        for (size_t i = 0; i < queries.size(); ++i) {
+            if (queries[i].id != task_id) {
+                continue;
+            }
+            id_log = task_id;
+            if (update_full_log) {
+                id_full_log = task_id;
+            }
+            w = i;
+            // Put the marker in the middle of the histogram bucket for this
+            // query.  The half-bucket offset avoids floating-point rounding
+            // making the histogram's inverse mapping select the next query.
+            line_x = i == 0
+                         ? 1.0
+                         : static_cast<double>(queries.size()) /
+                               (static_cast<double>(queries.size() - i) - 0.5);
+            line_x = std::clamp(line_x, 1.0, 100000.0);
+            return;
+        }
+    };
+
     // Main loop
     bool done = false;
     while (!done)
@@ -1171,6 +1199,7 @@ int main(int argc, char** argv) {
             if (ImGui::BeginMenu("View")) {
                 if (ImGui::BeginMenu("Dockers")) {
                     ImGui::MenuItem("Config", nullptr, &show_config_window);
+                    ImGui::MenuItem("Demo", nullptr, &show_demo_window);
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenu();
@@ -1189,7 +1218,7 @@ int main(int argc, char** argv) {
 
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window) {
-            // ImGui::ShowDemoWindow(&show_demo_window);
+            ImGui::ShowDemoWindow(&show_demo_window);
         }
 
 #if 0
@@ -1316,12 +1345,8 @@ int main(int argc, char** argv) {
             static bool just_chosen = true;
             static size_t chosen_unfull = -1;
             static bool just_chosen_unfull = true;
-            static uint64_t id_log = queries[0].id;
             {
             ImGui::Begin("Graph");
-            static double line_x;
-            static size_t w = 0;
-            static uint64_t id_full_log = id_log;
             static double rect[] = {100.0, 0.001, 141.2, 0.003};
 
             if (ImPlot::BeginPlot("HdrHistogram", ImVec2(-1,0))) {
@@ -1335,8 +1360,7 @@ int main(int argc, char** argv) {
                     ImPlotPoint pt = ImPlot::GetPlotMousePos();
                     line_x = std::clamp(pt.x, 1.0, 100000.0);
                     w = std::clamp(queries.size() - size_t(1.0 / line_x * queries.size()), size_t(0), size_t(queries.size() - 1));
-                    id_log = queries[w].id;
-                    id_full_log = id_log;
+                    select_task(queries[w].id, true);
                 }
                 ImPlotDragToolFlags flags = ImPlotDragToolFlags_NoCursors | ImPlotDragToolFlags_NoFit | ImPlotDragToolFlags_NoInputs;
                 ImPlot::DragLineX(0, &line_x, ImVec4(1,1,1,1), 1, flags);
@@ -1534,7 +1558,10 @@ int main(int argc, char** argv) {
                                 if (ImGui::Selectable(line.text.c_str(), highlighted)) {
                                     auto x = line.record.query();
                                     if (x) {
-                                        id_log = x;
+                                        // Keep the full-log anchor unchanged,
+                                        // but update the selected task and all
+                                        // of its derived views.
+                                        select_task(x, false);
                                     }
                                     selected = highlighted ? size_t(-1) : i;
                                     if (line.record.event == 0xc) {
@@ -1643,8 +1670,7 @@ int main(int argc, char** argv) {
                                     // in is the point of the link: the logs and
                                     // the plot are all keyed on it.
                                     if (sample.task != 0) {
-                                        id_log = sample.task;
-                                        id_full_log = sample.task;
+                                        select_task(sample.task, true);
                                         chosen_unfull = std::ranges::lower_bound(
                                                             sorted,
                                                             std::make_pair(sample.task,
