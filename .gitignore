@@ -28,3 +28,4 @@ buck-out/
 .update.lock
 /.worktrees
 /third-party/scylladb
+/imgui.ini
