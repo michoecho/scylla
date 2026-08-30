@@ -259,12 +259,12 @@ inline int64_t rdtsc() {
 //   1  cql_request{prev, task}      a CQL frame opened a new request chain
 //   4  io_begin{task, io}           a task submitted an I/O
 //   5  io_end{task, io}             that I/O completed
+//   0xa semaphore_execute{prev, task} the semaphore's loop ran a queued read
 //   0xb execution_stage{prev, task} an execution stage ran a queued work item
 //   0xc stacktrace_sample             the shard was interrupted for a stack sample
 //
-// (0x3 and 0xa, the reader-concurrency-semaphore events of the original
-// experiment, are not emitted by this build; the formatters for them are left
-// in place.)
+// (0x3, the admission decision of the original experiment, is not emitted by
+// this build; the formatter for it is left in place.)
 struct entry {
     uint64_t event;
     uint64_t id;
@@ -675,6 +675,15 @@ struct sink {
     }
     void operator()(const trace::execution_stage& e, const trace::tracepoint_metadata& m) const {
         out.push_back({0xb, e.prev, e.task, int64_t(m.timestamp), 0, shard});
+    }
+    // The reader concurrency semaphore's hop, and a switch in exactly the sense
+    // the ones above are: the read the loop is about to run belongs to the task
+    // that asked for it, not to the loop. Dropping these -- which is what the
+    // catch-all below did until this overload existed -- attributes every
+    // queued read, and every stack sample taken inside one, to whichever
+    // request happened to spin the loop up.
+    void operator()(const trace::semaphore_execute& e, const trace::tracepoint_metadata& m) const {
+        out.push_back({0xa, e.prev, e.task, int64_t(m.timestamp), 0, shard});
     }
     void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
         out.push_back({0x4, e.task, e.io, int64_t(m.timestamp), 0, shard});
