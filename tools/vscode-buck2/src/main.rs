@@ -573,10 +573,11 @@ async fn process_spec(
         }
         for case_name in case_names {
             let machine = machine_results.get(&case_name);
-            let details = case_outputs
+            let case_output = case_outputs
                 .get(&case_name)
                 .cloned()
-                .unwrap_or_else(|| empty_case_output());
+                .unwrap_or_default();
+            let case_details = format_case_output(&case_output);
             let (buck_status, status, duration_ms) = match machine {
                 Some(result) if result.status == "passed" => (
                     proto::TestStatus::Pass as i32,
@@ -599,6 +600,11 @@ async fn process_spec(
                     None,
                 ),
             };
+            let details = if status == "passed" {
+                format_case_summary(&case_output).unwrap_or_else(|| case_details.clone())
+            } else {
+                case_details.clone()
+            };
             orchestrator.report_test_result(proto::ReportTestResultRequest {
                 result: Some(TestResult {
                     name: case_name.clone(),
@@ -606,7 +612,7 @@ async fn process_spec(
                     msg: None,
                     target: Some(handle.clone()),
                     duration: duration_ms.map(proto_duration),
-                    details: details.clone(),
+                    details,
                     max_memory_used_bytes: result.max_memory_used_bytes,
                 }),
             }).await?;
@@ -615,7 +621,7 @@ async fn process_spec(
                 case_name,
                 status,
                 duration_ms,
-                output: details,
+                output: case_details,
             });
         }
         return Ok(());
@@ -628,7 +634,8 @@ async fn process_spec(
         } else {
             case_name.clone()
         };
-        let command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
+        let mut command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
+        command.push(verbatim_arg("--reporters=console,vscode-results"));
         let stage = TestStage { item: Some(test_stage::Item::Testing(Testing { suite: target_name.clone(), testcases: vec![case_name.clone()], variant: None, repeat_count: None })) };
         let coverage_output = coverage_output_name(&target_name, &case_name);
         let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
@@ -659,15 +666,31 @@ async fn process_spec(
                 workspace_root: paths.workspace_root,
             });
         }
-        let details = execution_output(&result);
         let status = result_status(&result);
+        let raw_stdout = execution_stream_output(result.stdout.as_ref());
+        let raw_stderr = execution_stream_output(result.stderr.as_ref());
+        let case_output = parse_case_outputs(&raw_stdout, &raw_stderr)
+            .ok()
+            .and_then(|outputs| outputs.into_iter().next().map(|(_, output)| output));
+        let case_details = case_output
+            .as_ref()
+            .map(format_case_output)
+            .unwrap_or_else(|| execution_output(&result));
+        let details = if status.1 == "passed" {
+            case_output
+                .as_ref()
+                .and_then(format_case_summary)
+                .unwrap_or_else(|| case_details.clone())
+        } else {
+            case_details.clone()
+        };
         orchestrator.report_test_result(proto::ReportTestResultRequest { result: Some(TestResult {
             name: case_name.clone(),
             status: status.0,
             msg: None,
             target: Some(handle.clone()),
             duration: result.execution_time.clone(),
-            details: details.clone(),
+            details,
             max_memory_used_bytes: result.max_memory_used_bytes,
         }) }).await?;
         output.results.push(CaseResult {
@@ -675,7 +698,7 @@ async fn process_spec(
             case_name,
             status: status.1,
             duration_ms: result.execution_time.as_ref().map(duration_ms),
-            output: details,
+            output: case_details,
         });
     }
     Ok(())
@@ -1036,10 +1059,19 @@ fn result_status(result: &proto::ExecutionResult2) -> (i32, &'static str) {
 }
 
 fn execution_output(result: &proto::ExecutionResult2) -> String {
-    format!("---- STDOUT ----\n{}\n---- STDERR ----\n{}", execution_stream_output(result.stdout.as_ref()), execution_stream_output(result.stderr.as_ref()))
+    format_case_output(&CaseOutput {
+        stdout: trim_case_output(execution_stream_output(result.stdout.as_ref())),
+        stderr: trim_case_output(execution_stream_output(result.stderr.as_ref())),
+    })
 }
 
-fn parse_case_outputs(stdout: &str, stderr: &str) -> anyhow::Result<HashMap<String, String>> {
+#[derive(Clone, Debug, Default)]
+struct CaseOutput {
+    stdout: String,
+    stderr: String,
+}
+
+fn parse_case_outputs(stdout: &str, stderr: &str) -> anyhow::Result<HashMap<String, CaseOutput>> {
     let stdout = parse_case_output_stream(stdout, "stdout")?;
     let stderr = parse_case_output_stream(stderr, "stderr")?;
     let mut names = stdout.keys().chain(stderr.keys()).cloned().collect::<Vec<_>>();
@@ -1053,13 +1085,44 @@ fn parse_case_outputs(stdout: &str, stderr: &str) -> anyhow::Result<HashMap<Stri
             let stderr_output = stderr.get(&name).map(String::as_str).unwrap_or_default();
             (
                 name,
-                format!(
-                    "---- STDOUT ----\n{}\n---- STDERR ----\n{}",
-                    stdout_output, stderr_output
-                ),
+                CaseOutput {
+                    stdout: trim_case_output(stdout_output.to_owned()),
+                    stderr: trim_case_output(stderr_output.to_owned()),
+                },
             )
         })
         .collect())
+}
+
+fn trim_case_output(mut output: String) -> String {
+    while output.starts_with(['\n', '\r']) {
+        output.remove(0);
+    }
+    while output.ends_with(['\n', '\r']) {
+        output.pop();
+    }
+    output
+}
+
+fn format_case_output(output: &CaseOutput) -> String {
+    let mut sections = Vec::new();
+    if !output.stdout.is_empty() {
+        sections.push(format!("---- STDOUT ----\n{}", output.stdout));
+    }
+    if !output.stderr.is_empty() {
+        sections.push(format!("---- STDERR ----\n{}", output.stderr));
+    }
+    sections.join("\n")
+}
+
+fn format_case_summary(output: &CaseOutput) -> Option<String> {
+    let run = output.stdout.lines().find(|line| line.starts_with("RUN "))?;
+    let outcome = output
+        .stdout
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("PASS (") || line.starts_with("FAIL ("))?;
+    Some(format!("{run}\n{outcome}"))
 }
 
 fn parse_case_output_stream(output: &str, stream_name: &str) -> anyhow::Result<HashMap<String, String>> {
@@ -1098,10 +1161,6 @@ fn parse_case_output_stream(output: &str, stream_name: &str) -> anyhow::Result<H
         return Err(anyhow!("test output start marker without an end in {stream_name}"));
     }
     Ok(cases)
-}
-
-fn empty_case_output() -> String {
-    "---- STDOUT ----\n\n---- STDERR ----\n".to_owned()
 }
 
 fn execution_stream_output(stream: Option<&proto::ExecutionStream>) -> String {
@@ -1150,7 +1209,7 @@ fn parse_location(line: &str) -> Option<(String, u32)> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{escape_doctest_filter, normalize_lcov_paths, parse_case_outputs, parse_listing, parse_machine_results, resolve_prepared_path};
+    use super::{escape_doctest_filter, format_case_output, format_case_summary, normalize_lcov_paths, parse_case_outputs, parse_listing, parse_machine_results, resolve_prepared_path};
 
     #[test]
     fn parses_test_locations_listing() {
@@ -1205,12 +1264,31 @@ mod tests {
         );
         let outputs = parse_case_outputs(stdout, stderr).unwrap();
         assert_eq!(
-            outputs["first"],
-            "---- STDOUT ----\nfirst stdout\n\n---- STDERR ----\nfirst stderr\n",
+            outputs["first"].stdout,
+            "first stdout",
         );
         assert_eq!(
-            outputs["second"],
-            "---- STDOUT ----\nsecond stdout\n\n---- STDERR ----\nsecond stderr\n",
+            outputs["first"].stderr,
+            "first stderr",
+        );
+        assert_eq!(outputs["second"].stdout, "second stdout");
+        assert_eq!(outputs["second"].stderr, "second stderr");
+    }
+
+    #[test]
+    fn omits_empty_stream_sections_and_marker_padding() {
+        let outputs = parse_case_outputs(
+            "VSCODE_TEST_OUTPUT_START\t6669727374\n\nRUN case\nPASS (1 asserts passed)\n\nVSCODE_TEST_OUTPUT_END\t6669727374\n",
+            "VSCODE_TEST_OUTPUT_START\t6669727374\n\nVSCODE_TEST_OUTPUT_END\t6669727374\n",
+        )
+        .unwrap();
+        assert_eq!(
+            format_case_output(&outputs["first"]),
+            "---- STDOUT ----\nRUN case\nPASS (1 asserts passed)",
+        );
+        assert_eq!(
+            format_case_summary(&outputs["first"]).as_deref(),
+            Some("RUN case\nPASS (1 asserts passed)"),
         );
     }
 

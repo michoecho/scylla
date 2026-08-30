@@ -37,6 +37,44 @@ void print_output_marker(const char* marker, const char* case_name) {
     std::fflush(stderr);
 }
 
+void print_failure_reason(int failure_flags) {
+    const struct {
+        int flag;
+        const char* name;
+    } reasons[] = {
+        {doctest::TestCaseFailureReason::AssertFailure, "AssertFailure"},
+        {doctest::TestCaseFailureReason::Exception, "Exception"},
+        {doctest::TestCaseFailureReason::Crash, "Crash"},
+        {doctest::TestCaseFailureReason::TooManyFailedAsserts, "TooManyFailedAsserts"},
+        {doctest::TestCaseFailureReason::Timeout, "Timeout"},
+        {doctest::TestCaseFailureReason::ShouldHaveFailedButDidnt,
+         "ShouldHaveFailedButDidnt"},
+        {doctest::TestCaseFailureReason::ShouldHaveFailedAndDid,
+         "ShouldHaveFailedAndDid"},
+        {doctest::TestCaseFailureReason::DidntFailExactlyNumTimes,
+         "DidntFailExactlyNumTimes"},
+        {doctest::TestCaseFailureReason::FailedExactlyNumTimes,
+         "FailedExactlyNumTimes"},
+        {doctest::TestCaseFailureReason::CouldHaveFailedAndDid,
+         "CouldHaveFailedAndDid"},
+    };
+
+    bool first = true;
+    for (const auto& reason : reasons) {
+        if ((failure_flags & reason.flag) == 0) {
+            continue;
+        }
+        if (!first) {
+            std::printf("|");
+        }
+        std::printf("%s", reason.name);
+        first = false;
+    }
+    if (first) {
+        std::printf("None");
+    }
+}
+
 struct VscodeResultsReporter final : doctest::IReporter {
     const doctest::TestCaseData* current = nullptr;
 
@@ -64,6 +102,18 @@ struct VscodeResultsReporter final : doctest::IReporter {
         if (current == nullptr) {
             return;
         }
+        const int asserts_failed = stats.numAssertsFailedCurrentTest;
+        const int asserts_passed = stats.numAssertsCurrentTest - asserts_failed;
+        if (stats.testCaseSuccess) {
+            std::printf("PASS (%d asserts passed)\n", asserts_passed);
+        } else {
+            std::printf("FAIL (%d asserts passed, %d asserts failed, failure reason: ",
+                        asserts_passed,
+                        asserts_failed);
+            print_failure_reason(stats.failure_flags);
+            std::printf(")\n");
+        }
+        std::fflush(stdout);
         print_output_marker("VSCODE_TEST_OUTPUT_END", current->m_name);
         std::printf("VSCODE_TEST_RESULT\t");
         print_hex(stdout, current->m_name);
