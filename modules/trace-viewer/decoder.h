@@ -21,6 +21,14 @@
 #include <utility>
 #include <vector>
 
+// mmap and friends. The objects a decode reads are big -- half a gigabyte for a
+// Scylla build with its debug info -- and it touches a few kilobytes of each, so
+// they are mapped rather than read. Linux only, like the tracer itself.
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace trace {
 
 // Which tracepoint a record came from, and when it was taken. Everything but
@@ -197,6 +205,73 @@ namespace detail {
     return nullptr;
 }
 
+// One object file, mapped rather than read into memory.
+//
+// These are big -- a Scylla binary with its debug info is half a gigabyte -- and
+// a decode touches a few kilobytes of each: the program headers, the dynamic
+// relocations, and whatever strings the locations point at. Reading the whole
+// file in to look at that copies the entire object for nothing, and pins it in
+// the heap for as long as the decoder lives. Mapping hands out the same
+// std::span and lets the kernel fault in only the pages actually touched.
+class mapped_file {
+public:
+    mapped_file() = default;
+
+    explicit mapped_file(const std::string& path) {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            return;
+        }
+        struct ::stat info {};
+        if (::fstat(fd, &info) == 0 && info.st_size > 0) {
+            void* const p = ::mmap(nullptr, static_cast<std::size_t>(info.st_size), PROT_READ,
+                                   MAP_PRIVATE, fd, 0);
+            if (p != MAP_FAILED) {
+                data_ = static_cast<const std::byte*>(p);
+                size_ = static_cast<std::size_t>(info.st_size);
+            }
+        }
+        // The mapping holds its own reference to the file, so the descriptor is
+        // not wanted past here -- and a decoder that mapped a dozen objects
+        // would otherwise sit on a dozen descriptors for its whole life.
+        ::close(fd);
+    }
+
+    ~mapped_file() {
+        if (data_ != nullptr) {
+            ::munmap(const_cast<std::byte*>(data_), size_);
+        }
+    }
+
+    mapped_file(mapped_file&& other) noexcept : data_(other.data_), size_(other.size_) {
+        other.data_ = nullptr;
+        other.size_ = 0;
+    }
+
+    mapped_file& operator=(mapped_file&& other) noexcept {
+        if (this != &other) {
+            if (data_ != nullptr) {
+                ::munmap(const_cast<std::byte*>(data_), size_);
+            }
+            data_ = other.data_;
+            size_ = other.size_;
+            other.data_ = nullptr;
+            other.size_ = 0;
+        }
+        return *this;
+    }
+
+    mapped_file(const mapped_file&) = delete;
+    mapped_file& operator=(const mapped_file&) = delete;
+
+    [[nodiscard]] bool ok() const { return data_ != nullptr; }
+    [[nodiscard]] std::span<const std::byte> bytes() const { return {data_, size_}; }
+
+private:
+    const std::byte* data_ = nullptr;
+    std::size_t size_ = 0;
+};
+
 // The relative relocations of one object, as (place, value) pairs sorted by
 // place -- both link-time virtual addresses.
 //
@@ -336,26 +411,23 @@ public:
     [[nodiscard]] std::span<const std::byte> object(const std::string& build_id) {
         const auto found = files_.find(build_id);
         if (found != files_.end()) {
-            return found->second;
+            return found->second.bytes();
         }
-        std::vector<std::byte> image;
+        detail::mapped_file image;
         if (build_id.size() >= 3) {
             const std::string stem =
                 root_ + "/.build-id/" + build_id.substr(0, 2) + "/" + build_id.substr(2);
             // With the suffix first, because that is what a debuginfo directory
             // holds; without it for a directory of plain binaries.
             for (const std::string& path : {stem + ".debug", stem}) {
-                std::ifstream in(path, std::ios::binary);
-                if (in) {
-                    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
-                                                std::istreambuf_iterator<char>()};
-                    image.resize(raw.size());
-                    std::memcpy(image.data(), raw.data(), raw.size());
+                detail::mapped_file candidate(path);
+                if (candidate.ok()) {
+                    image = std::move(candidate);
                     break;
                 }
             }
         }
-        return files_.emplace(build_id, std::move(image)).first->second;
+        return files_.emplace(build_id, std::move(image)).first->second.bytes();
     }
 
     // Where the object's file is, or an empty string if the directory does not
@@ -392,7 +464,7 @@ public:
 
 private:
     std::string root_;
-    std::map<std::string, std::vector<std::byte>, std::less<>> files_;
+    std::map<std::string, detail::mapped_file, std::less<>> files_;
     std::map<std::string, std::vector<std::pair<std::uint64_t, std::uint64_t>>, std::less<>>
         relocations_;
 };

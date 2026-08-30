@@ -279,6 +279,13 @@ struct entry {
 // is what an unlocated event and a task with no resume point both get.
 static std::vector<std::string> location_strings{""};
 
+// How the interning went, printed on the way in beside the other counts. A
+// directory of objects that is missing, stripped of the wrong thing, or simply
+// not the build the trace came from shows up here as every location unresolved,
+// which is far easier to read than a window full of `<unresolved 0x...>`.
+static size_t locations_resolved = 0;
+static size_t locations_unresolved = 0;
+
 static uint32_t intern_location(const trace::source_location& loc) {
     if (!loc.resolved && loc.address == 0) {
         return 0;
@@ -296,6 +303,7 @@ static uint32_t intern_location(const trace::source_location& loc) {
         if (const auto slash = file.rfind('/'); slash != std::string::npos) {
             file = file.substr(slash + 1);
         }
+        (loc.resolved ? locations_resolved : locations_unresolved) += 1;
         location_strings.push_back(loc.resolved
                                        ? fmt::format("{}:{}", file, loc.line)
                                        : loc.to_string());
@@ -845,6 +853,9 @@ int main(int argc, char** argv) {
             }
             entries.push_back({0xc, 0, i, samples[i].ts, 0, samples[i].shard});
         }
+        fmt::print("{} distinct source locations: {} resolved, {} not\n",
+                   locations_resolved + locations_unresolved, locations_resolved,
+                   locations_unresolved);
         fmt::print("{} stack samples, {} placed on the trace's clock\n", samples.size(), dated);
         fmt::print("  (a cpu-clock event only ticks while the shard is on the cpu, so a mostly "
                    "idle node has far fewer than {} Hz x shards x seconds)\n",

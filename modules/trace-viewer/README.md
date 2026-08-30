@@ -370,10 +370,29 @@ location inside it would read `<unresolved 0x...>` while everything else decoded
 
 `--strip-debug` is worth taking **if you only want source locations**: a decoder
 reads program headers, `.rodata` and the dynamic relocations and never touches
-debug info, which on the `Dev` binary is 564 MB down to 162 MB for the same 357
+debug info, which on the `Dev` binary is 564 MB down to 162 MB for the same
 resolved call sites.
 
-Stack samples are the exception. `llvm-addr2line` *does* read debug info, so
+Those objects are **mapped, not read**. A decode touches a few kilobytes of each
+-- the program headers, the dynamic relocations, and the strings the locations
+point at -- so reading them in copied half a gigabyte to look at almost none of
+it, and that copy was essentially the whole of the viewer's startup:
+
+| | time to the window, 565 MB of `dsos/` |
+|---|---|
+| read each object into the heap | ~18 s |
+| `mmap` each object | ~1.6 s |
+
+Same 404 locations, all 404 resolved, either way. The viewer prints that count on
+the way in, which is the quick check that a `dsos/` directory is the right one:
+every location unresolved means a missing, stripped or mismatched directory.
+
+`mmap` lives in `dso_directory::object()`, which is in the **generated**
+`decoder.h`. The source of truth is `tracer::generate_decoder_source()` in
+`modules/tracer/codegen.cc`; the copy checked in here was edited to match, so
+regenerating it does not undo this.
+
+Stack samples are the exception. `llvm-symbolizer` *does* read debug info, so
 against stripped objects a backtrace comes out as function names from the
 symbol table with no file and no line, and inlined frames vanish. Gather without
 `--strip-debug` if the backtraces are what you are here for.
