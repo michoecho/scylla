@@ -26,3 +26,5 @@ buck-out/
 
 # Lock file written by snapshot update runs; not a snapshot.
 .update.lock
+/.worktrees
+/third-party/scylladb

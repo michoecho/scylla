@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Create and remove worktrees with submodule worktrees attached to them.
+
+Usage:
+
+  tools/worktree create NAME [REVISION]
+  tools/worktree remove NAME
+
+The main worktree follows normal ``git worktree add`` behavior.  Submodules
+are initialized as detached worktrees of the corresponding submodule in the
+main worktree, so no submodule is cloned from its configured upstream URL.
+"""
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+class WorktreeError(RuntimeError):
+    """An expected worktree operation failed."""
+
+
+def run_git(repository, *arguments, check=True):
+    """Run Git in *repository* and return its standard output."""
+    command = ["git"]
+    if repository is not None:
+        command += ["-C", str(repository)]
+    command += list(arguments)
+    result = subprocess.run(command, text=True, capture_output=True)
+    if check and result.returncode:
+        details = result.stderr.strip() or result.stdout.strip()
+        raise WorktreeError(
+            f"{' '.join(command)} failed"
+            + (f": {details}" if details else ""))
+    return result
+
+
+def git_output(repository, *arguments):
+    """Run Git and return non-empty standard output lines as text."""
+    return run_git(repository, *arguments).stdout
+
+
+def repository_root():
+    return Path(
+        git_output(None, "rev-parse", "--show-toplevel").strip()
+    ).resolve()
+
+
+def worktree_path(root, name):
+    """Return a NAME path below root/.worktrees, rejecting path escapes."""
+    candidate = Path(name)
+    if candidate.is_absolute():
+        raise WorktreeError("worktree name must be relative")
+
+    worktrees = (root / ".worktrees").resolve()
+    path = (worktrees / candidate).resolve()
+    try:
+        path.relative_to(worktrees)
+    except ValueError as error:
+        raise WorktreeError("worktree name must stay below .worktrees") from error
+    if path == worktrees:
+        raise WorktreeError("worktree name must not be empty")
+    return path
+
+
+def gitlinks(repository):
+    """Yield (path, object ID) for the submodules in a repository index."""
+    output = git_output(repository, "ls-files", "--stage", "-z")
+    for entry in output.split("\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split("\t", 1)
+        mode, object_id, _stage = metadata.split()
+        if mode == "160000":
+            yield Path(path), object_id
+
+
+def require_worktree(path, description):
+    """Ensure Git resolves PATH to PATH itself, not to a parent repository."""
+    if not path.is_dir():
+        raise WorktreeError(f"{description} is not initialized: {path}")
+    try:
+        actual = Path(
+            git_output(path, "rev-parse", "--show-toplevel").strip()
+        ).resolve()
+    except WorktreeError as error:
+        raise WorktreeError(f"{description} is not initialized: {path}") from error
+    if actual != path.resolve():
+        raise WorktreeError(
+            f"{description} is not initialized: {path} "
+            f"(Git resolves it to {actual})")
+
+
+def add_submodule_worktrees(source, target, registrations):
+    """Recursively attach TARGET's submodules to SOURCE's repositories."""
+    for path, object_id in gitlinks(target):
+        source_submodule = source / path
+        target_submodule = target / path
+
+        # This deliberately does not run `git submodule update`: the source
+        # submodule worktree is the local repository whose objects we share.
+        require_worktree(
+            source_submodule,
+            "submodule in the toplevel worktree",
+        )
+
+        run_git(
+            source_submodule,
+            "worktree",
+            "add",
+            "--detach",
+            str(target_submodule),
+            object_id,
+        )
+        registrations.append((source_submodule, target_submodule))
+        add_submodule_worktrees(
+            source_submodule, target_submodule, registrations)
+
+
+def remove_submodule_worktrees(source, target, registrations):
+    """Collect child worktrees before the parent worktree is removed."""
+    for path, _object_id in gitlinks(target):
+        source_submodule = source / path
+        target_submodule = target / path
+        require_worktree(
+            source_submodule,
+            "submodule in the toplevel worktree",
+        )
+        registrations.append((source_submodule, target_submodule))
+        remove_submodule_worktrees(
+            source_submodule, target_submodule, registrations)
+
+
+def cleanup_registrations(registrations):
+    """Delist child worktrees, including entries whose directories vanished."""
+    for source, target in reversed(registrations):
+        result = run_git(
+            source,
+            "worktree",
+            "remove",
+            "--force",
+            str(target),
+            check=False,
+        )
+        if result.returncode:
+            details = result.stderr.strip() or result.stdout.strip()
+            raise WorktreeError(
+                f"could not delist submodule worktree {target}"
+                + (f": {details}" if details else ""))
+
+
+def create(root, name, revision=None):
+    target = worktree_path(root, name)
+    if target.exists():
+        raise WorktreeError(f"worktree path already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    command = ["worktree", "add", str(target)]
+    if revision is not None:
+        command.append(revision)
+    run_git(root, *command)
+
+    registrations = []
+    try:
+        add_submodule_worktrees(root, target, registrations)
+    except Exception:
+        # Keep a failed create from leaving either the main worktree or child
+        # worktree registrations behind.
+        cleanup_registrations(registrations)
+        run_git(root, "worktree", "remove", "--force", str(target), check=False)
+        raise
+
+    print(f"created {target}")
+
+
+def remove(root, name):
+    target = worktree_path(root, name)
+    if not target.exists():
+        raise WorktreeError(f"worktree path does not exist: {target}")
+
+    registrations = []
+    remove_submodule_worktrees(root, target, registrations)
+
+    # Removing the parent also removes the child directories.  The explicit
+    # child removals below are still needed to delist them from each
+    # submodule's worktree metadata.
+    run_git(root, "worktree", "remove", "--force", str(target))
+    cleanup_registrations(registrations)
+    print(f"removed {target}")
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Create or remove a worktree with local submodule worktrees."
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    create_parser = commands.add_parser("create", help="create a worktree")
+    create_parser.add_argument("name", metavar="NAME")
+    create_parser.add_argument(
+        "revision",
+        nargs="?",
+        help="revision to check out (default: Git's normal worktree behavior)",
+    )
+
+    remove_parser = commands.add_parser("remove", help="remove a worktree")
+    remove_parser.add_argument("name", metavar="NAME")
+
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        root = repository_root()
+        if args.command == "create":
+            create(root, args.name, args.revision)
+        else:
+            remove(root, args.name)
+    except (OSError, WorktreeError, subprocess.CalledProcessError) as error:
+        print(f"worktree: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
