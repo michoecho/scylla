@@ -30,6 +30,7 @@ echo "==> vsce package"
     cd "$here/extension"
     npx @vscode/vsce package \
         --allow-missing-repository \
+        --skip-license \
         -o buck2-test.vsix
 )
 
