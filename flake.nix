@@ -280,6 +280,7 @@
           doctest = pkgs.doctest;
 
           fmt = pkgs.fmt;
+          glaze = pkgs.glaze;
           # The OpenGL loader and development headers used by SDL's GL
           # context and Dear ImGui's OpenGL3 renderer.
           libGL = pkgs.libglvnd;
@@ -421,6 +422,7 @@
               aflplusplus
               cli11
               doctest
+              glaze
               nanobench
               llvmPkgs.clang-tools
               llvmPkgs.llvm

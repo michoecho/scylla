@@ -107,6 +107,22 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
 )
 
+flake.package(
+    name = "glaze_package",
+    package = "glaze",
+    files = {
+        "include": "include",
+    },
+    path = "root//:flake",
+)
+
+prebuilt_cxx_library(
+    name = "glaze",
+    header_dirs = [":glaze_package[include]"],
+    header_only = True,
+    visibility = ["PUBLIC"],
+)
+
 # SDL3 creates the window/context, while Dear ImGui's OpenGL3 renderer calls
 # the OpenGL entry points. Both are provided by the flake rather than the host.
 flake.prebuilt_pkgconfig_library(

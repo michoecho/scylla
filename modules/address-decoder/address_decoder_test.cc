@@ -47,34 +47,22 @@ TEST_CASE("json parses the shape llvm-symbolizer emits") {
         R"J({"Address":"0x1160","ModuleName":"./t","Symbol":[{"Column":36,"FileName":"/tmp/t.cc",)J"
         R"J("FunctionName":"outer(int)","Line":3}]})J");
     REQUIRE(doc.has_value());
-    CHECK((*doc)["ModuleName"].string_or("ModuleName") == "");
-    CHECK(doc->string_or("Address") == "0x1160");
-    const json::array* const symbols = (*doc)["Symbol"].as_array();
-    REQUIRE(symbols != nullptr);
-    REQUIRE(symbols->size() == 1);
-    CHECK((*symbols)[0].string_or("FunctionName") == "outer(int)");
-    CHECK((*symbols)[0].int_or("Line") == 3);
-    CHECK((*symbols)[0].int_or("Discriminator", -1) == -1);
+    REQUIRE(doc->size() == 1);
+    CHECK((*doc)[0].function == "outer(int)");
+    CHECK((*doc)[0].file == "/tmp/t.cc");
+    CHECK((*doc)[0].line == 3);
+    CHECK((*doc)[0].column == 36);
 }
 
-TEST_CASE("json handles escapes, nesting and the literals") {
+TEST_CASE("json handles escapes and omitted fields") {
     const auto doc = json::parse(
-        R"J({"a":"x\tyA\"z","b":[1,-2.5,1e3,true,false,null],"c":{"d":{"e":[]}}})J");
+        R"J({"Symbol":[{"FunctionName":"x\tyA\"z","Discriminator":2}]})J");
     REQUIRE(doc.has_value());
-    CHECK(doc->string_or("a") == "x\tyA\"z");
-    const json::array* const b = (*doc)["b"].as_array();
-    REQUIRE(b != nullptr);
-    REQUIRE(b->size() == 6);
-    CHECK((*b)[0].as_int().value_or(0) == 1);
-    CHECK((*b)[1].as_number().value_or(0) == doctest::Approx(-2.5));
-    CHECK((*b)[2].as_int().value_or(0) == 1000);
-    CHECK((*b)[3].as_bool().value_or(false) == true);
-    CHECK((*b)[4].as_bool().value_or(true) == false);
-    CHECK((*b)[5].is_null());
-    CHECK((*doc)["c"]["d"]["e"].as_array() != nullptr);
-    // A missing key chains without blowing up, which is what lets the reply
-    // parser read a field out of a record that does not have it.
-    CHECK((*doc)["nope"]["also nope"].is_null());
+    REQUIRE(doc->size() == 1);
+    CHECK((*doc)[0].function == "x\tyA\"z");
+    CHECK((*doc)[0].file.empty());
+    CHECK((*doc)[0].line == 0);
+    CHECK((*doc)[0].column == 0);
 }
 
 TEST_CASE("json rejects malformed input rather than guessing") {
@@ -88,7 +76,7 @@ TEST_CASE("json rejects malformed input rather than guessing") {
     // line at a time, and a line that is a valid document plus junk is a line
     // that did not come from the symbolizer.
     CHECK(!json::parse("{} {}").has_value());
-    CHECK(json::parse("  {\"a\":1}  ").has_value());
+    CHECK(json::parse("  {\"Symbol\":[]}  ").has_value());
 }
 
 TEST_CASE("a symbolizer reply becomes frames, innermost first") {

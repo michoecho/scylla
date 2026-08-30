@@ -256,22 +256,18 @@ private:
 }  // namespace
 
 std::vector<source_frame> parse_symbolizer_reply(std::string_view line) {
-    const std::optional<json::value> doc = json::parse(line);
+    const std::optional<json::document> doc = json::parse(line);
     if (!doc) {
         return {};
     }
-    const json::array* const symbols = (*doc)["Symbol"].as_array();
-    if (symbols == nullptr) {
-        return {};
-    }
     std::vector<source_frame> out;
-    out.reserve(symbols->size());
-    for (const json::value& sym : *symbols) {
+    out.reserve(doc->size());
+    for (const json::symbol& sym : *doc) {
         source_frame frame;
-        frame.function = sym.string_or("FunctionName");
-        frame.file = sym.string_or("FileName");
-        frame.line = static_cast<std::uint32_t>(sym.int_or("Line"));
-        frame.column = static_cast<std::uint32_t>(sym.int_or("Column"));
+        frame.function = sym.function;
+        frame.file = sym.file;
+        frame.line = sym.line;
+        frame.column = sym.column;
         // An address that hit nothing still gets a record, with every field
         // blank or zero. Reporting that as a frame would print "?? at :0" under
         // every unresolvable address; reporting nothing lets the caller fall

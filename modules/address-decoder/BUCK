@@ -17,6 +17,7 @@ add_module(
     },
     deps = [
         "//:doctest",
+        "//:glaze",
     ],
     compiler_flags = ["-Wall", "-Wextra"],
     module_source_dir = "modules/address-decoder",
