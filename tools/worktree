@@ -5,6 +5,7 @@ Usage:
 
   tools/worktree create NAME [REVISION]
   tools/worktree remove NAME
+  tools/worktree clean
 
 The main worktree follows normal ``git worktree add`` behavior.  Submodules
 are initialized as detached worktrees of the corresponding submodule in the
@@ -150,13 +151,24 @@ def cleanup_registrations(registrations):
                 + (f": {details}" if details else ""))
 
 
+def worktree_branches(root):
+    """Return branches currently checked out by any worktree."""
+    output = git_output(root, "worktree", "list", "--porcelain")
+    prefix = "branch refs/heads/"
+    return {
+        line[len(prefix):]
+        for line in output.splitlines()
+        if line.startswith(prefix)
+    }
+
+
 def create(root, name, revision=None):
     target = worktree_path(root, name)
     if target.exists():
         raise WorktreeError(f"worktree path already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    command = ["worktree", "add", str(target)]
+    command = ["worktree", "add", "-b", f"worktree/{name}", str(target)]
     if revision is not None:
         command.append(revision)
     run_git(root, *command)
@@ -190,6 +202,21 @@ def remove(root, name):
     print(f"removed {target}")
 
 
+def clean(root):
+    """Delete worktree branches that are not checked out by a worktree."""
+    branches = git_output(
+        root,
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/worktree/",
+    ).splitlines()
+    checked_out = worktree_branches(root)
+
+    for branch in sorted(branch for branch in branches if branch not in checked_out):
+        run_git(root, "branch", "-D", branch)
+        print(f"removed {branch}")
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Create or remove a worktree with local submodule worktrees."
@@ -207,6 +234,11 @@ def parse_args(argv):
     remove_parser = commands.add_parser("remove", help="remove a worktree")
     remove_parser.add_argument("name", metavar="NAME")
 
+    commands.add_parser(
+        "clean",
+        help="remove worktree branches without matching worktrees",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -216,8 +248,10 @@ def main(argv=None):
         root = repository_root()
         if args.command == "create":
             create(root, args.name, args.revision)
-        else:
+        elif args.command == "remove":
             remove(root, args.name)
+        else:
+            clean(root)
     except (OSError, WorktreeError, subprocess.CalledProcessError) as error:
         print(f"worktree: {error}", file=sys.stderr)
         return 1
