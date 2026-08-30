@@ -113,6 +113,179 @@ static const std::string& location_string(uint32_t index) {
     return location_strings[index];
 }
 
+static std::string entry_message(const entry& e) {
+    switch (e.event) {
+    case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
+    case 1: return "START";
+    case 0xa: return "PERMIT";
+    case 0xb: return "ES";
+    case 0x3: {
+        const char* rcs_status[] = {
+            "admitted immediately",
+            "queued because of non-empty ready",
+            "queued because of used permits",
+            "queued because of memory resources",
+            "queued because of count resources",
+        };
+        return fmt::format("{:10s} {}", "RCS", rcs_status[e.arg]);
+    }
+    case 0x4: return fmt::format("{:10s} {:16x}", "IO_BEGIN", e.arg);
+    case 0x5: return fmt::format("{:10s} {:16x}", "IO_END", e.arg);
+    default: return fmt::format("UNKNOWN ({})", e.event);
+    }
+}
+
+struct cached_log_line {
+    size_t source_index;
+    entry record;
+    std::string text;
+};
+
+struct log_cache {
+    uint64_t task_id = 0;
+    int threshold = -1;
+    size_t item_count = 0;
+    size_t source_begin = 0;
+    std::vector<cached_log_line> lines;
+};
+
+struct cached_plot_item {
+    ImPlotPoint min;
+    ImPlotPoint max;
+    ImPlotPoint line_end;
+    ImU32 color;
+    bool draw_line;
+};
+
+struct full_log_cache {
+    uint64_t task_id = 0;
+    int threshold = -1;
+    size_t task_count = 0;
+    size_t source_begin = 0;
+    int64_t start_ts = 0;
+    int64_t end_ts = 0;
+    std::vector<cached_log_line> lines;
+    std::vector<cached_plot_item> plot_items;
+};
+
+static std::string log_line_text(const entry& e, int64_t start_ts, bool include_task_id) {
+    auto dt_nano = std::chrono::duration<double, std::nano>(double(e.ts - start_ts) * MULTIPLIER);
+    auto dt = std::chrono::duration<double, std::milli>(dt_nano);
+    if (include_task_id) {
+        return fmt::format("{:12.9f}: {:16x}: {}", dt.count(), e.query(), entry_message(e));
+    }
+    return fmt::format("{:12.9f}: {}", dt.count(), entry_message(e));
+}
+
+static void render_truncation_warning(size_t count, int threshold, bool spanned) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.f, 0.f, 1.f));
+    if (spanned) {
+        ImGui::Text("number of tasks spanned %zu is greater than configured threshold %d, not rendering the rest", count, threshold);
+    } else {
+        ImGui::Text("number of tasks %zu is greater than configured threshold %d, not rendering the rest", count, threshold);
+    }
+    ImGui::PopStyleColor();
+}
+
+static void update_log_cache(log_cache& cache, uint64_t task_id, int threshold,
+                             const std::vector<entry>& sorted) {
+    if (cache.task_id == task_id && cache.threshold == threshold) {
+        return;
+    }
+
+    cache = {};
+    cache.task_id = task_id;
+    cache.threshold = threshold;
+    auto range = std::ranges::equal_range(sorted, task_id, std::ranges::less(),
+                                          [] (const auto& e) { return e.query(); });
+    cache.item_count = range.size();
+    cache.source_begin = range.begin() - sorted.begin();
+
+    const size_t cached_count = std::min(cache.item_count, static_cast<size_t>(threshold));
+    cache.lines.reserve(cached_count);
+    const int64_t start_ts = range.front().ts;
+    for (size_t source_index = cache.source_begin;
+         source_index < cache.source_begin + cached_count; ++source_index) {
+        const auto& record = sorted[source_index];
+        cache.lines.push_back({source_index, record, log_line_text(record, start_ts, false)});
+    }
+}
+
+static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int threshold,
+                                  const std::vector<entry>& sorted,
+                                  std::span<const entry> span) {
+    if (cache.task_id == task_id && cache.threshold == threshold) {
+        return;
+    }
+
+    cache = {};
+    cache.task_id = task_id;
+    cache.threshold = threshold;
+    auto sorted_range = std::ranges::equal_range(sorted, task_id, std::ranges::less(),
+                                                 [] (const auto& e) { return e.query(); });
+    auto span_range = std::ranges::equal_range(
+        span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {
+            return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);
+    });
+    cache.task_count = span_range.size();
+    cache.source_begin = span_range.begin() - span.begin();
+
+    cache.start_ts = sorted_range.front().ts;
+    cache.end_ts = sorted_range.back().ts;
+    const size_t cached_count = std::min(cache.task_count, static_cast<size_t>(threshold));
+    cache.lines.reserve(cached_count);
+    cache.plot_items.reserve(cached_count);
+    for (size_t source_index = cache.source_begin;
+         source_index < cache.source_begin + cached_count; ++source_index) {
+        const auto& record = span[source_index];
+        cache.lines.push_back({source_index, record, log_line_text(record, cache.start_ts, true)});
+    }
+
+    uint64_t iostack = 0;
+    int64_t iostart = 0;
+    int64_t prev_ts = cache.start_ts;
+    bool cpu = true;
+    for (size_t source_index = cache.source_begin;
+         source_index < cache.source_begin + cached_count; ++source_index) {
+        const auto& record = span[source_index];
+        const double x_min = double(prev_ts - cache.start_ts) * MULTIPLIER / 1e6;
+        const double x_max = double(record.ts - cache.start_ts) * MULTIPLIER / 1e6;
+        cache.plot_items.push_back({
+            {x_min, 1.0},
+            {x_max, 0.0},
+            {x_min, 0.0},
+            cpu ? IM_COL32(0, 128, 0, 255) : IM_COL32(0, 0, 128, 32),
+            cpu,
+        });
+
+        if (record.query() == task_id) {
+            if (record.event != 0x5) {
+                cpu = true;
+            }
+            if (record.event == 0x4) {
+                if (iostack == 0) {
+                    iostart = record.ts;
+                }
+                ++iostack;
+            } else if (record.event == 0x5) {
+                --iostack;
+                if (iostack == 0) {
+                    cache.plot_items.push_back({
+                        {double(iostart - cache.start_ts) * MULTIPLIER / 1e6, 1.0},
+                        {x_max, 0.0},
+                        {},
+                        IM_COL32(255, 255, 255, 32),
+                        false,
+                    });
+                }
+            }
+        } else {
+            cpu = false;
+        }
+        prev_ts = record.ts;
+    }
+}
+
 // Task ids are *not* namespaced by shard here, deliberately. A request
 // coordinated on one shard reaches a tablet on another, and the continuations
 // that run there inherit its id -- so one request's records are spread over two
@@ -414,8 +587,11 @@ int main(int argc, char** argv) {
 
     // Our state
     bool show_demo_window = true;
+    bool show_config_window = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     int log_task_threshold = 10000;
+    log_cache log_cache_state;
+    full_log_cache full_log_cache_state;
 
     // Main loop
     bool done = false;
@@ -440,12 +616,26 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
+
+        if (ImGui::BeginMainMenuBar()) {
+            if (ImGui::BeginMenu("View")) {
+                if (ImGui::BeginMenu("Dockers")) {
+                    ImGui::MenuItem("Config", nullptr, &show_config_window);
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+
         ImGui::DockSpaceOverViewport();
 
-        ImGui::Begin("Config");
-        ImGui::InputInt("Log task threshold", &log_task_threshold);
-        log_task_threshold = std::max(log_task_threshold, 0);
-        ImGui::End();
+        if (show_config_window) {
+            ImGui::Begin("Config", &show_config_window);
+            ImGui::InputInt("Log task threshold", &log_task_threshold);
+            log_task_threshold = std::max(log_task_threshold, 0);
+            ImGui::End();
+        }
 
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window) {
@@ -702,189 +892,137 @@ int main(int argc, char** argv) {
                 ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "STARVE", std::chrono::duration<double, std::milli>(queries[w].starvetime).count()).c_str());
                 ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "IO", std::chrono::duration<double, std::milli>(queries[w].iotime).count()).c_str());
                 ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "TOTAL", std::chrono::duration<double, std::milli>(queries[w].latency).count()).c_str());
-                auto log_range = std::ranges::equal_range(sorted, id_log, std::ranges::less(), [] (const auto& e) {return e.query();});
-                if (log_range.size() > static_cast<size_t>(log_task_threshold)) {
-                    ImGui::Text("number of tasks %zu is greater than configured threshold %d, not rendering", log_range.size(), log_task_threshold);
-                } else {
-                    uint64_t start = log_range.begin() - sorted.begin();
-                    uint64_t end = log_range.end() - sorted.begin() - 1;
-                    uint64_t start_ts = sorted[start].ts;
-                    //uint64_t end_ts = sorted[end].ts;
-                    static size_t selected = 0;
-                    for (size_t i = start; i <= end; ++i) {
-                    auto dt_nano = std::chrono::duration<double, std::nano>(double(sorted[i].ts - start_ts) * MULTIPLIER);
-                    auto dt = std::chrono::duration<double, std::milli>(dt_nano);
-                    auto message = std::invoke([&] () -> std::string {
-                        const auto e = sorted[i];
-                        switch (e.event) {
-                        case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
-                        case 1: return "START";
-                        case 0xa: return "PERMIT";
-                        case 0xb: return "ES";
-                        case 0x3: {
-                        const char* rcs_status[] = {
-                        "admitted immediately",
-                        "queued because of non-empty ready",
-                        "queued because of used permits",
-                        "queued because of memory resources",
-                        "queued because of count resources",
-                        };
-                        return fmt::format("{:10s} {}", "RCS", rcs_status[e.arg]);
+                update_log_cache(log_cache_state, id_log, log_task_threshold, sorted);
+                if (log_cache_state.item_count > static_cast<size_t>(log_task_threshold)) {
+                    render_truncation_warning(log_cache_state.item_count, log_task_threshold, false);
+                }
+                if (ImGui::BeginChild("Log entries", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                    {
+                        static size_t selected = -1;
+                        ImGuiListClipper clipper;
+                        clipper.Begin(static_cast<int>(log_cache_state.lines.size()));
+                        if (chosen_unfull >= log_cache_state.source_begin &&
+                            chosen_unfull < log_cache_state.source_begin + log_cache_state.lines.size()) {
+                            clipper.IncludeItemByIndex(static_cast<int>(chosen_unfull - log_cache_state.source_begin));
                         }
-                        case 0x4: return fmt::format("{:10s} {:16x}", "IO_BEGIN", e.arg);
-                        case 0x5: return fmt::format("{:10s} {:16x}", "IO_END", e.arg);
-                        default: return fmt::format("UNKNOWN ({})", e.event);
+                        while (clipper.Step()) {
+                            for (int visible_index = clipper.DisplayStart;
+                                 visible_index < clipper.DisplayEnd; ++visible_index) {
+                                const auto& line = log_cache_state.lines[visible_index];
+                                const size_t i = line.source_index;
+                                const bool selected_in_range =
+                                    selected >= log_cache_state.source_begin &&
+                                    selected < log_cache_state.source_begin + log_cache_state.lines.size() &&
+                                    selected < sorted.size();
+                                const bool highlighted =
+                                    selected_in_range &&
+                                    (line.record.event == 0x4 || line.record.event == 0x5) &&
+                                    (line.record.arg == sorted[selected].arg) &&
+                                    (sorted[selected].event == 0x4 || sorted[selected].event == 0x5);
+                                if (i == chosen_unfull) {
+                                    if (just_chosen_unfull) {
+                                        just_chosen_unfull = false;
+                                        ImGui::SetScrollHereY();
+                                    }
+                                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.f, 0.0f, 1.f));
+                                }
+                                if (ImGui::Selectable(line.text.c_str(), highlighted)) {
+                                    selected = highlighted ? size_t(-1) : i;
+                                }
+                                if (i == chosen_unfull) {
+                                    ImGui::PopStyleColor();
+                                }
+                            }
                         }
-                    });
-                    bool highlighted = (selected >= start && selected <= end) && (sorted[i].event == 0x4 || sorted[i].event == 0x5) && (sorted[i].arg == sorted[selected].arg);
-                    auto s = fmt::format("{:12.9f}: {}", dt.count(), message);
-                    if (i == chosen_unfull) {
-                        if (just_chosen_unfull) {
-                            just_chosen_unfull = false;
-                            ImGui::SetScrollHereY();
-                        }
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.f, 0.0f, 1.f));
-                    }
-                    if (ImGui::Selectable(s.c_str(), highlighted)) {
-                        if (highlighted) {
-                            selected = -1;
-                        } else {
-                            selected = i;
-                        }
-                    }
-                    if (i == chosen_unfull) {
-                        ImGui::PopStyleColor();
-                    }
                     }
                 }
+                ImGui::EndChild();
                 ImGui::End();
             }
 #if 1
             {
                 ImGui::Begin("Full log");
-                auto sorted_range = std::ranges::equal_range(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();});
-                auto span_range = std::ranges::equal_range(span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);});
-                if (span_range.size() > static_cast<size_t>(log_task_threshold)) {
-                    ImGui::Text("number of tasks spanned %zu is greater than configured threshold %d, not rendering", span_range.size(), log_task_threshold);
-                } else {
-                    size_t start = span_range.begin() - span.begin();
-                    size_t end = span_range.end() - span.begin() - 1;
-                    uint64_t start_ts = span[start].ts;
-                    static size_t selected = 0;
-                    for (size_t i = start; i <= end; ++i) {
-                    auto dt_nano = std::chrono::duration<double, std::nano>(double(span[i].ts - start_ts) * MULTIPLIER);
-                    auto dt = std::chrono::duration<double, std::milli>(dt_nano);
-                    auto message = std::invoke([&] () -> std::string {
-                        const auto e = span[i];
-                        switch (e.event) {
-                        case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
-                        case 1: return "START";
-                        case 0xa: return "PERMIT";
-                        case 0xb: return "ES";
-                        case 0x3: {
-                        const char* rcs_status[] = {
-                        "admitted immediately",
-                        "queued because of non-empty ready",
-                        "queued because of used permits",
-                        "queued because of memory resources",
-                        "queued because of count resources",
-                        };
-                        return fmt::format("{:10s} {}", "RCS", rcs_status[e.arg]);
+                update_full_log_cache(full_log_cache_state, id_full_log, log_task_threshold, sorted, span);
+                if (full_log_cache_state.task_count > static_cast<size_t>(log_task_threshold)) {
+                    render_truncation_warning(full_log_cache_state.task_count, log_task_threshold, true);
+                }
+                if (ImGui::BeginChild("Full log entries", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                    {
+                        static size_t selected = 0;
+                        ImGuiListClipper clipper;
+                        clipper.Begin(static_cast<int>(full_log_cache_state.lines.size()));
+                        if (chosen_one >= full_log_cache_state.source_begin &&
+                            chosen_one < full_log_cache_state.source_begin + full_log_cache_state.lines.size()) {
+                            clipper.IncludeItemByIndex(static_cast<int>(chosen_one - full_log_cache_state.source_begin));
                         }
-                        case 0x4: return fmt::format("{:10s} {:16x}", "IO_BEGIN", e.arg);
-                        case 0x5: return fmt::format("{:10s} {:16x}", "IO_END", e.arg);
-                        default: return fmt::format("UNKNOWN ({})", e.event);
+                        while (clipper.Step()) {
+                            for (int visible_index = clipper.DisplayStart;
+                                 visible_index < clipper.DisplayEnd; ++visible_index) {
+                                const auto& line = full_log_cache_state.lines[visible_index];
+                                const size_t i = line.source_index;
+                                const bool selected_in_range =
+                                    selected >= full_log_cache_state.source_begin &&
+                                    selected < full_log_cache_state.source_begin + full_log_cache_state.lines.size() &&
+                                    selected < span.size();
+                                const bool highlighted =
+                                    selected_in_range && line.record.query() == id_log;
+                                const bool is_active = line.record.query() == id_full_log;
+                                if (is_active) {
+                                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.f, 1.f, 0.24f, 1.f));
+                                }
+                                if (i == chosen_one) {
+                                    if (just_chosen) {
+                                        just_chosen = false;
+                                        ImGui::SetScrollHereY();
+                                    }
+                                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.f, 0.0f, 1.f));
+                                }
+                                if (ImGui::Selectable(line.text.c_str(), highlighted)) {
+                                    auto x = line.record.query();
+                                    if (x) {
+                                        id_log = x;
+                                    }
+                                    selected = highlighted ? size_t(-1) : i;
+                                }
+                                if (i == chosen_one) {
+                                    ImGui::PopStyleColor();
+                                }
+                                if (is_active) {
+                                    ImGui::PopStyleColor();
+                                }
+                            }
                         }
-                    });
-                    //bool highlighted = (selected >= start && selected <= end) && (span[i].event == 0x4 || span[i].event == 0x5) && (span[i].arg == span[selected].arg);
-                    bool highlighted = (selected >= start && selected <= end) && (span[i].query() == id_log);
-                    auto s = fmt::format("{:12.9f}: {:16x}: {}", dt.count(), span[i].query(), message);
-                    bool is_active = span[i].query() == id_full_log;
-                    if (is_active) {
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.f, 1.f, 0.24f, 1.f));
-                    }
-                    if (i == chosen_one) {
-                        if (just_chosen) {
-                            just_chosen = false;
-                            ImGui::SetScrollHereY();
-                        }
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.f, 0.0f, 1.f));
-                    }
-                    if (ImGui::Selectable(s.c_str(), highlighted)) {
-                        auto x = span[i].query();
-                        if (x) {
-                            id_log = x;
-                        }
-                        if (highlighted) {
-                            selected = -1;
-                        } else {
-                            selected = i;
-                        }
-                    }
-                    if (i == chosen_one) {
-                        ImGui::PopStyleColor();
-                    }
-                    if (is_active) {
-                        ImGui::PopStyleColor();
-                    }
                     }
                 }
+                ImGui::EndChild();
                 ImGui::End();
             }
 #endif
             {
                 ImGui::Begin("Full log plot");
-                auto sorted_range = std::ranges::equal_range(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();});
-                auto span_range = std::ranges::equal_range(span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);});
-                if (span_range.size() > static_cast<size_t>(log_task_threshold)) {
-                    ImGui::Text("number of tasks spanned %zu is greater than configured threshold %d, not rendering", span_range.size(), log_task_threshold);
-                } else if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, 100), ImPlotFlags_NoTitle)) {
+                if (full_log_cache_state.task_count > static_cast<size_t>(log_task_threshold)) {
+                    render_truncation_warning(full_log_cache_state.task_count, log_task_threshold, true);
+                }
+                if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, 100), ImPlotFlags_NoTitle)) {
                     static uint64_t prev_id;
                     auto flag = prev_id == id_full_log ? ImPlotCond_Once : ImPlotCond_Always;
                     prev_id = id_full_log;
 
-                    uint64_t start_ts = sorted_range.front().ts;
-                    uint64_t end_ts = sorted_range.back().ts;
+                    const int64_t start_ts = full_log_cache_state.start_ts;
+                    const int64_t end_ts = full_log_cache_state.end_ts;
                     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoGridLines, ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoDecorations);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, double(end_ts - start_ts)*MULTIPLIER/1e6);
                     ImPlot::SetupAxesLimits(0, double(end_ts - start_ts)*MULTIPLIER/1e6, 0, 1, flag);
                     ImPlot::PushPlotClipRect();
 
-                    uint64_t prev_ts = start_ts;
-                    bool cpu = true;
-                    uint64_t iostack = 0;
-                    uint64_t iostart = 0;
-                    for (const auto& x : span_range) {
-                            ImVec2 rmin = ImPlot::PlotToPixels(ImPlotPoint(double(prev_ts - start_ts)*MULTIPLIER/1e6, 1.f));
-                            ImVec2 rmax = ImPlot::PlotToPixels(ImPlotPoint(double(x.ts - start_ts)*MULTIPLIER/1e6, 0.f));
-                            ImVec2 rmin_low = ImPlot::PlotToPixels(ImPlotPoint(double(prev_ts - start_ts)*MULTIPLIER/1e6, 0.f));
-                        if (cpu) {
-                            ImPlot::GetPlotDrawList()->AddLine(rmin, rmin_low, IM_COL32(0,128,0,255));
-                            ImPlot::GetPlotDrawList()->AddRectFilled(rmin, rmax, IM_COL32(0,128,0,255));
-                        } else {
-                            ImPlot::GetPlotDrawList()->AddRectFilled(rmin, rmax, IM_COL32(0,0,128,32));
+                    for (const auto& item : full_log_cache_state.plot_items) {
+                        ImVec2 rmin = ImPlot::PlotToPixels(item.min);
+                        ImVec2 rmax = ImPlot::PlotToPixels(item.max);
+                        if (item.draw_line) {
+                            ImVec2 line_end = ImPlot::PlotToPixels(item.line_end);
+                            ImPlot::GetPlotDrawList()->AddLine(rmin, line_end, IM_COL32(0,128,0,255));
                         }
-                        if (x.query() == id_full_log) {
-                            if (x.event != 0x5) {
-                                cpu = true;
-                            }
-                            if (x.event == 0x4) {
-                                if (iostack == 0) {
-                                    iostart = x.ts;
-                                }
-                                iostack += 1;
-                            } else if (x.event == 0x5) {
-                                iostack -= 1;
-                                if (iostack == 0) {
-                                    ImVec2 rmin = ImPlot::PlotToPixels(ImPlotPoint(double(iostart - start_ts)*MULTIPLIER/1e6, 1.f));
-                                    ImVec2 rmax = ImPlot::PlotToPixels(ImPlotPoint(double(x.ts - start_ts)*MULTIPLIER/1e6, 0.f));
-                                    ImPlot::GetPlotDrawList()->AddRectFilled(rmin, rmax, IM_COL32(255,255,255,32));
-                                }
-                            }
-                        } else {
-                            cpu = false;
-                        }
-                        prev_ts = x.ts;
+                        ImPlot::GetPlotDrawList()->AddRectFilled(rmin, rmax, item.color);
                     }
                     ImPlot::PopPlotClipRect();
 
