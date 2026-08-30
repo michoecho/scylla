@@ -2,6 +2,7 @@
   root = .
   fuzztest = third-party/fuzztest
   imgui = third-party/imgui
+  scylladb = third-party/scylladb
   implot = third-party/implot
   rust_third_party = third-party/rust
   prelude = prelude
