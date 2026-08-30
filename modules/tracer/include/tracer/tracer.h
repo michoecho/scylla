@@ -184,6 +184,13 @@ public:
         if (current_.size() - cur_pos_ < n) [[unlikely]] {
             rotate();
         }
+        return write_unchecked(n);
+    }
+
+    // The caller has already established that n fits in the current buffer.
+    // Used by trace_buffers::write() so its hot path does not repeat the
+    // bounds check after handling rotation in its slow path.
+    [[gnu::always_inline]] std::byte* write_unchecked(std::size_t n) {
         std::byte* result = current_.data() + cur_pos_;
         cur_pos_ += n;
         return result;
@@ -243,19 +250,10 @@ public:
 
     [[gnu::always_inline]] std::byte* write(event_level level, std::size_t n) {
         buffer_group& group = groups_[static_cast<std::size_t>(level)];
-        if (!group.fits(n)) [[unlikely]] {
-            // Rotating drops the oldest buffer, and with it whatever sync
-            // record used to be the first thing in this ring -- so the fresh
-            // buffer is opened with a new one. Done here rather than inside
-            // buffer_group::rotate() because the record about to be written has
-            // not been written yet: this way the sync lands in front of it, and
-            // the ring stays in timestamp order.
-            group.rotate();
-            if (level != event_level::metadata) {
-                write_clock_sync(level);
-            }
+        if (group.fits(n)) [[likely]] {
+            return group.write_unchecked(n);
         }
-        return group.write(n);
+        return write_slow(level, n);
     }
 
     [[nodiscard]] const buffer_group& group(event_level level) const {
@@ -286,6 +284,10 @@ public:
     // header, with the other members that record.
     [[gnu::noinline]] void write_clock_sync(event_level level);
 
+    // Cold path for a record that does not fit in the current buffer. Rotation
+    // and clock-sync emission stay out of trace_buffers::write()'s hot path.
+    [[gnu::noinline]] std::byte* write_slow(event_level level, std::size_t n);
+
 private:
     // The objects this ring has already described, so that what has gone can be
     // named after it is gone.
@@ -302,7 +304,7 @@ private:
 
 // The tracer TRACEPOINT() writes to. Every thread that traces must have one
 // installed; there is deliberately no null check on the hot path.
-extern thread_local trace_buffers* local_tracer;
+constinit extern thread_local trace_buffers* local_tracer;
 
 // --- argument signatures -----------------------------------------------------
 //

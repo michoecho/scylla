@@ -27,7 +27,7 @@ void set_enabled(const tracepoint_entry& entry, bool enabled) {
 }
 }  // namespace
 
-thread_local trace_buffers* local_tracer = nullptr;
+constinit thread_local trace_buffers* local_tracer = nullptr;
 
 namespace {
 
@@ -107,6 +107,20 @@ buffer_group::buffer_group(std::size_t capacity, std::size_t buffer_size)
         old_.back().reserve(buffer_size_);
     }
     current_.resize(buffer_size_);
+}
+
+std::byte* trace_buffers::write_slow(event_level level, std::size_t n) {
+    buffer_group& group = groups_[static_cast<std::size_t>(level)];
+    assert(n <= group.buffer_size() && "record larger than one trace buffer");
+
+    // Rotating drops the live buffer and recycles the oldest one. The fresh
+    // buffer gets its clock-sync record before the record that forced the
+    // rotation, so the ring remains timestamp-ordered.
+    group.rotate();
+    if (level != event_level::metadata) {
+        write_clock_sync(level);
+    }
+    return group.write_unchecked(n);
 }
 
 void buffer_group::rotate() {
