@@ -1,0 +1,55 @@
+load("//buck:module.bzl", "add_module")
+
+# The library, without the module's test sources.
+#
+# Same split, for the same reason, as //modules/tracer:tracer_core: add_module()
+# puts the test translation units into the module library, and a location is a
+# static in an ELF section, so linking that library into the check below would
+# put the tests' call sites into the very table it inspects.
+cxx_library(
+    name = "source_location_core",
+    srcs = ["source_location.cc"],
+    exported_headers = {
+        "source_location/source_location.h": "include/source_location/source_location.h",
+    },
+    header_namespace = "",
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
+# The compile-time capture path, which needs an optimised build to exist at all.
+#
+# This repository compiles at -O0, where the asm operands cannot be folded and
+# the header falls back to filling entries at run time. So the fast path would
+# otherwise be built by nobody and tested by nobody: this target pins the -O2 it
+# requires, and the genrule below runs it, so that a failure of the path Scylla
+# will actually use is a failure of this build.
+cxx_binary(
+    name = "optimized_check",
+    srcs = ["optimized_check.cc"],
+    header_namespace = "",
+    compiler_flags = ["-O2"],
+    deps = [":source_location_core"],
+)
+
+genrule(
+    name = "optimized_check_out",
+    out = "optimized_check.txt",
+    cmd = "$(exe :optimized_check) > $OUT",
+)
+
+add_module(
+    name = "source_location",
+    srcs = ["source_location_test.cc"],
+    deps = [
+        ":source_location_core",
+        "//:doctest",
+    ],
+    resources = {
+        "optimized_check.txt": ":optimized_check_out",
+    },
+    env = {
+        "SRCLOC_OPTIMIZED_CHECK": "$(location :optimized_check_out)",
+    },
+    module_source_dir = "modules/source_location",
+)
