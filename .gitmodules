@@ -1,0 +1,9 @@
+[submodule "third-party/fuzztest"]
+	path = third-party/fuzztest
+	url = https://github.com/google/fuzztest.git
+[submodule "third-party/imgui"]
+	path = third-party/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "third-party/implot"]
+	path = third-party/implot
+	url = https://github.com/epezent/implot.git
