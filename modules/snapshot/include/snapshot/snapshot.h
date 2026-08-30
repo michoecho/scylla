@@ -212,11 +212,11 @@ constexpr SnapshotLiteral operator""_snap() {
         .value = {detail::StrippedLiteral<L>::text.data(), detail::StrippedLiteral<L>::size}};
 }
 
-// File-backed snapshot IDs are also kept in the test binary. The repository
-// validator will eventually use this section instead of having to recover
-// literal syntax from source text. `used` is important here: this is metadata,
-// so no ordinary code needs to reference the object after the literal has been
-// converted. `retain` (when available) keeps link-time section garbage
+// File-backed snapshot identities and hashes are also kept in the test binary.
+// The repository validator will eventually use this section instead of having
+// to recover literal syntax from source text. `used` is important here: this is
+// metadata, so no ordinary code needs to reference the object after the literal
+// has been converted. `retain` (when available) keeps link-time section garbage
 // collection from discarding it as well.
 #if defined(__ELF__) && (defined(__GNUC__) || defined(__clang__))
 #  if defined(__has_attribute)
@@ -286,8 +286,12 @@ struct Snapshot {
     bool forced = false;
 };
 
+// A file-backed literal is `uuid|sha1`: the UUID is its stable store identity,
+// while the SHA-1 is the expected value hash used for the fast comparison path.
+// An empty literal is accepted only as the updater's uninitialized placeholder.
 struct FileSnapshotLiteral {
     std::string_view id;
+    std::string_view hash;
     bool forced = false;
 
     [[nodiscard]] constexpr FileSnapshotLiteral update() const {
@@ -297,10 +301,11 @@ struct FileSnapshotLiteral {
     }
 
 private:
-    // Keeping construction private ensures every file-snapshot ID comes from
+    // Keeping construction private ensures every file-snapshot value comes from
     // the literal operator, which is also what records it in the ELF section.
-    consteval FileSnapshotLiteral(std::string_view id, bool forced = false)
-        : id(id), forced(forced) {}
+    consteval FileSnapshotLiteral(std::string_view id, std::string_view hash,
+                                  bool forced = false)
+        : id(id), hash(hash), forced(forced) {}
 
     template <detail::RawLiteral L>
     friend constexpr FileSnapshotLiteral operator""_filesnap();
@@ -308,17 +313,25 @@ private:
 
 template <detail::RawLiteral L>
 constexpr FileSnapshotLiteral operator""_filesnap() {
+    constexpr std::string_view value{detail::file_snapshot_id<L>.data(),
+                                     L.view().size()};
+    constexpr std::size_t separator = value.find('|');
     return FileSnapshotLiteral{
-        std::string_view{detail::file_snapshot_id<L>.data(), L.view().size()}};
+        separator == std::string_view::npos ? value : value.substr(0, separator),
+        separator == std::string_view::npos
+            ? std::string_view{}
+            : value.substr(separator + 1)};
 }
 
 struct FileSnapshot {
     std::string_view id;
+    std::string_view hash;
     std::source_location location;
 
     FileSnapshot(FileSnapshotLiteral literal,
                  std::source_location location = std::source_location::current())
-        : id(literal.id), location(location), forced(literal.forced) {}
+        : id(literal.id), hash(literal.hash), location(location),
+          forced(literal.forced) {}
 
     [[nodiscard]] FileSnapshot update() const {
         FileSnapshot copy = *this;
@@ -431,6 +444,11 @@ struct PendingUpdate {
     std::string old_value;
     std::string new_value;
     std::string id;
+    // The source spelling being replaced and its replacement. File snapshots
+    // update the hash in the source even when the stored bytes themselves did
+    // not change.
+    std::string old_literal;
+    std::string new_literal;
     bool initialize = false;
     bool existed = false;
 };

@@ -1,6 +1,7 @@
 #include "snapshot/snapshot.h"
 
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
@@ -50,6 +51,103 @@ bool canonical_uuid(std::string_view id) {
     }
   }
   return true;
+}
+
+bool canonical_sha1(std::string_view hash) {
+  if (hash.size() != 40)
+    return false;
+  for (const char c : hash)
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+      return false;
+  return true;
+}
+
+constexpr std::uint32_t rotate_left(std::uint32_t value, unsigned amount) {
+  return (value << amount) | (value >> (32 - amount));
+}
+
+void sha1_block(std::array<std::uint32_t, 5> &state,
+                const std::array<unsigned char, 64> &block) {
+  std::array<std::uint32_t, 80> words{};
+  for (std::size_t i = 0; i < 16; ++i)
+    words[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
+              (static_cast<std::uint32_t>(block[i * 4 + 1]) << 16) |
+              (static_cast<std::uint32_t>(block[i * 4 + 2]) << 8) |
+              static_cast<std::uint32_t>(block[i * 4 + 3]);
+  for (std::size_t i = 16; i < words.size(); ++i)
+    words[i] = rotate_left(words[i - 3] ^ words[i - 8] ^ words[i - 14] ^
+                               words[i - 16],
+                           1);
+
+  std::uint32_t a = state[0];
+  std::uint32_t b = state[1];
+  std::uint32_t c = state[2];
+  std::uint32_t d = state[3];
+  std::uint32_t e = state[4];
+  for (std::size_t i = 0; i < words.size(); ++i) {
+    std::uint32_t function;
+    std::uint32_t constant;
+    if (i < 20) {
+      function = (b & c) | ((~b) & d);
+      constant = 0x5a827999;
+    } else if (i < 40) {
+      function = b ^ c ^ d;
+      constant = 0x6ed9eba1;
+    } else if (i < 60) {
+      function = (b & c) | (b & d) | (c & d);
+      constant = 0x8f1bbcdc;
+    } else {
+      function = b ^ c ^ d;
+      constant = 0xca62c1d6;
+    }
+    const std::uint32_t next = rotate_left(a, 5) + function + e + constant +
+                               words[i];
+    e = d;
+    d = c;
+    c = rotate_left(b, 30);
+    b = a;
+    a = next;
+  }
+  state[0] += a;
+  state[1] += b;
+  state[2] += c;
+  state[3] += d;
+  state[4] += e;
+}
+
+std::string sha1(std::string_view value) {
+  std::array<std::uint32_t, 5> state = {
+      0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
+  std::array<unsigned char, 64> block{};
+  std::size_t offset = 0;
+  while (value.size() - offset >= block.size()) {
+    for (std::size_t i = 0; i < block.size(); ++i)
+      block[i] = static_cast<unsigned char>(value[offset + i]);
+    sha1_block(state, block);
+    offset += block.size();
+  }
+
+  block.fill(0);
+  const std::size_t remaining = value.size() - offset;
+  for (std::size_t i = 0; i < remaining; ++i)
+    block[i] = static_cast<unsigned char>(value[offset + i]);
+  block[remaining] = 0x80;
+  const std::uint64_t bit_length = static_cast<std::uint64_t>(value.size()) * 8;
+  if (remaining >= 56) {
+    sha1_block(state, block);
+    block.fill(0);
+  }
+  for (std::size_t i = 0; i < 8; ++i)
+    block[56 + i] = static_cast<unsigned char>(bit_length >> (56 - i * 8));
+  sha1_block(state, block);
+
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(40);
+  for (const std::uint32_t word : state)
+    for (unsigned nibble = 8; nibble-- > 0;)
+      result.push_back(hex[(word >> (nibble * 4)) & 0xf]);
+  return result;
 }
 
 std::string generate_uuid() {
@@ -234,15 +332,19 @@ Comparison compare(const RegexText &got, const Snapshot &expected) {
 
 Comparison compare(std::string_view got, const FileSnapshot &expected) {
   const bool recording = update_mode() || expected.forced;
-  const bool initialize = expected.id.empty();
+  const bool initialize = expected.id.empty() && expected.hash.empty();
   std::string id(expected.id);
   if (id.empty()) {
     if (!recording)
       return Comparison::Mismatched;
+    if (!expected.hash.empty())
+      return Comparison::Mismatched;
     id = generate_uuid();
-  } else if (!canonical_uuid(id)) {
+  } else if (!canonical_uuid(id) || !canonical_sha1(expected.hash)) {
     return Comparison::Mismatched;
   }
+
+  const std::string got_hash = sha1(got);
 
   const Owner here{expected.location.file_name(), expected.location.line(),
                    expected.location.column()};
@@ -253,10 +355,34 @@ Comparison compare(std::string_view got, const FileSnapshot &expected) {
     return Comparison::Mismatched;
   }
 
-  const ReadResult old = read_bytes(snapshot_path(id));
-  if (old.ok && old.bytes == got)
+  // The hash is the normal comparison path. In particular, do not inspect the
+  // snapshot store when it agrees: tests can then run without their source
+  // tree, and remote execution does not pay for an unnecessary filesystem read.
+  if (!initialize && got_hash == expected.hash)
     return expected.forced ? Comparison::StaleUpdateMarker
                            : Comparison::Matched;
+
+  // An uninitialized literal has no store entry to inspect. It is recorded
+  // directly with a generated identity and the hash of this value.
+  if (initialize) {
+    if (!recording)
+      return Comparison::Mismatched;
+    updates().push_back(
+        PendingUpdate{.kind = PendingUpdate::Kind::File,
+                      .file = expected.location.file_name(),
+                      .line = expected.location.line(),
+                      .column = expected.location.column(),
+                      .old_value = {},
+                      .new_value = std::string(got),
+                      .id = id,
+                      .old_literal = {},
+                      .new_literal = id + "|" + got_hash,
+                      .initialize = true,
+                      .existed = false});
+    return Comparison::MismatchedAndRecorded;
+  }
+
+  const ReadResult old = read_bytes(snapshot_path(id));
   if (!recording || (!old.ok && !old.missing))
     return Comparison::Mismatched;
 
@@ -268,6 +394,8 @@ Comparison compare(std::string_view got, const FileSnapshot &expected) {
                     .old_value = old.ok ? old.bytes : std::string{},
                     .new_value = std::string(got),
                     .id = id,
+                    .old_literal = id + "|" + std::string(expected.hash),
+                    .new_literal = id + "|" + got_hash,
                     .initialize = initialize,
                     .existed = old.ok});
   return Comparison::MismatchedAndRecorded;
@@ -303,6 +431,9 @@ std::string render_mismatch(std::string_view got,
   if (!canonical_uuid(expected.id))
     return std::format("malformed file snapshot id '{}' at {}", expected.id,
                        location_key(expected.location));
+  if (!canonical_sha1(expected.hash))
+    return std::format("malformed file snapshot hash '{}' at {}", expected.hash,
+                       location_key(expected.location));
   const auto found = owners().find(std::string(expected.id));
   if (found != owners().end()) {
     const Owner here{expected.location.file_name(), expected.location.line(),
@@ -314,6 +445,11 @@ std::string render_mismatch(std::string_view got,
           expected.id, location_key(expected.location), found->second.file,
           found->second.line, found->second.column);
   }
+  // Keep diagnostics for a hash-only mismatch filesystem-free as well. This is
+  // normally reached only for a caller that invokes render_mismatch directly,
+  // or for a duplicate owner, but the invariant is useful at this boundary.
+  if (sha1(got) == expected.hash)
+    return "file snapshot hash matches at " + location_key(expected.location);
   const ReadResult old = read_bytes(snapshot_path(expected.id));
   if (!old.ok)
     return old.error + " (referenced at " + location_key(expected.location) +
@@ -419,7 +555,7 @@ std::string flush_updates() {
     std::filesystem::path temp;
   };
   std::map<std::string, std::vector<Update>> inline_by_file;
-  std::map<std::string, std::vector<Update>> ids_by_file;
+  std::map<std::string, std::vector<Update>> filesnaps_by_file;
   std::vector<Write> writes;
   std::string errors;
 
@@ -446,17 +582,18 @@ std::string flush_updates() {
                            : current.error + "\n";
       continue;
     }
-    writes.push_back({cwd / snapshot_source_path(pending.id),
-                      pending.new_value, {}});
-    if (pending.initialize)
-      ids_by_file[pending.file].push_back(
-          {pending.line, pending.column, "", pending.id});
+    if (!current.ok || current.bytes != pending.new_value)
+      writes.push_back({cwd / snapshot_source_path(pending.id),
+                        pending.new_value, {}});
+    filesnaps_by_file[pending.file].push_back(
+        {pending.line, pending.column, pending.old_literal,
+         pending.new_literal});
   }
 
   std::map<std::string, bool> source_names;
   for (const auto &item : inline_by_file)
     source_names[item.first] = true;
-  for (const auto &item : ids_by_file)
+  for (const auto &item : filesnaps_by_file)
     source_names[item.first] = true;
   for (const auto &item : source_names) {
     const std::string &name = item.first;
@@ -469,10 +606,10 @@ std::string flush_updates() {
     }
 
     std::string changed_text = source.bytes;
-    const auto ids = ids_by_file.find(name);
-    if (ids != ids_by_file.end()) {
+    const auto filesnaps = filesnaps_by_file.find(name);
+    if (filesnaps != filesnaps_by_file.end()) {
       const UpdateResult changed =
-          apply_filesnap_id_updates(changed_text, ids->second);
+          apply_filesnap_updates(changed_text, filesnaps->second);
       if (!changed.ok) {
         errors += name + ": " + changed.error + "\n";
         continue;
@@ -481,12 +618,20 @@ std::string flush_updates() {
     }
 
     auto inline_updates = inline_by_file[name];
-    // UUID insertion changes only columns later on that same source line.
-    if (ids != ids_by_file.end()) {
+    // A file-snapshot replacement changes only columns later on that same
+    // source line. This matters when an inline snapshot follows it.
+    if (filesnaps != filesnaps_by_file.end()) {
       for (Update &update : inline_updates) {
-        for (const Update &id : ids->second) {
-          if (id.line == update.line && id.column < update.column)
-            update.column += static_cast<unsigned>(id.new_value.size());
+        for (const Update &filesnap : filesnaps->second) {
+          if (filesnap.line == update.line && filesnap.column < update.column) {
+            if (filesnap.new_value.size() >= filesnap.old_value.size()) {
+              update.column += static_cast<unsigned>(
+                  filesnap.new_value.size() - filesnap.old_value.size());
+            } else {
+              update.column -= static_cast<unsigned>(
+                  filesnap.old_value.size() - filesnap.new_value.size());
+            }
+          }
         }
       }
     }

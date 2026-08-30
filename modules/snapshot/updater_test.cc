@@ -450,22 +450,26 @@ static_assert(R"snap(
               )snap"_snap.value == "|a\n  |b\n",
               "only one pipe is stripped, so a value may itself start with one");
 
-TEST_CASE("bootstraps multiple file snapshot ids on one line") {
+TEST_CASE("updates multiple file snapshot values on one line") {
     const std::string source = "x(\"\"_filesnap, \"\"_filesnap);\n";
-    const auto result = snapshot_testing::apply_filesnap_id_updates(
+    const auto result = snapshot_testing::apply_filesnap_updates(
         source,
         {{.line = 1,
           .column = 3,
           .old_value = "",
-          .new_value = "11111111-1111-4111-8111-111111111111"},
+          .new_value = "11111111-1111-4111-8111-111111111111|"
+                       "f32b67c7e26342af42efabc674d441dca0a281c5"},
          {.line = 1,
           .column = 16,
           .old_value = "",
-          .new_value = "22222222-2222-4222-8222-222222222222"}});
+          .new_value = "22222222-2222-4222-8222-222222222222|"
+                       "744b7e20b33c2020eb47b0d542b4b556779ce78d"}});
     REQUIRE(result.ok);
     CHECK(result.text ==
-          "x(\"11111111-1111-4111-8111-111111111111\"_filesnap, "
-          "\"22222222-2222-4222-8222-222222222222\"_filesnap);\n");
+          "x(\"11111111-1111-4111-8111-111111111111|"
+          "f32b67c7e26342af42efabc674d441dca0a281c5\"_filesnap, "
+          "\"22222222-2222-4222-8222-222222222222|"
+          "744b7e20b33c2020eb47b0d542b4b556779ce78d\"_filesnap);\n");
 }
 
 static_assert(R"snap(

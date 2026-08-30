@@ -515,8 +515,8 @@ UpdateResult apply_updates(std::string_view source, std::vector<Update> updates)
     return result;
 }
 
-UpdateResult apply_filesnap_id_updates(std::string_view source,
-                                       std::vector<Update> updates) {
+UpdateResult apply_filesnap_updates(std::string_view source,
+                                    std::vector<Update> updates) {
     UpdateResult result;
     if (!valid_utf8(source)) {
         result.error = "source file is not valid UTF-8";
@@ -559,7 +559,7 @@ UpdateResult apply_filesnap_id_updates(std::string_view source,
         const std::string_view current = source.substr(begin + 1, quote - begin - 1);
         if (current != update.old_value) {
             result.error = "the file snapshot at " + at +
-                           " no longer holds the recorded id; the file has changed since the test ran";
+                           " no longer holds the recorded value; the file has changed since the test ran";
             return result;
         }
         if (std::any_of(resolved.begin(), resolved.end(),

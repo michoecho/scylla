@@ -4,6 +4,7 @@ from pathlib import Path
 
 TOOL = Path(__file__).parents[1] / "snapshot-files"
 UUID = "12345678-1234-4234-8234-123456789abc"
+SHA1 = "f32b67c7e26342af42efabc674d441dca0a281c5"
 
 
 def run(root, *args):
@@ -12,7 +13,7 @@ def run(root, *args):
 
 
 def write_reference(root, uuid=UUID):
-    (root / "test.cc").write_text(f'auto value = "{uuid}"_filesnap;\n')
+    (root / "test.cc").write_text(f'auto value = "{uuid}|{SHA1}"_filesnap;\n')
 
 
 def test_accepts_matching_reference(tmp_path):
@@ -26,7 +27,7 @@ def test_accepts_matching_reference(tmp_path):
 def test_reports_malformed_duplicate_missing_and_orphan(tmp_path):
     write_reference(tmp_path)
     (tmp_path / "other.cc").write_text(
-        f'auto duplicate = "{UUID}"_filesnap;\nauto malformed = "bad"_filesnap;\n')
+        f'auto duplicate = "{UUID}|{SHA1}"_filesnap;\nauto malformed = "bad"_filesnap;\n')
     orphan = "abcdefab-cdef-4abc-8def-abcdefabcdef"
     path = tmp_path / ".snapshots" / orphan[:2] / f"{orphan}.snap"
     path.parent.mkdir(parents=True)
@@ -52,7 +53,7 @@ def test_reports_filesnap_nested_in_a_string_literal(tmp_path):
     # real reference, so it reports it. The snapshot mechanism's own sources are
     # the only place this arises, and SKIP excludes them by name.
     (tmp_path / "data.cc").write_text(
-        f'const std::string s = "x(\\"{UUID}\\"_filesnap);\\n";\n')
+        f'const std::string s = "x(\\"{UUID}|{SHA1}\\"_filesnap);\\n";\n')
     result = run(tmp_path)
     assert result.returncode == 1
     assert "not immediately preceded" in result.stderr
@@ -62,7 +63,7 @@ def test_skips_the_snapshot_mechanisms_own_sources(tmp_path):
     path = tmp_path / "modules" / "snapshot"
     path.mkdir(parents=True)
     (path / "updater_test.cc").write_text(
-        f'const std::string s = "x(\\"{UUID}\\"_filesnap);\\n";\n')
+        f'const std::string s = "x(\\"{UUID}|{SHA1}\\"_filesnap);\\n";\n')
     assert run(tmp_path).returncode == 0
 
 
