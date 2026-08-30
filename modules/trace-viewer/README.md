@@ -56,6 +56,49 @@ numeric event ids its analysis keys off.
 | `io_end{task, io}` | that I/O completed | `0x5` |
 | `semaphore_execute{prev, task}` | the reader semaphore's loop ran a queued read | `0xa` |
 | `execution_stage{prev, task}` | an execution stage ran a queued work item | `0xb` |
+| `stacktrace_sample{shard, time_ns, frames}` | a shard was interrupted for a stack sample | `0xc` |
+
+### Stack samples
+
+Every shard opens a `perf_event_open()` software cpu-clock event on itself at
+100 Hz with `PERF_SAMPLE_CALLCHAIN`, and the reactor drains the resulting mmap
+ring from its poll loop -- beside the rendezvous poller, which is where a shard
+is known to be between tasks. Declared in
+`seastar/include/seastar/core/scylla_stacktrace_sampler.hh`, implemented in the
+`.cc` beside it.
+
+The kernel walks the user stack by **frame pointer**, which is why both
+`CMakeLists.txt` and `seastar/CMakeLists.txt` set `-fno-omit-frame-pointer` at
+the top -- before anything is defined, because `add_compile_options()` only
+reaches targets created after it, and Seastar is configured as a separate
+project in a multi-config build so it does not inherit Scylla's. There is no
+`PERF_SAMPLE_STACK_USER` and no DWARF unwinding: a frame-pointer walk is a
+handful of loads in the interrupt, and a stack copy is kilobytes a sample.
+
+Sampling follows the tracepoint switch, so a node nobody asked to trace never
+opens a perf event. It is *not* switched at the rendezvous -- enabling a perf
+event is an `ioctl`, not a patch of live code -- but it is switched only if the
+rendezvous succeeded, so a failed switch leaves nothing on.
+
+`perf_event_open` can fail: `/proc/sys/kernel/perf_event_paranoid` above 2, or a
+container without the capability. That is one `warn` line per shard and no
+samples; everything else in the trace is unaffected, and the failure is not
+retried.
+
+Two things are worth knowing about the timestamps:
+
+- A sample carries the **kernel's** time, and the event is opened with
+  `clockid = CLOCK_REALTIME` precisely so that it lands in the domain the
+  tracer's `clock_sync` records pair rdtsc ticks with. The viewer converts it
+  back to ticks (`wall_clock::ticks_from_realtime()`) and the sample sorts among
+  the records it interrupted.
+- The record's *own* header timestamp is an rdtsc from when the poll loop
+  drained it, which is up to a poll period later. Nothing uses it.
+
+`frames` is a run of `uint64_t` return addresses, innermost first, with perf's
+`PERF_CONTEXT_*` markers dropped. Like a source location it is an address and
+nothing else, so reading it needs the objects -- the same `dsos/` directory, and
+the same reasoning about whose job that is.
 
 `at` is `seastar::task::location()` -- the `then()` call site, or the `co_await`
 a coroutine suspended at, which Seastar was already storing on every task as its
@@ -80,7 +123,9 @@ Deliberately crudely. Scylla's CMake pulls the tracer in by **absolute path**:
 - `seastar/CMakeLists.txt` sets `Scylla_TRACER_REPO` to
   `/home/michal/projects/cpp_template` and compiles `modules/tracer/tracer.cc`
   `modules/tracer/codegen.cc` and `modules/utils/barrier.cc` into
-  `libseastar.so`, with `-w` because they are not written to Seastar's
+  `libseastar.so` -- alongside `src/core/scylla_tracer.cc`,
+  `src/core/rendezvous.cc` and `src/core/scylla_stacktrace_sampler.cc` -- with
+  `-w` because they are not written to Seastar's
   `-Wall -Werror`. The barrier is what the rendezvous below gathers the shards
   with; its doctest cases live in a separate `barrier_test.cc` precisely so
   that this build never sees them.
@@ -226,6 +271,43 @@ buck2 run //modules/trace-viewer:trace_viewer -- \
 It takes the snapshot **directory**, not a file, and decodes every `*.trace` in
 it. This opens a window; there is no headless mode.
 
+### The sample viewer
+
+The **Stack samples** window is a list of every `stacktrace_sample` in the
+trace -- when, which cpu, which task, how deep -- with the decoded backtrace of
+the selected one beside it.
+
+Decoding is **lazy and cached**: a minute of a two-shard node is twelve thousand
+samples of a couple of dozen frames each, and symbolising them all at startup
+would be a quarter of a million `addr2line` lookups for the handful anybody
+opens. Clicking a sample runs one `llvm-addr2line -f -C -i -a` per object the
+sample's frames fall in, and every answer is kept by address -- so the second
+sample through the same call site is free. `$TRACE_ADDR2LINE` overrides the
+binary.
+
+Frames above the innermost are looked up at `address - 1`: a return address is
+the instruction *after* the call, and a call in tail position would otherwise be
+attributed to the next function entirely.
+
+The link to the rest of the viewer runs both ways, and in both directions it is
+the sample's task that carries it:
+
+- Clicking a sample selects the task that was on the cpu when it was taken, so
+  the log, the full log and the plot all move to it -- and both logs scroll to
+  the sample's own line.
+- A sample taken inside a task appears in that task's log as a `SAMPLE` line,
+  and clicking it selects the sample here.
+
+Which task a sample interrupted is worked out once, at load: the samples are
+placed on the trace's clock, everything is merged into one timeline, and one
+walk carrying the current task **per shard** answers it for all of them. Per
+shard is the point -- a task id has the shard that *minted* it in its top bits,
+not the one running it, so the only honest answer to "which cpu was this" is
+which file the record came out of. That is what `entry::shard` is.
+
+A sample taken while the shard was between tasks keeps task 0 and appears only
+in this window.
+
 ## Regenerating `decoder.h`
 
 `decoder.h` here is a **generated file, copied in**. It is emitted by
@@ -286,9 +368,15 @@ process, because a program that never `dlopen`s maps exactly that set, and Scyll
 does not. Something arriving only through `dlopen` would be missing, and a
 location inside it would read `<unresolved 0x...>` while everything else decoded.
 
-`--strip-debug` is worth taking: a decoder reads program headers, `.rodata` and
-the dynamic relocations and never touches debug info, which on the `Dev` binary
-is 564 MB down to 162 MB for the same 357 resolved call sites.
+`--strip-debug` is worth taking **if you only want source locations**: a decoder
+reads program headers, `.rodata` and the dynamic relocations and never touches
+debug info, which on the `Dev` binary is 564 MB down to 162 MB for the same 357
+resolved call sites.
+
+Stack samples are the exception. `llvm-addr2line` *does* read debug info, so
+against stripped objects a backtrace comes out as function names from the
+symbol table with no file and no line, and inlined frames vanish. Gather without
+`--strip-debug` if the backtraces are what you are here for.
 
 The viewer picks up a `dsos/` directory inside the snapshot on its own;
 `$TRACE_DSO_DIR` overrides, for a directory kept somewhere else.
@@ -313,7 +401,29 @@ object" misses, both handled by the generated decoder:
 
 ## Debugging a trace without the GUI
 
-When something looks wrong, decode headlessly and count. A ~40 line program
+For stack samples the viewer itself has a headless path, because a backtrace
+that comes out as bare addresses is nearly always a missing or stripped `dsos/`
+directory rather than anything wrong with the trace:
+
+```sh
+TRACE_DUMP_SAMPLE=5 buck2 run //modules/trace-viewer:trace_viewer -- <snapshot-dir>
+```
+
+prints that sample's decoded backtrace and exits without opening a window. The
+counts the viewer prints on the way in are worth reading too: how many samples
+there are, how many were placed on the trace's clock, and how many fell inside a
+task.
+
+Expect **far fewer samples than 100 Hz x shards x seconds**. A cpu-clock event
+only ticks while the shard is on the cpu, and a node serving `load.py`'s
+sequential selects is idle most of the time -- a 30-second run over two shards
+gives a few dozen samples, not six thousand. That is the sampler working, not
+failing. Note also that the samples are written at the `info` level while the
+switches are at `debug`, so a long run's *samples* survive in the ring while its
+switches have been evicted: an early sample can be a sample with no task, which
+is why the "fell inside a task" count is below the total.
+
+When something else looks wrong, decode headlessly and count. A ~40 line program
 including `decoder.h`, with one `operator()` per tracepoint, will tell you how
 many distinct tasks own an `io_begin` -- if that number is small, the chain is
 broken somewhere. Also worth counting: how many `cql_request` records there are,

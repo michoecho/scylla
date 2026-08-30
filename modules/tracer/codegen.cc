@@ -607,6 +607,24 @@ public:
         return files_.emplace(build_id, std::move(image)).first->second;
     }
 
+    // Where the object's file is, or an empty string if the directory does not
+    // have it. For handing to something that reads objects itself -- addr2line
+    // over a stack of frames, say -- rather than for reading here.
+    [[nodiscard]] std::string path(const std::string& build_id) const {
+        if (build_id.size() < 3) {
+            return {};
+        }
+        const std::string stem =
+            root_ + "/.build-id/" + build_id.substr(0, 2) + "/" + build_id.substr(2);
+        // Same two candidates, in the same order, as object() above.
+        for (const std::string& candidate : {stem + ".debug", stem}) {
+            if (std::ifstream(candidate, std::ios::binary)) {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
     // The object's relative relocations, read once. A location's file and
     // function pointers are not in the file of a shared object -- see
     // detail::relative_relocations() -- and a trace holds a location per record,
@@ -1093,6 +1111,85 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     return code;
 }
 
+// Reading raw addresses -- stack frames -- back against the objects they are
+// in. Fixed text: it only ever touches the tracer's own metadata tracepoints,
+// whose shape is the same in every generated decoder.
+std::string generate_mappings() {
+    return R"cpp(
+// Reopened: decode() above closed it, and this is a second, independent way in
+// -- nothing here is needed to read a record.
+namespace trace {
+
+// One object, as the metadata prologue described it: the build ID that names
+// it and the span of addresses it was mapped over.
+//
+// decode() keeps this to itself, because a *record* is read against the objects
+// as they were at its own timestamp. This is for the other kind of address: a
+// stack frame, or anything else a tracepoint carries as a bare pointer into
+// the process. Those have no reader of their own -- what is at an address is in
+// the object, not in the trace -- so a caller is handed the mappings and does
+// its own resolving, with llvm-addr2line or anything else that takes a file and
+// an offset.
+struct object_mapping {
+    std::string build_id;
+    std::uint64_t base;  // where the object was mapped
+    std::uint64_t size;  // how far past the base it reached
+};
+
+// The objects the prologue of `trace`'s metadata stream listed, which is every
+// object the thread had mapped when its rings were built. A library dlopened
+// afterwards is in the metadata stream proper rather than the prologue and does
+// not appear here; nothing that traces today does that.
+inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> trace) {
+    const std::byte* p = trace.data();
+    const std::byte* const end = p + trace.size();
+    if (detail::read_unaligned<std::uint32_t>(p, end) != trace_magic) {
+        throw std::runtime_error("not a trace");
+    }
+    while (p < end) {
+        const auto level = detail::read_unaligned<std::uint8_t>(p, end);
+        const auto length = detail::read_unaligned<std::uint64_t>(p, end);
+        detail::require(p, end, length);
+        if (level != metadata_level) {
+            p += length;
+            continue;
+        }
+        const std::byte* q = p;
+        const std::byte* const q_end = p + length;
+        detail::read_unaligned<std::uint64_t>(q, q_end);  // entry address
+        detail::read_unaligned<std::uint64_t>(q, q_end);  // timestamp
+        const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
+        std::vector<object_mapping> out;
+        out.reserve(counted.count);
+        for (std::uint32_t i = 0; i < counted.count; i++) {
+            detail::read_unaligned<std::uint64_t>(q, q_end);
+            detail::read_unaligned<std::uint64_t>(q, q_end);
+            const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
+            out.push_back({std::string(loaded.build_id), loaded.base_address,
+                           loaded.mapping_size});
+        }
+        return out;
+    }
+    throw std::runtime_error("a trace with no metadata stream");
+}
+
+// The object an address is in, or null. Linear, over a list of a few dozen: the
+// mappings are not sorted, and a caller resolving a stack does this once per
+// frame and then caches the answer.
+[[nodiscard]] inline const object_mapping* mapping_of(
+        const std::vector<object_mapping>& mappings, std::uint64_t address) {
+    for (const object_mapping& m : mappings) {
+        if (address >= m.base && address - m.base < m.size) {
+            return &m;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace trace
+)cpp";
+}
+
 }  // namespace
 
 std::string generate_decoder_source(std::span<const codegen_object> objects) {
@@ -1113,6 +1210,7 @@ std::string generate_decoder_source(std::span<const codegen_object> objects) {
     out += generate_objects(planned);
     out += generate_locator(planned);
     out += generate_decode(planned);
+    out += generate_mappings();
     return out;
 }
 

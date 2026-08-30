@@ -30,6 +30,10 @@
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <map>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
 #include "decoder.h"
 
 // Nanoseconds per rdtsc tick.  A fallback: the rate of the machine the original
@@ -105,6 +109,36 @@ public:
         return uint64_t(__int128(before.realtime_ns) + offset);
     }
 
+    // The other direction: which tick count a wall clock reading corresponds to.
+    //
+    // For the one thing in the trace that is dated rather than stamped -- a perf
+    // stack sample, whose time comes from the kernel in CLOCK_REALTIME and whose
+    // record header is an rdtsc from whenever the poll loop got round to
+    // draining it. Converting it back puts the sample among the records it
+    // interrupted instead of among the ones that were being written a poll
+    // later.
+    std::optional<int64_t> ticks_from_realtime(uint64_t ns) const {
+        if (points_.empty()) {
+            return std::nullopt;
+        }
+        const auto after =
+            std::ranges::lower_bound(points_, ns, {}, &clock_sync_point::realtime_ns);
+        if (after == points_.begin()) {
+            return extrapolate_ticks(points_.front(), ns);
+        }
+        const clock_sync_point& before = *(after - 1);
+        if (after == points_.end()) {
+            return extrapolate_ticks(before, ns);
+        }
+        const __int128 span_ticks = __int128(after->ticks) - before.ticks;
+        const __int128 span_ns = __int128(after->realtime_ns) - before.realtime_ns;
+        if (span_ns == 0) {
+            return before.ticks;
+        }
+        const __int128 offset = (__int128(ns - before.realtime_ns) * span_ticks) / span_ns;
+        return int64_t(__int128(before.ticks) + offset);
+    }
+
     // What a tick is worth in nanoseconds, for the durations everything else in
     // here measures.  The outermost pair of syncs, because that is the longest
     // baseline the trace offers; the recorded rate if there is only one sync;
@@ -125,6 +159,15 @@ private:
     // Outside the syncs: the recorded rate is all there is, and it is an
     // estimate.  A trace normally has a sync at each end, so this is the path
     // taken only by the handful of records before the opening one.
+    static std::optional<int64_t> extrapolate_ticks(const clock_sync_point& sync, uint64_t ns) {
+        if (sync.ticks_per_second == 0) {
+            return std::nullopt;
+        }
+        const __int128 offset = ((__int128(ns) - sync.realtime_ns) *
+                                 __int128(sync.ticks_per_second)) / 1'000'000'000;
+        return int64_t(__int128(sync.ticks) + offset);
+    }
+
     static std::optional<uint64_t> extrapolate(const clock_sync_point& sync, int64_t ticks) {
         if (sync.ticks_per_second == 0) {
             return std::nullopt;
@@ -142,6 +185,13 @@ private:
 };
 
 static wall_clock the_clock;
+
+// The sample the "Stack samples" window is showing the backtrace of, and
+// whether it was picked somewhere else -- from a SAMPLE line in one of the log
+// windows -- and so needs scrolling to. The two windows point at each other, so
+// the selection cannot live inside either.
+static size_t selected_sample = size_t(-1);
+static bool sample_needs_scroll = false;
 
 // The width of what format_realtime() returns, so a trace without a clock can
 // leave the column blank and keep the rest of the line where it was.
@@ -187,6 +237,7 @@ inline int64_t rdtsc() {
 //   4  io_begin{task, io}           a task submitted an I/O
 //   5  io_end{task, io}             that I/O completed
 //   0xb execution_stage{prev, task} an execution stage ran a queued work item
+//   0xc stacktrace_sample             the shard was interrupted for a stack sample
 //
 // (0x3 and 0xa, the reader-concurrency-semaphore events of the original
 // experiment, are not emitted by this build; the formatters for them are left
@@ -201,6 +252,13 @@ struct entry {
     // locations() below. Zero is "none" -- most events carry no location at all,
     // and a task nobody gave a resume point to does not either.
     uint32_t loc = 0;
+
+    // Which shard's file this came out of. Task *ids* carry a shard in their top
+    // bits, but that is the shard that minted the id and not the one running it
+    // -- a continuation inherits its id across a cross-shard hop -- so the only
+    // honest answer to "which cpu was this on" is which file it was in. Stack
+    // samples are matched to tasks per shard, and that is what needs it.
+    uint32_t shard = 0;
 
     // Which request this record belongs to. For a *switch* that is the task
     // being switched to; for everything else, the task it happened under.
@@ -249,6 +307,187 @@ static const std::string& location_string(uint32_t index) {
     return location_strings[index];
 }
 
+// --- stack samples ------------------------------------------------------------
+//
+// Every shard interrupts itself 100 times a second and records where it was, as
+// a run of return addresses walked off the frame pointers -- see
+// seastar/include/seastar/core/scylla_stacktrace_sampler.hh. An address is not
+// a function name and the trace does not carry one: what is at an address is in
+// the object it points into, exactly as for a srcloc::location, and turning it
+// into something readable is this program's job and llvm-addr2line's.
+//
+// That is done *lazily*, when a sample is clicked. A minute of a two-shard node
+// is twelve thousand samples of a couple of dozen frames each, and symbolising
+// all of them at startup would be a quarter of a million addr2line lookups for
+// the handful anybody will ever look at.
+
+struct stack_sample {
+    // The kernel's timestamp, in CLOCK_REALTIME nanoseconds -- the domain the
+    // clock_sync records pair rdtsc with, which is the whole reason the perf
+    // event is opened with that clockid.
+    uint64_t realtime_ns = 0;
+    // The same moment as a tick count, so the sample sorts among the records it
+    // interrupted. See wall_clock::ticks_from_realtime().
+    int64_t ts = 0;
+    uint32_t shard = 0;
+    // The task that was on the cpu, filled in below by walking the merged
+    // timeline; zero if the shard was between tasks or the trace does not reach
+    // back far enough to say.
+    uint64_t task = 0;
+    // Innermost first, as perf gave them: the sampled pc, then one return
+    // address per frame above it.
+    std::vector<uint64_t> frames;
+};
+
+static std::vector<stack_sample> samples;
+
+// The objects the trace said were mapped, and where their files are. Both are
+// filled in by main() once the traces are read; a viewer with no dsos/ directory
+// simply has no paths and every frame stays an address.
+static std::vector<trace::object_mapping> object_mappings;
+static trace::dso_directory* the_dsos = nullptr;
+
+// One symbolised frame: what llvm-addr2line said, or the bare address.
+//
+// Keyed by the address as looked up rather than as recorded -- see below -- so
+// that the same call site costs one lookup however many samples caught it.
+static std::unordered_map<uint64_t, std::string> frame_cache;
+
+// Which addresses have been asked about at all. A frame in an object the
+// directory does not have gets an entry too, so it is not re-attempted.
+static std::string addr2line_binary() {
+    if (const char* const from_env = std::getenv("TRACE_ADDR2LINE")) {
+        return from_env;
+    }
+    return "llvm-addr2line";
+}
+
+// Symbolise a batch of addresses out of one object, filling frame_cache.
+//
+// One process for the whole batch: addr2line takes a list, and a stack of
+// thirty frames spread over two objects is two spawns rather than thirty. The
+// output is read in the form `-a -f -i` gives it -- an `0x...` line opening each
+// address, then function/file pairs, one pair per inlined frame -- so the
+// inlining is kept and shown as the several lines it is.
+static void symbolise_batch(const std::string& path,
+                            const std::vector<std::pair<uint64_t, uint64_t>>& batch) {
+    // process address, file offset
+    std::string command = fmt::format("{} -e '{}' -f -C -i -a", addr2line_binary(), path);
+    for (const auto& [process_address, file_offset] : batch) {
+        command += fmt::format(" {:#x}", file_offset);
+    }
+    command += " 2>/dev/null";
+
+    std::vector<std::vector<std::string>> per_address;
+    FILE* const pipe = popen(command.c_str(), "r");
+    if (pipe != nullptr) {
+        std::array<char, 4096> line{};
+        while (fgets(line.data(), int(line.size()), pipe) != nullptr) {
+            std::string text(line.data());
+            while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+                text.pop_back();
+            }
+            // An address line opens the block for the next input address; -a
+            // prints one whether or not anything was found.
+            if (text.rfind("0x", 0) == 0 && text.find(' ') == std::string::npos) {
+                per_address.emplace_back();
+                continue;
+            }
+            if (!per_address.empty()) {
+                per_address.back().push_back(std::move(text));
+            }
+        }
+        pclose(pipe);
+    }
+
+    for (size_t i = 0; i < batch.size(); ++i) {
+        const uint64_t key = batch[i].first;
+        if (i >= per_address.size() || per_address[i].empty()) {
+            frame_cache.emplace(key, std::string());
+            continue;
+        }
+        // Function then file:line, repeated once per inlined frame. Rendered
+        // innermost first, which is the order addr2line prints them in.
+        std::string text;
+        const auto& lines = per_address[i];
+        for (size_t j = 0; j + 1 < lines.size(); j += 2) {
+            if (!text.empty()) {
+                text += "\n                       (inlined by) ";
+            }
+            text += fmt::format("{} at {}", lines[j], lines[j + 1]);
+        }
+        if (text.empty()) {
+            text = lines.front();
+        }
+        frame_cache.emplace(key, std::move(text));
+    }
+}
+
+// The decoded backtrace of one sample, computed once and kept.
+//
+// A frame above the innermost is a *return* address -- the instruction after
+// the call -- and looking it up as it stands attributes the call to whatever
+// follows it, which for a call in tail position is the next function
+// altogether. One byte back is inside the call instruction, which is what every
+// unwinder does and what makes the line numbers right.
+static const std::vector<std::string>& sample_backtrace(size_t index) {
+    static std::unordered_map<size_t, std::vector<std::string>> decoded;
+    if (const auto found = decoded.find(index); found != decoded.end()) {
+        return found->second;
+    }
+
+    const stack_sample& sample = samples[index];
+
+    // Group the frames this sample needs by object, so each object is one
+    // addr2line run.
+    std::map<std::string, std::vector<std::pair<uint64_t, uint64_t>>> wanted;
+    std::vector<uint64_t> keys;
+    keys.reserve(sample.frames.size());
+    for (size_t i = 0; i < sample.frames.size(); ++i) {
+        const uint64_t key = i == 0 ? sample.frames[i] : sample.frames[i] - 1;
+        keys.push_back(key);
+        if (frame_cache.contains(key)) {
+            continue;
+        }
+        const trace::object_mapping* const in = trace::mapping_of(object_mappings, key);
+        if (in == nullptr) {
+            frame_cache.emplace(key, std::string());
+            continue;
+        }
+        const std::string path = the_dsos != nullptr ? the_dsos->path(in->build_id) : std::string();
+        if (path.empty()) {
+            frame_cache.emplace(key, std::string());
+            continue;
+        }
+        // The offset within the object's own address space, which is what its
+        // ELF file is written in -- the same subtraction the decoder does to
+        // read a source location.
+        wanted[path].push_back({key, key - in->base});
+    }
+    for (const auto& [path, batch] : wanted) {
+        symbolise_batch(path, batch);
+    }
+
+    std::vector<std::string> out;
+    out.reserve(sample.frames.size());
+    for (size_t i = 0; i < sample.frames.size(); ++i) {
+        static const std::string nothing;
+        const auto found = frame_cache.find(keys[i]);
+        const std::string& text = found == frame_cache.end() ? nothing : found->second;
+        out.push_back(text.empty() ? fmt::format("#{:<3} {:#018x}", i, sample.frames[i])
+                                   : fmt::format("#{:<3} {:#018x}  {}", i, sample.frames[i], text));
+    }
+    return decoded.emplace(index, std::move(out)).first->second;
+}
+
+// The log line a sample gets, which must not symbolise anything: it is built for
+// every sample in a task's log, and symbolising is what clicking one is for.
+static std::string sample_message(uint64_t index) {
+    const stack_sample& sample = samples[index];
+    return fmt::format("{:10s} {} frames from {:#x}", "SAMPLE", sample.frames.size(),
+                       sample.frames.empty() ? 0 : sample.frames.front());
+}
+
 static std::string entry_message(const entry& e) {
     switch (e.event) {
     case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
@@ -265,6 +504,7 @@ static std::string entry_message(const entry& e) {
         };
         return fmt::format("{:10s} {}", "RCS", rcs_status[e.arg]);
     }
+    case 0xc: return sample_message(e.arg);
     case 0x4: return fmt::format("{:10s} {:16x}", "IO_BEGIN", e.arg);
     case 0x5: return fmt::format("{:10s} {:16x}", "IO_END", e.arg);
     default: return fmt::format("UNKNOWN ({})", e.event);
@@ -439,21 +679,35 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
 // tracepoint the viewer has a use for, and a template that swallows the rest.
 struct sink {
     std::vector<entry>& out;
+    // Which file this is, so that every record knows which cpu wrote it. See
+    // entry::shard.
+    uint32_t shard;
 
     void operator()(const trace::run_task& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0, e.prev, e.task, int64_t(m.timestamp), intern_location(e.at)});
+        out.push_back({0, e.prev, e.task, int64_t(m.timestamp), intern_location(e.at), shard});
     }
     void operator()(const trace::cql_request& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({1, e.prev, e.task, int64_t(m.timestamp)});
+        out.push_back({1, e.prev, e.task, int64_t(m.timestamp), 0, shard});
     }
     void operator()(const trace::execution_stage& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0xb, e.prev, e.task, int64_t(m.timestamp)});
+        out.push_back({0xb, e.prev, e.task, int64_t(m.timestamp), 0, shard});
     }
     void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0x4, e.task, e.io, int64_t(m.timestamp)});
+        out.push_back({0x4, e.task, e.io, int64_t(m.timestamp), 0, shard});
     }
     void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0x5, e.task, e.io, int64_t(m.timestamp)});
+        out.push_back({0x5, e.task, e.io, int64_t(m.timestamp), 0, shard});
+    }
+    // A sample is put aside rather than turned into an entry here: its place in
+    // the timeline is its *own* timestamp converted to ticks, and no sync record
+    // has been read yet. main() makes the entries once the clock is built.
+    void operator()(const trace::stacktrace_sample& e, const trace::tracepoint_metadata&) const {
+        stack_sample sample;
+        sample.realtime_ns = e.time_ns;
+        sample.shard = e.shard;
+        const auto* const words = reinterpret_cast<const uint64_t*>(e.frames.data());
+        sample.frames.assign(words, words + e.frames.size() / sizeof(uint64_t));
+        samples.push_back(std::move(sample));
     }
     // Pass one of the wall clock conversion: a sync record is not an event of
     // the program's own, so it never becomes an entry -- it is put aside, and
@@ -466,16 +720,42 @@ struct sink {
 };
 
 // One shard's trace file, decoded into the records above.
-static void load_trace(const std::filesystem::path& path, std::vector<entry>& out,
-                       trace::dso_directory& dsos) {
+//
+// `shard` is which file this is rather than anything the file says: a trace has
+// no field for the cpu it came off, and it does not need one, because there is
+// one file per shard.
+static void load_trace(const std::filesystem::path& path, uint32_t shard,
+                       std::vector<entry>& out, trace::dso_directory& dsos) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::system_error(errno, std::generic_category(), path.string());
     }
     const std::vector<char> raw{std::istreambuf_iterator<char>(in),
                                 std::istreambuf_iterator<char>()};
-    trace::decode({reinterpret_cast<const std::byte*>(raw.data()), raw.size()},
-                  sink{out}, dsos);
+    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
+                                           raw.size()};
+    trace::decode(bytes, sink{out, shard}, dsos);
+
+    // The objects this thread had mapped, for the raw addresses in a stack
+    // sample. Every shard of one process saw the same objects at the same
+    // addresses, so the first file that has any is enough.
+    if (object_mappings.empty()) {
+        object_mappings = trace::trace_mappings(bytes);
+    }
+}
+
+// The number in `shard-N.trace`, or nothing if the name is not that shape.
+static std::optional<uint32_t> shard_of(const std::filesystem::path& path) {
+    const std::string stem = path.stem().string();
+    const auto dash = stem.rfind('-');
+    if (dash == std::string::npos) {
+        return std::nullopt;
+    }
+    try {
+        return uint32_t(std::stoul(stem.substr(dash + 1)));
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
 }
 template <> struct fmt::formatter<entry> : formatter<string_view> {
     auto format(const entry& e, auto& ctx) const -> decltype(ctx.out()) {
@@ -519,9 +799,15 @@ int main(int argc, char** argv) {
             ? trace::dso_directory()
             : trace::dso_directory(dso_dir.string());
 
+    the_dsos = &dsos;
+
     std::vector<entry> entries;
-    for (const auto& file : files) {
-        load_trace(file, entries, dsos);
+    for (size_t i = 0; i < files.size(); ++i) {
+        const auto& file = files[i];
+        // The name if it has a number in it, and the position in the sorted
+        // list otherwise -- all this has to be is distinct per file.
+        const uint32_t shard = shard_of(file).value_or(uint32_t(i));
+        load_trace(file, shard, entries, dsos);
         fmt::print("{}: {} records so far\n", file.string(), entries.size());
     }
     if (entries.empty()) {
@@ -542,11 +828,77 @@ int main(int argc, char** argv) {
                MULTIPLIER, 1.0 / MULTIPLIER,
                the_clock.empty() ? " -- no sync records, times unavailable" : "");
 
+    // Stack samples become entries only now, because where a sample belongs in
+    // the timeline is its own CLOCK_REALTIME timestamp read back as ticks, and
+    // that needs the clock the pass above built. Without a clock they fall back
+    // to the tick count they already sort at -- which is when the poll loop
+    // drained them, a poll period late, and the best that can be done.
+    if (!samples.empty()) {
+        std::ranges::sort(samples, {}, &stack_sample::realtime_ns);
+        size_t dated = 0;
+        for (size_t i = 0; i < samples.size(); ++i) {
+            if (const auto ticks = the_clock.ticks_from_realtime(samples[i].realtime_ns)) {
+                samples[i].ts = *ticks;
+                ++dated;
+            } else if (!entries.empty()) {
+                samples[i].ts = entries.back().ts;
+            }
+            entries.push_back({0xc, 0, i, samples[i].ts, 0, samples[i].shard});
+        }
+        fmt::print("{} stack samples, {} placed on the trace's clock\n", samples.size(), dated);
+        fmt::print("  (a cpu-clock event only ticks while the shard is on the cpu, so a mostly "
+                   "idle node has far fewer than {} Hz x shards x seconds)\n",
+                   100);
+    }
+
     // The analysis below walks `span` as a global timeline -- it was reading a
     // single thread's ring in file order -- so the shards have to be merged
     // into one before it can, and the timestamps are rdtsc from one machine,
     // which makes that meaningful.
     std::ranges::sort(entries, {}, &entry::ts);
+
+    // Which task each sample interrupted. A sample says which cpu it was on and
+    // when; the switches say which task each cpu was running from when. So one
+    // walk of the merged timeline, carrying the current task per shard, answers
+    // it for every sample at once -- and that is the whole of the link between
+    // the two windows below. A sample taken while the shard was between tasks
+    // keeps task 0 and appears only in the sample list.
+    {
+        std::unordered_map<uint32_t, uint64_t> running;
+        for (entry& e : entries) {
+            if (e.event == 0 || e.event == 1 || e.event == 0xa || e.event == 0xb) {
+                running[e.shard] = e.arg;
+            } else if (e.event == 0xc) {
+                const auto found = running.find(e.shard);
+                e.id = found == running.end() ? 0 : found->second;
+                samples[e.arg].task = e.id;
+            }
+        }
+    }
+
+    // Symbolising is otherwise reachable only by clicking, and a backtrace that
+    // comes out as bare addresses is usually a missing or stripped dsos/
+    // directory rather than anything in the trace. This prints one and stops, so
+    // that can be told apart without opening a window. See "Debugging a trace
+    // without the GUI" in the README.
+    if (const char* const which = std::getenv("TRACE_DUMP_SAMPLE")) {
+        const size_t index = size_t(std::strtoul(which, nullptr, 0));
+        if (index >= samples.size()) {
+            fmt::print("no sample {} ({} in the trace)\n", index, samples.size());
+            return 1;
+        }
+        fmt::print("sample {}: cpu{} task {:x} at {}\n", index, samples[index].shard,
+                   samples[index].task, format_realtime(samples[index].realtime_ns));
+        for (const std::string& line : sample_backtrace(index)) {
+            fmt::print("{}\n", line);
+        }
+        return 0;
+    }
+
+    fmt::print("{} of {} samples fell inside a task\n",
+               std::ranges::count_if(samples, [](const auto& x) { return x.task != 0; }),
+               samples.size());
+
     auto span = std::span<const entry>(entries);
     auto sorted = std::vector<entry>(span.begin(), span.end());
     std::ranges::sort(sorted, std::ranges::less(), [] (const auto &x) {return std::make_pair(x.query(), x.ts);});
@@ -1088,6 +1440,10 @@ int main(int argc, char** argv) {
                                 }
                                 if (ImGui::Selectable(line.text.c_str(), highlighted)) {
                                     selected = highlighted ? size_t(-1) : i;
+                                    if (line.record.event == 0xc) {
+                                        selected_sample = line.record.arg;
+                                        sample_needs_scroll = true;
+                                    }
                                 }
                                 if (i == chosen_unfull) {
                                     ImGui::PopStyleColor();
@@ -1143,6 +1499,10 @@ int main(int argc, char** argv) {
                                         id_log = x;
                                     }
                                     selected = highlighted ? size_t(-1) : i;
+                                    if (line.record.event == 0xc) {
+                                        selected_sample = line.record.arg;
+                                        sample_needs_scroll = true;
+                                    }
                                 }
                                 if (i == chosen_one) {
                                     ImGui::PopStyleColor();
@@ -1197,6 +1557,106 @@ int main(int argc, char** argv) {
                         just_chosen_unfull = true;
                     }
                     ImPlot::EndPlot();
+                }
+                ImGui::End();
+            }
+
+            // The samples, and the backtrace of whichever one is selected.
+            //
+            // Both directions of the link between this window and the logs run
+            // through selected_sample: clicking a row here selects the task the
+            // sample interrupted, which is what the other windows are keyed on,
+            // and clicking a SAMPLE line there selects the row here.
+            {
+                ImGui::Begin("Stack samples");
+                if (samples.empty()) {
+                    ImGui::Text("no stacktrace_sample records in this trace");
+                } else {
+                    ImGui::Text("%s", fmt::format("{} samples, {} objects mapped, {}",
+                                                  samples.size(), object_mappings.size(),
+                                                  the_dsos == nullptr || object_mappings.empty()
+                                                      ? "no objects to decode against"
+                                                      : "decoded on demand")
+                                          .c_str());
+                    const float list_width = ImGui::GetContentRegionAvail().x * 0.5f;
+                    if (ImGui::BeginChild("Sample list", ImVec2(list_width, 0),
+                                          ImGuiChildFlags_ResizeX,
+                                          ImGuiWindowFlags_HorizontalScrollbar)) {
+                        ImGuiListClipper clipper;
+                        clipper.Begin(static_cast<int>(samples.size()));
+                        if (sample_needs_scroll && selected_sample < samples.size()) {
+                            clipper.IncludeItemByIndex(static_cast<int>(selected_sample));
+                        }
+                        while (clipper.Step()) {
+                            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                                const stack_sample& sample = samples[i];
+                                const std::string text = fmt::format(
+                                    "{}  cpu{:<2} {:16x}  {:3} frames##{}",
+                                    format_realtime(sample.realtime_ns), sample.shard, sample.task,
+                                    sample.frames.size(), i);
+                                const bool chosen = size_t(i) == selected_sample;
+                                if (chosen && sample_needs_scroll) {
+                                    sample_needs_scroll = false;
+                                    ImGui::SetScrollHereY();
+                                }
+                                if (ImGui::Selectable(text.c_str(), chosen)) {
+                                    selected_sample = size_t(i);
+                                    // Selecting the task the sample was taken
+                                    // in is the point of the link: the logs and
+                                    // the plot are all keyed on it.
+                                    if (sample.task != 0) {
+                                        id_log = sample.task;
+                                        id_full_log = sample.task;
+                                        chosen_unfull = std::ranges::lower_bound(
+                                                            sorted,
+                                                            std::make_pair(sample.task,
+                                                                           uint64_t(sample.ts)),
+                                                            std::ranges::less(),
+                                                            [](const auto& e) {
+                                                                return std::make_pair(
+                                                                    e.query(), uint64_t(e.ts));
+                                                            }) -
+                                                        sorted.begin();
+                                        chosen_unfull = std::clamp(chosen_unfull, size_t(0),
+                                                                   sorted.size() - 1);
+                                        just_chosen_unfull = true;
+                                        chosen_one =
+                                            std::ranges::lower_bound(span, sample.ts,
+                                                                     std::ranges::less(),
+                                                                     [](const auto& e) {
+                                                                         return e.ts;
+                                                                     }) -
+                                            span.begin();
+                                        chosen_one =
+                                            std::clamp(chosen_one, size_t(0), span.size() - 1);
+                                        just_chosen = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ImGui::EndChild();
+                    ImGui::SameLine();
+                    if (ImGui::BeginChild("Backtrace", ImVec2(0, 0), ImGuiChildFlags_None,
+                                          ImGuiWindowFlags_HorizontalScrollbar)) {
+                        if (selected_sample >= samples.size()) {
+                            ImGui::Text("pick a sample on the left");
+                        } else {
+                            const stack_sample& sample = samples[selected_sample];
+                            ImGui::Text("%s", fmt::format("cpu{} task {:x} at {}", sample.shard,
+                                                          sample.task,
+                                                          format_realtime(sample.realtime_ns))
+                                                  .c_str());
+                            ImGui::Separator();
+                            // Symbolised here and nowhere earlier: this is the
+                            // one sample anybody asked about, and the answer is
+                            // kept for the next time it is asked about.
+                            for (const std::string& line : sample_backtrace(selected_sample)) {
+                                ImGui::TextUnformatted(line.c_str());
+                            }
+                        }
+                    }
+                    ImGui::EndChild();
                 }
                 ImGui::End();
             }

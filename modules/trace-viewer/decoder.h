@@ -358,6 +358,24 @@ public:
         return files_.emplace(build_id, std::move(image)).first->second;
     }
 
+    // Where the object's file is, or an empty string if the directory does not
+    // have it. For handing to something that reads objects itself -- addr2line
+    // over a stack of frames, say -- rather than for reading here.
+    [[nodiscard]] std::string path(const std::string& build_id) const {
+        if (build_id.size() < 3) {
+            return {};
+        }
+        const std::string stem =
+            root_ + "/.build-id/" + build_id.substr(0, 2) + "/" + build_id.substr(2);
+        // Same two candidates, in the same order, as object() above.
+        for (const std::string& candidate : {stem + ".debug", stem}) {
+            if (std::ifstream(candidate, std::ios::binary)) {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
     // The object's relative relocations, read once. A location's file and
     // function pointers are not in the file of a shared object -- see
     // detail::relative_relocations() -- and a trace holds a location per record,
@@ -409,7 +427,7 @@ inline std::string field_to_string(const source_location& v) { return v.to_strin
 
 }  // namespace detail
 
-// seastar/src/core/scylla_tracer.cc:81
+// seastar/src/core/scylla_tracer.cc:86
 struct run_task {
     std::uint64_t prev;
     std::uint64_t task;
@@ -423,7 +441,7 @@ struct run_task {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:86
+// seastar/src/core/scylla_tracer.cc:91
 struct execution_stage {
     std::uint64_t prev;
     std::uint64_t task;
@@ -435,7 +453,7 @@ struct execution_stage {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:91
+// seastar/src/core/scylla_tracer.cc:96
 struct cql_request {
     std::uint64_t prev;
     std::uint64_t task;
@@ -447,7 +465,7 @@ struct cql_request {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:96
+// seastar/src/core/scylla_tracer.cc:101
 struct semaphore_execute {
     std::uint64_t prev;
     std::uint64_t task;
@@ -459,7 +477,7 @@ struct semaphore_execute {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:101
+// seastar/src/core/scylla_tracer.cc:106
 struct io_begin {
     std::uint64_t task;
     std::uint64_t io;
@@ -471,7 +489,7 @@ struct io_begin {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:106
+// seastar/src/core/scylla_tracer.cc:111
 struct io_end {
     std::uint64_t task;
     std::uint64_t io;
@@ -530,6 +548,20 @@ struct clock_sync {
         return std::format("clock_sync{{realtime_ns={}, ticks_per_second={}}}",
                            detail::field_to_string(realtime_ns),
                            detail::field_to_string(ticks_per_second));
+    }
+};
+
+// seastar/src/core/scylla_stacktrace_sampler.cc:82
+struct stacktrace_sample {
+    std::uint32_t shard;
+    std::uint64_t time_ns;
+    std::span<const std::byte> frames;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("stacktrace_sample{{shard={}, time_ns={}, frames={}}}",
+                           detail::field_to_string(shard),
+                           detail::field_to_string(time_ns),
+                           detail::field_to_string(frames));
     }
 };
 
@@ -607,16 +639,25 @@ inline clock_sync read_clock_sync(const std::byte*& p, const std::byte* end) {
     return out;
 }
 
-inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/scylla_tracer.cc", 81, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
-inline constexpr tracepoint_metadata metadata_1{"execution_stage", "seastar/src/core/scylla_tracer.cc", 86, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_2{"cql_request", "seastar/src/core/scylla_tracer.cc", 91, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_3{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 96, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_4{"io_begin", "seastar/src/core/scylla_tracer.cc", 101, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_5{"io_end", "seastar/src/core/scylla_tracer.cc", 106, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
+inline stacktrace_sample read_stacktrace_sample(const std::byte*& p, const std::byte* end) {
+    stacktrace_sample out{};
+    out.shard = detail::read_unaligned<std::uint32_t>(p, end);
+    out.time_ns = detail::read_unaligned<std::uint64_t>(p, end);
+    out.frames = detail::read_bytes(p, end);
+    return out;
+}
+
+inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/scylla_tracer.cc", 86, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
+inline constexpr tracepoint_metadata metadata_1{"execution_stage", "seastar/src/core/scylla_tracer.cc", 91, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_2{"cql_request", "seastar/src/core/scylla_tracer.cc", 96, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_3{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 101, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_4{"io_begin", "seastar/src/core/scylla_tracer.cc", 106, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_5{"io_end", "seastar/src/core/scylla_tracer.cc", 111, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
 inline constexpr tracepoint_metadata metadata_6{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1151, "void tracer::trace_buffers::note_objects_changed()", 0};
 inline constexpr tracepoint_metadata metadata_7{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1166, "void tracer::trace_buffers::note_objects_changed()", 0};
 inline constexpr tracepoint_metadata metadata_8{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1179, "void tracer::trace_buffers::note_objects_changed()", 0};
 inline constexpr tracepoint_metadata metadata_9{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1125, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
+inline constexpr tracepoint_metadata metadata_10{"stacktrace_sample", "seastar/src/core/scylla_stacktrace_sampler.cc", 82, "void seastar::(anonymous namespace)::trace_stacktrace_sample(std::uint32_t, std::uint64_t, std::span<const std::byte>)", 0};
 
 }  // namespace detail
 
@@ -635,7 +676,6 @@ struct object_descriptor {
 };
 
 inline constexpr object_descriptor objects[] = {
-    {"0309a3e75625998508004d6557d78f3de5e99d79", 0, 0},
     {"031d8c981cc111d747835b88605ef2a7cd183841", 0, 0},
     {"14ab4e5d89a6726d00357ff52f5430030e0741f8", 0, 0},
     {"2336665dcde4b83ab92e76e2de9df087e4d9d52f", 0, 0},
@@ -647,12 +687,13 @@ inline constexpr object_descriptor objects[] = {
     {"7b4d84838262e842fbf03a46d3e3d60135b8a20a", 0, 0},
     {"812dbcc86f2a2d6a6ec964d488cc071e17d0bcf6", 0, 0},
     {"b4ccadde6bdd8a27427bde094488cb299d811bae", 0, 0},
-    {"b9e4cdc2669c6819b262ae705fa5631ba3b50dbf", 0, 10},
-    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 10, 0},
-    {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 10, 0},
-    {"eab16d42136776e092b375ec994661ecf3de14b9", 10, 0},
-    {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 10, 0},
-    {"ff15fcce562be56ef6db5d0883b9e7fc72362292", 10, 0},
+    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 0, 0},
+    {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 0, 0},
+    {"e164b883a7d0421e46ce87d047ab5b974ad11a98", 0, 0},
+    {"e9ccd2e9846213effac9a36a2d77786e0e24e17e", 0, 11},
+    {"eab16d42136776e092b375ec994661ecf3de14b9", 11, 0},
+    {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 11, 0},
+    {"ff15fcce562be56ef6db5d0883b9e7fc72362292", 11, 0},
 };
 
 namespace detail {
@@ -966,10 +1007,89 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
                 cb(event, meta);
                 break;
             }
+            case 10: {
+                tracepoint_metadata meta = detail::metadata_10;
+                meta.timestamp = timestamp;
+                stacktrace_sample event = detail::read_stacktrace_sample(q, q_end);
+                cb(event, meta);
+                break;
+            }
             default:
                 throw std::runtime_error(std::format("bad tracepoint id {}", id));
         }
     }
+}
+
+}  // namespace trace
+
+// Reopened: decode() above closed it, and this is a second, independent way in
+// -- nothing here is needed to read a record.
+namespace trace {
+
+// One object, as the metadata prologue described it: the build ID that names
+// it and the span of addresses it was mapped over.
+//
+// decode() keeps this to itself, because a *record* is read against the objects
+// as they were at its own timestamp. This is for the other kind of address: a
+// stack frame, or anything else a tracepoint carries as a bare pointer into
+// the process. Those have no reader of their own -- what is at an address is in
+// the object, not in the trace -- so a caller is handed the mappings and does
+// its own resolving, with llvm-addr2line or anything else that takes a file and
+// an offset.
+struct object_mapping {
+    std::string build_id;
+    std::uint64_t base;  // where the object was mapped
+    std::uint64_t size;  // how far past the base it reached
+};
+
+// The objects the prologue of `trace`'s metadata stream listed, which is every
+// object the thread had mapped when its rings were built. A library dlopened
+// afterwards is in the metadata stream proper rather than the prologue and does
+// not appear here; nothing that traces today does that.
+inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> trace) {
+    const std::byte* p = trace.data();
+    const std::byte* const end = p + trace.size();
+    if (detail::read_unaligned<std::uint32_t>(p, end) != trace_magic) {
+        throw std::runtime_error("not a trace");
+    }
+    while (p < end) {
+        const auto level = detail::read_unaligned<std::uint8_t>(p, end);
+        const auto length = detail::read_unaligned<std::uint64_t>(p, end);
+        detail::require(p, end, length);
+        if (level != metadata_level) {
+            p += length;
+            continue;
+        }
+        const std::byte* q = p;
+        const std::byte* const q_end = p + length;
+        detail::read_unaligned<std::uint64_t>(q, q_end);  // entry address
+        detail::read_unaligned<std::uint64_t>(q, q_end);  // timestamp
+        const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
+        std::vector<object_mapping> out;
+        out.reserve(counted.count);
+        for (std::uint32_t i = 0; i < counted.count; i++) {
+            detail::read_unaligned<std::uint64_t>(q, q_end);
+            detail::read_unaligned<std::uint64_t>(q, q_end);
+            const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
+            out.push_back({std::string(loaded.build_id), loaded.base_address,
+                           loaded.mapping_size});
+        }
+        return out;
+    }
+    throw std::runtime_error("a trace with no metadata stream");
+}
+
+// The object an address is in, or null. Linear, over a list of a few dozen: the
+// mappings are not sorted, and a caller resolving a stack does this once per
+// frame and then caches the answer.
+[[nodiscard]] inline const object_mapping* mapping_of(
+        const std::vector<object_mapping>& mappings, std::uint64_t address) {
+    for (const object_mapping& m : mappings) {
+        if (address >= m.base && address - m.base < m.size) {
+            return &m;
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace trace
