@@ -8,6 +8,16 @@ project(scylla)
 set(CMAKE_CXX_COMPILE_OPTIONS_COLOR_DIAGNOSTICS "")
 set(CMAKE_C_COMPILE_OPTIONS_COLOR_DIAGNOSTICS "")
 
+# Frame pointers everywhere, for the stack sampler: the kernel walks the user
+# stack by rbp on every sample -- see
+# seastar/include/seastar/core/scylla_stacktrace_sampler.hh -- and a frame that
+# omitted its pointer ends the walk. Seastar sets the same flag in its own
+# CMakeLists.txt, because in a multi-config build it is configured as a
+# separate project and does not inherit this.
+#
+# Up here because add_compile_options() only reaches targets created after it.
+add_compile_options(-fno-omit-frame-pointer)
+
 list(APPEND CMAKE_MODULE_PATH
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake
   ${CMAKE_CURRENT_SOURCE_DIR}/seastar/cmake)
