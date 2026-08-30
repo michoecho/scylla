@@ -412,8 +412,8 @@ extern jump_entry __stop___jump_table[] __attribute__((weak));
 // label on that instruction, placed by the ARCH_STATIC_BRANCH_*_ASM macros.
 // Operand 0 is the key's slot (see key_ref), operand 1 the branch type, which
 // is folded into the low bit exactly as the kernel folds it into the key's.
-#define JUMP_TABLE_ENTRY                       \
-    ".pushsection __jump_table, \"aw\" \n\t"   \
+#define JUMP_TABLE_ENTRY                              \
+    ".pushsection __jump_table, \"aw?\",@progbits \n\t" \
     ".balign 8 \n\t"                           \
     ".long 1b - . \n\t"                        \
     ".long %l[l_yes] - . \n\t"                 \
