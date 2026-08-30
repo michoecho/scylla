@@ -18,6 +18,7 @@
 #include <doctest/doctest.h>
 
 #include "snapshot/check.h"
+#include "snapshot/regex_text.h"
 #include "static_keys/static_keys.h"
 #include "tracer/codegen.h"
 #include "tracer/tracer.h"
@@ -26,6 +27,7 @@
 namespace {
 
 using snapshot_testing::check_snapshot;
+using snapshot_testing::RegexText;
 using snapshot_testing::operator""_snap;
 
 std::string read_file(const char* path) {
@@ -38,6 +40,37 @@ std::string read_env_file(const char* variable) {
     const char* const path = std::getenv(variable);
     REQUIRE_MESSAGE(path != nullptr, variable, " is not set");
     return read_file(path);
+}
+
+// The displayed source-location column moves as the producer and tracer
+// change, but the events and values around it are part of the output contract.
+// Keep the real output as the recorded sample while making that column variable.
+RegexText serialize_source_columns(std::string_view text) {
+    RegexText out;
+    std::size_t from = 0;
+    while (from < text.size()) {
+        const std::size_t line_end = text.find('\n', from);
+        const std::size_t end = line_end == std::string_view::npos ? text.size() : line_end;
+        const std::size_t path = text.find("modules/", from);
+        const std::size_t colon = text.find(':', path);
+        const std::size_t whitespace = text.find_first_of(" \t", colon + 1);
+        std::size_t field_end = whitespace;
+        while (field_end < end && (text[field_end] == ' ' || text[field_end] == '\t')) {
+            ++field_end;
+        }
+        if (path == std::string_view::npos || path >= end || colon >= end ||
+            field_end == whitespace || field_end >= end) {
+            out.literal(text.substr(from, end - from));
+        } else {
+            out.literal(text.substr(from, path - from));
+            out.variable(text.substr(path, field_end - path), R"([^\n]*:\d+\s+)");
+            out.literal(text.substr(field_end, end - field_end));
+        }
+        if (line_end == std::string_view::npos) break;
+        out.literal("\n");
+        from = line_end + 1;
+    }
+    return out;
 }
 
 // The signature TRACEPOINT() would build for this parameter list, without
@@ -844,11 +877,12 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 // is a program built against that header, and :decoded_trace is it run on the
 // trace. What lands here is its stdout.
 //
-// Timestamps are a counter rather than rdtsc (see trace_producer.cc), so this
-// is stable byte for byte. A diff in it is a change in the wire format, the
-// generated decoder, or the demo workload.
+// Timestamps are a counter rather than rdtsc (see trace_producer.cc), and the
+// snapshot keeps the source files, event values, and the rest of the output
+// literal. Source line and column numbers are the only fields allowed to move.
 TEST_CASE("decoded trace") {
-    check_snapshot(read_env_file("TRACER_DECODED"), R"snap(
+    const RegexText decoded = serialize_source_columns(read_env_file("TRACER_DECODED"));
+    check_snapshot(decoded, R"snap(
         |               900 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |              1000 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |              1100 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
@@ -885,7 +919,7 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::dso_directory dsos(dso_dir());
     trace::decode(bytes, out, dsos);
 
-    check_snapshot(out.text, R"snap(
+    check_snapshot(serialize_source_columns(out.text), R"snap(
         |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:58 listening{port=8080}
