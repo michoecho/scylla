@@ -16,8 +16,11 @@ cxx_binary(
     name = "trace_viewer",
     srcs = ["main.cc"],
     header_namespace = "",
+    link_style = "static",
     deps = [
         ":decoder",
+        "//modules/address-decoder:address_decoder",
+        "//:doctest_impl",
         "//:fmt",
         "//:opengl",
         "//:sdl3",

@@ -77,6 +77,16 @@ export_file(
     visibility = ["PUBLIC"],
 )
 
+# The doctest runtime for a non-test binary that links a module. See the source
+# for why one is needed at all.
+cxx_library(
+    name = "doctest_impl",
+    srcs = ["buck/doctest_impl.cc"],
+    exported_deps = [":doctest"],
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
 cxx_library(
     name = "module_runner",
     srcs = ["buck/module_run.cc"],

@@ -30,10 +30,13 @@
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include "address_decoder/address_decoder.h"
 #include "decoder.h"
 
 // Nanoseconds per rdtsc tick.  A fallback: the rate of the machine the original
@@ -191,6 +194,26 @@ static wall_clock the_clock;
 // windows -- and so needs scrolling to. The two windows point at each other, so
 // the selection cannot live inside either.
 static size_t selected_sample = size_t(-1);
+
+// The state of every address in the backtrace on screen.
+//
+// Symbolising is asynchronous, so a frame's text is not available in the frame
+// that asks for it and the window needs somewhere to remember that it asked.
+// Three states, and the transitions run one way only:
+//
+//   fresh    nothing has been asked about this address -- request it.
+//   sent     it is with a worker; look for it in what was reaped this frame.
+//   decoded  the answer is in the decoder and frame_line() will render it.
+//
+// Selecting another sample puts every address back to `fresh`. That is not a
+// cache flush -- the decoder still knows every address it has ever answered,
+// and re-requesting one it knows is a no-op that resolves on the next frame
+// through the `sent` check below. It is just this window's per-row bookkeeping,
+// which belongs to the sample being shown and not to the addresses.
+enum class frame_state { fresh, sent, decoded };
+static std::vector<frame_state> frame_states;
+// Which sample frame_states describes; size_t(-1) for none yet.
+static size_t frame_states_for = size_t(-1);
 static bool sample_needs_scroll = false;
 
 // The width of what format_realtime() returns, so a trace without a clock can
@@ -355,137 +378,90 @@ static std::vector<stack_sample> samples;
 static std::vector<trace::object_mapping> object_mappings;
 static trace::dso_directory* the_dsos = nullptr;
 
-// One symbolised frame: what llvm-addr2line said, or the bare address.
+// Symbolising, which is done on worker threads and never on this one.
 //
-// Keyed by the address as looked up rather than as recorded -- see below -- so
-// that the same call site costs one lookup however many samples caught it.
-static std::unordered_map<uint64_t, std::string> frame_cache;
-
-// Which addresses have been asked about at all. A frame in an object the
-// directory does not have gets an entry too, so it is not re-attempted.
-static std::string addr2line_binary() {
-    if (const char* const from_env = std::getenv("TRACE_ADDR2LINE")) {
-        return from_env;
-    }
-    return "llvm-addr2line";
-}
-
-// Symbolise a batch of addresses out of one object, filling frame_cache.
+// Every address in the sample list goes through modules/address-decoder: one
+// persistent llvm-symbolizer per object, on a thread of its own, answering into
+// a queue this loop drains once a frame. The header there has the reasoning;
+// the short version is that spawning addr2line per click is one to two seconds
+// on Scylla's binary, all of it spent indexing the same debug info again, and a
+// backtrace that appears a second after the click is a backtrace nobody waits
+// for.
 //
-// One process for the whole batch: addr2line takes a list, and a stack of
-// thirty frames spread over two objects is two spawns rather than thirty. The
-// output is read in the form `-a -f -i` gives it -- an `0x...` line opening each
-// address, then function/file pairs, one pair per inlined frame -- so the
-// inlining is kept and shown as the several lines it is.
-static void symbolise_batch(const std::string& path,
-                            const std::vector<std::pair<uint64_t, uint64_t>>& batch) {
-    // process address, file offset
-    std::string command = fmt::format("{} -e '{}' -f -C -i -a", addr2line_binary(), path);
-    for (const auto& [process_address, file_offset] : batch) {
-        command += fmt::format(" {:#x}", file_offset);
-    }
-    command += " 2>/dev/null";
+// The consequence for everything below is that a decoded frame is *not*
+// available in the frame that asked for it. There is no blocking call to fall
+// back on: the window draws what it has, marks what it has asked about, and
+// picks the answers up whenever they land.
+static std::unique_ptr<addrdec::address_decoder> the_decoder;
 
-    std::vector<std::vector<std::string>> per_address;
-    FILE* const pipe = popen(command.c_str(), "r");
-    if (pipe != nullptr) {
-        std::array<char, 4096> line{};
-        while (fgets(line.data(), int(line.size()), pipe) != nullptr) {
-            std::string text(line.data());
-            while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
-                text.pop_back();
-            }
-            // An address line opens the block for the next input address; -a
-            // prints one whether or not anything was found.
-            if (text.rfind("0x", 0) == 0 && text.find(' ') == std::string::npos) {
-                per_address.emplace_back();
-                continue;
-            }
-            if (!per_address.empty()) {
-                per_address.back().push_back(std::move(text));
-            }
-        }
-        pclose(pipe);
-    }
-
-    for (size_t i = 0; i < batch.size(); ++i) {
-        const uint64_t key = batch[i].first;
-        if (i >= per_address.size() || per_address[i].empty()) {
-            frame_cache.emplace(key, std::string());
-            continue;
-        }
-        // Function then file:line, repeated once per inlined frame. Rendered
-        // innermost first, which is the order addr2line prints them in.
-        std::string text;
-        const auto& lines = per_address[i];
-        for (size_t j = 0; j + 1 < lines.size(); j += 2) {
-            if (!text.empty()) {
-                text += "\n                       (inlined by) ";
-            }
-            text += fmt::format("{} at {}", lines[j], lines[j + 1]);
-        }
-        if (text.empty()) {
-            text = lines.front();
-        }
-        frame_cache.emplace(key, std::move(text));
-    }
-}
-
-// The decoded backtrace of one sample, computed once and kept.
+// The address to look an entry of `frames` up at.
 //
 // A frame above the innermost is a *return* address -- the instruction after
 // the call -- and looking it up as it stands attributes the call to whatever
 // follows it, which for a call in tail position is the next function
 // altogether. One byte back is inside the call instruction, which is what every
 // unwinder does and what makes the line numbers right.
-static const std::vector<std::string>& sample_backtrace(size_t index) {
-    static std::unordered_map<size_t, std::vector<std::string>> decoded;
-    if (const auto found = decoded.find(index); found != decoded.end()) {
-        return found->second;
-    }
+static uint64_t frame_key(const stack_sample& sample, size_t i) {
+    return i == 0 ? sample.frames[i] : sample.frames[i] - 1;
+}
 
+// Queue one address, mapping it to the object it falls in first.
+//
+// An address in no known object, or in one the dsos/ directory does not have,
+// is still handed to the decoder with an empty path: it answers those itself,
+// immediately and as unresolved. Dropping them here instead would leave the
+// caller's state machine stuck in "sent" for exactly the frames that are most
+// likely to be unresolvable.
+static void request_frame(uint64_t key) {
+    addrdec::decode_request request;
+    request.address = key;
+    if (const trace::object_mapping* const in = trace::mapping_of(object_mappings, key)) {
+        if (the_dsos != nullptr) {
+            request.object_path = the_dsos->path(in->build_id);
+            // The offset within the object's own address space, which is what
+            // its ELF file is written in -- the same subtraction the decoder
+            // does to read a source location.
+            request.file_offset = key - in->base;
+        }
+    }
+    the_decoder->request(request);
+}
+
+// One rendered backtrace line: the address, and whatever is known about it.
+static std::string frame_line(const stack_sample& sample, size_t i, bool decoded) {
+    const uint64_t key = frame_key(sample, i);
+    const addrdec::decoded_address* const answer = the_decoder->lookup(key);
+    if (!decoded || answer == nullptr) {
+        return fmt::format("#{:<3} {:#018x}  ...", i, sample.frames[i]);
+    }
+    const std::string text = answer->to_string();
+    return text.empty() ? fmt::format("#{:<3} {:#018x}", i, sample.frames[i])
+                        : fmt::format("#{:<3} {:#018x}  {}", i, sample.frames[i], text);
+}
+
+// Ask for every frame of a sample and wait for the answers.
+//
+// Only for the headless path: the window must never do this, which is the whole
+// point of the module. Bounded, because a symbolizer that never answers would
+// otherwise hang a command whose job is to diagnose exactly that.
+static std::vector<std::string> sample_backtrace_blocking(size_t index) {
     const stack_sample& sample = samples[index];
-
-    // Group the frames this sample needs by object, so each object is one
-    // addr2line run.
-    std::map<std::string, std::vector<std::pair<uint64_t, uint64_t>>> wanted;
-    std::vector<uint64_t> keys;
-    keys.reserve(sample.frames.size());
     for (size_t i = 0; i < sample.frames.size(); ++i) {
-        const uint64_t key = i == 0 ? sample.frames[i] : sample.frames[i] - 1;
-        keys.push_back(key);
-        if (frame_cache.contains(key)) {
-            continue;
-        }
-        const trace::object_mapping* const in = trace::mapping_of(object_mappings, key);
-        if (in == nullptr) {
-            frame_cache.emplace(key, std::string());
-            continue;
-        }
-        const std::string path = the_dsos != nullptr ? the_dsos->path(in->build_id) : std::string();
-        if (path.empty()) {
-            frame_cache.emplace(key, std::string());
-            continue;
-        }
-        // The offset within the object's own address space, which is what its
-        // ELF file is written in -- the same subtraction the decoder does to
-        // read a source location.
-        wanted[path].push_back({key, key - in->base});
+        request_frame(frame_key(sample, i));
     }
-    for (const auto& [path, batch] : wanted) {
-        symbolise_batch(path, batch);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (the_decoder->outstanding() != 0 && std::chrono::steady_clock::now() < deadline) {
+        the_decoder->reap();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+    the_decoder->reap();
 
     std::vector<std::string> out;
     out.reserve(sample.frames.size());
     for (size_t i = 0; i < sample.frames.size(); ++i) {
-        static const std::string nothing;
-        const auto found = frame_cache.find(keys[i]);
-        const std::string& text = found == frame_cache.end() ? nothing : found->second;
-        out.push_back(text.empty() ? fmt::format("#{:<3} {:#018x}", i, sample.frames[i])
-                                   : fmt::format("#{:<3} {:#018x}  {}", i, sample.frames[i], text));
+        out.push_back(frame_line(sample, i, true));
     }
-    return decoded.emplace(index, std::move(out)).first->second;
+    return out;
 }
 
 // The log line a sample gets, which must not symbolise anything: it is built for
@@ -809,6 +785,11 @@ int main(int argc, char** argv) {
 
     the_dsos = &dsos;
 
+    // The symbolizer pool. Constructing it starts nothing -- the first address
+    // that falls in an object is what spawns that object's worker -- so a trace
+    // nobody symbolises pays nothing for this.
+    the_decoder = std::make_unique<addrdec::address_decoder>();
+
     std::vector<entry> entries;
     for (size_t i = 0; i < files.size(); ++i) {
         const auto& file = files[i];
@@ -893,15 +874,41 @@ int main(int argc, char** argv) {
     // that can be told apart without opening a window. See "Debugging a trace
     // without the GUI" in the README.
     if (const char* const which = std::getenv("TRACE_DUMP_SAMPLE")) {
-        const size_t index = size_t(std::strtoul(which, nullptr, 0));
-        if (index >= samples.size()) {
-            fmt::print("no sample {} ({} in the trace)\n", index, samples.size());
-            return 1;
+        // A comma-separated list rather than one index, because the cost that
+        // matters here is not the first sample's -- it is the second's. The
+        // first pays for indexing the object, which is tens of seconds on the
+        // Dev binary and unavoidable; every sample after it should be
+        // effectively free, because the symbolizer is still alive and still
+        // holding that index. Two indices and the elapsed time beside each is
+        // what shows whether that is true.
+        std::vector<size_t> indices;
+        for (const char* p = which; *p != '\0';) {
+            char* end = nullptr;
+            const unsigned long value = std::strtoul(p, &end, 0);
+            if (end == p) {
+                break;
+            }
+            indices.push_back(size_t(value));
+            p = end;
+            while (*p == ',' || *p == ' ') {
+                ++p;
+            }
         }
-        fmt::print("sample {}: cpu{} task {:x} at {}\n", index, samples[index].shard,
-                   samples[index].task, format_realtime(samples[index].realtime_ns));
-        for (const std::string& line : sample_backtrace(index)) {
-            fmt::print("{}\n", line);
+        for (const size_t index : indices) {
+            if (index >= samples.size()) {
+                fmt::print("no sample {} ({} in the trace)\n", index, samples.size());
+                return 1;
+            }
+            const auto begin = std::chrono::steady_clock::now();
+            const std::vector<std::string> lines = sample_backtrace_blocking(index);
+            const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - begin);
+            fmt::print("sample {}: cpu{} task {:x} at {} (symbolised in {} ms)\n", index,
+                       samples[index].shard, samples[index].task,
+                       format_realtime(samples[index].realtime_ns), took.count());
+            for (const std::string& line : lines) {
+                fmt::print("{}\n", line);
+            }
         }
         return 0;
     }
@@ -1139,6 +1146,17 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
+
+        // Everything the symbolizer workers finished since the last frame,
+        // taken in one go and unconditionally -- the sample window may be shut
+        // or collapsed, and results left in the queue would then never be
+        // moved into the decoder's own record of what it knows. Addresses that
+        // belong to a sample nobody is looking at are picked up too; they are
+        // kept, so nothing is lost by reaping them here.
+        std::unordered_set<uint64_t> just_decoded;
+        for (const addrdec::decoded_address& d : the_decoder->reap()) {
+            just_decoded.insert(d.address);
+        }
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("View")) {
@@ -1659,11 +1677,50 @@ int main(int argc, char** argv) {
                                                           format_realtime(sample.realtime_ns))
                                                   .c_str());
                             ImGui::Separator();
-                            // Symbolised here and nowhere earlier: this is the
-                            // one sample anybody asked about, and the answer is
-                            // kept for the next time it is asked about.
-                            for (const std::string& line : sample_backtrace(selected_sample)) {
-                                ImGui::TextUnformatted(line.c_str());
+
+                            // A sample switch invalidates the row states, and
+                            // nothing else does: the vector is indexed by
+                            // position in *this* sample's frames.
+                            if (frame_states_for != selected_sample) {
+                                frame_states_for = selected_sample;
+                                frame_states.assign(sample.frames.size(), frame_state::fresh);
+                            }
+
+                            size_t pending = 0;
+                            for (size_t i = 0; i < sample.frames.size(); ++i) {
+                                const uint64_t key = frame_key(sample, i);
+                                switch (frame_states[i]) {
+                                case frame_state::fresh:
+                                    request_frame(key);
+                                    frame_states[i] = frame_state::sent;
+                                    break;
+                                case frame_state::sent:
+                                    // Either it came back just now, or it was
+                                    // already known -- a call site another
+                                    // sample went through, or this same sample
+                                    // looked at a moment ago -- in which case
+                                    // request_frame() dropped the request and
+                                    // there is nothing to wait for.
+                                    if (just_decoded.contains(key) ||
+                                        the_decoder->lookup(key) != nullptr) {
+                                        frame_states[i] = frame_state::decoded;
+                                    }
+                                    break;
+                                case frame_state::decoded:
+                                    break;
+                                }
+                                if (frame_states[i] != frame_state::decoded) {
+                                    ++pending;
+                                }
+                                ImGui::TextUnformatted(
+                                    frame_line(sample, i, frame_states[i] == frame_state::decoded)
+                                        .c_str());
+                            }
+                            if (pending != 0) {
+                                ImGui::Separator();
+                                ImGui::Text("%s", fmt::format("symbolising {} of {} frames...",
+                                                              pending, sample.frames.size())
+                                                      .c_str());
                             }
                         }
                     }

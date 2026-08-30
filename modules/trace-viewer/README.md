@@ -11,6 +11,7 @@ Three parts, in two repositories:
 | the tracepoint machinery | `modules/tracer` (this repo) |
 | the instrumentation and the snapshot API | `third-party/scylladb`, and its `seastar` submodule |
 | the viewer | `modules/trace-viewer` (this repo, here) |
+| symbolising a stack sample's addresses | `modules/address-decoder` (this repo) |
 
 The Scylla checkout is **not** a submodule of this repo -- it is an untracked
 directory under `third-party/`, with its own history and its own Nix devshell.
@@ -277,13 +278,44 @@ The **Stack samples** window is a list of every `stacktrace_sample` in the
 trace -- when, which cpu, which task, how deep -- with the decoded backtrace of
 the selected one beside it.
 
-Decoding is **lazy and cached**: a minute of a two-shard node is twelve thousand
-samples of a couple of dozen frames each, and symbolising them all at startup
-would be a quarter of a million `addr2line` lookups for the handful anybody
-opens. Clicking a sample runs one `llvm-addr2line -f -C -i -a` per object the
-sample's frames fall in, and every answer is kept by address -- so the second
-sample through the same call site is free. `$TRACE_ADDR2LINE` overrides the
-binary.
+Decoding is **lazy, asynchronous and cached**: a minute of a two-shard node is
+twelve thousand samples of a couple of dozen frames each, and symbolising them
+all at startup would be a quarter of a million lookups for the handful anybody
+opens.
+
+It runs in `modules/address-decoder`: one worker thread per object, each owning
+a **persistent** `llvm-symbolizer` bound to that object with `--obj`, fed
+addresses through a mutexed queue and answering into another one that the render
+loop drains once a frame. `$TRACE_SYMBOLIZER` overrides the binary.
+
+Persistent is the whole point. Almost all of the cost is opening the object and
+indexing its debug info -- on the `Dev` binary that is a few seconds, and it is
+paid by whichever address lands in it first. Spawning a process per click paid it
+*again on every click*:
+
+| | first sample | every sample after |
+|---|---|---|
+| one `addr2line` per click | ~3.4 s | ~3.4 s |
+| a symbolizer kept alive | ~3.4 s | 4-170 ms |
+
+Measure it with a list rather than a single index -- the second number is the one
+that matters:
+
+```sh
+TRACE_DUMP_SAMPLE=1,2,5,40 buck2 run //modules/trace-viewer:trace_viewer -- <dir>
+```
+
+Because the answer arrives on another thread, it is *not* available in the frame
+that asked for it, and the window has to be able to draw a backtrace it does not
+yet have. So it keeps a state per displayed address -- `fresh`, `sent`,
+`decoded` -- requesting on the first, watching the reaped results on the second,
+and rendering `...` until the third. Selecting another sample puts every address
+back to `fresh`; that is this window's bookkeeping only, and costs nothing,
+because the decoder still knows every address it has ever answered and a
+re-request for one of those resolves on the next frame.
+
+Answers are kept by address, so the second sample through the same call site is
+free even across a sample switch.
 
 Frames above the innermost are looked up at `address - 1`: a return address is
 the instruction *after* the call, and a call in tail position would otherwise be
@@ -428,7 +460,9 @@ directory rather than anything wrong with the trace:
 TRACE_DUMP_SAMPLE=5 buck2 run //modules/trace-viewer:trace_viewer -- <snapshot-dir>
 ```
 
-prints that sample's decoded backtrace and exits without opening a window. The
+prints that sample's decoded backtrace and exits without opening a window. It
+takes a comma-separated list, and prints how long each one took -- which is also
+how the symbolizer pool is checked to be doing its job; see the table above. The
 counts the viewer prints on the way in are worth reading too: how many samples
 there are, how many were placed on the trace's clock, and how many fell inside a
 task.

@@ -1,0 +1,23 @@
+load("//buck:module.bzl", "add_module")
+
+# Symbolising addresses without blocking whoever asked. One persistent
+# llvm-symbolizer per object, one worker thread driving it, and a queue of
+# answers the caller drains when it suits -- see the header for why the obvious
+# spawn-per-lookup is unusable on an object the size of Scylla's.
+add_module(
+    name = "address_decoder",
+    srcs = [
+        "address_decoder.cc",
+        "address_decoder_test.cc",
+        "json.cc",
+    ],
+    exported_headers = {
+        "address_decoder/address_decoder.h": "include/address_decoder/address_decoder.h",
+        "address_decoder/json.h": "include/address_decoder/json.h",
+    },
+    deps = [
+        "//:doctest",
+    ],
+    compiler_flags = ["-Wall", "-Wextra"],
+    module_source_dir = "modules/address-decoder",
+)
