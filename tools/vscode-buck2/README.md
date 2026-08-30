@@ -54,15 +54,16 @@ test binary for its individual cases and writes them to the configured
 artifact. Running selected VS Code cases writes the target/case pairs to a
 temporary JSON selection file and passes its path to the executor. This keeps
 large selections out of Buck2's argument vector. The executor filters the
-listing against that file and writes its result to the artifact. The full Buck2
-output is attached to each corresponding VS Code test result.
+listing against that file and writes its result to the artifact. For ordinary
+targets, the full output from each Buck2 invocation is attached to its
+corresponding VS Code test result.
 
 Targets may set the `startup_shared` Buck label. For those targets, the
 executor combines the selected doctest names into one `--test-case` filter and
 runs the executable once. The bundled `vscode-results` doctest reporter emits
-one machine-readable result per case so VS Code still receives individual
-statuses and durations. Unlabelled targets retain one process invocation per
-case.
+one machine-readable result per case and frames each case's output, so VS Code
+still receives individual statuses, durations, and case-specific output.
+Unlabelled targets retain one process invocation per case.
 
 The `Debug Tests` profile does not run the test through Buck. The executor
 asks Buck2 to materialise the test binary and resolve the command line, working

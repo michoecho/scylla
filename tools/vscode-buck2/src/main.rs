@@ -562,8 +562,10 @@ async fn process_spec(
             });
         }
 
-        let details = execution_output_without_machine_results(&result);
-        let machine_results = parse_machine_results(&execution_stream_output(result.stdout.as_ref()))?;
+        let stdout = execution_stream_output(result.stdout.as_ref());
+        let stderr = execution_stream_output(result.stderr.as_ref());
+        let case_outputs = parse_case_outputs(&stdout, &stderr)?;
+        let machine_results = parse_machine_results(&stdout)?;
         if machine_results.is_empty() {
             return Err(anyhow!(
                 "startup_shared test produced no per-case results for {target_name}"
@@ -571,6 +573,10 @@ async fn process_spec(
         }
         for case_name in case_names {
             let machine = machine_results.get(&case_name);
+            let details = case_outputs
+                .get(&case_name)
+                .cloned()
+                .unwrap_or_else(|| empty_case_output());
             let (buck_status, status, duration_ms) = match machine {
                 Some(result) if result.status == "passed" => (
                     proto::TestStatus::Pass as i32,
@@ -609,7 +615,7 @@ async fn process_spec(
                 case_name,
                 status,
                 duration_ms,
-                output: details.clone(),
+                output: details,
             });
         }
         return Ok(());
@@ -1033,21 +1039,69 @@ fn execution_output(result: &proto::ExecutionResult2) -> String {
     format!("---- STDOUT ----\n{}\n---- STDERR ----\n{}", execution_stream_output(result.stdout.as_ref()), execution_stream_output(result.stderr.as_ref()))
 }
 
-fn execution_output_without_machine_results(result: &proto::ExecutionResult2) -> String {
-    format!(
-        "---- STDOUT ----\n{}\n---- STDERR ----\n{}",
-        strip_machine_result_lines(&execution_stream_output(result.stdout.as_ref())),
-        execution_stream_output(result.stderr.as_ref()),
-    )
+fn parse_case_outputs(stdout: &str, stderr: &str) -> anyhow::Result<HashMap<String, String>> {
+    let stdout = parse_case_output_stream(stdout, "stdout")?;
+    let stderr = parse_case_output_stream(stderr, "stderr")?;
+    let mut names = stdout.keys().chain(stderr.keys()).cloned().collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let stdout_output = stdout.get(&name).map(String::as_str).unwrap_or_default();
+            let stderr_output = stderr.get(&name).map(String::as_str).unwrap_or_default();
+            (
+                name,
+                format!(
+                    "---- STDOUT ----\n{}\n---- STDERR ----\n{}",
+                    stdout_output, stderr_output
+                ),
+            )
+        })
+        .collect())
 }
 
-fn strip_machine_result_lines(output: &str) -> String {
-    const PREFIX: &str = "VSCODE_TEST_RESULT\t";
-    output
-        .lines()
-        .filter(|line| !line.starts_with(PREFIX))
-        .collect::<Vec<_>>()
-        .join("\n")
+fn parse_case_output_stream(output: &str, stream_name: &str) -> anyhow::Result<HashMap<String, String>> {
+    const START: &str = "VSCODE_TEST_OUTPUT_START\t";
+    const END: &str = "VSCODE_TEST_OUTPUT_END\t";
+    let mut cases = HashMap::new();
+    let mut current: Option<(String, String)> = None;
+
+    for raw_line in output.split_inclusive('\n') {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(encoded_name) = line.strip_prefix(START) {
+            if current.is_some() {
+                return Err(anyhow!("nested VS Code test output marker in {stream_name}"));
+            }
+            current = Some((decode_hex(encoded_name)?, String::new()));
+        } else if let Some(encoded_name) = line.strip_prefix(END) {
+            let (case_name, case_output) = current
+                .take()
+                .ok_or_else(|| anyhow!("test output end marker without a start in {stream_name}"))?;
+            let end_name = decode_hex(encoded_name)?;
+            if end_name != case_name {
+                return Err(anyhow!(
+                    "test output end marker for {end_name:?} closes {case_name:?} in {stream_name}"
+                ));
+            }
+            if cases.insert(case_name.clone(), case_output).is_some() {
+                return Err(anyhow!("duplicate VS Code test output for {case_name:?} in {stream_name}"));
+            }
+        } else if let Some((_, case_output)) = &mut current {
+            case_output.push_str(raw_line);
+        }
+    }
+
+    if current.is_some() {
+        return Err(anyhow!("test output start marker without an end in {stream_name}"));
+    }
+    Ok(cases)
+}
+
+fn empty_case_output() -> String {
+    "---- STDOUT ----\n\n---- STDERR ----\n".to_owned()
 }
 
 fn execution_stream_output(stream: Option<&proto::ExecutionStream>) -> String {
@@ -1096,7 +1150,7 @@ fn parse_location(line: &str) -> Option<(String, u32)> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{escape_doctest_filter, normalize_lcov_paths, parse_listing, parse_machine_results, resolve_prepared_path, strip_machine_result_lines};
+    use super::{escape_doctest_filter, normalize_lcov_paths, parse_case_outputs, parse_listing, parse_machine_results, resolve_prepared_path};
 
     #[test]
     fn parses_test_locations_listing() {
@@ -1129,11 +1183,44 @@ mod tests {
     }
 
     #[test]
-    fn hides_machine_results_from_display_output() {
-        assert_eq!(
-            strip_machine_result_lines("before\nVSCODE_TEST_RESULT\t6669727374\tpassed\t12\nafter\n"),
-            "before\nafter",
+    fn keeps_each_startup_shared_case_output_separate() {
+        let stdout = concat!(
+            "runner setup\n",
+            "VSCODE_TEST_OUTPUT_START\t6669727374\n",
+            "first stdout\n",
+            "VSCODE_TEST_OUTPUT_END\t6669727374\n",
+            "VSCODE_TEST_RESULT\t6669727374\tpassed\t12\n",
+            "VSCODE_TEST_OUTPUT_START\t7365636f6e64\n",
+            "second stdout\n",
+            "VSCODE_TEST_OUTPUT_END\t7365636f6e64\n",
+            "VSCODE_TEST_RESULT\t7365636f6e64\tfailed\t34\n",
         );
+        let stderr = concat!(
+            "VSCODE_TEST_OUTPUT_START\t6669727374\n",
+            "first stderr\n",
+            "VSCODE_TEST_OUTPUT_END\t6669727374\n",
+            "VSCODE_TEST_OUTPUT_START\t7365636f6e64\n",
+            "second stderr\n",
+            "VSCODE_TEST_OUTPUT_END\t7365636f6e64\n",
+        );
+        let outputs = parse_case_outputs(stdout, stderr).unwrap();
+        assert_eq!(
+            outputs["first"],
+            "---- STDOUT ----\nfirst stdout\n\n---- STDERR ----\nfirst stderr\n",
+        );
+        assert_eq!(
+            outputs["second"],
+            "---- STDOUT ----\nsecond stdout\n\n---- STDERR ----\nsecond stderr\n",
+        );
+    }
+
+    #[test]
+    fn rejects_unclosed_case_output() {
+        let error = parse_case_outputs(
+            "VSCODE_TEST_OUTPUT_START\t6669727374\noutput\n",
+            "",
+        ).unwrap_err();
+        assert!(error.to_string().contains("without an end"));
     }
 
     #[test]
