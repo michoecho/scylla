@@ -267,6 +267,7 @@ std::string generate_prologue() {
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace trace {
@@ -388,71 +389,7 @@ struct source_location {
     }
 };
 
-// The objects a trace needs to be decoded against, by build ID.
-//
-//     <root>/.build-id/<first two hex digits>/<the rest>[.debug]
-//
-// which is the layout gdb and llvm-cov already expect from a
-// --debug-file-directory, and what tracer::write_dso_directory() produces. The
-// whole file is read rather than mapped: a decode reads a handful of scattered
-// words out of each object, and a lifetime that ends when this object does is
-// worth more here than the pages saved.
-class dso_directory {
-public:
-    explicit dso_directory(std::string root) : root_(std::move(root)) {}
-
-    // Where a decoder looks when its caller says nothing: $TRACE_DSO_DIR, or the
-    // working directory.
-    dso_directory() {
-        const char* const from_env = std::getenv("TRACE_DSO_DIR");
-        root_ = from_env != nullptr ? from_env : ".";
-    }
-
-    // The object's bytes, or an empty span if the directory does not have it.
-    // Misses are remembered too: a trace holds many records from one object, and
-    // a missing object should be one failed open rather than thousands.
-    [[nodiscard]] std::span<const std::byte> object(const std::string& build_id) {
-        const auto found = files_.find(build_id);
-        if (found != files_.end()) {
-            return found->second;
-        }
-        std::vector<std::byte> image;
-        if (build_id.size() >= 3) {
-            const std::string stem =
-                root_ + "/.build-id/" + build_id.substr(0, 2) + "/" + build_id.substr(2);
-            // With the suffix first, because that is what a debuginfo directory
-            // holds; without it for a directory of plain binaries.
-            for (const std::string& path : {stem + ".debug", stem}) {
-                std::ifstream in(path, std::ios::binary);
-                if (in) {
-                    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
-                                                std::istreambuf_iterator<char>()};
-                    image.resize(raw.size());
-                    std::memcpy(image.data(), raw.data(), raw.size());
-                    break;
-                }
-            }
-        }
-        return files_.emplace(build_id, std::move(image)).first->second;
-    }
-
-private:
-    std::string root_;
-    std::map<std::string, std::vector<std::byte>, std::less<>> files_;
-};
-
-// The directory a decode uses when its caller names none. One per process, so
-// that a program decoding several traces reads each object once; a caller that
-// wants a directory of its own passes it to decode() instead.
-[[nodiscard]] inline dso_directory& shared_dso_directory() {
-    static dso_directory directory;
-    return directory;
-}
-
 namespace detail {
-
-// How to_string() renders a location, beside the other field renderings above.
-inline std::string field_to_string(const source_location& v) { return v.to_string(); }
 
 // Where a link-time virtual address lands in the object's file, or nullptr if
 // it lands nowhere that has `size` bytes behind it.
@@ -508,6 +445,201 @@ inline std::string field_to_string(const source_location& v) { return v.to_strin
     }
     return nullptr;
 }
+
+// The relative relocations of one object, as (place, value) pairs sorted by
+// place -- both link-time virtual addresses.
+//
+// A pointer stored inside a shared object is not in the object's file. x86-64
+// uses RELA, whose addend lives in the relocation entry rather than at the place
+// it patches, so the file holds a zero there and the value is only in
+// .rela.dyn; the loader writes it as the object is mapped. The two pointers of a
+// source location -- its file and its function -- are exactly that, so a decoder
+// reading them straight out of the image would get nothing but a zero, and
+// resolve every location in every shared library to the same wrong thing.
+//
+// Only R_X86_64_RELATIVE is collected, which is what a pointer to something in
+// the same object is. DT_RELR needs nothing here: it packs offsets and leaves
+// the value in place, so the file already holds it.
+//
+// An object with no dynamic segment -- a non-PIE executable is the usual one --
+// has no such relocations and needs none: its pointers are absolute and already
+// written down.
+[[nodiscard]] inline std::vector<std::pair<std::uint64_t, std::uint64_t>> relative_relocations(
+    std::span<const std::byte> image) {
+    constexpr std::size_t e_phoff_at = 0x20;
+    constexpr std::size_t e_phentsize_at = 0x36;
+    constexpr std::size_t e_phnum_at = 0x38;
+    constexpr std::uint32_t pt_dynamic = 2;
+    constexpr std::uint64_t dt_null = 0;
+    constexpr std::uint64_t dt_rela = 7;
+    constexpr std::uint64_t dt_relasz = 8;
+    constexpr std::uint64_t dt_relaent = 9;
+    constexpr std::uint32_t r_x86_64_relative = 8;
+
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> out;
+    const auto word = [image](std::size_t at, std::size_t width) -> std::uint64_t {
+        std::uint64_t value = 0;
+        std::memcpy(&value, image.data() + at, width);
+        return value;
+    };
+    if (image.size() < 0x40 || std::memcmp(image.data(), "\x7f" "ELF\x02\x01", 6) != 0) {
+        return out;
+    }
+    const std::uint64_t phoff = word(e_phoff_at, 8);
+    const std::uint64_t phentsize = word(e_phentsize_at, 2);
+    const std::uint64_t phnum = word(e_phnum_at, 2);
+
+    std::uint64_t dynamic_at = 0;
+    std::uint64_t dynamic_size = 0;
+    for (std::uint64_t i = 0; i < phnum; ++i) {
+        const auto at = static_cast<std::size_t>(phoff + i * phentsize);
+        if (at + 56 > image.size()) {
+            return out;
+        }
+        if (word(at, 4) == pt_dynamic) {
+            dynamic_at = word(at + 16, 8);   // p_vaddr
+            dynamic_size = word(at + 40, 8); // p_memsz
+        }
+    }
+    const std::byte* const dynamic = at_vaddr(image, dynamic_at, static_cast<std::size_t>(dynamic_size));
+    if (dynamic == nullptr) {
+        return out;
+    }
+
+    std::uint64_t rela = 0;
+    std::uint64_t relasz = 0;
+    std::uint64_t relaent = 24;
+    for (std::uint64_t at = 0; at + 16 <= dynamic_size; at += 16) {
+        std::uint64_t tag = 0;
+        std::uint64_t value = 0;
+        std::memcpy(&tag, dynamic + at, sizeof(tag));
+        std::memcpy(&value, dynamic + at + 8, sizeof(value));
+        if (tag == dt_null) {
+            break;
+        }
+        if (tag == dt_rela) rela = value;
+        if (tag == dt_relasz) relasz = value;
+        if (tag == dt_relaent && value != 0) relaent = value;
+    }
+    if (rela == 0 || relasz == 0) {
+        return out;
+    }
+    const std::byte* const entries = at_vaddr(image, rela, static_cast<std::size_t>(relasz));
+    if (entries == nullptr) {
+        return out;
+    }
+    for (std::uint64_t at = 0; at + 24 <= relasz; at += relaent) {
+        std::uint64_t place = 0;
+        std::uint64_t info = 0;
+        std::uint64_t addend = 0;
+        std::memcpy(&place, entries + at, sizeof(place));
+        std::memcpy(&info, entries + at + 8, sizeof(info));
+        std::memcpy(&addend, entries + at + 16, sizeof(addend));
+        if (static_cast<std::uint32_t>(info) == r_x86_64_relative) {
+            out.emplace_back(place, addend);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// The value a pointer field holds once the loader has been through it: what is
+// written at `place` in the file, or the relocation's addend where the file
+// holds nothing.
+[[nodiscard]] inline std::uint64_t relocated(
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>>& relocations, std::uint64_t place,
+    std::uint64_t in_file) {
+    if (in_file != 0) {
+        return in_file;
+    }
+    const auto found = std::lower_bound(relocations.begin(), relocations.end(),
+                                        std::pair<std::uint64_t, std::uint64_t>{place, 0});
+    return found != relocations.end() && found->first == place ? found->second : in_file;
+}
+
+}  // namespace detail
+
+// The objects a trace needs to be decoded against, by build ID.
+//
+//     <root>/.build-id/<first two hex digits>/<the rest>[.debug]
+//
+// which is the layout gdb and llvm-cov already expect from a
+// --debug-file-directory, and what tracer::write_dso_directory() produces. The
+// whole file is read rather than mapped: a decode reads a handful of scattered
+// words out of each object, and a lifetime that ends when this object does is
+// worth more here than the pages saved.
+class dso_directory {
+public:
+    explicit dso_directory(std::string root) : root_(std::move(root)) {}
+
+    // Where a decoder looks when its caller says nothing: $TRACE_DSO_DIR, or the
+    // working directory.
+    dso_directory() {
+        const char* const from_env = std::getenv("TRACE_DSO_DIR");
+        root_ = from_env != nullptr ? from_env : ".";
+    }
+
+    // The object's bytes, or an empty span if the directory does not have it.
+    // Misses are remembered too: a trace holds many records from one object, and
+    // a missing object should be one failed open rather than thousands.
+    [[nodiscard]] std::span<const std::byte> object(const std::string& build_id) {
+        const auto found = files_.find(build_id);
+        if (found != files_.end()) {
+            return found->second;
+        }
+        std::vector<std::byte> image;
+        if (build_id.size() >= 3) {
+            const std::string stem =
+                root_ + "/.build-id/" + build_id.substr(0, 2) + "/" + build_id.substr(2);
+            // With the suffix first, because that is what a debuginfo directory
+            // holds; without it for a directory of plain binaries.
+            for (const std::string& path : {stem + ".debug", stem}) {
+                std::ifstream in(path, std::ios::binary);
+                if (in) {
+                    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                                std::istreambuf_iterator<char>()};
+                    image.resize(raw.size());
+                    std::memcpy(image.data(), raw.data(), raw.size());
+                    break;
+                }
+            }
+        }
+        return files_.emplace(build_id, std::move(image)).first->second;
+    }
+
+    // The object's relative relocations, read once. A location's file and
+    // function pointers are not in the file of a shared object -- see
+    // detail::relative_relocations() -- and a trace holds a location per record,
+    // so this is built on first use and kept.
+    [[nodiscard]] const std::vector<std::pair<std::uint64_t, std::uint64_t>>& relocations(
+        const std::string& build_id) {
+        const auto found = relocations_.find(build_id);
+        if (found != relocations_.end()) {
+            return found->second;
+        }
+        return relocations_.emplace(build_id, detail::relative_relocations(object(build_id)))
+            .first->second;
+    }
+
+private:
+    std::string root_;
+    std::map<std::string, std::vector<std::byte>, std::less<>> files_;
+    std::map<std::string, std::vector<std::pair<std::uint64_t, std::uint64_t>>, std::less<>>
+        relocations_;
+};
+
+// The directory a decode uses when its caller names none. One per process, so
+// that a program decoding several traces reads each object once; a caller that
+// wants a directory of its own passes it to decode() instead.
+[[nodiscard]] inline dso_directory& shared_dso_directory() {
+    static dso_directory directory;
+    return directory;
+}
+
+namespace detail {
+
+// How to_string() renders a location, beside the other field renderings above.
+inline std::string field_to_string(const source_location& v) { return v.to_string(); }
 
 // A NUL-terminated string at a virtual address, bounded by the end of the file:
 // an object naming a location it does not hold is a corrupt object, not a read
@@ -651,10 +783,11 @@ public:
             }
             // The four fields of a std::source_location, laid out as
             // srcloc::entry describes: two pointers then two 32-bit words. The
-            // pointers hold link-time virtual addresses -- the linker writes the
-            // addend of the relative relocation in place -- so they are read the
-            // same way the entry itself was.
-            const std::byte* const entry = at_vaddr(image, out.address - m.base, 24);
+            // pointers hold link-time virtual addresses, and are read the same
+            // way the entry itself was -- once the relocation that fills them in
+            // has been applied, which in a shared object is where they live.
+            const std::uint64_t entry_at = out.address - m.base;
+            const std::byte* const entry = at_vaddr(image, entry_at, 24);
             if (entry == nullptr) {
                 return;
             }
@@ -662,6 +795,13 @@ public:
             std::uint64_t function_at = 0;
             std::memcpy(&file_at, entry, sizeof(file_at));
             std::memcpy(&function_at, entry + 8, sizeof(function_at));
+            // In a shared object those two are zero in the file and the value is
+            // in .rela.dyn; in a non-PIE executable they are already right.
+            if (file_at == 0 || function_at == 0) {
+                const auto& fixups = dsos_->relocations(out.object);
+                file_at = relocated(fixups, entry_at, file_at);
+                function_at = relocated(fixups, entry_at + 8, function_at);
+            }
             std::memcpy(&out.line, entry + 16, sizeof(out.line));
             std::memcpy(&out.column, entry + 20, sizeof(out.column));
             out.file = string_at_vaddr(image, file_at);

@@ -153,12 +153,23 @@ private:
     void* handle_ = nullptr;
 };
 
+// The loaded objects that hold tracepoints, which is what most of the cases
+// below are about. trace_objects() itself describes *every* loaded object --
+// a source location may be in any of them, so a trace has to be able to name
+// them all -- and that is a dozen and a half libraries nothing here has an
+// opinion about.
+std::vector<tracer::trace_object> tracing_objects() {
+    std::vector<tracer::trace_object> objects = tracer::trace_objects();
+    std::erase_if(objects, [](const tracer::trace_object& o) { return o.table.empty(); });
+    return objects;
+}
+
 // The table address of the one loaded object that is not this test binary --
 // which is to say the plugin's, whenever one is open. trace_objects() is
 // ordered by build ID, so which end of it the plugin is at depends on a hash;
 // asking for "the one that is not us" does not.
 std::uintptr_t plugin_table_address(std::string_view self) {
-    for (const tracer::trace_object& object : tracer::trace_objects()) {
+    for (const tracer::trace_object& object : tracing_objects()) {
         if (object.build_id != self) {
             return object.table_address;
         }
@@ -471,7 +482,7 @@ TEST_CASE("the code generator merges tracepoints that share a name") {
 // is undone as it goes away.
 TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them away") {
     const std::size_t before = tracer::tracepoints().size();
-    const std::size_t objects_before = tracer::trace_objects().size();
+    const std::size_t objects_before = tracing_objects().size();
     REQUIRE(count_named("plugin_loaded") == 0);
 
     {
@@ -482,7 +493,7 @@ TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them aw
         // Exactly the library's own table arrived, and it is a second object as
         // far as a trace is concerned -- with a build ID of its own.
         CHECK(tracer::tracepoints().size() == before + plugin_count());
-        const std::vector<tracer::trace_object> objects = tracer::trace_objects();
+        const std::vector<tracer::trace_object> objects = tracing_objects();
         REQUIRE(objects.size() == objects_before + 1);
         CHECK(objects[0].build_id != objects[1].build_id);
 
@@ -518,7 +529,7 @@ TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them aw
     // The table went with the library. Anything else would leave the registry
     // pointing into an unmapped range for the rest of the process's life.
     CHECK(tracer::tracepoints().size() == before);
-    CHECK(tracer::trace_objects().size() == objects_before);
+    CHECK(tracing_objects().size() == objects_before);
     CHECK(count_named("plugin_loaded") == 0);
 }
 
@@ -550,7 +561,7 @@ TEST_CASE("a tracer records the objects it was built with, and the changes it is
 
     // Loaded, registered, and genuinely part of the process -- but not yet
     // reported, so the ring still describes the process as it was.
-    REQUIRE(tracer::trace_objects().size() == 2);
+    REQUIRE(tracing_objects().size() == 2);
     CHECK(metadata(buffers) == alone);
 
     buffers.note_objects_changed();
@@ -587,7 +598,7 @@ TEST_CASE("a tracer records the objects it was built with, and the changes it is
 TEST_CASE("a plugin can be replaced without its records being misread") {
     // Taken before anything is loaded, so that "the object that is not this
     // one" means the plugin for the rest of the test.
-    const std::vector<tracer::trace_object> alone = tracer::trace_objects();
+    const std::vector<tracer::trace_object> alone = tracing_objects();
     REQUIRE(alone.size() == 1);
     const std::string self = alone.front().build_id;
 
@@ -733,24 +744,24 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 // generated decoder, or the demo workload.
 TEST_CASE("decoded trace") {
     check_snapshot(read_env_file("TRACER_DECODED"), R"snap(
-        |               400 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
-        |               500 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
-        |               600 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |               700 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
-        |               800 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
-        |               900 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
-        |              1000 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |              1100 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |              1200 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
-        |              1300 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
-        |              1400 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
-        |              1500 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
-        |              1600 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
-        |              1700 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
-        |              1800 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
-        |              1900 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
-        |              2000 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
-        |              2100 | modules/tracer/trace_producer.cc:88           | shutting_down{}
+        |               900 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
+        |              1000 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
+        |              1100 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1200 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
+        |              1300 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
+        |              1400 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
+        |              1500 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1600 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              1700 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
+        |              1800 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
+        |              1900 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
+        |              2000 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
+        |              2100 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
+        |              2200 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
+        |              2300 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
+        |              2400 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
+        |              2500 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
+        |              2600 | modules/tracer/trace_producer.cc:88           | shutting_down{}
         )snap"_snap);
 }
 

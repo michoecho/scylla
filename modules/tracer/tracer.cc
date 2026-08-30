@@ -128,36 +128,25 @@ std::string build_id_of(const dl_phdr_info& info) {
     return {};
 }
 
-int claim_object(dl_phdr_info* info, std::size_t /*size*/, void* data) {
-    auto& query = *static_cast<object_query*>(data);
-    const auto address = reinterpret_cast<ElfW(Addr)>(query.address);
-
-    // Two things at once: whether this object holds the address, and how far it
-    // reaches. The extent is the end of the last PT_LOAD, which has to be
-    // gathered over the whole loop rather than taken from the segment that
-    // matched -- a location and a tracepoint table are in different segments.
-    bool claimed = false;
+// How far past its base an object reaches: the end of its last PT_LOAD. Gathered
+// over every segment rather than taken from one, because the things an address
+// may be -- a tracepoint table, a source location -- are in different segments.
+std::uint64_t extent_of(const dl_phdr_info& info) {
     ElfW(Addr) extent = 0;
-    for (int i = 0; i < info->dlpi_phnum; ++i) {
-        const ElfW(Phdr)& phdr = info->dlpi_phdr[i];
-        if (phdr.p_type != PT_LOAD) {
-            continue;
-        }
-        const ElfW(Addr) begin = info->dlpi_addr + phdr.p_vaddr;
-        extent = std::max(extent, phdr.p_vaddr + phdr.p_memsz);
-        if (address >= begin && address < begin + phdr.p_memsz) {
-            claimed = true;
+    for (int i = 0; i < info.dlpi_phnum; ++i) {
+        const ElfW(Phdr)& phdr = info.dlpi_phdr[i];
+        if (phdr.p_type == PT_LOAD) {
+            extent = std::max(extent, phdr.p_vaddr + phdr.p_memsz);
         }
     }
-    if (!claimed) {
-        return 0;
-    }
-    query.found = true;
-    query.build_id = build_id_of(*info);
-    query.base = static_cast<std::uintptr_t>(info->dlpi_addr);
-    query.mapping_size = static_cast<std::uint64_t>(extent);
-    query.path = info->dlpi_name != nullptr ? info->dlpi_name : "";
-    return 1;  // stop the walk
+    return static_cast<std::uint64_t>(extent);
+}
+
+int collect_object(dl_phdr_info* info, std::size_t /*size*/, void* data) {
+    auto& all = *static_cast<std::vector<object_query>*>(data);
+    all.push_back({nullptr, build_id_of(*info), static_cast<std::uintptr_t>(info->dlpi_addr),
+                   extent_of(*info), info->dlpi_name != nullptr ? info->dlpi_name : "", true});
+    return 0;  // every object, not the first that matches
 }
 
 // The path an object was loaded from. The loader names the main executable with
@@ -186,27 +175,65 @@ std::vector<const tracepoint_entry*> tracepoints() {
 }
 
 std::vector<trace_object> trace_objects() {
+    // Every loaded object, and not only the ones holding tracepoints.
+    //
+    // A record's address is placed by its object's *table*, so tables were once
+    // all this needed to walk. A source location is not: it is an address
+    // anywhere in whichever object captured it, and in a program whose
+    // tracepoints live in one shared library -- which is how Scylla is put
+    // together -- most of them are captured somewhere else entirely. An object
+    // this does not name is an address a decoder cannot place at all, so what is
+    // described is the whole address space and not the part of it that traces.
+    //
+    // An object with no build ID is skipped rather than refused, unless it holds
+    // a tracepoint table: the vdso is one, and a program does not choose to have
+    // it. The refusal below is kept for the case it was written for.
+    std::vector<object_query> loaded;
+    ::dl_iterate_phdr(&collect_object, &loaded);
+
+    const auto holding = [&loaded](const void* address) -> object_query* {
+        const auto at = reinterpret_cast<std::uintptr_t>(address);
+        for (object_query& object : loaded) {
+            if (at >= object.base && at - object.base < object.mapping_size) {
+                return &object;
+            }
+        }
+        return nullptr;
+    };
+
     std::vector<trace_object> objects;
+    std::vector<const object_query*> described;
     for (const tracepoint_table* table = tracepoint_tables(); table != nullptr;
          table = table->next) {
-        object_query query{.address = table->start};
-        ::dl_iterate_phdr(&claim_object, &query);
-        if (!query.found) {
+        const object_query* const owner = holding(table->start);
+        if (owner == nullptr) {
             throw std::runtime_error(std::format(
                 "tracepoint table at {} belongs to no loaded object", static_cast<const void*>(table->start)));
         }
-        if (query.build_id.empty()) {
+        if (owner->build_id.empty()) {
             throw std::runtime_error(std::format(
                 "the object holding the tracepoint table at {} has no GNU build ID; link it "
                 "with -Wl,--build-id so that its tracepoints can be named in a trace",
                 static_cast<const void*>(table->start)));
         }
-        objects.push_back({std::move(query.build_id),
+        objects.push_back({owner->build_id,
                            reinterpret_cast<std::uintptr_t>(table->start),
-                           query.base,
-                           query.mapping_size,
-                           object_path(query.path),
+                           owner->base,
+                           owner->mapping_size,
+                           object_path(owner->path),
                            {table->start, static_cast<std::size_t>(table->stop - table->start)}});
+        described.push_back(owner);
+    }
+
+    for (const object_query& object : loaded) {
+        if (object.build_id.empty() ||
+            std::find(described.begin(), described.end(), &object) != described.end()) {
+            continue;
+        }
+        // No table, so no table address: a decoder places a record by the
+        // greatest table address not above it, and zero is below every real one.
+        objects.push_back({object.build_id, 0, object.base, object.mapping_size,
+                           object_path(object.path), {}});
     }
 
     // Registry order is load order, which is not a property of the program.
@@ -220,8 +247,21 @@ std::vector<trace_object> trace_objects() {
 void write_dso_directory(const std::string& root) {
     namespace fs = std::filesystem;
 
+    // Every object the process has loaded, which since trace_objects() started
+    // naming them all is more than the ones that trace: a source location is an
+    // address in whichever object captured it, and the copy is what a decoder
+    // reads the file and line out of.
+    //
+    // An object that cannot be collected is fatal only if it holds tracepoints.
+    // Without a table it is one object's locations that come out unresolved,
+    // which is worth less than refusing to write the directory at all -- and a
+    // process has objects it did not choose and cannot open.
     for (const trace_object& object : trace_objects()) {
+        const bool required = !object.table.empty();
         if (object.path.empty()) {
+            if (!required) {
+                continue;
+            }
             throw std::runtime_error(std::format(
                 "object {} was loaded from a path this process cannot name, so it cannot be "
                 "collected for a decoder",
@@ -248,6 +288,9 @@ void write_dso_directory(const std::string& root) {
         fs::copy_file(object.path, directory / (object.build_id.substr(2) + ".debug"),
                       fs::copy_options::overwrite_existing, error);
         if (error) {
+            if (!required) {
+                continue;  // a library that has since been replaced or removed
+            }
             throw std::runtime_error(std::format("cannot copy {} into {}: {}", object.path,
                                                  directory.string(), error.message()));
         }

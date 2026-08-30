@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Collect a binary and its libraries into a build-ID directory for a decoder.
+
+Usage:
+
+  tools/gather-dsos BINARY OUTDIR [--strip-debug] [--link]
+
+A trace records a source location as one address, so reading it back needs the
+object the address is in -- see "Source locations" in
+modules/trace-viewer/README.md.  This takes the executable, resolves the
+libraries it will load, reads each one's GNU build ID out of its ELF notes, and
+files a copy under
+
+    OUTDIR/.build-id/<first two hex digits>/<the rest>.debug
+
+which is the layout ``gdb --debug-file-directory``, ``llvm-cov`` and this repo's
+generated decoders all expect.
+
+Nothing in the traced process does this.  In a real deployment the objects come
+from a build-ID server -- debuginfod serves exactly this namespace -- and a
+process being traced has no business copying its own text anywhere.  Here it is
+this script, run by hand.
+
+The library list comes from ``ldd``, which is the loader itself answering: it
+walks DT_NEEDED transitively under the same RUNPATH and search rules the program
+will use, so what comes out is what the process will have mapped.  For a program
+that never ``dlopen``s -- Scylla does not -- that is the whole of it.  An object
+that only ever arrives through ``dlopen`` (glibc's NSS modules are the ones
+everybody has) is not here, and a location inside one would decode as
+``<unresolved 0x...>`` while the rest of the trace read normally.
+
+**Gather from the binary the trace came from.**  A rebuild gives it a new build
+ID, and the trace names the one it ran with; a decoder given the wrong one
+reports the location unresolved rather than guessing.
+
+``--strip-debug`` runs each copy through ``objcopy --strip-debug``.  A decoder
+reads program headers, ``.rodata`` and the dynamic relocations, so debug info is
+weight it never touches -- on a Dev-mode Scylla that is 561 MB down to 140 MB.
+
+``--link`` hard-links instead of copying, for a scratch directory that will not
+outlive the build outputs it points at.  Cheap, and wrong the moment a linker
+writes a new binary over the same inode.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+# A resolved line of ldd output: "libfoo.so.1 => /path/to/libfoo.so.1 (0x...)".
+# The unresolved ones are the vdso, which is not a file, and a genuine missing
+# library, which is reported rather than passed over.
+LDD_RESOLVED = re.compile(r"^\s*(\S+) => (/\S+) \(0x[0-9a-f]+\)$")
+LDD_MISSING = re.compile(r"^\s*(\S+) => not found$")
+
+NT_GNU_BUILD_ID = 3
+
+
+def build_id_of(path):
+    """The object's GNU build ID as lowercase hex, or None if it has none.
+
+    Read out of the program headers rather than the sections, because that is
+    where a stripped object still has it, and because it is the same note the
+    tracer reads in-process to name the object in the trace.
+    """
+    with open(path, "rb") as f:
+        header = f.read(64)
+        if len(header) < 64 or header[:6] != b"\x7fELF\x02\x01":
+            return None  # not a little-endian 64-bit ELF
+        e_phoff, = struct.unpack_from("<Q", header, 0x20)
+        e_phentsize, e_phnum = struct.unpack_from("<HH", header, 0x36)
+
+        for i in range(e_phnum):
+            f.seek(e_phoff + i * e_phentsize)
+            phdr = f.read(56)
+            if len(phdr) < 56:
+                return None
+            p_type, = struct.unpack_from("<I", phdr, 0)
+            if p_type != 4:  # PT_NOTE
+                continue
+            p_offset, = struct.unpack_from("<Q", phdr, 8)
+            p_filesz, = struct.unpack_from("<Q", phdr, 32)
+            f.seek(p_offset)
+            notes = f.read(p_filesz)
+
+            # A run of notes, each a header then the owner name and the
+            # descriptor, both padded to four bytes.  Nothing says the build ID
+            # is the first, or that one segment holds all the notes.
+            at = 0
+            while at + 12 <= len(notes):
+                namesz, descsz, ntype = struct.unpack_from("<III", notes, at)
+                name_at = at + 12
+                desc_at = name_at + ((namesz + 3) & ~3)
+                nxt = desc_at + ((descsz + 3) & ~3)
+                if nxt > len(notes) or nxt <= at:
+                    break  # a malformed note, not a note that is not ours
+                if ntype == NT_GNU_BUILD_ID and notes[name_at:name_at + 4] == b"GNU\0":
+                    return notes[desc_at:desc_at + descsz].hex()
+                at = nxt
+    return None
+
+
+def needed_objects(binary):
+    """The executable and every library it will load, as absolute paths."""
+    result = subprocess.run(["ldd", str(binary)], capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"ldd {binary}: {result.stderr.strip()}")
+
+    found = [str(binary.resolve())]
+    for line in result.stdout.splitlines():
+        missing = LDD_MISSING.match(line)
+        if missing is not None:
+            sys.exit(f"{binary} needs {missing.group(1)}, which is not on this machine")
+        resolved = LDD_RESOLVED.match(line)
+        if resolved is None:
+            continue  # the vdso, or the loader's own line, which has no "=>"
+        path = str(Path(resolved.group(2)).resolve())
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Collect a binary and its libraries into a build-ID directory.")
+    parser.add_argument("binary", type=Path, help="the executable the trace came from")
+    parser.add_argument("outdir", type=Path, help="the directory to write; created if missing")
+    parser.add_argument("--strip-debug", action="store_true",
+                        help="drop debug info from each copy (objcopy --strip-debug)")
+    parser.add_argument("--link", action="store_true",
+                        help="hard-link instead of copying, where the filesystem allows it")
+    args = parser.parse_args()
+
+    if args.strip_debug and args.link:
+        parser.error("--strip-debug writes a new file, so it cannot also --link")
+    if not args.binary.is_file():
+        sys.exit(f"{args.binary} is not a file")
+
+    written = 0
+    total = 0
+    skipped = []
+    for path in needed_objects(args.binary):
+        try:
+            build_id = build_id_of(path)
+        except OSError as error:
+            skipped.append(f"{path}: {error}")
+            continue
+        if build_id is None or len(build_id) < 3:
+            # An object linked without --build-id cannot be filed, and cannot be
+            # named by a trace either, so it is nothing this can help with.
+            skipped.append(f"{path}: no GNU build ID")
+            continue
+
+        directory = args.outdir / ".build-id" / build_id[:2]
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / (build_id[2:] + ".debug")
+        if destination.exists():
+            destination.unlink()
+
+        if args.link:
+            try:
+                os.link(path, destination)
+            except OSError:
+                shutil.copyfile(path, destination)  # a different filesystem
+        elif args.strip_debug:
+            subprocess.run(["objcopy", "--strip-debug", path, destination], check=True)
+        else:
+            shutil.copyfile(path, destination)
+
+        written += 1
+        total += destination.stat().st_size
+        print(f"{build_id[:12]}  {destination.stat().st_size:>12}  {path}")
+
+    for line in skipped:
+        print(f"skipped {line}", file=sys.stderr)
+    print(f"{written} objects, {total / (1 << 20):.0f} MiB, in {args.outdir}")
+
+
+if __name__ == "__main__":
+    main()

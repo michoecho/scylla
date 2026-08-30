@@ -714,9 +714,18 @@ struct trace_object {
     std::span<const tracepoint_entry> table;
 };
 
-// Every registered table with the build ID of the object that owns it, ordered
-// by build ID so that two runs of the same program describe themselves the same
-// way whatever order their libraries happened to load in.
+// Every loaded object, ordered by build ID so that two runs of the same program
+// describe themselves the same way whatever order their libraries happened to
+// load in. An object holding a registered table carries it, and its address; one
+// that holds none carries an empty table and a table address of zero.
+//
+// Not just the objects that trace, because not everything a trace records is a
+// tracepoint address. A source location is an address anywhere in whichever
+// object captured it -- in a program whose tracepoints live in one shared
+// library, usually a different one -- and an object nothing describes is an
+// address a decoder cannot even name, let alone read. An object with no build ID
+// is left out unless it holds tracepoints, which is how the vdso stays out of
+// the way of the refusal below.
 //
 // Throws std::runtime_error if an object holding tracepoints has no build ID:
 // its tracepoints could be recorded but never attributed, so that is a link to
@@ -737,7 +746,9 @@ struct trace_object {
 // been rewritten.
 //
 // This writes the objects loaded *now*, which is every object a tracer built now
-// would describe. A program that dlopen()s something and traces through it has
+// would describe -- all of them, since a location may be in any. That is a copy
+// of the program and of every library it has open, so a directory is as big as
+// the process's text; it is what reading a location back costs. A program that dlopen()s something and traces through it has
 // to call this again, for the same reason it has to call note_objects_changed().
 //
 // Throws std::runtime_error if an object cannot be read or copied.
@@ -811,6 +822,12 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 //     trace_objects_loaded{count}
 //     trace_object_loaded{build_id, table_address, base_address, mapping_size}
 //     trace_object_unloaded{build_id, base_address}
+//
+// There is one load event per *loaded object*, and not one per tracepoint table:
+// an object with no tracepoints in it can still be where a source location
+// points, and an object nothing described is an address a decoder cannot place.
+// Such an event carries a table address of zero, which is below every real one
+// and so never claims a record.
 //
 // A load event says where the object's tracepoint table landed *and* where the
 // object itself did. Both are needed and neither implies the other: a record
