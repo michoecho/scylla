@@ -415,6 +415,7 @@ int main(int argc, char** argv) {
     // Our state
     bool show_demo_window = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    int log_task_threshold = 10000;
 
     // Main loop
     bool done = false;
@@ -440,6 +441,11 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         ImGui::DockSpaceOverViewport();
+
+        ImGui::Begin("Config");
+        ImGui::InputInt("Log task threshold", &log_task_threshold);
+        log_task_threshold = std::max(log_task_threshold, 0);
+        ImGui::End();
 
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window) {
@@ -696,12 +702,16 @@ int main(int argc, char** argv) {
                 ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "STARVE", std::chrono::duration<double, std::milli>(queries[w].starvetime).count()).c_str());
                 ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "IO", std::chrono::duration<double, std::milli>(queries[w].iotime).count()).c_str());
                 ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "TOTAL", std::chrono::duration<double, std::milli>(queries[w].latency).count()).c_str());
-                uint64_t start = std::ranges::lower_bound(sorted, id_log, std::ranges::less(), [] (const auto& e) {return e.query();}) - sorted.begin();
-                uint64_t end = std::ranges::upper_bound(sorted, id_log, std::ranges::less(), [] (const auto& e) {return e.query();}) - sorted.begin() - 1;
-                uint64_t start_ts = sorted[start].ts;
-                //uint64_t end_ts = sorted[end].ts;
-                static size_t selected = 0;
-                for (size_t i = start; i <= end; ++i) {
+                auto log_range = std::ranges::equal_range(sorted, id_log, std::ranges::less(), [] (const auto& e) {return e.query();});
+                if (log_range.size() > static_cast<size_t>(log_task_threshold)) {
+                    ImGui::Text("number of tasks %zu is greater than configured threshold %d, not rendering", log_range.size(), log_task_threshold);
+                } else {
+                    uint64_t start = log_range.begin() - sorted.begin();
+                    uint64_t end = log_range.end() - sorted.begin() - 1;
+                    uint64_t start_ts = sorted[start].ts;
+                    //uint64_t end_ts = sorted[end].ts;
+                    static size_t selected = 0;
+                    for (size_t i = start; i <= end; ++i) {
                     auto dt_nano = std::chrono::duration<double, std::nano>(double(sorted[i].ts - start_ts) * MULTIPLIER);
                     auto dt = std::chrono::duration<double, std::milli>(dt_nano);
                     auto message = std::invoke([&] () -> std::string {
@@ -745,20 +755,23 @@ int main(int argc, char** argv) {
                     if (i == chosen_unfull) {
                         ImGui::PopStyleColor();
                     }
+                    }
                 }
                 ImGui::End();
             }
 #if 1
             {
                 ImGui::Begin("Full log");
-                uint64_t start = std::ranges::lower_bound(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();}) - sorted.begin();
-                uint64_t end = std::ranges::upper_bound(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();}) - sorted.begin() - 1;
-                uint64_t start_ts = sorted[start].ts;
-                uint64_t end_ts = sorted[end].ts;
-                start = std::ranges::lower_bound(span, start_ts, std::ranges::less(), [] (const auto& e) {return e.ts;}) - span.begin();
-                end = std::ranges::lower_bound(span, end_ts, std::ranges::less(), [] (const auto& e) {return e.ts;}) - span.begin() - 1;
-                static size_t selected = 0;
-                for (size_t i = start; i <= end; ++i) {
+                auto sorted_range = std::ranges::equal_range(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();});
+                auto span_range = std::ranges::equal_range(span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);});
+                if (span_range.size() > static_cast<size_t>(log_task_threshold)) {
+                    ImGui::Text("number of tasks spanned %zu is greater than configured threshold %d, not rendering", span_range.size(), log_task_threshold);
+                } else {
+                    size_t start = span_range.begin() - span.begin();
+                    size_t end = span_range.end() - span.begin() - 1;
+                    uint64_t start_ts = span[start].ts;
+                    static size_t selected = 0;
+                    for (size_t i = start; i <= end; ++i) {
                     auto dt_nano = std::chrono::duration<double, std::nano>(double(span[i].ts - start_ts) * MULTIPLIER);
                     auto dt = std::chrono::duration<double, std::milli>(dt_nano);
                     auto message = std::invoke([&] () -> std::string {
@@ -814,19 +827,21 @@ int main(int argc, char** argv) {
                     if (is_active) {
                         ImGui::PopStyleColor();
                     }
+                    }
                 }
                 ImGui::End();
             }
 #endif
             {
                 ImGui::Begin("Full log plot");
-                if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, 100), ImPlotFlags_NoTitle)) {
+                auto sorted_range = std::ranges::equal_range(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();});
+                auto span_range = std::ranges::equal_range(span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);});
+                if (span_range.size() > static_cast<size_t>(log_task_threshold)) {
+                    ImGui::Text("number of tasks spanned %zu is greater than configured threshold %d, not rendering", span_range.size(), log_task_threshold);
+                } else if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, 100), ImPlotFlags_NoTitle)) {
                     static uint64_t prev_id;
                     auto flag = prev_id == id_full_log ? ImPlotCond_Once : ImPlotCond_Always;
                     prev_id = id_full_log;
-
-                    auto sorted_range = std::ranges::equal_range(sorted, id_full_log, std::ranges::less(), [] (const auto& e) {return e.query();});
-                    auto span_range = std::ranges::equal_range(span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);});
 
                     uint64_t start_ts = sorted_range.front().ts;
                     uint64_t end_ts = sorted_range.back().ts;
