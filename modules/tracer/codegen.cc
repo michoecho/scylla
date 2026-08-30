@@ -88,6 +88,7 @@ std::string_view decoded_type(std::string_view type) {
     if (type == "bool") return "bool";
     if (type == "ptr") return "const void*";
     if (type == "str") return "std::string_view";
+    if (type == "srcloc") return "source_location";
     if (type == "bytes") return "std::span<const std::byte>";
     return {};
 }
@@ -103,6 +104,14 @@ std::string escape(std::string_view s) {
 
 // The statement that reads one field out of the record.
 std::string read_field(const field& f) {
+    if (f.type == "srcloc") {
+        // Only the address is on the wire. Turning it into a file and a line
+        // needs the object it points into, which is a fact about the *moment*
+        // the record was written -- so it is left to resolve_*() below, where
+        // the mappings are.
+        return std::format(
+            "    out.{}.address = detail::read_unaligned<std::uint64_t>(p, end);\n", f.name);
+    }
     if (f.type == "str") {
         return std::format("    out.{} = detail::read_str(p, end);\n", f.name);
     }
@@ -247,8 +256,12 @@ std::string generate_prologue() {
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <format>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -329,6 +342,190 @@ std::string field_to_string(const T& v) {
 
 }  // namespace detail
 
+// --- resolving a source location ----------------------------------------------
+//
+// A srcloc::location on the wire is one address, and nothing else: the address
+// of a constant the compiler laid down in the object that captured it. Reading
+// it back is three steps.
+//
+//   1. Which object was it in? The metadata stream says where each object was
+//      mapped -- its base and how far it reached -- as of the moment the record
+//      was written, so this is the same "read the mappings at that timestamp"
+//      lookup a tracepoint address goes through, against a different range.
+//   2. Subtract the base. What is left is a virtual address in the object's own
+//      link-time layout, which is a fact about the *file* rather than the run.
+//   3. Open the file and read it. The object is found by build ID, in the
+//      directory laid out below; the location is the four fields of a
+//      std::source_location, and the two of them that are pointers are more
+//      virtual addresses in the same object, read the same way.
+//
+// A location that cannot be taken through all three -- an object the directory
+// does not have, a run recorded before it was mapped -- comes out unresolved
+// rather than wrong, with the address it was recorded as. See resolved below.
+
+// One decoded source location. Owning strings rather than views into the object
+// file, so that an event outlives the dso_directory it was resolved against;
+// everything else a decoded event holds points into the trace, and this is the
+// one field that would otherwise point somewhere with a shorter life.
+struct source_location {
+    std::string file;
+    std::string function;
+    std::uint32_t line = 0;
+    std::uint32_t column = 0;
+
+    std::uint64_t address = 0;  // as recorded, and all there is if !resolved
+    std::string object;         // build ID of the object it was found in
+    bool resolved = false;
+
+    [[nodiscard]] std::string to_string() const {
+        if (resolved) {
+            return std::format("{}:{}:{}", file, line, column);
+        }
+        if (address == 0) {
+            return "<none>";  // srcloc::location::none(), recorded as it was
+        }
+        return std::format("<unresolved {:#x}>", address);
+    }
+};
+
+// The objects a trace needs to be decoded against, by build ID.
+//
+//     <root>/.build-id/<first two hex digits>/<the rest>[.debug]
+//
+// which is the layout gdb and llvm-cov already expect from a
+// --debug-file-directory, and what tracer::write_dso_directory() produces. The
+// whole file is read rather than mapped: a decode reads a handful of scattered
+// words out of each object, and a lifetime that ends when this object does is
+// worth more here than the pages saved.
+class dso_directory {
+public:
+    explicit dso_directory(std::string root) : root_(std::move(root)) {}
+
+    // Where a decoder looks when its caller says nothing: $TRACE_DSO_DIR, or the
+    // working directory.
+    dso_directory() {
+        const char* const from_env = std::getenv("TRACE_DSO_DIR");
+        root_ = from_env != nullptr ? from_env : ".";
+    }
+
+    // The object's bytes, or an empty span if the directory does not have it.
+    // Misses are remembered too: a trace holds many records from one object, and
+    // a missing object should be one failed open rather than thousands.
+    [[nodiscard]] std::span<const std::byte> object(const std::string& build_id) {
+        const auto found = files_.find(build_id);
+        if (found != files_.end()) {
+            return found->second;
+        }
+        std::vector<std::byte> image;
+        if (build_id.size() >= 3) {
+            const std::string stem =
+                root_ + "/.build-id/" + build_id.substr(0, 2) + "/" + build_id.substr(2);
+            // With the suffix first, because that is what a debuginfo directory
+            // holds; without it for a directory of plain binaries.
+            for (const std::string& path : {stem + ".debug", stem}) {
+                std::ifstream in(path, std::ios::binary);
+                if (in) {
+                    const std::vector<char> raw{std::istreambuf_iterator<char>(in),
+                                                std::istreambuf_iterator<char>()};
+                    image.resize(raw.size());
+                    std::memcpy(image.data(), raw.data(), raw.size());
+                    break;
+                }
+            }
+        }
+        return files_.emplace(build_id, std::move(image)).first->second;
+    }
+
+private:
+    std::string root_;
+    std::map<std::string, std::vector<std::byte>, std::less<>> files_;
+};
+
+// The directory a decode uses when its caller names none. One per process, so
+// that a program decoding several traces reads each object once; a caller that
+// wants a directory of its own passes it to decode() instead.
+[[nodiscard]] inline dso_directory& shared_dso_directory() {
+    static dso_directory directory;
+    return directory;
+}
+
+namespace detail {
+
+// How to_string() renders a location, beside the other field renderings above.
+inline std::string field_to_string(const source_location& v) { return v.to_string(); }
+
+// Where a link-time virtual address lands in the object's file, or nullptr if
+// it lands nowhere that has `size` bytes behind it.
+//
+// The ELF header and program headers are read by offset rather than through
+// <elf.h>, so that a decoder built anywhere can read a trace from a Linux
+// x86-64 program -- which is the only kind there is. Anything that is not a
+// little-endian 64-bit ELF is refused rather than misread.
+[[nodiscard]] inline const std::byte* at_vaddr(std::span<const std::byte> image,
+                                               std::uint64_t vaddr, std::size_t size) {
+    constexpr std::size_t e_phoff_at = 0x20;
+    constexpr std::size_t e_phentsize_at = 0x36;
+    constexpr std::size_t e_phnum_at = 0x38;
+    constexpr std::uint32_t pt_load = 1;
+
+    const auto word = [image](std::size_t at, std::size_t width) -> std::uint64_t {
+        std::uint64_t value = 0;
+        std::memcpy(&value, image.data() + at, width);
+        return value;
+    };
+    const auto fits = [image](std::size_t at, std::size_t width) {
+        return at + width <= image.size();
+    };
+
+    if (!fits(0, 0x40) || std::memcmp(image.data(), "\x7f" "ELF\x02\x01", 6) != 0) {
+        return nullptr;
+    }
+    const std::uint64_t phoff = word(e_phoff_at, 8);
+    const std::uint64_t phentsize = word(e_phentsize_at, 2);
+    const std::uint64_t phnum = word(e_phnum_at, 2);
+
+    for (std::uint64_t i = 0; i < phnum; ++i) {
+        const auto at = static_cast<std::size_t>(phoff + i * phentsize);
+        if (!fits(at, 56)) {
+            return nullptr;
+        }
+        if (word(at, 4) != pt_load) {
+            continue;
+        }
+        const std::uint64_t p_offset = word(at + 8, 8);
+        const std::uint64_t p_vaddr = word(at + 16, 8);
+        const std::uint64_t p_filesz = word(at + 32, 8);
+        if (vaddr < p_vaddr || vaddr - p_vaddr >= p_filesz) {
+            continue;
+        }
+        // A .bss address is in the segment's memory size but not its file size,
+        // and has nothing behind it to read.
+        const std::uint64_t offset = p_offset + (vaddr - p_vaddr);
+        if (!fits(static_cast<std::size_t>(offset), size)) {
+            return nullptr;
+        }
+        return image.data() + offset;
+    }
+    return nullptr;
+}
+
+// A NUL-terminated string at a virtual address, bounded by the end of the file:
+// an object naming a location it does not hold is a corrupt object, not a read
+// off the end of one.
+[[nodiscard]] inline std::string string_at_vaddr(std::span<const std::byte> image,
+                                                 std::uint64_t vaddr) {
+    const std::byte* const p = at_vaddr(image, vaddr, 1);
+    if (p == nullptr) {
+        return {};
+    }
+    const auto* text = reinterpret_cast<const char*>(p);
+    const std::size_t room = image.size() - static_cast<std::size_t>(p - image.data());
+    const void* const nul = std::memchr(text, '\0', room);
+    return nul == nullptr ? std::string{} : std::string(text);
+}
+
+}  // namespace detail
+
 )cpp";
 }
 
@@ -405,6 +602,101 @@ std::string generate_objects(const plan& planned) {
     return code;
 }
 
+// Where an address is read against: the objects mapped as of the record being
+// read, plus the files their locations are read out of. Emitted after the object
+// table because a mapping points into it.
+std::string generate_locator(const plan& planned) {
+    std::string code = R"cpp(namespace detail {
+
+// One object, for as long as it is mapped. `object` is null for a build ID this
+// decoder was not generated from: the mapping is still kept, because it is what
+// stops that object's records being attributed to the object below it -- they
+// are refused by name instead.
+struct mapping {
+    std::uint64_t table;  // where the object's tracepoint table was mapped
+    std::uint64_t base;   // and where the object itself begins
+    std::uint64_t size;   // how far past the base it reaches
+    const object_descriptor* object;
+    std::string_view build_id;
+};
+
+// The mappings a record is read against, and the objects a location is read out
+// of. One of these lives for the length of a decode; the mappings change as its
+// metadata stream is consumed, which is what makes a record decode against the
+// process as it was at the record's own timestamp.
+class locator {
+public:
+    explicit locator(dso_directory& dsos) : dsos_(&dsos) {}
+
+    std::vector<mapping> mappings;  // sorted by table address
+
+    // Fill in a location from the object it points into. Silent about failure
+    // by design: a location whose object is not in the directory, or which was
+    // recorded before that object was mapped, stays unresolved and keeps the
+    // address it came with. That is a decoder missing a file, not a corrupt
+    // trace, and it should not stop the other records being read.
+    void resolve(source_location& out) const {
+        if (out.address == 0) {
+            return;  // srcloc::location::none()
+        }
+        for (const mapping& m : mappings) {
+            if (out.address < m.base || out.address - m.base >= m.size) {
+                continue;
+            }
+            out.object = std::string(m.build_id);
+
+            const std::span<const std::byte> image = dsos_->object(out.object);
+            if (image.empty()) {
+                return;  // the object is named, and not in the directory
+            }
+            // The four fields of a std::source_location, laid out as
+            // srcloc::entry describes: two pointers then two 32-bit words. The
+            // pointers hold link-time virtual addresses -- the linker writes the
+            // addend of the relative relocation in place -- so they are read the
+            // same way the entry itself was.
+            const std::byte* const entry = at_vaddr(image, out.address - m.base, 24);
+            if (entry == nullptr) {
+                return;
+            }
+            std::uint64_t file_at = 0;
+            std::uint64_t function_at = 0;
+            std::memcpy(&file_at, entry, sizeof(file_at));
+            std::memcpy(&function_at, entry + 8, sizeof(function_at));
+            std::memcpy(&out.line, entry + 16, sizeof(out.line));
+            std::memcpy(&out.column, entry + 20, sizeof(out.column));
+            out.file = string_at_vaddr(image, file_at);
+            out.function = string_at_vaddr(image, function_at);
+            out.resolved = !out.file.empty();
+            return;
+        }
+    }
+
+private:
+    dso_directory* dsos_;
+};
+
+)cpp";
+
+    // One resolver per struct that has a location in it, so that the switch
+    // below is a call rather than a run of field names.
+    for (const tracepoint_kind& kind : planned.kinds) {
+        std::string body;
+        for (const field& f : kind.fields) {
+            if (f.type == "srcloc") {
+                body += std::format("    where.resolve(out.{});\n", f.name);
+            }
+        }
+        if (body.empty()) {
+            continue;
+        }
+        code += std::format("inline void resolve_{}({}& out, const locator& where) {{\n{}}}\n\n",
+                            kind.name, kind.name, body);
+    }
+
+    code += "}  // namespace detail\n\n";
+    return code;
+}
+
 std::string generate_decode(const plan& planned) {
     std::string code = std::format(
         "// The widest \"file:line\" in the trace, for a caller lining up a column of\n"
@@ -423,9 +715,11 @@ std::string generate_decode(const plan& planned) {
 // tracepoint, so nothing in them can say which object a record's address
 // belongs to, and every trace begins with exactly that.
 template <typename Callback>
-void decode(std::span<const std::byte> trace, Callback&& cb) {{
+void decode(std::span<const std::byte> trace, Callback&& cb,
+            dso_directory& dsos = shared_dso_directory()) {{
     (void)trace;
     (void)cb;
+    (void)dsos;
     throw std::runtime_error(
         "this decoder was generated from tracepoint tables without the tracer's own "
         "metadata tracepoints, and a trace cannot be read without them");
@@ -449,11 +743,17 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {{
 // consumes them: they are the frame the rest of the trace is read in rather
 // than events of the program's own.
 //
+// `dsos` is where the objects a source location points into are found, by build
+// ID. It is only consulted by a trace that carries a location, and a location it
+// cannot place comes out unresolved rather than stopping the decode -- see
+// "resolving a source location" above. The default reads $TRACE_DSO_DIR.
+//
 // Throws std::runtime_error on anything that cannot be decoded. A record is not
 // self-delimiting, so a truncated or corrupt stream cannot be resynchronised
 // past: the first bad byte ends the decode.
 template <typename Callback>
-void decode(std::span<const std::byte> trace, Callback&& cb) {
+void decode(std::span<const std::byte> trace, Callback&& cb,
+            dso_directory& dsos = shared_dso_directory()) {
     const std::byte* p = trace.data();
     const std::byte* const end = p + trace.size();
 
@@ -491,16 +791,10 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
             "a trace with no metadata stream: nothing in it says where its objects were mapped");
     }
 
-    // Where an object is mapped, for as long as it is. `object` is null for a
-    // build ID this decoder was not generated from: the mapping is still kept,
-    // because it is what stops that object's records being attributed to the
-    // object below it -- they are refused by name instead.
-    struct mapping {
-        std::uint64_t address;
-        const object_descriptor* object;
-        std::string_view build_id;
-    };
-    std::vector<mapping> mappings;
+    // What a record is read against: the objects mapped as of the record being
+    // read, kept up to date by the load and unload events below.
+    detail::locator where(dsos);
+    std::vector<detail::mapping>& mappings = where.mappings;
 
     const auto load = [&mappings](const trace_object_loaded& event) {
         const object_descriptor* found = nullptr;
@@ -509,16 +803,22 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
                 found = &object;
             }
         }
-        mappings.push_back({event.table_address, found, event.build_id});
-        // Sorted so that "the object an address is in" is a binary search for
-        // the greatest table address not above it.
+        mappings.push_back({event.table_address, event.base_address, event.mapping_size, found,
+                            event.build_id});
+        // Sorted so that "the object a tracepoint address is in" is a binary
+        // search for the greatest table address not above it.
         std::sort(mappings.begin(), mappings.end(),
-                  [](const mapping& a, const mapping& b) { return a.address < b.address; });
+                  [](const detail::mapping& a, const detail::mapping& b) {
+                      return a.table < b.table;
+                  });
     };
 
+    // By base address, which is the one thing that is unique per load: two
+    // objects may have no tracepoint table between them, and a table is one
+    // section inside an object rather than the object itself.
     const auto unload = [&mappings](const trace_object_unloaded& event) {
         for (auto it = mappings.begin(); it != mappings.end(); ++it) {
-            if (it->address == event.table_address) {
+            if (it->base == event.base_address) {
                 mappings.erase(it);
                 return;
             }
@@ -572,24 +872,24 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
 
         const auto above = std::upper_bound(
             mappings.begin(), mappings.end(), address,
-            [](std::uint64_t value, const mapping& m) { return value < m.address; });
+            [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
         if (above == mappings.begin()) {
             throw std::runtime_error(std::format(
                 "tracepoint address {:#x} is below every object loaded at {}", address, timestamp));
         }
-        const mapping& from = *(above - 1);
+        const detail::mapping& from = *(above - 1);
         if (from.object == nullptr) {
             throw std::runtime_error(std::format(
                 "tracepoint address {:#x} belongs to object {}, which this decoder was not "
                 "generated from",
                 address, from.build_id));
         }
-        const std::uint64_t offset = address - from.address;
+        const std::uint64_t offset = address - from.table;
         if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
             throw std::runtime_error(std::format(
                 "tracepoint address {:#x} is not an entry of object {}, which is what was at "
                 "{:#x} at {}",
-                address, from.build_id, from.address, timestamp));
+                address, from.build_id, from.table, timestamp));
         }
         const std::uint32_t id =
             from.object->first_id + static_cast<std::uint32_t>(offset / entry_stride);
@@ -620,14 +920,25 @@ void decode(std::span<const std::byte> trace, Callback&& cb) {
                     id, kind);
                 continue;
             }
+            // A struct with a location in it is read and then placed: the
+            // reader has the bytes, and only the mappings as of this record
+            // know what an address in them means.
+            const bool has_location = std::ranges::any_of(
+                planned.kinds[object.entries[i].kind].fields,
+                [](const field& f) { return f.type == "srcloc"; });
             code += std::format(
                 "            case {}: {{\n"
                 "                tracepoint_metadata meta = detail::metadata_{};\n"
                 "                meta.timestamp = timestamp;\n"
-                "                cb(detail::read_{}(q, q_end), meta);\n"
+                "                {} event = detail::read_{}(q, q_end);\n"
+                "{}"
+                "                cb(event, meta);\n"
                 "                break;\n"
                 "            }}\n",
-                id, id, kind);
+                id, id, kind, kind,
+                has_location
+                    ? std::format("                detail::resolve_{}(event, where);\n", kind)
+                    : std::string{});
         }
     }
 
@@ -660,6 +971,7 @@ std::string generate_decoder_source(std::span<const codegen_object> objects) {
     }
     out += "\n}  // namespace detail\n\n";
     out += generate_objects(planned);
+    out += generate_locator(planned);
     out += generate_decode(planned);
     return out;
 }

@@ -22,7 +22,12 @@ cxx_library(
     # Exported: tracer.h expands a static key into every TRACEPOINT(), so the
     # header is unusable without static_keys' own header -- and without the
     # -Wl,--export-dynamic and -ldl that target carries.
-    exported_deps = ["//modules/static_keys:static_keys_headers"],
+    exported_deps = [
+        # Exported for the same reason: a TRACEPOINT() may carry a
+        # srcloc::location, so the wire type is part of this header's interface.
+        "//modules/source_location:source_location_core",
+        "//modules/static_keys:static_keys_headers",
+    ],
     exported_linker_flags = [
         # A trace names the objects it came from by build ID, which is the only
         # identity that survives the process. Nothing here has one by default.
@@ -122,6 +127,16 @@ genrule(
     cmd = "$(exe :trace_producer) --emit-trace $OUT",
 )
 
+# Step 3b: the objects the trace's source locations point into, filed by build
+# ID. A location is one address inside a loaded object, so unlike a tracepoint --
+# whose name and file are compiled into the decoder -- reading one back needs the
+# object file itself. See "handing the objects to a decoder" in tracer.h.
+genrule(
+    name = "dso_dir",
+    out = "dsos",
+    cmd = "$(exe :trace_producer) --emit-dsos $OUT",
+)
+
 # Step 4: a program that decodes with the generated header. It is a callback
 # that prints and nothing else -- and it is the check that the generated header
 # compiles standing on its own, outside the test that also includes it.
@@ -136,7 +151,9 @@ cxx_binary(
 genrule(
     name = "decoded_trace",
     out = "decoded.txt",
-    cmd = "$(exe :trace_decoder) $(location :trace_bin) > $OUT",
+    # TRACE_DSO_DIR is where the generated decoder looks for the objects; the
+    # decoder program itself says nothing about them.
+    cmd = "TRACE_DSO_DIR=$(location :dso_dir) $(exe :trace_decoder) $(location :trace_bin) > $OUT",
 )
 
 add_module(
@@ -155,9 +172,13 @@ add_module(
         # tables change as it arrives and leaves.
         "trace_plugin": ":trace_plugin",
         "trace.bin": ":trace_bin",
+        # The producer's objects, so that the test can resolve the source
+        # locations in the trace exactly as :decoded_trace does.
+        "dsos": ":dso_dir",
     },
     env = {
         "TRACER_DECODED": "$(location :decoded_trace)",
+        "TRACER_DSOS": "$(location :dso_dir)",
         "TRACER_PLUGIN": "$(location :trace_plugin)",
         "TRACER_TRACE": "$(location :trace_bin)",
     },

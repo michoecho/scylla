@@ -104,7 +104,9 @@ std::vector<std::byte> fake_trace(
         put(static_cast<std::uint16_t>(build_id.size()));
         const auto* bytes = reinterpret_cast<const std::byte*>(build_id.data());
         metadata.insert(metadata.end(), bytes, bytes + build_id.size());
-        put(address);
+        put(address);  // table_address
+        put(address);  // base_address: nothing here records a location
+        put(std::uint64_t{0});  // mapping_size, for the same reason
     }
 
     std::vector<std::byte> out;
@@ -173,6 +175,14 @@ std::size_t count_named(std::string_view name) {
     }
     return found;
 }
+
+// A callback assembled from lambdas, for a test that wants one tracepoint and
+// does not care about the rest. decode() calls cb for every record, so the
+// catch-all is not optional.
+template <typename... Fs>
+struct overloaded : Fs... {
+    using Fs::operator()...;
+};
 
 // A trace consumer: one operator() per tracepoint it has something particular
 // to say about, and a template one for the rest. The two named overloads reach
@@ -629,6 +639,88 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
     CHECK(decoded(second) == decoded(first));
 }
 
+namespace {
+
+// Where the build put the producer's objects. A source location is an address
+// inside one of them, so a decoder needs the files themselves -- unlike a
+// tracepoint, whose name and file are compiled into the decoder.
+std::string dso_dir() {
+    const char* const path = std::getenv("TRACER_DSOS");
+    REQUIRE_MESSAGE(path != nullptr, "TRACER_DSOS is not set");
+    return path;
+}
+
+// Every table_opened event of the demo trace, which is the tracepoint carrying a
+// location. `dsos` is the caller's, because what these cases differ in is which
+// objects the decoder was given.
+std::vector<trace::table_opened> opened_tables(trace::dso_directory& dsos) {
+    const std::string raw = read_env_file("TRACER_TRACE");
+    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
+                                           raw.size()};
+    std::vector<trace::table_opened> found;
+    trace::decode(bytes, overloaded{
+                             [&found](const trace::table_opened& event,
+                                      const trace::tracepoint_metadata&) { found.push_back(event); },
+                             [](const auto&, const trace::tracepoint_metadata&) {},
+                         },
+                  dsos);
+    return found;
+}
+
+}  // namespace
+
+// A location is the address of the compiler's own constant, so decoding one is
+// not a table lookup but a read out of the object it points into: the metadata
+// stream says where that object was mapped, and the build-ID directory says
+// which file it was. This is the whole reason the metadata stream carries an
+// object's base address and not just its tracepoint table's.
+TEST_CASE("a source location decodes to the place it was captured") {
+    trace::dso_directory dsos(dso_dir());
+    const std::vector<trace::table_opened> opened = opened_tables(dsos);
+    REQUIRE(opened.size() == 3);
+
+    // The two captured ones name their *call sites* -- two different lines of
+    // trace_producer.cc -- and not the tracepoint, which is one line inside
+    // open_table() and is what meta.file/meta.line would have said.
+    CHECK(opened[0].opened_at.resolved);
+    CHECK(opened[0].opened_at.file == "modules/tracer/trace_producer.cc");
+    CHECK(opened[0].opened_at.function.find("run_demo") != std::string::npos);
+    CHECK(opened[0].opened_at.column > 0);
+
+    CHECK(opened[1].opened_at.resolved);
+    CHECK(opened[1].opened_at.file == opened[0].opened_at.file);
+    CHECK(opened[1].opened_at.line == opened[0].opened_at.line + 1);
+
+    // And the one that was never captured decodes as nothing rather than as an
+    // address that happens to be zero.
+    CHECK_FALSE(opened[2].opened_at.resolved);
+    CHECK(opened[2].opened_at.address == 0);
+    CHECK(opened[2].opened_at.to_string() == "<none>");
+}
+
+// The bargain the address makes. A tracepoint is decodable from the generated
+// header alone; a location is not, and a decoder without the objects has to say
+// so rather than invent a file. It says so per location, so the rest of the
+// trace still decodes -- a missing object is a decoder that was set up wrong,
+// not a trace that is wrong.
+TEST_CASE("a location whose object the decoder has not got stays unresolved") {
+    trace::dso_directory empty("/nonexistent");
+    const std::vector<trace::table_opened> opened = opened_tables(empty);
+    REQUIRE(opened.size() == 3);
+
+    CHECK_FALSE(opened[0].opened_at.resolved);
+    CHECK(opened[0].opened_at.file.empty());
+    // The address it was recorded as survives, and so does the identity of the
+    // object it is in -- which is what the metadata stream can say without any
+    // file at all.
+    CHECK(opened[0].opened_at.address != 0);
+    CHECK_FALSE(opened[0].opened_at.object.empty());
+    CHECK(opened[0].opened_at.to_string().starts_with("<unresolved 0x"));
+
+    // Two call sites are still two addresses, unresolved or not.
+    CHECK(opened[0].opened_at.address != opened[1].opened_at.address);
+}
+
 // The end-to-end pipeline, asserted on its output.
 //
 // Everything upstream of this is a build step: :trace_producer emits both a
@@ -641,21 +733,24 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
 // generated decoder, or the demo workload.
 TEST_CASE("decoded trace") {
     check_snapshot(read_env_file("TRACER_DECODED"), R"snap(
-        |               400 | modules/tracer/trace_producer.cc:49           | listening{port=8080}
-        |               500 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=0, keepalive=true}
-        |               600 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
-        |               700 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=1, keepalive=false}
-        |               800 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/index.html}
-        |               900 | modules/tracer/trace_producer.cc:52           | accepted_connection{conn=2, keepalive=true}
-        |              1000 | modules/tracer/trace_producer.cc:54           | request_header{method=GET, path=/}
-        |              1100 | modules/tracer/trace_producer.cc:61           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |              1200 | modules/tracer/trace_producer.cc:64           | clock_skew{nanoseconds=-4200, retries=3}
+        |               400 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
+        |               500 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
+        |               600 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |               700 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
+        |               800 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
+        |               900 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
+        |              1000 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1100 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              1200 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
         |              1300 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
         |              1400 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
         |              1500 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
         |              1600 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
         |              1700 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
-        |              1800 | modules/tracer/trace_producer.cc:71           | shutting_down{}
+        |              1800 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
+        |              1900 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
+        |              2000 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
+        |              2100 | modules/tracer/trace_producer.cc:88           | shutting_down{}
         )snap"_snap);
 }
 
@@ -668,24 +763,28 @@ TEST_CASE("a decoded trace is structs, not text") {
                                            raw.size()};
 
     collector out;
-    trace::decode(bytes, out);
+    trace::dso_directory dsos(dso_dir());
+    trace::decode(bytes, out, dsos);
 
     check_snapshot(out.text, R"snap(
-        |modules/tracer/trace_producer.cc:49 listening{port=8080}
+        |modules/tracer/trace_producer.cc:58 listening{port=8080}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
         |accepted_connection: connection 1, keepalive false
         |request_header: GET /index.html
         |accepted_connection: connection 2, keepalive true
         |request_header: GET /
-        |modules/tracer/trace_producer.cc:61 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |modules/tracer/trace_producer.cc:64 clock_skew{nanoseconds=-4200, retries=3}
+        |modules/tracer/trace_producer.cc:70 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |modules/tracer/trace_producer.cc:73 clock_skew{nanoseconds=-4200, retries=3}
         |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=1, label=handshake}
         |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=2}
         |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=99}
-        |modules/tracer/trace_producer.cc:71 shutting_down{}
+        |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
+        |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
+        |modules/tracer/trace_producer.cc:86 table_opened{name=anonymous, opened_at=<none>}
+        |modules/tracer/trace_producer.cc:88 shutting_down{}
         )snap"_snap);
 }
 

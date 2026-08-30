@@ -39,6 +39,12 @@
 // address turns it into an offset within an object named by its build ID rather
 // than by where it happened to land. See "the metadata stream" below.
 //
+// A tracepoint may also carry a srcloc::location -- where its *caller* was --
+// which is the one parameter type whose meaning is not in the tables at all: it
+// is an address inside a loaded object, so a decoder needs the object files
+// themselves. See "handing the objects to a decoder" below, and "resolving a
+// location" in tracer/codegen.h.
+//
 // Decoding is the other half, and it is not in this header: tracer/codegen.h
 // walks that same section and emits the C++ source of a decoder specialised to
 // this binary's tracepoints -- one struct per tracepoint, with the parameter
@@ -62,6 +68,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "source_location/source_location.h"
 #include "static_keys/static_keys.h"
 
 namespace tracer {
@@ -191,7 +198,7 @@ private:
     // named after it is gone.
     struct known_object {
         std::string build_id;
-        std::uintptr_t table_address;
+        std::uintptr_t base_address;
     };
 
     std::array<buffer_group, level_count> groups_;
@@ -230,7 +237,14 @@ inline constexpr bool always_false = false;
 // to copy blindly.
 template <typename T>
 consteval std::string_view type_to_sig() {
-    if constexpr (std::is_same_v<T, bool>) {
+    if constexpr (std::is_same_v<T, ::srcloc::location>) {
+        // A caller's source location, recorded as the one word it is: the
+        // address of the compiler's own constant. Only a decoder with the
+        // object in hand can read it back -- see "resolving a location" in
+        // codegen.h -- which is why it is a wire type of its own rather than a
+        // "ptr".
+        return "srcloc";
+    } else if constexpr (std::is_same_v<T, bool>) {
         return "bool";
     } else if constexpr (std::is_same_v<T, std::span<const std::byte>>) {
         return "bytes";
@@ -471,6 +485,10 @@ constexpr std::size_t arg_size(const void* const&) {
     return sizeof(std::uint64_t);
 }
 
+constexpr std::size_t arg_size(const ::srcloc::location&) {
+    return sizeof(std::uint64_t);
+}
+
 constexpr std::size_t arg_size(const std::span<const std::byte>& x) {
     return x.size() + sizeof(std::uint16_t);
 }
@@ -505,6 +523,13 @@ inline void serialize_arg(std::byte*& out, const T& x) {
 
 inline void serialize_arg(std::byte*& out, const void* const& x) {
     write_raw(out, reinterpret_cast<std::uintptr_t>(x));
+}
+
+// The address and nothing else: the file, the function and the line are already
+// in the object the address points into, and copying them into every record is
+// exactly the formatting a tracepoint exists not to do.
+inline void serialize_arg(std::byte*& out, const ::srcloc::location& x) {
+    write_raw(out, static_cast<std::uint64_t>(x.address()));
 }
 
 inline void serialize_arg(std::byte*& out, const std::span<const std::byte>& x) {
@@ -669,6 +694,23 @@ const tracepoint_module tracepoint_module_registration;
 struct trace_object {
     std::string build_id;
     std::uintptr_t table_address;  // where this run mapped the object's table
+
+    // Where this run mapped the object itself, and how far it reaches: the
+    // load bias and the end of its last PT_LOAD. Together they are the range of
+    // addresses that belong to this object, which is what turns an address
+    // recorded inside it -- a srcloc::location -- back into an offset in a file
+    // that a decoder can open. The table address cannot do that job: it says
+    // where one section landed, not where the object begins.
+    std::uintptr_t base_address;
+    std::uint64_t mapping_size;
+
+    // Where this run loaded the object from, for a program collecting the
+    // objects a trace will need to be decoded against; see
+    // write_dso_directory() below. The loader reports the main executable as
+    // the empty string, so that case is resolved to /proc/self/exe here rather
+    // than by every caller.
+    std::string path;
+
     std::span<const tracepoint_entry> table;
 };
 
@@ -680,6 +722,26 @@ struct trace_object {
 // its tracepoints could be recorded but never attributed, so that is a link to
 // fix (-Wl,--build-id) rather than a trace to write half of.
 [[nodiscard]] std::vector<trace_object> trace_objects();
+
+// --- handing the objects to a decoder ------------------------------------------
+//
+// A trace names its objects by build ID, and a source location in one is an
+// offset into the object's file. So a decoder needs the files, and it finds them
+// by build ID in a directory laid out the way a debuginfo directory is:
+//
+//     <root>/.build-id/<first two hex digits>/<the rest>.debug
+//
+// which is what llvm-cov's and gdb's --debug-file-directory expect, and what
+// tools/vscode-buck2 already builds for coverage. Copies rather than symlinks,
+// so that the directory keeps working once the build outputs it came from have
+// been rewritten.
+//
+// This writes the objects loaded *now*, which is every object a tracer built now
+// would describe. A program that dlopen()s something and traces through it has
+// to call this again, for the same reason it has to call note_objects_changed().
+//
+// Throws std::runtime_error if an object cannot be read or copied.
+void write_dso_directory(const std::string& root);
 
 // --- turning tracepoints on ---------------------------------------------------
 //
@@ -747,8 +809,17 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 // a level of their own.
 //
 //     trace_objects_loaded{count}
-//     trace_object_loaded{build_id, table_address}
-//     trace_object_unloaded{build_id, table_address}
+//     trace_object_loaded{build_id, table_address, base_address, mapping_size}
+//     trace_object_unloaded{build_id, base_address}
+//
+// A load event says where the object's tracepoint table landed *and* where the
+// object itself did. Both are needed and neither implies the other: a record
+// names its tracepoint by the address of an entry, which is an offset from the
+// table, while a srcloc::location is an address anywhere in the object's
+// .rodata, which is an offset from the base. The base could in principle be
+// recovered from the table address by finding the `tracepoints` section in the
+// object file, but only for an object whose section headers survived, so both
+// are written down rather than one being derived.
 //
 // They are written by TRACEPOINT_UNGATED() like any other record, into the
 // metadata ring of the tracer that is recording. There is no second writer, no
@@ -897,8 +968,12 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
 
 inline void trace_buffers::note_objects_changed() {
     const std::vector<trace_object> objects = trace_objects();
+    // Two objects are the same load if they are the same file at the same
+    // address. The base rather than the table address, because an object may
+    // have no tracepoint table at all -- and because the base is the thing that
+    // is unique per load, a table being one section inside it.
     const auto same = [](const known_object& a, const trace_object& b) {
-        return a.build_id == b.build_id && a.table_address == b.table_address;
+        return a.build_id == b.build_id && a.base_address == b.base_address;
     };
 
     // The records below go through TRACEPOINT_UNGATED(), which writes to
@@ -926,8 +1001,8 @@ inline void trace_buffers::note_objects_changed() {
             continue;
         }
         TRACEPOINT_UNGATED(event_level::metadata, "trace_object_unloaded", "build_id",
-                           std::string_view(it->build_id), "table_address",
-                           static_cast<std::uint64_t>(it->table_address));
+                           std::string_view(it->build_id), "base_address",
+                           static_cast<std::uint64_t>(it->base_address));
         it = known_.erase(it);
     }
 
@@ -938,8 +1013,10 @@ inline void trace_buffers::note_objects_changed() {
         }
         TRACEPOINT_UNGATED(event_level::metadata, "trace_object_loaded", "build_id",
                            std::string_view(object.build_id), "table_address",
-                           static_cast<std::uint64_t>(object.table_address));
-        known_.push_back({object.build_id, object.table_address});
+                           static_cast<std::uint64_t>(object.table_address), "base_address",
+                           static_cast<std::uint64_t>(object.base_address), "mapping_size",
+                           static_cast<std::uint64_t>(object.mapping_size));
+        known_.push_back({object.build_id, object.base_address});
     }
 
     local_tracer = previous;

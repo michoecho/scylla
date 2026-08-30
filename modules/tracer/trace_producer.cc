@@ -6,6 +6,7 @@
 //
 //     trace_producer --emit-decoder        C++ header of the matching decoder
 //     trace_producer --emit-trace FILE     a trace of the demo workload
+//     trace_producer --emit-dsos DIR       the objects a decoder needs, by build ID
 //
 // -- and see modules/tracer/BUCK for how those become build steps.
 //
@@ -31,6 +32,7 @@
 #include "tracer_demo/demo_clock.h"
 #include "tracer_demo/trace_plugin.h"
 
+#include "source_location/source_location.h"
 #include "tracer/codegen.h"
 #include "tracer/tracer.h"
 
@@ -42,9 +44,16 @@ std::span<const std::byte> as_bytes(std::string_view s) {
     return {reinterpret_cast<const std::byte*>(s.data()), s.size()};
 }
 
+// A function that records where it was called from, which is the shape a source
+// location exists for: `open_table` says nothing about its call site and the
+// tracepoint reports it anyway.
+void open_table(std::string_view name, srcloc::location from = {}) {
+    TRACEPOINT(event_level::info, "table_opened", "name", name, "opened_at", from);
+}
+
 // A workload chosen to cover every wire type the codegen can emit: the integer
-// widths, bool, a string, a length-prefixed byte span, a pointer, and no
-// parameters at all.
+// widths, bool, a string, a length-prefixed byte span, a pointer, a source
+// location, and no parameters at all.
 void run_demo() {
     TRACEPOINT(event_level::info, "listening", "port", static_cast<std::uint16_t>(8080));
 
@@ -67,6 +76,14 @@ void run_demo() {
     // -- a second copy of "shared_event" beside the one just below.
     demo::run_plugin_workload(2);
     demo::trace_shared_event(99);
+
+    // Two call sites, so the decoded trace shows two different places -- and one
+    // location that was never captured, which decodes as the nothing it is
+    // rather than as an address.
+    open_table("users");
+    open_table("sessions");
+    TRACEPOINT(event_level::info, "table_opened", "name", "anonymous", "opened_at",
+               srcloc::location::none());
 
     TRACEPOINT(event_level::info, "shutting_down");
 }
@@ -120,7 +137,20 @@ int main(int argc, char** argv) {
     if (mode == "--emit-trace" && argc == 3) {
         return emit_trace(argv[2]);
     }
+    if (mode == "--emit-dsos" && argc == 3) {
+        // This binary and the library it is linked against, filed by build ID.
+        // A source location is an address inside one of them, so a decoder
+        // cannot read one back without the files themselves.
+        try {
+            tracer::write_dso_directory(argv[2]);
+        } catch (const std::exception& e) {
+            std::cerr << "cannot collect the objects: " << e.what() << "\n";
+            return 1;
+        }
+        return 0;
+    }
 
-    std::cerr << "usage: " << argv[0] << " (--emit-decoder | --emit-trace FILE)\n";
+    std::cerr << "usage: " << argv[0]
+              << " (--emit-decoder | --emit-trace FILE | --emit-dsos DIR)\n";
     return 2;
 }

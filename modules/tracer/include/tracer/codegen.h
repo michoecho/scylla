@@ -26,6 +26,23 @@
 // Nothing generated here prints on its own account. Each struct has a
 // to_string() for when text is what is wanted, and that is the whole of the
 // formatting.
+//
+// --- resolving a location -----------------------------------------------------
+//
+// One wire type is not decodable from the tables alone. A `srcloc::location`
+// parameter -- see modules/source_location -- is the address of a constant the
+// compiler laid down in whichever object captured it, so reading it back needs
+// that object's *file*, not a description of it. The generated decoder therefore
+// carries a small ELF reader and a `dso_directory`: the metadata stream says
+// which object was mapped where, subtracting the base turns the address into a
+// link-time virtual address, and the object is opened by build ID under
+//
+//     <root>/.build-id/<first two hex digits>/<the rest>.debug
+//
+// which is what tracer::write_dso_directory() produces. decode() takes the
+// directory as an argument; a location it cannot place comes out unresolved,
+// carrying the address it was recorded as, rather than stopping the decode. The
+// generated header documents all of this at the point it is emitted.
 
 #include <span>
 #include <string>

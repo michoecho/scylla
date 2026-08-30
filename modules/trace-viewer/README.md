@@ -228,6 +228,30 @@ A trace is decoded against the object it came from by build ID, so a mismatched
 decoder does not silently misdecode -- it refuses. See "the metadata stream" in
 `modules/tracer/include/tracer/tracer.h`.
 
+The `decoder.h` and the `.trace` files it reads are **one pair**. The metadata
+stream is itself made of tracepoints, so its shape is part of what a decoder is
+generated from: a load event now carries the object's base address and extent
+beside its tracepoint table's, which is what lets a source location be read back.
+An old decoder reads old traces and a new one reads new traces; neither reads the
+other's, and the copy checked in here is the one that matches `smoke.trace`.
+Regenerate both together after rebuilding Scylla against a newer `modules/tracer`.
+
+### Source locations
+
+A tracepoint parameter may be a `srcloc::location`, which records where its
+*caller* was -- see `modules/source_location`. It is one address, so unlike every
+other field it cannot be read out of the trace alone: the decoder needs the
+object files themselves, found by build ID under
+
+```
+$TRACE_DSO_DIR/.build-id/<first two hex digits>/<the rest>.debug
+```
+
+which is the layout `gdb --debug-file-directory` and `llvm-cov` already use, and
+which `tracer::write_dso_directory()` writes. Without it the rest of the trace
+still decodes and each location comes out as `<unresolved 0x...>` rather than as
+a guess.
+
 ## Debugging a trace without the GUI
 
 When something looks wrong, decode headlessly and count. A ~40 line program

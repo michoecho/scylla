@@ -17,18 +17,19 @@ cxx_library(
     visibility = ["PUBLIC"],
 )
 
-# The compile-time capture path, which needs an optimised build to exist at all.
+# The location table, which needs an optimised build to exist at all.
 #
-# This repository compiles at -O0, where the asm operands cannot be folded and
-# the header falls back to filling entries at run time. So the fast path would
-# otherwise be built by nobody and tested by nobody: this target pins the -O2 it
-# requires, and the genrule below runs it, so that a failure of the path Scylla
-# will actually use is a failure of this build.
+# A location is the same word at every optimisation level, so the module's own
+# tests cover it at the -O0 this repository builds with. The `source_locations`
+# section is the exception -- it is assembled by inline asm, whose operands only
+# fold from -O1 up -- so it would otherwise be built by nobody and tested by
+# nobody. This target pins the -O1 it requires regardless of the build mode, and
+# the genrule below runs it, so that a regression in it fails this build.
 cxx_binary(
     name = "optimized_check",
     srcs = ["optimized_check.cc"],
     header_namespace = "",
-    compiler_flags = ["-O2"],
+    compiler_flags = ["-O1"],
     deps = [":source_location_core"],
 )
 

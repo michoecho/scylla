@@ -1,6 +1,7 @@
 #include "tracer/tracer.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <format>
 #include <stdexcept>
 
@@ -84,6 +85,9 @@ namespace {
 struct object_query {
     const void* address;   // in: a byte of the table being placed
     std::string build_id;  // out: hex, empty if the object has no build note
+    std::uintptr_t base = 0;      // out: the object's load bias
+    std::uint64_t mapping_size = 0;  // out: how far past the base it reaches
+    std::string path;      // out: the file it was loaded from, "" for the exe
     bool found = false;    // out: whether any object claimed the address
 };
 
@@ -127,19 +131,45 @@ std::string build_id_of(const dl_phdr_info& info) {
 int claim_object(dl_phdr_info* info, std::size_t /*size*/, void* data) {
     auto& query = *static_cast<object_query*>(data);
     const auto address = reinterpret_cast<ElfW(Addr)>(query.address);
+
+    // Two things at once: whether this object holds the address, and how far it
+    // reaches. The extent is the end of the last PT_LOAD, which has to be
+    // gathered over the whole loop rather than taken from the segment that
+    // matched -- a location and a tracepoint table are in different segments.
+    bool claimed = false;
+    ElfW(Addr) extent = 0;
     for (int i = 0; i < info->dlpi_phnum; ++i) {
         const ElfW(Phdr)& phdr = info->dlpi_phdr[i];
         if (phdr.p_type != PT_LOAD) {
             continue;
         }
         const ElfW(Addr) begin = info->dlpi_addr + phdr.p_vaddr;
+        extent = std::max(extent, phdr.p_vaddr + phdr.p_memsz);
         if (address >= begin && address < begin + phdr.p_memsz) {
-            query.found = true;
-            query.build_id = build_id_of(*info);
-            return 1;  // stop the walk
+            claimed = true;
         }
     }
-    return 0;
+    if (!claimed) {
+        return 0;
+    }
+    query.found = true;
+    query.build_id = build_id_of(*info);
+    query.base = static_cast<std::uintptr_t>(info->dlpi_addr);
+    query.mapping_size = static_cast<std::uint64_t>(extent);
+    query.path = info->dlpi_name != nullptr ? info->dlpi_name : "";
+    return 1;  // stop the walk
+}
+
+// The path an object was loaded from. The loader names the main executable with
+// the empty string -- it did not open it, the kernel did -- so that one case is
+// answered here rather than by every caller.
+std::string object_path(const std::string& reported) {
+    if (!reported.empty()) {
+        return reported;
+    }
+    std::error_code error;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    return error ? std::string{} : self.string();
 }
 
 }  // namespace
@@ -173,6 +203,9 @@ std::vector<trace_object> trace_objects() {
         }
         objects.push_back({std::move(query.build_id),
                            reinterpret_cast<std::uintptr_t>(table->start),
+                           query.base,
+                           query.mapping_size,
+                           object_path(query.path),
                            {table->start, static_cast<std::size_t>(table->stop - table->start)}});
     }
 
@@ -180,6 +213,45 @@ std::vector<trace_object> trace_objects() {
     std::sort(objects.begin(), objects.end(),
               [](const trace_object& a, const trace_object& b) { return a.build_id < b.build_id; });
     return objects;
+}
+
+// --- handing the objects to a decoder ------------------------------------------
+
+void write_dso_directory(const std::string& root) {
+    namespace fs = std::filesystem;
+
+    for (const trace_object& object : trace_objects()) {
+        if (object.path.empty()) {
+            throw std::runtime_error(std::format(
+                "object {} was loaded from a path this process cannot name, so it cannot be "
+                "collected for a decoder",
+                object.build_id));
+        }
+        // Two digits then the rest, which is the layout every debuginfo
+        // consumer already knows; see "handing the objects to a decoder" in
+        // tracer.h. A build ID shorter than that is not one.
+        if (object.build_id.size() < 3) {
+            throw std::runtime_error(
+                std::format("object build ID \"{}\" is too short to file", object.build_id));
+        }
+        const fs::path directory =
+            fs::path(root) / ".build-id" / object.build_id.substr(0, 2);
+
+        std::error_code error;
+        fs::create_directories(directory, error);
+        if (error) {
+            throw std::runtime_error(std::format("cannot create {}: {}", directory.string(),
+                                                 error.message()));
+        }
+        // Copied rather than linked: the point of the directory is to outlive
+        // the build outputs the objects came from.
+        fs::copy_file(object.path, directory / (object.build_id.substr(2) + ".debug"),
+                      fs::copy_options::overwrite_existing, error);
+        if (error) {
+            throw std::runtime_error(std::format("cannot copy {} into {}: {}", object.path,
+                                                 directory.string(), error.message()));
+        }
+    }
 }
 
 // --- writing a trace ----------------------------------------------------------

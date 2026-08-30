@@ -1,13 +1,11 @@
 #include "source_location/source_location.h"
 
-#include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <source_location>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <thread>
-#include <vector>
 
 #include <doctest/doctest.h>
 
@@ -15,11 +13,12 @@ namespace {
 
 // The shape this module exists for: a function that learns where it was called
 // from, without its callers saying anything.
-srcloc::location caller_of_traced;
+srcloc::location caller_of_traced = srcloc::location::none();
 void traced(int /*x*/, srcloc::location loc = {}) { caller_of_traced = loc; }
 
-// The two vague-linkage contexts. An inline function's call site is one entry
-// per translation unit; a template's is one per instantiation.
+// The two vague-linkage contexts, which an earlier design had to work hard for
+// and this one does not: the location is the compiler's own constant, so an
+// inline function and a template capture it exactly as anything else does.
 inline srcloc::location from_inline_function() {
     traced(1);
     return caller_of_traced;
@@ -31,24 +30,29 @@ srcloc::location from_template() {
     return caller_of_traced;
 }
 
-bool table_contains(srcloc::location loc) {
-    const auto all = srcloc::locations();
-    return std::ranges::find(all, loc.get()) != all.end();
-}
-
-// Never called, so its entry stays zeroed -- the price of filling entries at
-// run time rather than at compile time.
-srcloc::location never_runs() {
-    traced(3);
-    return caller_of_traced;
-}
-
 }  // namespace
 
 TEST_CASE("srcloc::location is one pointer") {
     static_assert(sizeof(srcloc::location) == sizeof(void*));
-    srcloc::location here;
+    const srcloc::location here;
     CHECK(sizeof(here) == sizeof(void*));
+    CHECK(here.address() == reinterpret_cast<std::uintptr_t>(here.get()));
+}
+
+// The assumption the module rests on: that entry is laid out like
+// std::source_location::__impl. Nothing in the standard says so, so it is
+// checked rather than assumed -- a standard library that disagreed would fail
+// here rather than decode to nonsense.
+TEST_CASE("an entry is a std::source_location, field for field") {
+    CHECK(srcloc::matches_std_source_location());
+
+    const auto line = static_cast<std::uint32_t>(__LINE__);
+    const srcloc::location here;
+    const std::source_location std_here = std::source_location::current();
+    CHECK(here.line() == line + 1);
+    CHECK(std_here.line() == line + 2);
+    CHECK(here.file() == std_here.file_name());
+    CHECK(here.function() == std_here.function_name());
 }
 
 TEST_CASE("a default argument captures the caller, not the callee") {
@@ -74,22 +78,27 @@ TEST_CASE("a bare location names the line it is written on") {
 TEST_CASE("an explicitly empty location holds nothing") {
     const srcloc::location loc = srcloc::location::none();
     CHECK_FALSE(loc.has_value());
+    CHECK(loc.address() == 0);
     CHECK(loc.line() == 0);
     CHECK(loc.file() == "");
 }
 
-TEST_CASE("one call site is one entry, two are two") {
+// The identity a trace records. Two call sites are two constants, one call site
+// is one -- and the compiler folds identical locations nowhere, because no two
+// call sites have the same line and column.
+TEST_CASE("one call site is one address, two are two") {
     traced(0);
     const srcloc::location a = caller_of_traced;
     traced(0);
     const srcloc::location b = caller_of_traced;
     CHECK(a != b);
+    CHECK(a.address() != b.address());
 
-    srcloc::location repeated;
+    srcloc::location repeated = srcloc::location::none();
     for (int i = 0; i < 3; ++i) {
         traced(0);
         if (i > 0) {
-            CHECK(caller_of_traced == repeated);  // one call site, not one entry per pass
+            CHECK(caller_of_traced == repeated);  // one call site, not one per pass
         }
         repeated = caller_of_traced;
     }
@@ -98,10 +107,10 @@ TEST_CASE("one call site is one entry, two are two") {
 TEST_CASE("capture works in an inline function and in a template") {
     const srcloc::location inlined = from_inline_function();
     CHECK(inlined.function().find("from_inline_function") != std::string_view::npos);
-    CHECK(table_contains(inlined));
 
-    // One call site, two instantiations, two entries -- and each names the
-    // instantiation it came from.
+    // One call site, two instantiations. The line is the same and the function
+    // is not, so these are two constants: the compiler names the instantiation
+    // in __PRETTY_FUNCTION__, and the location carries it.
     const srcloc::location as_int = from_template<int>();
     const srcloc::location as_double = from_template<double>();
     CHECK(as_int != as_double);
@@ -110,70 +119,29 @@ TEST_CASE("capture works in an inline function and in a template") {
     CHECK(as_double.function().find("double") != std::string_view::npos);
 }
 
-#if !SRCLOC_COMPILE_TIME_CAPTURE
-TEST_CASE("filling an entry is safe from several threads at once") {
-    std::vector<std::jthread> threads;
-    std::vector<srcloc::location> seen(4);
-    for (int i = 0; i < 4; ++i) {
-        threads.emplace_back([&seen, i] {
-            traced(0);
-            seen[static_cast<std::size_t>(i)] = caller_of_traced;
-        });
-    }
-    threads.clear();  // join
-    for (const srcloc::location loc : seen) {
-        CHECK(loc == seen.front());  // all four raced for the same slot
-        CHECK(loc.line() > 0);
-        CHECK_FALSE(loc.file().empty());
-    }
-}
-
-#endif
-
-TEST_CASE("every reached call site is in the section table") {
+// A location that is already in hand, which is what a decoder ends up with once
+// it has placed an address. Not a capture: it names what it is given.
+TEST_CASE("an entry in hand can be wrapped without capturing anything") {
     traced(0);
-    const srcloc::location loc = caller_of_traced;
-    CHECK(table_contains(loc));
-
-    // The point of the section: the pointer is an index into a table, and the
-    // index is what a decoder outside the process can act on.
-    const srcloc::location_index at = srcloc::index_of(loc);
-    REQUIRE(at.table != nullptr);
-    CHECK(at.table->start + at.index == loc.get());
-    CHECK(at.index < static_cast<std::size_t>(at.table->stop - at.table->start));
+    const srcloc::location captured = caller_of_traced;
+    const srcloc::location wrapped = srcloc::location::at(captured.get());
+    CHECK(wrapped == captured);
+    CHECK(wrapped.line() == captured.line());
+    CHECK(srcloc::location::at(nullptr) == srcloc::location::none());
 }
 
-TEST_CASE("the table is a packed array whether or not its entries are filled") {
-    const auto all = srcloc::locations();
-    REQUIRE(all.size() > 1);
-
-#if SRCLOC_COMPILE_TIME_CAPTURE
-    // Assembled at compile time: nothing is blank, not even never_runs().
-    CHECK(std::ranges::none_of(all, [](const srcloc::entry* e) { return e->file == nullptr; }));
-#else
-    // Filled at run time: a call site this run did not reach is still zeroed.
-    const auto blank = std::ranges::count_if(
-        all, [](const srcloc::entry* e) { return e->file == nullptr; });
-    CHECK(blank >= 1);  // never_runs(), at least
-#endif
-
-    // A blank entry still occupies its index, so indexes do not shift between
-    // runs that reach different code.
-    for (const srcloc::location_table* table = srcloc::location_tables(); table != nullptr;
-         table = table->next) {
-        for (const srcloc::entry* e = table->start; e != table->stop; ++e) {
-            CAPTURE(e - table->start);
-            CHECK(((e->file == nullptr && e->line == 0) || (e->file != nullptr && e->line > 0)));
-        }
-    }
+// The section is the inline-asm mechanism, so it exists at -O1 and up and not
+// here. That is not a gap in what this module offers -- every case above holds
+// either way -- and it is asserted rather than skipped so that a build which
+// somehow acquired a table would say so.
+TEST_CASE("there is no location table in an unoptimised build") {
+    CHECK(SRCLOC_LOCATION_TABLE == 0);
+    CHECK(srcloc::locations().empty());
 }
 
-// The optimised path cannot be exercised from here: this test is compiled the
-// way the repository compiles everything, which is -O0, so the header's
-// run-time fallback is what the cases above are testing. //:optimized_check is
-// the same module built at -O2, asserting the properties only the compile-time
-// path has; this reads its output so that the two are reported together.
-TEST_CASE("the compile-time capture path is built and checked at -O2") {
+// :optimized_check is this module at -O1, asserting what only the table has.
+// This reads its output so that the two are reported together.
+TEST_CASE("the location table is built and checked at -O1") {
     const char* const path = std::getenv("SRCLOC_OPTIMIZED_CHECK");
     REQUIRE(path != nullptr);
     std::ifstream in(path);
@@ -182,7 +150,5 @@ TEST_CASE("the compile-time capture path is built and checked at -O2") {
     text << in.rdbuf();
     const std::string output = text.str();
     CAPTURE(output);
-    CHECK(output.find("all complete") != std::string::npos);
-    // -O0 here, -O2 there: the two paths of the same header.
-    CHECK(SRCLOC_COMPILE_TIME_CAPTURE == 0);
+    CHECK(output.find("all readable") != std::string::npos);
 }
