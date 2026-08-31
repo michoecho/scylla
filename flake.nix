@@ -6,9 +6,16 @@
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     nativelink.url = "github:TraceMachina/nativelink";
     nativelink.inputs.nixpkgs.follows = "nixpkgs-stable";
+    # The converter consumes the native Trace protobufs from this pinned
+    # upstream checkout. nix/perfetto-protos.nix generates the C++ bindings and
+    # packages them with the protobuf runtime for Buck.
+    perfetto = {
+      url = "github:google/perfetto/18d95ebddce53d4671fd2ed99dc45c39a458ef1d";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs-stable, nixpkgs-unstable, nativelink, ... }:
+  outputs = { self, nixpkgs-stable, nixpkgs-unstable, nativelink, perfetto, ... }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs-stable.lib.genAttrs supportedSystems (system: f system);
@@ -260,6 +267,9 @@
           code = vscodeFor (pkgsUnstableFor system);
           nativelink = nativelinkFor pkgs;
           perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
+          perfetto-protos = pkgs.callPackage ./nix/perfetto-protos.nix {
+            source = perfetto.sourceInfo.outPath;
+          };
 
           # Hegel (property-based testing), packaged nixpkgs-style from source.
           # Upstream ships a flake, but it downloads a prebuilt engine .so from

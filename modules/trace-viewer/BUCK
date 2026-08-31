@@ -10,6 +10,7 @@ cxx_library(
     exported_headers = {"decoder.h": "decoder.h"},
     header_namespace = "",
     preferred_linkage = "static",
+    visibility = ["PUBLIC"],
 )
 
 cxx_binary(

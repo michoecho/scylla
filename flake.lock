@@ -188,11 +188,29 @@
         "type": "github"
       }
     },
+    "perfetto": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787943997,
+        "narHash": "sha256-77wqhwyQNaRtzvqIV8EW3zbjgvd9p2XZxftzIge7geA=",
+        "owner": "google",
+        "repo": "perfetto",
+        "rev": "18d95ebddce53d4671fd2ed99dc45c39a458ef1d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "google",
+        "repo": "perfetto",
+        "rev": "18d95ebddce53d4671fd2ed99dc45c39a458ef1d",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "nativelink": "nativelink",
         "nixpkgs-stable": "nixpkgs-stable",
-        "nixpkgs-unstable": "nixpkgs-unstable"
+        "nixpkgs-unstable": "nixpkgs-unstable",
+        "perfetto": "perfetto"
       }
     },
     "rust-overlay": {

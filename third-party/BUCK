@@ -25,3 +25,11 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
     static = True,
 )
+
+flake.prebuilt_pkgconfig_library(
+    name = "perfetto_protos",
+    package = "perfetto-protos",
+    module = "perfetto-protos",
+    path = "root//:flake",
+    static = True,
+)
