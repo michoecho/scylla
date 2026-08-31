@@ -52,6 +52,8 @@ interface LcovSection {
     functions: { hit: number; instrumented: number; details: { name: string; line: number; hit: number }[] };
 }
 
+type RunMode = "normal" | "coverage" | "pt";
+
 let controller: vscode.TestController;
 let extensionContext: vscode.ExtensionContext;
 const roots = new Map<string, vscode.TestItem>();
@@ -65,13 +67,13 @@ export function activate(context: vscode.ExtensionContext): void {
     controller.createRunProfile(
         "Run Tests",
         vscode.TestRunProfileKind.Run,
-        (request, cancellation) => runTests(request, cancellation, false),
+        (request, cancellation) => runTests(request, cancellation, "normal"),
         true,
     );
     const coverageProfile = controller.createRunProfile(
         "Run Tests with Coverage",
         vscode.TestRunProfileKind.Coverage,
-        (request, cancellation) => runTests(request, cancellation, true),
+        (request, cancellation) => runTests(request, cancellation, "coverage"),
         true,
     );
     coverageProfile.loadDetailedCoverage = async (_, fileCoverage) => coverageData.get(fileCoverage) ?? [];
@@ -81,9 +83,30 @@ export function activate(context: vscode.ExtensionContext): void {
         (request, cancellation) => debugTests(request, cancellation),
         true,
     );
+    const ptProfile = controller.createRunProfile(
+        "Run with PT",
+        vscode.TestRunProfileKind.Run,
+        (request, cancellation) => runTests(request, cancellation, "pt"),
+        false,
+    );
     context.subscriptions.push(
         controller,
         vscode.commands.registerCommand("buck2Test.refresh", () => refreshAll()),
+        vscode.commands.registerCommand("buck2Test.runWithPt", async (item?: vscode.TestItem) => {
+            if (!item) {
+                return;
+            }
+            const cancellation = new vscode.CancellationTokenSource();
+            try {
+                await runTests(
+                    new vscode.TestRunRequest([item], undefined, ptProfile),
+                    cancellation.token,
+                    "pt",
+                );
+            } finally {
+                cancellation.dispose();
+            }
+        }),
     );
     void refreshAll();
 }
@@ -163,8 +186,10 @@ function createCaseItem(
 async function runTests(
     request: vscode.TestRunRequest,
     cancellation: vscode.CancellationToken,
-    withCoverage: boolean,
+    mode: RunMode,
 ): Promise<void> {
+    const withCoverage = mode === "coverage";
+    const withPt = mode === "pt";
     const run = controller.createTestRun(request);
     const selected = [...records.values()].filter(record => {
         const included = !request.include || request.include.some(item => contains(item, record.item));
@@ -221,10 +246,11 @@ async function runTests(
                     folder,
                     targets,
                     output,
-                    withCoverage ? ["--vscode-coverage"] : [],
+                    withPt ? ["--vscode-pt"] : withCoverage ? ["--vscode-coverage"] : [],
                     cases,
                     cancellation,
                     withCoverage ? "root//:coverage" : undefined,
+                    withPt,
                 );
                 const response = await readOutput(output);
                 if (withCoverage) {
@@ -587,6 +613,7 @@ async function runBuck2(
     cases?: { target: string; case_name: string }[],
     cancellation?: vscode.CancellationToken,
     modifier?: string,
+    localOnly = false,
 ): Promise<void> {
     const config = vscode.workspace.getConfiguration("buck2Test", folder.uri);
     const buck2 = config.get<string>("buck2Path", "buck2");
@@ -608,6 +635,7 @@ async function runBuck2(
     }
     const args = [
         "test",
+        ...(localOnly ? ["--local-only"] : []),
         "--config", `test.v2_test_executor=${executor}`,
         "--console", "simple",
         "--no-interactive-console",

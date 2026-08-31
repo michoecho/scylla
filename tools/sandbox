@@ -295,6 +295,11 @@ def main():
         # $WAYLAND_DISPLAY, which we leave intact.
         "--unsetenv", "DISPLAY",
 
+        # Make NixOS' xdg-open use the host desktop portal. The session D-Bus
+        # socket is exposed above, so URLs are opened by the host's default
+        # browser instead of trying to run KDE's KIO opener in the sandbox.
+        "--setenv", "NIXOS_XDG_OPEN_USE_PORTAL", "1",
+
         # Namespacing
         "--share-net",
         "--unshare-pid",

@@ -48,6 +48,8 @@ bool g_active = false; // both fifo paths present in the environment
 const char* g_ctl_path = nullptr;
 const char* g_ack_path = nullptr;
 
+} // namespace
+
 void resolve() {
     if (g_resolved)
         return;
@@ -56,6 +58,8 @@ void resolve() {
     g_ack_path = std::getenv(kAckEnv);
     g_active = g_ctl_path != nullptr && g_ack_path != nullptr;
 }
+
+namespace {
 
 // Open `path` with `flags` if `fd` is not already open. Returns the (possibly
 // freshly opened) fd, or -1 on failure. O_CLOEXEC so the traced child we may

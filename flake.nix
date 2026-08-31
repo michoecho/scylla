@@ -192,6 +192,14 @@
                 version = "26.5818.61809";
                 sha256 = "sha256-1/dinrtnp1WigzDzp1rBeO9QOSsQM/xuFvj66xY1Ngg=";
               }
+            ]
+            ++ pkgs-unstable.vscode-utils.extensionsFromVscodeMarketplace [
+              {
+                name = "deepseek-v4-for-copilot";
+                publisher = "vizards";
+                version = "0.8.2";
+                sha256 = "sha256-EwvkVVPCNGXO1T86kxKqLwOUy1hqr3ZjpknswkF1n3w=";
+              }
             ];
 
           # The extensions as one directory, which is what the wrapper copies

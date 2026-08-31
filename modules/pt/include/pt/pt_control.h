@@ -16,6 +16,11 @@
 
 namespace pt {
 
+// Resolve the control FIFO environment once. This is normally called
+// implicitly by enable()/disable(), but reporters that bracket a larger
+// operation can resolve the environment explicitly during setup.
+void resolve();
+
 // Enable tracing and block until perf acknowledges. No-op (returns false) when
 // not running under the orchestrator or if the control fifos are unavailable.
 // Returns true if an ack was received.

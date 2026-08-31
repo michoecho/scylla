@@ -11,6 +11,7 @@
   "categories": ["Testing", "Other"],
   "activationEvents": [
     "onCommand:buck2Test.refresh",
+    "onCommand:buck2Test.runWithPt",
     "workspaceContains:BUCK",
     "workspaceContains:.buckroot"
   ],
@@ -25,8 +26,27 @@
       {
         "command": "buck2Test.refresh",
         "title": "Buck2: Refresh Tests"
+      },
+      {
+        "command": "buck2Test.runWithPt",
+        "title": "Run with PT"
       }
     ],
+    "menus": {
+      "testing/item/context": [
+        {
+          "command": "buck2Test.runWithPt",
+          "group": "inline@4",
+          "when": "controllerId == buck2-test"
+        }
+      ],
+      "testing/item/gutter": [
+        {
+          "command": "buck2Test.runWithPt",
+          "when": "controllerId == buck2-test"
+        }
+      ]
+    },
     "configuration": {
       "title": "Buck2 Test",
       "properties": {

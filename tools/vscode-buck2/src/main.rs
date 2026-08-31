@@ -63,6 +63,7 @@ struct Options {
     list_only: bool,
     coverage: bool,
     debug: bool,
+    pt: bool,
     selected_cases: HashSet<String>,
     selection_file: Option<PathBuf>,
     list_arg: String,
@@ -295,6 +296,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
             "--vscode-list-only" => options.list_only = true,
             "--vscode-coverage" => options.coverage = true,
             "--vscode-debug" => options.debug = true,
+            "--vscode-pt" => options.pt = true,
             "--vscode-case" => {
                 options.selected_cases.insert(value_or_next(args, index, value)?.to_owned());
             }
@@ -529,8 +531,7 @@ async fn process_spec(
             .map(|case| escape_doctest_filter(&case.name))
             .collect::<Vec<_>>()
             .join(",");
-        let mut command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
-        command.push(verbatim_arg("--reporters=console,vscode-results"));
+        let command = test_command(&spec, options, &case_filter);
         let stage = TestStage {
             item: Some(test_stage::Item::Testing(Testing {
                 suite: target_name.clone(),
@@ -634,8 +635,7 @@ async fn process_spec(
         } else {
             case_name.clone()
         };
-        let mut command = command_with_arg(&spec.command, &options.case_arg.replace("{}", &case_filter));
-        command.push(verbatim_arg("--reporters=console,vscode-results"));
+        let command = test_command(&spec, options, &case_filter);
         let stage = TestStage { item: Some(test_stage::Item::Testing(Testing { suite: target_name.clone(), testcases: vec![case_name.clone()], variant: None, repeat_count: None })) };
         let coverage_output = coverage_output_name(&target_name, &case_name);
         let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
@@ -950,6 +950,21 @@ fn command_with_arg(command: &[ExternalRunnerSpecValue], arg: &str) -> Vec<ArgVa
     }).chain([verbatim_arg(arg)]).collect()
 }
 
+fn test_command(spec: &ExternalRunnerSpec, options: &Options, case_filter: &str) -> Vec<ArgValue> {
+    let mut command = command_with_arg(&spec.command, &options.case_arg.replace("{}", case_filter));
+    let reporter = if options.pt { "vscode-results-pt" } else { "vscode-results" };
+    command.push(verbatim_arg(&format!("--reporters=console,{reporter}")));
+    if options.pt {
+        command = [
+            verbatim_arg("tools/pt-trace"),
+            verbatim_arg("run"),
+            verbatim_arg("--perfetto"),
+            verbatim_arg("--"),
+        ].into_iter().chain(command).collect();
+    }
+    command
+}
+
 fn verbatim_arg(arg: &str) -> ArgValue {
     ArgValue {
         content: Some(ArgValueContent { value: Some(proto::arg_value_content::Value::SpecValue(ExternalRunnerSpecValue {
@@ -1209,7 +1224,18 @@ fn parse_location(line: &str) -> Option<(String, u32)> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{escape_doctest_filter, format_case_output, format_case_summary, normalize_lcov_paths, parse_case_outputs, parse_listing, parse_machine_results, resolve_prepared_path};
+    use super::{escape_doctest_filter, format_case_output, format_case_summary, normalize_lcov_paths, parse_case_outputs, parse_listing, parse_machine_results, resolve_prepared_path, test_command, Options};
+    use super::{external_runner_spec_value, proto, ArgValue, ArgValueContent, ExternalRunnerSpec, ExternalRunnerSpecValue};
+
+    fn arg_text(arg: &ArgValue) -> &str {
+        let Some(ArgValueContent { value: Some(proto::arg_value_content::Value::SpecValue(value)), .. }) = arg.content.as_ref() else {
+            panic!("expected a spec value argument");
+        };
+        let Some(external_runner_spec_value::Value::Verbatim(value)) = value.value.as_ref() else {
+            panic!("expected a verbatim argument");
+        };
+        value
+    }
 
     #[test]
     fn parses_test_locations_listing() {
@@ -1310,6 +1336,35 @@ mod tests {
         assert_eq!(
             resolve_prepared_path("/workspace", "/tmp/profile.profraw"),
             PathBuf::from("/tmp/profile.profraw"),
+        );
+    }
+
+    #[test]
+    fn pt_mode_wraps_the_test_and_selects_the_pt_reporter() {
+        let spec = ExternalRunnerSpec {
+            command: vec![ExternalRunnerSpecValue {
+                value: Some(external_runner_spec_value::Value::Verbatim("test-bin".to_owned())),
+            }],
+            ..Default::default()
+        };
+        let options = Options {
+            pt: true,
+            case_arg: "--test-case={}".to_owned(),
+            ..Default::default()
+        };
+
+        let command = test_command(&spec, &options, "one case");
+        assert_eq!(
+            command.iter().map(arg_text).collect::<Vec<_>>(),
+            vec![
+                "tools/pt-trace",
+                "run",
+                "--perfetto",
+                "--",
+                "test-bin",
+                "--test-case=one case",
+                "--reporters=console,vscode-results-pt",
+            ],
         );
     }
 

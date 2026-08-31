@@ -9,7 +9,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "doctest/doctest.h"
+#include "modules/main/vscode_results_reporter.h"
 
 namespace {
 
@@ -75,63 +75,59 @@ void print_failure_reason(int failure_flags) {
     }
 }
 
-struct VscodeResultsReporter final : doctest::IReporter {
-    const doctest::TestCaseData* current = nullptr;
+}  // namespace
 
-    explicit VscodeResultsReporter(const doctest::ContextOptions&) {}
+VscodeResultsReporter::VscodeResultsReporter(const doctest::ContextOptions&) {}
 
-    void report_query(const doctest::QueryData&) override {}
-    void test_run_start() override {}
-    void test_run_end(const doctest::TestRunStats&) override {}
+void VscodeResultsReporter::report_query(const doctest::QueryData&) {}
+void VscodeResultsReporter::test_run_start() {}
+void VscodeResultsReporter::test_run_end(const doctest::TestRunStats&) {}
 
-    void test_case_start(const doctest::TestCaseData& test) override {
-        current = &test;
-        print_output_marker("VSCODE_TEST_OUTPUT_START", current->m_name);
-        std::printf("RUN %s:%u: %s\n",
-                    current->m_file.c_str(),
-                    current->m_line,
-                    current->m_name);
-        std::fflush(stdout);
+void VscodeResultsReporter::test_case_start(const doctest::TestCaseData& test) {
+    current_ = &test;
+    print_output_marker("VSCODE_TEST_OUTPUT_START", current_->m_name);
+    std::printf("RUN %s:%u: %s\n",
+                current_->m_file.c_str(),
+                current_->m_line,
+                current_->m_name);
+    std::fflush(stdout);
+}
+
+void VscodeResultsReporter::test_case_reenter(const doctest::TestCaseData& test) {
+    current_ = &test;
+}
+
+void VscodeResultsReporter::test_case_end(const doctest::CurrentTestCaseStats& stats) {
+    if (current_ == nullptr) {
+        return;
     }
-
-    void test_case_reenter(const doctest::TestCaseData& test) override {
-        current = &test;
+    const int asserts_failed = stats.numAssertsFailedCurrentTest;
+    const int asserts_passed = stats.numAssertsCurrentTest - asserts_failed;
+    if (stats.testCaseSuccess) {
+        std::printf("PASS (%d asserts passed)\n", asserts_passed);
+    } else {
+        std::printf("FAIL (%d asserts passed, %d asserts failed, failure reason: ",
+                    asserts_passed,
+                    asserts_failed);
+        print_failure_reason(stats.failure_flags);
+        std::printf(")\n");
     }
+    std::fflush(stdout);
+    print_output_marker("VSCODE_TEST_OUTPUT_END", current_->m_name);
+    std::printf("VSCODE_TEST_RESULT\t");
+    print_hex(stdout, current_->m_name);
+    std::printf("\t%s\t%llu\n",
+                stats.testCaseSuccess ? "passed" : "failed",
+                static_cast<unsigned long long>(
+                    std::llround(stats.seconds * 1000.0)));
+    std::fflush(stdout);
+}
 
-    void test_case_end(const doctest::CurrentTestCaseStats& stats) override {
-        if (current == nullptr) {
-            return;
-        }
-        const int asserts_failed = stats.numAssertsFailedCurrentTest;
-        const int asserts_passed = stats.numAssertsCurrentTest - asserts_failed;
-        if (stats.testCaseSuccess) {
-            std::printf("PASS (%d asserts passed)\n", asserts_passed);
-        } else {
-            std::printf("FAIL (%d asserts passed, %d asserts failed, failure reason: ",
-                        asserts_passed,
-                        asserts_failed);
-            print_failure_reason(stats.failure_flags);
-            std::printf(")\n");
-        }
-        std::fflush(stdout);
-        print_output_marker("VSCODE_TEST_OUTPUT_END", current->m_name);
-        std::printf("VSCODE_TEST_RESULT\t");
-        print_hex(stdout, current->m_name);
-        std::printf("\t%s\t%llu\n",
-                    stats.testCaseSuccess ? "passed" : "failed",
-                    static_cast<unsigned long long>(
-                        std::llround(stats.seconds * 1000.0)));
-        std::fflush(stdout);
-    }
-
-    void test_case_exception(const doctest::TestCaseException&) override {}
-    void test_case_skipped(const doctest::TestCaseData&) override {}
-    void subcase_start(const doctest::SubcaseSignature&) override {}
-    void subcase_end() override {}
-    void log_assert(const doctest::AssertData&) override {}
-    void log_message(const doctest::MessageData&) override {}
-};
+void VscodeResultsReporter::test_case_exception(const doctest::TestCaseException&) {}
+void VscodeResultsReporter::test_case_skipped(const doctest::TestCaseData&) {}
+void VscodeResultsReporter::subcase_start(const doctest::SubcaseSignature&) {}
+void VscodeResultsReporter::subcase_end() {}
+void VscodeResultsReporter::log_assert(const doctest::AssertData&) {}
+void VscodeResultsReporter::log_message(const doctest::MessageData&) {}
 
 DOCTEST_REGISTER_REPORTER("vscode-results", 0, VscodeResultsReporter);
-
-}  // namespace

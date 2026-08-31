@@ -84,3 +84,10 @@ The `Run Tests with Coverage` profile adds `--modifier root//:coverage` to the
 Buck2 invocation. The executor assigns each test case an LLVM raw profile
 output, merges the profiles with `llvm-profdata`, exports LCOV with `llvm-cov`,
 and the extension loads the resulting files through VS Code's coverage API.
+
+The `Run with PT` profile is also available directly from a test item's
+context menu and from the editor gutter menu. It forces `buck2 test
+--local-only`, runs the selected test under `tools/pt-trace run --perfetto`,
+and selects the `vscode-results-pt` reporter. The reporter enables Intel PT for
+the doctest run and disables it before returning, after which the trace is
+opened in Perfetto.

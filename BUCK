@@ -302,10 +302,15 @@ cxx_library(
     name = "vscode_results_reporter",
     srcs = [
         "modules/main/test_locations_reporter.cc",
+        "modules/main/pt_vscode_results_reporter.cc",
         "modules/main/vscode_results_reporter.cc",
+    ],
+    headers = [
+        "modules/main/vscode_results_reporter.h",
     ],
     deps = [
         ":doctest",
+        "//modules/pt:pt",
     ],
     link_whole = True,
     preferred_linkage = "static",
