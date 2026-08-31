@@ -71,3 +71,6 @@ nativelink:
 # Run the command in a sandbox, (mainly to limit LLM blast radius).
 sandbox +cmd:
     tools/sandbox --whole-sys {{cmd}}
+
+extension:
+    tools/vscode-buck2/build-and-install
