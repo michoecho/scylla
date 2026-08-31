@@ -36,7 +36,6 @@
       "testing/item/context": [
         {
           "command": "buck2Test.runWithPt",
-          "group": "inline@4",
           "when": "controllerId == buck2-test"
         }
       ],
