@@ -9,6 +9,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory_resource>
 #include <optional>
 #include <ranges>
@@ -212,6 +213,7 @@ public:
     using value_type = Tp;
     using key_type = Key;
     using value_ptr = typename timestamped_val::value_ptr;
+    using cache_callback = std::function<void(const Key&, const Tp&)>;
 
     class entry_is_too_big : public std::exception {};
 
@@ -276,8 +278,26 @@ public:
         _timer.arm(_timer_period);
     }
 
+    void set_callbacks(cache_callback on_insert, cache_callback on_remove) {
+        _on_insert = std::move(on_insert);
+        _on_remove = std::move(on_remove);
+    }
+
+    template <typename Func>
+    void for_each(Func&& func) const {
+        auto visit = [&func] (const ts_value_lru_entry& entry) {
+            func(entry.key(), entry.timestamped_value().value());
+        };
+        for (const auto& entry : _unprivileged_lru_list) {
+            visit(entry);
+        }
+        for (const auto& entry : _lru_list) {
+            visit(entry);
+        }
+    }
+
     ~loading_cache() {
-        auto value_destroyer = [] (ts_value_lru_entry* ptr) { loading_cache::destroy_ts_value(ptr); };
+        auto value_destroyer = [this] (ts_value_lru_entry* ptr) { destroy_ts_value(ptr); };
         _unprivileged_lru_list.erase_and_dispose(_unprivileged_lru_list.begin(), _unprivileged_lru_list.end(), value_destroyer);
         _lru_list.erase_and_dispose(_lru_list.begin(), _lru_list.end(), value_destroyer);
     }
@@ -341,6 +361,9 @@ public:
 
                 // This will "touch" the entry and add it to the LRU list - we must do this before the shrink() call.
                 value_ptr vp(new_lru_entry->timestamped_value_ptr());
+                if (_on_insert) {
+                    _on_insert(new_lru_entry->key(), new_lru_entry->timestamped_value().value());
+                }
 
                 return make_ready_future<value_ptr>(std::move(vp));
             }
@@ -420,8 +443,8 @@ public:
         auto cond_pred = [&pred] (const ts_value_lru_entry& v) {
             return pred(v.timestamped_value().value());
         };
-        auto value_destroyer = [] (ts_value_lru_entry* p) {
-            loading_cache::destroy_ts_value(p);
+        auto value_destroyer = [this] (ts_value_lru_entry* p) {
+            destroy_ts_value(p);
         };
 
         _unprivileged_lru_list.remove_and_dispose_if(cond_pred, value_destroyer);
@@ -476,7 +499,7 @@ private:
         }
         ts_value_lru_entry* lru_entry_ptr = ts_ptr->lru_entry_ptr();
         lru_list_type& entry_list = container_list(*lru_entry_ptr);
-        entry_list.erase_and_dispose(entry_list.iterator_to(*lru_entry_ptr), [] (ts_value_lru_entry* p) { loading_cache::destroy_ts_value(p); });
+        entry_list.erase_and_dispose(entry_list.iterator_to(*lru_entry_ptr), [this] (ts_value_lru_entry* p) { destroy_ts_value(p); });
     }
 
     timestamped_val_ptr ready_entry_ptr(timestamped_val_ptr tv_ptr) {
@@ -505,7 +528,10 @@ private:
         return _cfg.expiry != duration(0);
     }
 
-    static void destroy_ts_value(ts_value_lru_entry* val) noexcept {
+    void destroy_ts_value(ts_value_lru_entry* val) noexcept {
+        if (_on_remove) {
+            _on_remove(val->key(), val->timestamped_value().value());
+        }
         Alloc().delete_object(val);
     }
 
@@ -593,8 +619,8 @@ private:
             }
             return false;
         };
-        auto value_destroyer = [] (ts_value_lru_entry* p) {
-            loading_cache::destroy_ts_value(p);
+        auto value_destroyer = [this] (ts_value_lru_entry* p) {
+            destroy_ts_value(p);
         };
 
         _unprivileged_lru_list.remove_and_dispose_if(expiration_cond, value_destroyer);
@@ -609,14 +635,14 @@ private:
         auto drop_privileged_entry = [&] {
             ts_value_lru_entry& lru_entry = *_lru_list.rbegin();
             _logger.trace("shrink(): {}: dropping the entry: ms since last_read {}", lru_entry.key(), duration_cast<milliseconds>(loading_cache_clock_type::now() - lru_entry.timestamped_value().last_read()).count());
-            loading_cache::destroy_ts_value(&lru_entry);
+            destroy_ts_value(&lru_entry);
             LoadingCacheStats::inc_privileged_on_cache_size_eviction();
         };
 
         auto drop_unprivileged_entry = [&] {
             ts_value_lru_entry& lru_entry = *_unprivileged_lru_list.rbegin();
             _logger.trace("shrink(): {}: dropping the unprivileged entry: ms since last_read {}", lru_entry.key(), duration_cast<milliseconds>(loading_cache_clock_type::now() - lru_entry.timestamped_value().last_read()).count());
-            loading_cache::destroy_ts_value(&lru_entry);
+            destroy_ts_value(&lru_entry);
             LoadingCacheStats::inc_unprivileged_on_cache_size_eviction();
         };
 
@@ -733,6 +759,8 @@ private:
     std::optional<config> _updated_cfg;
     logging::logger& _logger;
     std::function<future<Tp>(const Key&)> _load;
+    cache_callback _on_insert;
+    cache_callback _on_remove;
     timer<loading_cache_clock_type> _timer;
     seastar::named_gate _timer_reads_gate;
 };
@@ -829,4 +857,3 @@ public:
 };
 
 }
-

@@ -224,6 +224,10 @@ public:
 
     lang::manager& lang() { return _lang_manager; }
 
+    // Record a point-in-time image of the user prepared-statement cache. The
+    // caller must invoke this on the shard whose cache is being snapshotted.
+    void trace_prepared_statements_snapshot();
+
     const vector_search::vector_store_client& vector_store_client() const noexcept {
         return _vector_store_client;
     }

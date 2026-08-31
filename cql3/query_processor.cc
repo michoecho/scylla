@@ -17,6 +17,8 @@
 #include <seastar/coroutine/as_future.hh>
 #include <seastar/coroutine/try_future.hh>
 
+#include <span>
+
 #include "service/storage_proxy.hh"
 #include "service/migration_manager.hh"
 #include "service/mapreduce_service.hh"
@@ -47,6 +49,38 @@ logging::logger authorized_prepared_statements_cache_log("authorized_prepared_st
 const sstring query_processor::CQL_VERSION = "3.3.1";
 
 const std::chrono::minutes prepared_statements_cache::entry_expiry = std::chrono::minutes(60);
+
+namespace {
+
+using prepared_cache_key = prepared_cache_key_type::cache_key_type;
+
+void trace_prepared_statement(bool added, const prepared_cache_key& key,
+        const prepared_cache_entry& entry) {
+    const auto& id = static_cast<const cql_prepared_id_type&>(key);
+    const auto id_bytes = std::as_bytes(std::span(id.data(), id.size()));
+    const auto* const audit_info = entry->statement->get_audit_info();
+    const std::string_view keyspace = audit_info ? std::string_view(audit_info->keyspace()) : std::string_view{};
+    entry->statement->raw_cql_statement.with_linearized([&] (std::string_view statement) {
+        if (added) {
+            seastar::trace_prepared_statement_added(keyspace, statement, id_bytes);
+        } else {
+            seastar::trace_prepared_statement_removed(keyspace, statement, id_bytes);
+        }
+    });
+}
+
+void trace_prepared_statement_snapshot_entry(const prepared_cache_key& key,
+        const prepared_cache_entry& entry) {
+    const auto& id = static_cast<const cql_prepared_id_type&>(key);
+    const auto id_bytes = std::as_bytes(std::span(id.data(), id.size()));
+    const auto* const audit_info = entry->statement->get_audit_info();
+    const std::string_view keyspace = audit_info ? std::string_view(audit_info->keyspace()) : std::string_view{};
+    entry->statement->raw_cql_statement.with_linearized([&] (std::string_view statement) {
+        seastar::trace_prepared_statement_snapshot_entry(keyspace, statement, id_bytes);
+    });
+}
+
+}
 
 struct query_processor::remote {
     remote(service::migration_manager& mm, service::mapreduce_service& fwd,
@@ -96,6 +130,13 @@ query_processor::query_processor(service::storage_proxy& proxy, data_dictionary:
         , _write_consistency_levels_warned_observer(_db.get_config().write_consistency_levels_warned.observe([this](const auto& v) { _write_consistency_levels_warned = to_consistency_level_set(v); }))
         , _write_consistency_levels_disallowed_observer(_db.get_config().write_consistency_levels_disallowed.observe([this](const auto& v) { _write_consistency_levels_disallowed = to_consistency_level_set(v); }))
         {
+    _prepared_cache.set_trace_callbacks(
+            [] (const prepared_cache_key& key, const prepared_cache_entry& entry) {
+                trace_prepared_statement(true, key, entry);
+            },
+            [] (const prepared_cache_key& key, const prepared_cache_entry& entry) {
+                trace_prepared_statement(false, key, entry);
+            });
     _write_consistency_levels_warned = to_consistency_level_set(_db.get_config().write_consistency_levels_warned());
     _write_consistency_levels_disallowed = to_consistency_level_set(_db.get_config().write_consistency_levels_disallowed());
     namespace sm = seastar::metrics;
@@ -705,6 +746,8 @@ query_processor::do_execute_prepared(
         statements::prepared_statement::checked_weak_ptr prepared,
         cql3::prepared_cache_key_type cache_key,
         bool needs_authorization) {
+    const auto& id = static_cast<const cql_prepared_id_type&>(cache_key.key());
+    seastar::trace_prepared_query_run(std::as_bytes(std::span(id.data(), id.size())));
     if (needs_authorization) {
         co_await statement->check_access(*this, query_state.get_client_state());
         try {
@@ -768,6 +811,14 @@ query_processor::prepare(utils::chunked_string query_string, const service::clie
     } catch(typename prepared_statements_cache::statement_is_too_big&) {
         throw prepared_statement_is_too_big(query_string.linearize());
     }
+}
+
+void query_processor::trace_prepared_statements_snapshot() {
+    seastar::trace_prepared_statements_snapshot_begin();
+    _prepared_cache.for_each([] (const prepared_cache_key& key, const prepared_cache_entry& entry) {
+        trace_prepared_statement_snapshot_entry(key, entry);
+    });
+    seastar::trace_prepared_statements_snapshot_end();
 }
 
 static utils::chunked_string hash_target(utils::chunked_string_view query_string, std::string_view keyspace) {

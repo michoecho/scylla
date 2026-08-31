@@ -54,11 +54,11 @@ static std::unique_ptr<reply> exception_reply(std::exception_ptr eptr) {
     throw std::runtime_error("exception_reply");
 }
 
-future<> set_server_init(http_context& ctx) {
+future<> set_server_init(http_context& ctx, sharded<cql3::query_processor>& qp) {
     auto rb = std::make_shared < api_registry_builder > (ctx.api_doc);
     auto rb02 = std::make_shared < api_registry_builder20 > (ctx.api_doc, "/v2");
 
-    return ctx.http_server.set_routes([rb, &ctx, rb02](routes& r) {
+    return ctx.http_server.set_routes([rb, &ctx, rb02, &qp](routes& r) {
         r.register_exeption_handler(exception_reply);
         r.put(GET, "/ui", new httpd::file_handler(ctx.api_dir + "/index.html",
                 new content_replace("html")));
@@ -73,7 +73,7 @@ future<> set_server_init(http_context& ctx) {
                 "The system related API");
         rb02->add_definitions_file(r, "metrics");
         rb02->add_definitions_file(r, "client_routes");
-        set_system(ctx, r);
+        set_system(ctx, r, qp);
         rb->register_function(r, "error_injection",
             "The error injection API");
         set_error_injection(ctx, r);
@@ -395,4 +395,3 @@ future<> unset_server_raft(http_context& ctx) {
 }
 
 }
-

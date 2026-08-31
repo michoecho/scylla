@@ -12,6 +12,7 @@
 #include "db/config.hh"
 #include "replica/database.hh"
 #include "sstables/sstables_manager.hh"
+#include "cql3/query_processor.hh"
 
 #include <rapidjson/document.h>
 #include <boost/lexical_cast.hpp>
@@ -43,7 +44,7 @@ extern "C" void __attribute__((weak)) __llvm_profile_dump();
 extern "C" const char * __attribute__((weak)) __llvm_profile_get_filename();
 extern "C" void __attribute__((weak)) __llvm_profile_reset_counters();
 
-void set_system(http_context& ctx, routes& r) {
+void set_system(http_context& ctx, routes& r, sharded<cql3::query_processor>& qp) {
     hm::get_metrics_config.set(r, [](const_req req) {
         std::vector<hm::metrics_config> res;
         res.resize(seastar::metrics::get_relabel_configs().size());
@@ -197,7 +198,7 @@ void set_system(http_context& ctx, routes& r) {
     // The decoder source goes in beside the traces: it is generated from the
     // tracepoint tables of *this* binary, which is the only thing that can
     // read them back. See modules/tracer/include/tracer/codegen.h.
-    hs::trace_snapshot.set(r, [&ctx](std::unique_ptr<request> req) -> future<json::json_return_type> {
+    hs::trace_snapshot.set(r, [&ctx, &qp](std::unique_ptr<request> req) -> future<json::json_return_type> {
         const auto now = std::chrono::system_clock::now().time_since_epoch();
         const auto dir = fmt::format("{}/traces/{}", ctx.db.local().get_config().work_directory(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
@@ -210,7 +211,8 @@ void set_system(http_context& ctx, routes& r) {
             out << decoder;
         });
 
-        co_await smp::invoke_on_all([&dir] {
+        co_await smp::invoke_on_all([&dir, &qp] {
+            qp.local().trace_prepared_statements_snapshot();
             auto blob = seastar::trace_snapshot();
             return seastar::async([&dir, blob = std::move(blob)] {
                 std::ofstream out(fmt::format("{}/shard-{}.trace", dir, this_shard_id()),

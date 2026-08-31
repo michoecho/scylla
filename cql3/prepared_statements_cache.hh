@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "utils/loading_cache.hh"
 #include "utils/hash.hh"
 #include "cql3/statements/prepared_statement.hh"
@@ -116,6 +118,17 @@ public:
     prepared_statements_cache(logging::logger& logger, size_t size)
         : _cache(size, entry_expiry, logger)
     {}
+
+    using trace_callback = std::function<void(const prepared_cache_key_type::cache_key_type&, const prepared_cache_entry&)>;
+
+    void set_trace_callbacks(trace_callback on_insert, trace_callback on_remove) {
+        _cache.set_callbacks(std::move(on_insert), std::move(on_remove));
+    }
+
+    template <typename Func>
+    void for_each(Func&& func) const {
+        _cache.for_each(std::forward<Func>(func));
+    }
 
     template <typename LoadFunc>
     future<pinned_value_type> get_pinned(const key_type& key, LoadFunc&& load) {
