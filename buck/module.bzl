@@ -111,6 +111,7 @@ def add_module(
             },
             "remote_cache_enabled": True,
             "use_case": "buck2-default",
+            "local_enabled": True,
         }
 
     native.cxx_library(
