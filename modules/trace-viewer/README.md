@@ -58,6 +58,17 @@ numeric event ids its analysis keys off.
 | `semaphore_execute{prev, task}` | the reader semaphore's loop ran a queued read | `0xa` |
 | `execution_stage{prev, task}` | an execution stage ran a queued work item | `0xb` |
 | `stacktrace_sample{shard, time_ns, frames}` | a shard was interrupted for a stack sample | `0xc` |
+| `prepared_query_run{id}` | a prepared statement was executed | `0xd` |
+| `prepared_statement_added{keyspace, statement, id}` | a prepared statement entered the shard cache | `0xe` |
+| `prepared_statement_removed{keyspace, statement, id}` | a prepared statement left the shard cache | `0xf` |
+| `prepared_statements_snapshot_{begin,end}` / `prepared_statement_snapshot_entry{keyspace, statement, id}` | the full prepared-statement cache at dump time | `0x10`–`0x12` |
+
+Prepared-query records are reconstructed during load. The viewer walks each
+shard's info stream backwards from its snapshot, undoing additions and undoing
+removals with the metadata carried by both deltas. It then attaches the
+keyspace and statement text to every `prepared_query_run` record. The run and
+cache records are also associated with the task that was running on that shard
+at their timestamp, so they appear in the corresponding request log.
 
 ### Stack samples
 

@@ -499,7 +499,19 @@ inline std::string field_to_string(const source_location& v) { return v.to_strin
 
 }  // namespace detail
 
-// seastar/src/core/scylla_tracer.cc:86
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1127
+struct clock_sync {
+    std::uint64_t realtime_ns;
+    std::uint64_t ticks_per_second;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("clock_sync{{realtime_ns={}, ticks_per_second={}}}",
+                           detail::field_to_string(realtime_ns),
+                           detail::field_to_string(ticks_per_second));
+    }
+};
+
+// seastar/src/core/scylla_tracer.cc:96
 struct run_task {
     std::uint64_t prev;
     std::uint64_t task;
@@ -513,7 +525,7 @@ struct run_task {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:91
+// seastar/src/core/scylla_tracer.cc:101
 struct execution_stage {
     std::uint64_t prev;
     std::uint64_t task;
@@ -525,7 +537,7 @@ struct execution_stage {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:96
+// seastar/src/core/scylla_tracer.cc:106
 struct cql_request {
     std::uint64_t prev;
     std::uint64_t task;
@@ -537,7 +549,7 @@ struct cql_request {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:101
+// seastar/src/core/scylla_tracer.cc:111
 struct semaphore_execute {
     std::uint64_t prev;
     std::uint64_t task;
@@ -549,7 +561,7 @@ struct semaphore_execute {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:106
+// seastar/src/core/scylla_tracer.cc:116
 struct io_begin {
     std::uint64_t task;
     std::uint64_t io;
@@ -561,7 +573,7 @@ struct io_begin {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:111
+// seastar/src/core/scylla_tracer.cc:121
 struct io_end {
     std::uint64_t task;
     std::uint64_t io;
@@ -573,7 +585,73 @@ struct io_end {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1151
+// seastar/src/core/scylla_tracer.cc:128
+struct prepared_statement_added {
+    std::string_view keyspace;
+    std::string_view statement;
+    std::span<const std::byte> id;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("prepared_statement_added{{keyspace={}, statement={}, id={}}}",
+                           detail::field_to_string(keyspace),
+                           detail::field_to_string(statement),
+                           detail::field_to_string(id));
+    }
+};
+
+// seastar/src/core/scylla_tracer.cc:135
+struct prepared_statement_removed {
+    std::string_view keyspace;
+    std::string_view statement;
+    std::span<const std::byte> id;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("prepared_statement_removed{{keyspace={}, statement={}, id={}}}",
+                           detail::field_to_string(keyspace),
+                           detail::field_to_string(statement),
+                           detail::field_to_string(id));
+    }
+};
+
+// seastar/src/core/scylla_tracer.cc:140
+struct prepared_query_run {
+    std::span<const std::byte> id;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("prepared_query_run{{id={}}}",
+                           detail::field_to_string(id));
+    }
+};
+
+// seastar/src/core/scylla_tracer.cc:145
+struct prepared_statements_snapshot_begin {
+    [[nodiscard]] std::string to_string() const {
+        return std::format("prepared_statements_snapshot_begin{{}}");
+    }
+};
+
+// seastar/src/core/scylla_tracer.cc:152
+struct prepared_statement_snapshot_entry {
+    std::string_view keyspace;
+    std::string_view statement;
+    std::span<const std::byte> id;
+
+    [[nodiscard]] std::string to_string() const {
+        return std::format("prepared_statement_snapshot_entry{{keyspace={}, statement={}, id={}}}",
+                           detail::field_to_string(keyspace),
+                           detail::field_to_string(statement),
+                           detail::field_to_string(id));
+    }
+};
+
+// seastar/src/core/scylla_tracer.cc:157
+struct prepared_statements_snapshot_end {
+    [[nodiscard]] std::string to_string() const {
+        return std::format("prepared_statements_snapshot_end{{}}");
+    }
+};
+
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1153
 struct trace_objects_loaded {
     std::uint32_t count;
 
@@ -583,7 +661,7 @@ struct trace_objects_loaded {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1166
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1168
 struct trace_object_unloaded {
     std::string_view build_id;
     std::uint64_t base_address;
@@ -595,7 +673,7 @@ struct trace_object_unloaded {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1179
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1181
 struct trace_object_loaded {
     std::string_view build_id;
     std::uint64_t table_address;
@@ -608,18 +686,6 @@ struct trace_object_loaded {
                            detail::field_to_string(table_address),
                            detail::field_to_string(base_address),
                            detail::field_to_string(mapping_size));
-    }
-};
-
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1125
-struct clock_sync {
-    std::uint64_t realtime_ns;
-    std::uint64_t ticks_per_second;
-
-    [[nodiscard]] std::string to_string() const {
-        return std::format("clock_sync{{realtime_ns={}, ticks_per_second={}}}",
-                           detail::field_to_string(realtime_ns),
-                           detail::field_to_string(ticks_per_second));
     }
 };
 
@@ -638,6 +704,13 @@ struct stacktrace_sample {
 };
 
 namespace detail {
+
+inline clock_sync read_clock_sync(const std::byte*& p, const std::byte* end) {
+    clock_sync out{};
+    out.realtime_ns = detail::read_unaligned<std::uint64_t>(p, end);
+    out.ticks_per_second = detail::read_unaligned<std::uint64_t>(p, end);
+    return out;
+}
 
 inline run_task read_run_task(const std::byte*& p, const std::byte* end) {
     run_task out{};
@@ -682,6 +755,46 @@ inline io_end read_io_end(const std::byte*& p, const std::byte* end) {
     return out;
 }
 
+inline prepared_statement_added read_prepared_statement_added(const std::byte*& p, const std::byte* end) {
+    prepared_statement_added out{};
+    out.keyspace = detail::read_str(p, end);
+    out.statement = detail::read_str(p, end);
+    out.id = detail::read_bytes(p, end);
+    return out;
+}
+
+inline prepared_statement_removed read_prepared_statement_removed(const std::byte*& p, const std::byte* end) {
+    prepared_statement_removed out{};
+    out.keyspace = detail::read_str(p, end);
+    out.statement = detail::read_str(p, end);
+    out.id = detail::read_bytes(p, end);
+    return out;
+}
+
+inline prepared_query_run read_prepared_query_run(const std::byte*& p, const std::byte* end) {
+    prepared_query_run out{};
+    out.id = detail::read_bytes(p, end);
+    return out;
+}
+
+inline prepared_statements_snapshot_begin read_prepared_statements_snapshot_begin([[maybe_unused]] const std::byte*& p, [[maybe_unused]] const std::byte* end) {
+    prepared_statements_snapshot_begin out{};
+    return out;
+}
+
+inline prepared_statement_snapshot_entry read_prepared_statement_snapshot_entry(const std::byte*& p, const std::byte* end) {
+    prepared_statement_snapshot_entry out{};
+    out.keyspace = detail::read_str(p, end);
+    out.statement = detail::read_str(p, end);
+    out.id = detail::read_bytes(p, end);
+    return out;
+}
+
+inline prepared_statements_snapshot_end read_prepared_statements_snapshot_end([[maybe_unused]] const std::byte*& p, [[maybe_unused]] const std::byte* end) {
+    prepared_statements_snapshot_end out{};
+    return out;
+}
+
 inline trace_objects_loaded read_trace_objects_loaded(const std::byte*& p, const std::byte* end) {
     trace_objects_loaded out{};
     out.count = detail::read_unaligned<std::uint32_t>(p, end);
@@ -704,13 +817,6 @@ inline trace_object_loaded read_trace_object_loaded(const std::byte*& p, const s
     return out;
 }
 
-inline clock_sync read_clock_sync(const std::byte*& p, const std::byte* end) {
-    clock_sync out{};
-    out.realtime_ns = detail::read_unaligned<std::uint64_t>(p, end);
-    out.ticks_per_second = detail::read_unaligned<std::uint64_t>(p, end);
-    return out;
-}
-
 inline stacktrace_sample read_stacktrace_sample(const std::byte*& p, const std::byte* end) {
     stacktrace_sample out{};
     out.shard = detail::read_unaligned<std::uint32_t>(p, end);
@@ -719,17 +825,23 @@ inline stacktrace_sample read_stacktrace_sample(const std::byte*& p, const std::
     return out;
 }
 
-inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/scylla_tracer.cc", 86, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
-inline constexpr tracepoint_metadata metadata_1{"execution_stage", "seastar/src/core/scylla_tracer.cc", 91, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_2{"cql_request", "seastar/src/core/scylla_tracer.cc", 96, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_3{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 101, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_4{"io_begin", "seastar/src/core/scylla_tracer.cc", 106, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_5{"io_end", "seastar/src/core/scylla_tracer.cc", 111, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_6{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1151, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_7{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1166, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_8{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1179, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_9{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1125, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
-inline constexpr tracepoint_metadata metadata_10{"stacktrace_sample", "seastar/src/core/scylla_stacktrace_sampler.cc", 82, "void seastar::(anonymous namespace)::trace_stacktrace_sample(std::uint32_t, std::uint64_t, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_0{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1127, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
+inline constexpr tracepoint_metadata metadata_1{"run_task", "seastar/src/core/scylla_tracer.cc", 96, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
+inline constexpr tracepoint_metadata metadata_2{"execution_stage", "seastar/src/core/scylla_tracer.cc", 101, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_3{"cql_request", "seastar/src/core/scylla_tracer.cc", 106, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_4{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 111, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_5{"io_begin", "seastar/src/core/scylla_tracer.cc", 116, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_6{"io_end", "seastar/src/core/scylla_tracer.cc", 121, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_7{"prepared_statement_added", "seastar/src/core/scylla_tracer.cc", 128, "void seastar::trace_prepared_statement_added(std::string_view, std::string_view, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_8{"prepared_statement_removed", "seastar/src/core/scylla_tracer.cc", 135, "void seastar::trace_prepared_statement_removed(std::string_view, std::string_view, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_9{"prepared_query_run", "seastar/src/core/scylla_tracer.cc", 140, "void seastar::trace_prepared_query_run(std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_10{"prepared_statements_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 145, "void seastar::trace_prepared_statements_snapshot_begin()", 0};
+inline constexpr tracepoint_metadata metadata_11{"prepared_statement_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 152, "void seastar::trace_prepared_statement_snapshot_entry(std::string_view, std::string_view, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_12{"prepared_statements_snapshot_end", "seastar/src/core/scylla_tracer.cc", 157, "void seastar::trace_prepared_statements_snapshot_end()", 0};
+inline constexpr tracepoint_metadata metadata_13{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1153, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_14{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1168, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_15{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1181, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_16{"stacktrace_sample", "seastar/src/core/scylla_stacktrace_sampler.cc", 82, "void seastar::(anonymous namespace)::trace_stacktrace_sample(std::uint32_t, std::uint64_t, std::span<const std::byte>)", 0};
 
 }  // namespace detail
 
@@ -754,18 +866,17 @@ inline constexpr object_descriptor objects[] = {
     {"2f3772c31f8ae1e34f4f8fcfee055663f8be2152", 0, 0},
     {"341e289fdd8a934c5ec6359ac67bc10efd15b21e", 0, 0},
     {"37d40ae813bd56440d2e4b796177d94b70e6f5b1", 0, 0},
-    {"3890fe5da8e54c0ebce0c03d20e72836424d8f94", 0, 0},
     {"48f14782322a959c65ae96b2ce9d6b5919180831", 0, 0},
-    {"7b4d84838262e842fbf03a46d3e3d60135b8a20a", 0, 0},
-    {"812dbcc86f2a2d6a6ec964d488cc071e17d0bcf6", 0, 0},
-    {"b4ccadde6bdd8a27427bde094488cb299d811bae", 0, 0},
-    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 0, 0},
-    {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 0, 0},
-    {"e164b883a7d0421e46ce87d047ab5b974ad11a98", 0, 0},
-    {"e9ccd2e9846213effac9a36a2d77786e0e24e17e", 0, 11},
-    {"eab16d42136776e092b375ec994661ecf3de14b9", 11, 0},
-    {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 11, 0},
-    {"ff15fcce562be56ef6db5d0883b9e7fc72362292", 11, 0},
+    {"58f8cc0b958f141062b358deb31c9fcea2ea11ff", 0, 17},
+    {"7b4d84838262e842fbf03a46d3e3d60135b8a20a", 17, 0},
+    {"812dbcc86f2a2d6a6ec964d488cc071e17d0bcf6", 17, 0},
+    {"b4ccadde6bdd8a27427bde094488cb299d811bae", 17, 0},
+    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 17, 0},
+    {"d6d480ae454bd1d2a366c447666e5817eb998437", 17, 0},
+    {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 17, 0},
+    {"df8a4d2a0f0c8f6fdbe8461020a2349fb746b31c", 17, 0},
+    {"eab16d42136776e092b375ec994661ecf3de14b9", 17, 0},
+    {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 17, 0},
 };
 
 namespace detail {
@@ -1023,64 +1134,106 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             case 0: {
                 tracepoint_metadata meta = detail::metadata_0;
                 meta.timestamp = timestamp;
-                run_task event = detail::read_run_task(q, q_end);
-                detail::resolve_run_task(event, where);
+                clock_sync event = detail::read_clock_sync(q, q_end);
                 cb(event, meta);
                 break;
             }
             case 1: {
                 tracepoint_metadata meta = detail::metadata_1;
                 meta.timestamp = timestamp;
-                execution_stage event = detail::read_execution_stage(q, q_end);
+                run_task event = detail::read_run_task(q, q_end);
+                detail::resolve_run_task(event, where);
                 cb(event, meta);
                 break;
             }
             case 2: {
                 tracepoint_metadata meta = detail::metadata_2;
                 meta.timestamp = timestamp;
-                cql_request event = detail::read_cql_request(q, q_end);
+                execution_stage event = detail::read_execution_stage(q, q_end);
                 cb(event, meta);
                 break;
             }
             case 3: {
                 tracepoint_metadata meta = detail::metadata_3;
                 meta.timestamp = timestamp;
-                semaphore_execute event = detail::read_semaphore_execute(q, q_end);
+                cql_request event = detail::read_cql_request(q, q_end);
                 cb(event, meta);
                 break;
             }
             case 4: {
                 tracepoint_metadata meta = detail::metadata_4;
                 meta.timestamp = timestamp;
-                io_begin event = detail::read_io_begin(q, q_end);
+                semaphore_execute event = detail::read_semaphore_execute(q, q_end);
                 cb(event, meta);
                 break;
             }
             case 5: {
                 tracepoint_metadata meta = detail::metadata_5;
                 meta.timestamp = timestamp;
+                io_begin event = detail::read_io_begin(q, q_end);
+                cb(event, meta);
+                break;
+            }
+            case 6: {
+                tracepoint_metadata meta = detail::metadata_6;
+                meta.timestamp = timestamp;
                 io_end event = detail::read_io_end(q, q_end);
                 cb(event, meta);
                 break;
             }
-            case 6:
-                throw std::runtime_error(
-                    "a trace_objects_loaded event past the start of the metadata stream");
-            case 7:
-                unload(detail::read_trace_object_unloaded(q, q_end));
+            case 7: {
+                tracepoint_metadata meta = detail::metadata_7;
+                meta.timestamp = timestamp;
+                prepared_statement_added event = detail::read_prepared_statement_added(q, q_end);
+                cb(event, meta);
                 break;
-            case 8:
-                load(detail::read_trace_object_loaded(q, q_end));
+            }
+            case 8: {
+                tracepoint_metadata meta = detail::metadata_8;
+                meta.timestamp = timestamp;
+                prepared_statement_removed event = detail::read_prepared_statement_removed(q, q_end);
+                cb(event, meta);
                 break;
+            }
             case 9: {
                 tracepoint_metadata meta = detail::metadata_9;
                 meta.timestamp = timestamp;
-                clock_sync event = detail::read_clock_sync(q, q_end);
+                prepared_query_run event = detail::read_prepared_query_run(q, q_end);
                 cb(event, meta);
                 break;
             }
             case 10: {
                 tracepoint_metadata meta = detail::metadata_10;
+                meta.timestamp = timestamp;
+                prepared_statements_snapshot_begin event = detail::read_prepared_statements_snapshot_begin(q, q_end);
+                cb(event, meta);
+                break;
+            }
+            case 11: {
+                tracepoint_metadata meta = detail::metadata_11;
+                meta.timestamp = timestamp;
+                prepared_statement_snapshot_entry event = detail::read_prepared_statement_snapshot_entry(q, q_end);
+                cb(event, meta);
+                break;
+            }
+            case 12: {
+                tracepoint_metadata meta = detail::metadata_12;
+                meta.timestamp = timestamp;
+                prepared_statements_snapshot_end event = detail::read_prepared_statements_snapshot_end(q, q_end);
+                cb(event, meta);
+                break;
+            }
+            case 13:
+                throw std::runtime_error(
+                    "a trace_objects_loaded event past the start of the metadata stream");
+            case 14:
+                unload(detail::read_trace_object_unloaded(q, q_end));
+                break;
+            case 15:
+                load(detail::read_trace_object_loaded(q, q_end));
+                break;
+            case 16: {
+                tracepoint_metadata meta = detail::metadata_16;
                 meta.timestamp = timestamp;
                 stacktrace_sample event = detail::read_stacktrace_sample(q, q_end);
                 cb(event, meta);

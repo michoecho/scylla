@@ -262,6 +262,9 @@ inline int64_t rdtsc() {
 //   0xa semaphore_execute{prev, task} the semaphore's loop ran a queued read
 //   0xb execution_stage{prev, task} an execution stage ran a queued work item
 //   0xc stacktrace_sample             the shard was interrupted for a stack sample
+//   0xd prepared_query_run            a prepared query ran; metadata is attached below
+//   0xe/f prepared_statement_{added,removed} cache-set deltas
+//   0x10..12 prepared-statement snapshot begin, entry, end
 //
 // (0x3, the admission decision of the original experiment, is not emitted by
 // this build; the formatter for it is left in place.)
@@ -282,6 +285,13 @@ struct entry {
     // honest answer to "which cpu was this on" is which file it was in. Stack
     // samples are matched to tasks per shard, and that is what needs it.
     uint32_t shard = 0;
+
+    // Prepared-query metadata is copied out of the trace buffer while it is
+    // still alive. Runs acquire the two text fields during the reverse info
+    // pass below; delta and snapshot records carry them already.
+    std::string prepared_id;
+    std::string prepared_keyspace;
+    std::string prepared_statement;
 
     // Which request this record belongs to. For a *switch* that is the task
     // being switched to; for everything else, the task it happened under.
@@ -472,6 +482,15 @@ static std::string sample_message(uint64_t index) {
                        sample.frames.empty() ? 0 : sample.frames.front());
 }
 
+static std::string prepared_id_string(const entry& e) {
+    std::string out;
+    out.reserve(e.prepared_id.size() * 2);
+    for (const unsigned char c : e.prepared_id) {
+        out += fmt::format("{:02x}", c);
+    }
+    return out;
+}
+
 static std::string entry_message(const entry& e) {
     switch (e.event) {
     case 0: return fmt::format("{:10s} {}", "SWITCH", location_string(e.loc));
@@ -491,6 +510,24 @@ static std::string entry_message(const entry& e) {
     case 0xc: return sample_message(e.arg);
     case 0x4: return fmt::format("{:10s} {:16x}", "IO_BEGIN", e.arg);
     case 0x5: return fmt::format("{:10s} {:16x}", "IO_END", e.arg);
+    case 0xd:
+        return fmt::format("{:10s} {}{} [id={}]", "PREPARED",
+                           e.prepared_keyspace.empty() ? "" : e.prepared_keyspace + ".",
+                           e.prepared_statement.empty() ? "<unknown>" : e.prepared_statement,
+                           prepared_id_string(e));
+    case 0xe:
+        return fmt::format("{:10s} {}{} [id={}]", "PREP_ADD",
+                           e.prepared_keyspace.empty() ? "" : e.prepared_keyspace + ".",
+                           e.prepared_statement, prepared_id_string(e));
+    case 0xf:
+        return fmt::format("{:10s} {}{} [id={}]", "PREP_REMOVE",
+                           e.prepared_keyspace.empty() ? "" : e.prepared_keyspace + ".",
+                           e.prepared_statement, prepared_id_string(e));
+    case 0x10: return "PREP_SNAPSHOT_BEGIN";
+    case 0x11: return fmt::format("{:10s} {}{} [id={}]", "PREP_ENTRY",
+                                  e.prepared_keyspace.empty() ? "" : e.prepared_keyspace + ".",
+                                  e.prepared_statement, prepared_id_string(e));
+    case 0x12: return "PREP_SNAPSHOT_END";
     default: return fmt::format("UNKNOWN ({})", e.event);
     }
 }
@@ -659,6 +696,21 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
 // the top bits, which is what makes that safe; see fresh_task_id in
 // seastar/src/core/scylla_tracer.cc.
 
+static std::string copy_bytes(std::span<const std::byte> bytes) {
+    return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+static void add_prepared_entry(std::vector<entry>& out, uint64_t event,
+                               std::string_view keyspace, std::string_view statement,
+                               std::span<const std::byte> id, int64_t timestamp,
+                               uint32_t shard) {
+    entry result{event, 0, 0, timestamp, 0, shard};
+    result.prepared_id = copy_bytes(id);
+    result.prepared_keyspace = keyspace;
+    result.prepared_statement = statement;
+    out.push_back(std::move(result));
+}
+
 // The callback the generated decode() hands each record to: one overload per
 // tracepoint the viewer has a use for, and a template that swallows the rest.
 struct sink {
@@ -690,6 +742,33 @@ struct sink {
     }
     void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
         out.push_back({0x5, e.task, e.io, int64_t(m.timestamp), 0, shard});
+    }
+    void operator()(const trace::prepared_statement_added& e,
+                    const trace::tracepoint_metadata& m) const {
+        add_prepared_entry(out, 0xe, e.keyspace, e.statement, e.id,
+                           int64_t(m.timestamp), shard);
+    }
+    void operator()(const trace::prepared_statement_removed& e,
+                    const trace::tracepoint_metadata& m) const {
+        add_prepared_entry(out, 0xf, e.keyspace, e.statement, e.id,
+                           int64_t(m.timestamp), shard);
+    }
+    void operator()(const trace::prepared_query_run& e,
+                    const trace::tracepoint_metadata& m) const {
+        add_prepared_entry(out, 0xd, {}, {}, e.id, int64_t(m.timestamp), shard);
+    }
+    void operator()(const trace::prepared_statements_snapshot_begin&,
+                    const trace::tracepoint_metadata& m) const {
+        out.push_back({0x10, 0, 0, int64_t(m.timestamp), 0, shard});
+    }
+    void operator()(const trace::prepared_statement_snapshot_entry& e,
+                    const trace::tracepoint_metadata& m) const {
+        add_prepared_entry(out, 0x11, e.keyspace, e.statement, e.id,
+                           int64_t(m.timestamp), shard);
+    }
+    void operator()(const trace::prepared_statements_snapshot_end&,
+                    const trace::tracepoint_metadata& m) const {
+        out.push_back({0x12, 0, 0, int64_t(m.timestamp), 0, shard});
     }
     // A sample is put aside rather than turned into an entry here: its place in
     // the timeline is its *own* timestamp converted to ticks, and no sync record
@@ -858,6 +937,44 @@ int main(int argc, char** argv) {
     // which makes that meaningful.
     std::ranges::sort(entries, {}, &entry::ts);
 
+    // Reconstruct prepared statements at every prepared-query run. The latest
+    // snapshot is the anchor for this reverse walk: a forward add is undone by
+    // removing the entry, while a forward remove is undone by adding its
+    // metadata back. Snapshot entries are encountered in reverse order and
+    // therefore seed the set as the walk crosses the snapshot.
+    {
+        struct prepared_metadata {
+            std::string keyspace;
+            std::string statement;
+        };
+        using prepared_set = std::unordered_map<std::string, prepared_metadata>;
+        std::unordered_map<uint32_t, prepared_set> sets;
+
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            entry& e = *it;
+            auto& set = sets[e.shard];
+            switch (e.event) {
+            case 0xd: {
+                const auto found = set.find(e.prepared_id);
+                if (found != set.end()) {
+                    e.prepared_keyspace = found->second.keyspace;
+                    e.prepared_statement = found->second.statement;
+                }
+                break;
+            }
+            case 0xe:
+                set.erase(e.prepared_id);
+                break;
+            case 0xf:
+            case 0x11:
+                set[e.prepared_id] = {e.prepared_keyspace, e.prepared_statement};
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
     // Which task each sample interrupted. A sample says which cpu it was on and
     // when; the switches say which task each cpu was running from when. So one
     // walk of the merged timeline, carrying the current task per shard, answers
@@ -869,6 +986,10 @@ int main(int argc, char** argv) {
         for (entry& e : entries) {
             if (e.event == 0 || e.event == 1 || e.event == 0xa || e.event == 0xb) {
                 running[e.shard] = e.arg;
+            } else if (e.event == 0xd || e.event == 0xe || e.event == 0xf ||
+                       e.event == 0x10 || e.event == 0x11 || e.event == 0x12) {
+                const auto found = running.find(e.shard);
+                e.id = found == running.end() ? 0 : found->second;
             } else if (e.event == 0xc) {
                 const auto found = running.find(e.shard);
                 e.id = found == running.end() ? 0 : found->second;
