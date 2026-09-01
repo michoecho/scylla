@@ -42,27 +42,49 @@ std::string read_env_file(const char* variable) {
     return read_file(path);
 }
 
-// The displayed source-location column moves as the producer and tracer
-// change, but the events and values around it are part of the output contract.
-// Keep the real output as the recorded sample while making that column variable.
-RegexText serialize_source_columns(std::string_view text) {
+// The displayed timestamp and source-location columns move as the producer and
+// tracer change, but the events and values around them are part of the output
+// contract. Keep the real output as the recorded sample while making those
+// columns variable.
+RegexText serialize_trace_columns(std::string_view text) {
     RegexText out;
     std::size_t from = 0;
     while (from < text.size()) {
         const std::size_t line_end = text.find('\n', from);
         const std::size_t end = line_end == std::string_view::npos ? text.size() : line_end;
-        const std::size_t path = text.find("modules/", from);
-        const std::size_t colon = text.find(':', path);
-        const std::size_t whitespace = text.find_first_of(" \t", colon + 1);
+        const std::size_t first_digit = text.find_first_not_of(" \t", from);
+        const std::size_t after_digits =
+            first_digit == std::string_view::npos
+                ? std::string_view::npos
+                : text.find_first_not_of("0123456789", first_digit);
+        const std::size_t pipe = after_digits == std::string_view::npos
+                                     ? std::string_view::npos
+                                     : text.find('|', after_digits);
+        const bool has_timestamp =
+            first_digit < end && after_digits < end && pipe < end &&
+            text.find_first_not_of(" \t", after_digits) == pipe &&
+            text[first_digit] >= '0' && text[first_digit] <= '9';
+        const std::size_t body = has_timestamp ? after_digits : from;
+        if (has_timestamp) {
+            out.variable(text.substr(from, after_digits - from), R"([ \t]*[0-9]+)");
+        }
+
+        const std::size_t path = text.find("modules/", body);
+        const std::size_t colon = path == std::string_view::npos
+                                      ? std::string_view::npos
+                                      : text.find(':', path);
+        const std::size_t whitespace = colon == std::string_view::npos
+                                           ? std::string_view::npos
+                                           : text.find_first_of(" \t", colon + 1);
         std::size_t field_end = whitespace;
         while (field_end < end && (text[field_end] == ' ' || text[field_end] == '\t')) {
             ++field_end;
         }
         if (path == std::string_view::npos || path >= end || colon >= end ||
             field_end == whitespace || field_end >= end) {
-            out.literal(text.substr(from, end - from));
+            out.literal(text.substr(body, end - body));
         } else {
-            out.literal(text.substr(from, path - from));
+            out.literal(text.substr(body, path - body));
             out.variable(text.substr(path, field_end - path), R"([^\n]*:\d+\s+)");
             out.literal(text.substr(field_end, end - field_end));
         }
@@ -879,31 +901,32 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 //
 // Timestamps are a counter rather than rdtsc (see trace_producer.cc), and the
 // snapshot keeps the source files, event values, and the rest of the output
-// literal. Source line and column numbers are the only fields allowed to move.
+// literal. Timestamps and source line and column numbers are the only fields
+// allowed to move.
 TEST_CASE("decoded trace") {
-    const RegexText decoded = serialize_source_columns(read_env_file("TRACER_DECODED"));
+    const RegexText decoded = serialize_trace_columns(read_env_file("TRACER_DECODED"));
     check_snapshot(decoded, R"snap(
-        |               900 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |              1000 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |              1100 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
-        |              1200 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
-        |              1300 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |              1400 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
-        |              1500 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
-        |              1600 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
-        |              1700 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |              1800 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |              1900 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
-        |              2000 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
-        |              2100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
-        |              2200 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
-        |              2300 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
-        |              2400 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
-        |              2500 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
-        |              2600 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
-        |              2700 | modules/tracer/include/tracer/tracer.h:1125   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |              2800 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
-        |              2900 | modules/tracer/trace_producer.cc:88           | shutting_down{}
+        |               800 | modules/tracer/include/tracer/tracer.h:1127   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |               900 | modules/tracer/include/tracer/tracer.h:1127   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              1000 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
+        |              1100 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
+        |              1200 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1300 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
+        |              1400 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
+        |              1500 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
+        |              1600 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1700 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              1800 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
+        |              1900 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
+        |              2000 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
+        |              2100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
+        |              2200 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
+        |              2300 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
+        |              2400 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
+        |              2500 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
+        |              2600 | modules/tracer/include/tracer/tracer.h:1127   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              2700 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
+        |              2800 | modules/tracer/trace_producer.cc:88           | shutting_down{}
         )snap"_snap);
 }
 
@@ -919,7 +942,7 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::dso_directory dsos(dso_dir());
     trace::decode(bytes, out, dsos);
 
-    check_snapshot(serialize_source_columns(out.text), R"snap(
+    check_snapshot(serialize_trace_columns(out.text), R"snap(
         |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:58 listening{port=8080}
