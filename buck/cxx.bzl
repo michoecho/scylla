@@ -55,7 +55,11 @@ def _nix_cxx_toolchain(ctx: AnalysisContext) -> list[Provider]:
     elif host_info().os.is_windows:
         fail("not supported")
     elif host_info().os.is_linux:
-        pass
+        # Do not record a shared library in DT_NEEDED merely because it is a
+        # transitive dependency of a PCH. The PCH's deps are also propagated
+        # into the link graph, and most PCH consumers use only a small subset
+        # of the headers it makes available.
+        additional_linker_flags = ["-Wl,--as-needed"]
     else:
         additional_linker_flags = ["-fuse-ld=lld"]
 

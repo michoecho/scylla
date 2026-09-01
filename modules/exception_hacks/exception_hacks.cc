@@ -17,11 +17,6 @@
 // the exception currently being handled, and this project applies
 // nix/patches/boost-stacktrace-from-exception-ptr.patch to reach the same
 // lookup from any exception_ptr.
-//
-// The path to that library goes through weak symbols, so a build that fails to
-// link it (or an --as-needed link that drops it) still compiles and still
-// runs -- it just returns empty traces forever. The test below asserts capture
-// is actually live, so that regression is loud.
 boost::stacktrace::stacktrace stacktrace_of_exception(const std::exception_ptr& eptr) {
     return boost::stacktrace::stacktrace::from_exception(eptr);
 }
