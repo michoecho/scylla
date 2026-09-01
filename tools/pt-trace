@@ -126,7 +126,7 @@ def parse_args(argv):
     # which is the finest resolution the hardware offers; raise it to trade
     # resolution for less trace volume if the AUX buffer starts overflowing.
     run.add_argument(
-        "-e", "--event", default="intel_pt/cyc=1/u",
+        "-e", "--event", default="intel_pt/cyc=1,cyc_thresh=5/u",
         help="perf event spec to record (default: intel_pt/cyc=1/u, "
              "user-space only).",
     )
@@ -388,8 +388,8 @@ def main(argv):
     os.mkfifo(ack_fifo)
 
     perf_cmd = [
-        args.perf, "record",
-        "--mmap-pages=,256M",
+        "taskset", "-c", "0", args.perf, "record",
+        "--mmap-pages=,64",
         "-e", args.event,
         "-o", args.output,
         # Start with events disabled; the program enables them via the fifo.
