@@ -389,6 +389,7 @@ def main(argv):
 
     perf_cmd = [
         args.perf, "record",
+        "--mmap-pages=,256M",
         "-e", args.event,
         "-o", args.output,
         # Start with events disabled; the program enables them via the fifo.
