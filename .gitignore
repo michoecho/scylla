@@ -21,13 +21,13 @@
 /nuke
 buck-out/
 
-/third-party/scylla
 /references
 
 # Lock file written by snapshot update runs; not a snapshot.
 .update.lock
 /.worktrees
 /third-party/scylladb
+/third-party/linux
 /imgui.ini
 
 # Throwaway PT capture artifacts written into the repo root by tools/pt-trace.
