@@ -15,36 +15,39 @@
 
 namespace {
 
-void print_hex(std::FILE* stream, const char* value) {
+void append_hex(std::string& out, const char* value) {
     static constexpr char kHexDigits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(std::strlen(value) * 2);
+    out.reserve(out.size() + std::strlen(value) * 2);
     for (const unsigned char* cursor =
              reinterpret_cast<const unsigned char*>(value);
          *cursor != '\0'; ++cursor) {
         out.push_back(kHexDigits[*cursor >> 4]);
         out.push_back(kHexDigits[*cursor & 0x0F]);
     }
-    std::fwrite(out.data(), 1, out.size(), stream);
+}
+
+void append_output_marker(std::string& out, const char* marker, const char* case_name) {
+    out.push_back('\n');
+    out += marker;
+    out.push_back('\t');
+    append_hex(out, case_name);
+    out.push_back('\n');
 }
 
 void print_output_marker(const char* marker, const char* case_name) {
     // Test code is allowed to leave either stream without a trailing newline.
     // Start every marker on its own line so the executor can frame output
     // without confusing a marker with a suffix of test output.
-    std::fputc('\n', stdout);
-    std::printf("%s\t", marker);
-    print_hex(stdout, case_name);
-    std::printf("\n");
-    std::fputc('\n', stderr);
-    std::fprintf(stderr, "%s\t", marker);
-    print_hex(stderr, case_name);
-    std::fprintf(stderr, "\n");
+    std::string line;
+    line.reserve(1 + std::strlen(marker) + 1 + std::strlen(case_name) * 2 + 1);
+    append_output_marker(line, marker, case_name);
+
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fwrite(line.data(), 1, line.size(), stderr);
     std::fflush(stdout);
-    std::fflush(stderr);
 }
 
-void print_failure_reason(int failure_flags) {
+void append_failure_reason(std::string& out, int failure_flags) {
     const struct {
         int flag;
         const char* name;
@@ -72,13 +75,13 @@ void print_failure_reason(int failure_flags) {
             continue;
         }
         if (!first) {
-            std::printf("|");
+            out.push_back('|');
         }
-        std::printf("%s", reason.name);
+        out += reason.name;
         first = false;
     }
     if (first) {
-        std::printf("None");
+        out += "None";
     }
 }
 
@@ -110,23 +113,40 @@ void VscodeResultsReporter::test_case_end(const doctest::CurrentTestCaseStats& s
     }
     const int asserts_failed = stats.numAssertsFailedCurrentTest;
     const int asserts_passed = stats.numAssertsCurrentTest - asserts_failed;
+
+    // The end marker goes to both streams; the pass/fail line and the result
+    // record only to stdout. Build each stream's bytes in memory so the whole
+    // per-case report is a single write per stream.
+    std::string marker;
+    append_output_marker(marker, "VSCODE_TEST_OUTPUT_END", current_->m_name);
+
+    std::string out;
+    out.reserve(marker.size() + 64);
+    out += marker;
     if (stats.testCaseSuccess) {
-        std::printf("PASS (%d asserts passed)\n", asserts_passed);
+        out += "PASS (";
+        out += std::to_string(asserts_passed);
+        out += " asserts passed)\n";
     } else {
-        std::printf("FAIL (%d asserts passed, %d asserts failed, failure reason: ",
-                    asserts_passed,
-                    asserts_failed);
-        print_failure_reason(stats.failure_flags);
-        std::printf(")\n");
+        out += "FAIL (";
+        out += std::to_string(asserts_passed);
+        out += " asserts passed, ";
+        out += std::to_string(asserts_failed);
+        out += " asserts failed, failure reason: ";
+        append_failure_reason(out, stats.failure_flags);
+        out += ")\n";
     }
-    std::fflush(stdout);
-    print_output_marker("VSCODE_TEST_OUTPUT_END", current_->m_name);
-    std::printf("VSCODE_TEST_RESULT\t");
-    print_hex(stdout, current_->m_name);
-    std::printf("\t%s\t%llu\n",
-                stats.testCaseSuccess ? "passed" : "failed",
-                static_cast<unsigned long long>(
-                    std::llround(stats.seconds * 1000.0)));
+    out += "VSCODE_TEST_RESULT\t";
+    append_hex(out, current_->m_name);
+    out += "\t";
+    out += stats.testCaseSuccess ? "passed" : "failed";
+    out += "\t";
+    out += std::to_string(static_cast<unsigned long long>(
+        std::llround(stats.seconds * 1000.0)));
+    out += "\n";
+
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    std::fwrite(marker.data(), 1, marker.size(), stderr);
     std::fflush(stdout);
 }
 
