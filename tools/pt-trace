@@ -142,7 +142,7 @@ def parse_args(argv):
              "the perf2perfetto dlfilter (default file: perf.ftf).",
     )
     run.add_argument(
-        "--ftf-mode", default="c", choices=["t", "c", "i"],
+        "--ftf-mode", default="t", choices=["t", "c", "i"],
         help="Time axis for the .ftf: t=timestamp, c=cpu cycles, "
              "i=instructions (default: c).",
     )
