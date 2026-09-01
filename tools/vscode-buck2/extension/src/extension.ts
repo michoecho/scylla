@@ -666,7 +666,7 @@ async function runBuck2(
     }
     const args = [
         "test",
-        ...(localOnly ? ["--local-only"] : []),
+        ...(localOnly ? ["-c", "test.force_local=1"] : []),
         "--config", `test.v2_test_executor=${executor}`,
         "--console", "simple",
         "--no-interactive-console",

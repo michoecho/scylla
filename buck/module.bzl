@@ -100,7 +100,8 @@ def add_module(
     # path in the prelude that also sets `run_from_project_root`, which is what
     # makes the project-relative paths a rewrite works with resolve. See
     # prelude/tests/re_utils.bzl.
-    if snapshot_update != "0":
+    test_force_local = read_config("test", "force_local", "0")
+    if test_force_local != "0" or snapshot_update != "0":
         test_remote_execution = "disabled"
     else:
         test_remote_execution = {
@@ -111,7 +112,6 @@ def add_module(
             },
             "remote_cache_enabled": True,
             "use_case": "buck2-default",
-            "local_enabled": True,
         }
 
     native.cxx_library(
