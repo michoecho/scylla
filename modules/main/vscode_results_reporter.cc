@@ -8,17 +8,24 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <string>
 
-#include "modules/main/vscode_results_reporter.h"
+#include "vscode_results_reporter.h"
 
 namespace {
 
 void print_hex(std::FILE* stream, const char* value) {
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(std::strlen(value) * 2);
     for (const unsigned char* cursor =
              reinterpret_cast<const unsigned char*>(value);
          *cursor != '\0'; ++cursor) {
-        std::fprintf(stream, "%02x", static_cast<unsigned>(*cursor));
+        out.push_back(kHexDigits[*cursor >> 4]);
+        out.push_back(kHexDigits[*cursor & 0x0F]);
     }
+    std::fwrite(out.data(), 1, out.size(), stream);
 }
 
 void print_output_marker(const char* marker, const char* case_name) {
