@@ -72,6 +72,15 @@ struct Options {
     case_arg: String,
 }
 
+// Vulkan loader configuration describes the machine on which a test runs.
+// Keep this an explicit allowlist: forwarding arbitrary host environment
+// variables would make test execution surprising and could leak credentials.
+const SYSTEM_VULKAN_ENV: [&str; 3] = [
+    "VK_DRIVER_FILES",
+    "VK_LAYER_PATH",
+    "VK_IMPLICIT_LAYER_PATH",
+];
+
 #[derive(Debug, Deserialize)]
 struct SelectedCase {
     target: String,
@@ -429,7 +438,7 @@ async fn process_spec(
         &spec,
         TestStage { item: Some(test_stage::Item::Listing(test_stage::Listing { suite: target_name.clone(), cacheable: true })) },
         list_command,
-        options.coverage.then(|| execution_env(&spec, Some(verbatim_arg("/dev/null")))),
+        options.coverage.then(|| execution_env(&spec, Some(verbatim_arg("/dev/null")), false)),
     ).await?;
     let listing_output = execution_output(&listing);
     let cases = parse_listing(&execution_stream_output(listing.stdout.as_ref()))?;
@@ -500,7 +509,7 @@ async fn process_spec(
                 &handle,
                 stage,
                 command,
-                execution_env(&spec, None),
+                execution_env(&spec, None, false),
             ).await?;
             let mut argv = prepared.cmd.into_iter();
             let program = argv
@@ -543,7 +552,11 @@ async fn process_spec(
             })),
         };
         let coverage_output = coverage_output_name(&target_name, "startup-shared");
-        let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
+        let env = execution_env(
+            &spec,
+            options.coverage.then(|| declared_output(&coverage_output)),
+            options.pt,
+        );
         let coverage_paths = if options.coverage {
             Some(prepare_coverage_paths(
                 orchestrator,
@@ -640,7 +653,11 @@ async fn process_spec(
         let command = test_command(&spec, options, &case_filter)?;
         let stage = TestStage { item: Some(test_stage::Item::Testing(Testing { suite: target_name.clone(), testcases: vec![case_name.clone()], variant: None, repeat_count: None })) };
         let coverage_output = coverage_output_name(&target_name, &case_name);
-        let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
+        let env = execution_env(
+            &spec,
+            options.coverage.then(|| declared_output(&coverage_output)),
+            options.pt,
+        );
         let coverage_paths = if options.coverage {
             Some(prepare_coverage_paths(
                 orchestrator,
@@ -706,7 +723,11 @@ async fn process_spec(
     Ok(())
 }
 
-fn execution_env(spec: &ExternalRunnerSpec, profile: Option<ArgValue>) -> Vec<proto::EnvironmentVariable> {
+fn execution_env(
+    spec: &ExternalRunnerSpec,
+    profile: Option<ArgValue>,
+    inherit_system_vulkan_env: bool,
+) -> Vec<proto::EnvironmentVariable> {
     let mut env = spec.env.iter().map(|(key, value)| proto::EnvironmentVariable {
         key: key.clone(),
         value: Some(ArgValue {
@@ -714,6 +735,29 @@ fn execution_env(spec: &ExternalRunnerSpec, profile: Option<ArgValue>) -> Vec<pr
             format: None,
         }),
     }).collect::<Vec<_>>();
+    if inherit_system_vulkan_env {
+        for key in SYSTEM_VULKAN_ENV {
+            // An explicit target env remains authoritative over the host
+            // value. This also avoids emitting duplicate environment keys.
+            if spec.env.contains_key(key) {
+                continue;
+            }
+            let Ok(value) = std::env::var(key) else { continue };
+            env.push(proto::EnvironmentVariable {
+                key: key.to_owned(),
+                value: Some(ArgValue {
+                    content: Some(ArgValueContent {
+                        value: Some(proto::arg_value_content::Value::SpecValue(
+                            ExternalRunnerSpecValue {
+                                value: Some(external_runner_spec_value::Value::Verbatim(value)),
+                            },
+                        )),
+                    }),
+                    format: None,
+                }),
+            });
+        }
+    }
     if let Some(profile) = profile {
         env.push(proto::EnvironmentVariable { key: "LLVM_PROFILE_FILE".to_owned(), value: Some(profile) });
     }
@@ -1054,7 +1098,7 @@ async fn execute(
             target: Some(handle.clone()),
             cmd: command,
             pre_create_dirs: Vec::new(),
-            env: env.unwrap_or_else(|| execution_env(spec, None)),
+            env: env.unwrap_or_else(|| execution_env(spec, None, false)),
         }),
         executor_override: None,
         required_local_resources: Vec::new(),
