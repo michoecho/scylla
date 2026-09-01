@@ -5,6 +5,7 @@ def add_module(
         exported_headers = {},
         deps = [],
         compiler_flags = [],
+        use_pch = True,
         exported_needs_coverage_instrumentation = False,
         exported_preprocessor_flags = [],
         exported_linker_flags = [],
@@ -127,7 +128,7 @@ def add_module(
         precompiled_header = select({
             "//:no_pch": None,
             "DEFAULT": "//:project_pch",
-        }),
+        }) if use_pch else None,
         header_namespace = "",
         link_whole = True,
         preferred_linkage = "static",
@@ -138,10 +139,10 @@ def add_module(
     native.cxx_test(
         name = test_name,
         srcs = ["//:module_test_main"],
-        deps = [":" + name, "//:vscode_results_reporter", "//:module_runner"] + select({
+        deps = [":" + name, "//:vscode_results_reporter", "//:module_runner"] + (select({
             "//:no_pch": [],
             "DEFAULT": ["//:project_pch"],
-        }),
+        }) if use_pch else []),
         resources = resources,
         env = test_env,
         labels = labels,
@@ -155,7 +156,7 @@ def add_module(
         precompiled_header = select({
             "//:no_pch": None,
             "DEFAULT": "//:project_pch",
-        }),
+        }) if use_pch else None,
         # Shared normally, because it links faster and is what every other
         # configuration wants. Static under the fuzztest modifier, and that is
         # not a preference but a correctness requirement of the backend.
