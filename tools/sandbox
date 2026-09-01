@@ -183,7 +183,7 @@ def optional_binds(home, whole_sys=False):
     rw(f"{home}/.claude.json")   # created/updated by claude
     ro(f"{home}/.gitconfig")
     ro(f"{home}/.nvm")           # needed for node
-    ro(f"{home}/.cargo")         # needed for cargo
+    rw(f"{home}/.cargo")         # needed for cargo
     ro(f"{home}/.rustup")
     ro(f"{home}/.ssh/known_hosts")  # host key verification
 
