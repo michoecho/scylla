@@ -57,11 +57,14 @@ import webbrowser
 CTL_ENV = "PERF_CTL_FIFO"
 ACK_ENV = "PERF_ACK_FIFO"
 
-# The perf2perfetto dlfilter comes from the Nix devshell, which points this at
-# the prebuilt library in the store (see nix/perf2perfetto.nix). Outside the
-# devshell it's unset and --dlfilter must be given explicitly.
-DLFILTER_ENV = "PERF2PERFETTO_DLFILTER"
-DLFILTER = os.environ.get(DLFILTER_ENV)
+# The perf2perfetto dlfilter is vendored in this repo (third-party/rust/
+# perf2perfetto) and built by Buck2, so rather than being told where it is,
+# pt-trace asks the build system -- see dlfilter_from_buck().
+DLFILTER_TARGET = "//:perf2perfetto"
+
+# The repo root, so pt-trace can find the build system regardless of the
+# directory it was invoked from.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 # Port the Perfetto UI fetches the trace from; mirrors perfetto's own
 # open_trace_in_ui helper.
@@ -160,9 +163,9 @@ def parse_args(argv):
              "program.",
     )
     run.add_argument(
-        "--dlfilter", default=DLFILTER,
-        help=f"Path to libperf2perfetto.so (default: ${DLFILTER_ENV}, "
-             f"currently {DLFILTER or 'unset'}).",
+        "--dlfilter", default=None,
+        help=f"Path to libperf2perfetto.so. Defaults to building "
+             f"{DLFILTER_TARGET} with buck2 and using what it produces.",
     )
     run.add_argument(
         "--perfetto", action="store_true",
@@ -218,6 +221,46 @@ def parse_args(argv):
     return args
 
 
+def dlfilter_from_buck():
+    """Build the dlfilter and return an absolute path to it, or None.
+
+    Building rather than merely locating it is the point: the library is
+    vendored source in this repo, so "where is it" and "is it up to date with
+    the source" are the same question, and only the build system can answer
+    either. `--show-simple-output` prints the one output path and nothing else.
+
+    The path it prints is relative to the repo root, and perf resolves a
+    dlfilter path with no '/' in it against its own search directories -- so
+    absolutise it before handing it over, since pt-trace can be run from
+    anywhere.
+    """
+    cmd = ["buck2", "build", "--show-simple-output", DLFILTER_TARGET]
+    try:
+        # Build output goes to stderr, so it stays visible: this can take a
+        # while the first time, and silence would look like a hang.
+        out = subprocess.run(
+            cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE, text=True, check=True,
+        ).stdout
+    except FileNotFoundError:
+        print(
+            "pt-trace: buck2 not found; run inside `nix develop`, or pass "
+            "--dlfilter with a path to libperf2perfetto.so",
+            file=sys.stderr,
+        )
+        return None
+    except subprocess.CalledProcessError as e:
+        print(f"pt-trace: failed to build {DLFILTER_TARGET} "
+              f"(buck2 exited {e.returncode})", file=sys.stderr)
+        return None
+
+    path = out.strip()
+    if not path:
+        print(f"pt-trace: {DLFILTER_TARGET} produced no output path",
+              file=sys.stderr)
+        return None
+    return os.path.join(REPO_ROOT, path)
+
+
 def decode_ftf(args):
     """Decode args.output to args.ftf via the perf2perfetto dlfilter.
 
@@ -225,23 +268,17 @@ def decode_ftf(args):
     for errors (e) and full instructions (i0ns) so the cycle/instruction
     counters in the trace are as accurate as the dlfilter can make them.
     """
-    if not args.dlfilter:
-        print(
-            f"pt-trace: no dlfilter: ${DLFILTER_ENV} is unset and --dlfilter "
-            f"was not given\n"
-            f"pt-trace: run inside `nix develop`, which sets it",
-            file=sys.stderr,
-        )
+    dlfilter = args.dlfilter or dlfilter_from_buck()
+    if not dlfilter:
         return False
-    if not os.path.exists(args.dlfilter):
-        print(f"pt-trace: dlfilter not found at {args.dlfilter}",
-              file=sys.stderr)
+    if not os.path.exists(dlfilter):
+        print(f"pt-trace: dlfilter not found at {dlfilter}", file=sys.stderr)
         return False
 
     script_cmd = [
         args.perf, "script", "-i", args.output,
         "--itrace=bei0ns",
-        "--dlfilter", args.dlfilter,
+        "--dlfilter", dlfilter,
         # perf2perfetto reads two --dlargs: output filename, then mode char.
         "--dlarg", args.ftf,
         "--dlarg", args.ftf_mode,

@@ -274,7 +274,6 @@
         in {
           code = vscodeFor (pkgsUnstableFor system);
           nativelink = nativelinkFor pkgs;
-          perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
           perfetto-protos = pkgs.callPackage ./nix/perfetto-protos.nix {
             source = perfetto.sourceInfo.outPath;
           };
@@ -396,11 +395,6 @@
           # exception_ptr internally, so the patch mostly just exposes it; see
           # the patch header and modules/exception_hacks/exception_hacks.cc.
           boost = boostFor pkgs;
-
-          # The `perf script` dlfilter that turns an Intel PT trace into a
-          # Perfetto/Fuchsia trace, used by tools/pt-trace. Built from the
-          # upstream cargo project; see nix/perf2perfetto.nix.
-          perf2perfetto = pkgs.callPackage ./nix/perf2perfetto.nix { };
 
           # Local REAPI uses tiny HTTP/2 messages, so the default TCP behavior
           # can introduce delayed-ACK/Nagle stalls on loopback. These wrappers
@@ -545,10 +539,6 @@
             # For Vulkan on wayland
             VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
             FIRA_CODE_PATH = "${pkgs.nerd-fonts.fira-code}";
-
-            # Absolute path to the prebuilt dlfilter. tools/pt-trace passes this
-            # to `perf script --dlfilter`; there is nothing to build by hand.
-            PERF2PERFETTO_DLFILTER = "${perf2perfetto}/lib/libperf2perfetto.so";
 
             # Keep Python bytecode out of the source tree: without this, running
             # anything in tools/ drops a __pycache__/ next to it. The prefix
