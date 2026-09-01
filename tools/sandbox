@@ -128,6 +128,7 @@ def optional_binds(home, whole_sys=False):
     args += whole_sys_binds() if whole_sys else gpu_sys_binds()
 
     # NixOS graphics driver tree (Vulkan ICDs + Mesa libs, symlinked into /nix).
+    #ro("/run/opengl-driver")
     ro("/run/opengl-driver")
     ro("/run/opengl-driver-32")
 

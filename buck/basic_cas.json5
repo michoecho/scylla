@@ -80,11 +80,9 @@
           // Preserve the environment of the `nix run nativelink ...` process
           // for shell-based remote actions.
           PATH: "from_environment",
-          foo: "from_environment",
-          bar: {
-            value: "something",
-          },
-          baz: "timeout_millis",
+          VK_LAYER_PATH: "from_environment",
+          VK_DRIVER_FILES: "from_environment",
+          VK_IMPLICIT_LAYER_PATH: "from_environment",
           channel: "side_channel_file",
           action: "action_directory",
         },

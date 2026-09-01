@@ -89,7 +89,7 @@ struct RendererConfig {
     // Off for tests: a window that never maps still presents, and the
     // swapchain path being exercised is the same either way.
     bool visible = true;
-    bool validation = true;
+    bool validation = false;
     // Longest downscaled screenshot edge. Preserves aspect ratio; the
     // other edge is rounded up to a multiple of 4.
     uint32_t screenshot_max_dim = 480;
