@@ -302,7 +302,7 @@ def decode_ftf(args):
 
     script_cmd = [
         args.perf, "script", "-i", args.output,
-        "--itrace=bei0ns",
+        "--itrace=be",
         "--dlfilter", dlfilter,
         # perf2perfetto reads two --dlargs: output filename, then mode char.
         "--dlarg", args.ftf,
