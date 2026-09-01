@@ -316,6 +316,7 @@ cxx_library(
     link_whole = True,
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
+    compiler_flags = ["-O2"],
 )
 
 # The `perf script` dlfilter that turns an Intel PT trace into a Fuchsia trace
