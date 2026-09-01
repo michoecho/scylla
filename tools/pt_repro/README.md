@@ -62,3 +62,41 @@ Beyond that:
 
 The `pt_ctl_send` / `read` / `@plt` frames around the region of interest are
 the control protocol itself and are expected.
+
+## Recording the kernel too (`-e intel_pt/cyc=1/uk`)
+
+Mostly better, with one real caveat.
+
+Syscalls stop ending the trace, because the kernel side is now traced: the
+`syscall` is an ordinary call into `entry_SYSCALL_64` and the `sysret` returns
+from it, so you get the real kernel tree instead of the `[kernel]` stand-in.
+`is_syscall_entry()` requires TRACE_END for exactly this reason and goes quiet
+here. Tail calls and PLT stubs are unaffected.
+
+Two things to know:
+
+- **Decoding needs kernel text**, which is separate from permission to record.
+  Without a readable `/proc/kcore` or vmlinux the decoder dies on the first
+  kernel instruction ("Failed to get instruction") and the stack resets at
+  every syscall -- worse than `/u`. `perf record --kcore` captures one, but
+  reading `/proc/kcore` needs root. To decode with a kcore captured elsewhere,
+  assemble a directory-format perf.data by hand:
+
+  ```sh
+  mkdir uk.data && cp recording uk.data/data && cp -r other/kcore_dir uk.data/
+  perf script -i uk.data ...
+  ```
+
+  Recording `/uk` at all also needs `perf_event_paranoid < 1`.
+
+- **Preemption resets the stack, and should.** `/uk` traces the kernel's own
+  PT save/restore, so a context switch stops in `pt_event_stop`'s `wrmsr` and
+  resumes in `pt_event_start`'s. Those are two bytes apart in
+  `native_write_msr`, but they sit under completely different call paths, and
+  the trace end is attributed to the outgoing thread while the resume goes to
+  the incoming one. There is no stack to carry across, so `resumes_in_place()`
+  requires an asynchronous resume to be at the *exact* interrupted byte, which
+  this is not. Expect several segments per thread on a preemption-heavy `/uk`
+  trace; `check_common`'s single-TRACE assertion is a `/u` property.
+
+Interrupts (`int`/`iret`) are still unexercised by all four reproducers.
