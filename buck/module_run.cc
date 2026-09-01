@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 
+#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest/doctest.h"
 
 namespace run {

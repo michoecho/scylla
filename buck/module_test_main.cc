@@ -1,17 +1,8 @@
 // The main() linked into every module test executable.
-//
-// A module's library carries the tests of everything it links, because test
-// sources are compiled into the module library and the runner TU that defines
-// DOCTEST_CONFIG_IMPLEMENT is linked into an executable exactly once. The
-// runner filters the registry down to the cases defined in this module's own
-// directory unless `--all` is supplied.
 
 #include <cstring>
 #include <string>
 #include <vector>
-
-#define DOCTEST_CONFIG_IMPLEMENT
-#include <doctest/doctest.h>
 
 #include "module_run.h"
 

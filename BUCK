@@ -95,6 +95,7 @@ cxx_library(
     },
     exported_deps = [":doctest"],
     visibility = ["PUBLIC"],
+    compiler_flags = ["-O2"],
 )
 
 flake.prebuilt_pkgconfig_library(
