@@ -29,3 +29,8 @@ buck-out/
 /.worktrees
 /third-party/scylladb
 /imgui.ini
+
+# Throwaway PT capture artifacts written into the repo root by tools/pt-trace.
+/perf.data
+/perf.data/
+/perf.ftf

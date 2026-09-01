@@ -1,0 +1,4 @@
+*_repro
+*.ftf
+*.perf.data
+*.perf.data.old

@@ -126,9 +126,15 @@ def parse_args(argv):
     # which is the finest resolution the hardware offers; raise it to trade
     # resolution for less trace volume if the AUX buffer starts overflowing.
     run.add_argument(
-        "-e", "--event", default="intel_pt/cyc=1,cyc_thresh=5/u",
+        "-e", "--event", default="intel_pt/cyc=1/u",
         help="perf event spec to record (default: intel_pt/cyc=1/u, "
              "user-space only).",
+    )
+    run.add_argument(
+        "--aux-pages", default="256M",
+        help="Size of the PT AUX buffer, as perf's --mmap-pages accepts it "
+             "(default: 256M). Lower it only to deliberately provoke dropped "
+             "data; a small buffer shows up as gaps and reset call stacks.",
     )
     run.add_argument(
         "--script", action="store_true",
@@ -388,8 +394,11 @@ def main(argv):
     os.mkfifo(ack_fifo)
 
     perf_cmd = [
-        "taskset", "-c", "0", args.perf, "record",
-        "--mmap-pages=,64",
+        args.perf, "record",
+        # PT fills the AUX buffer fast enough that the default size drops
+        # data on anything but a trivial region, and every dropped buffer is
+        # a gap the decoder cannot bridge -- so the call stack resets there.
+        f"--mmap-pages=,{args.aux_pages}",
         "-e", args.event,
         "-o", args.output,
         # Start with events disabled; the program enables them via the fifo.
