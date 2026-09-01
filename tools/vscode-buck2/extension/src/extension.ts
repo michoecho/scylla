@@ -56,12 +56,14 @@ type RunMode = "normal" | "coverage" | "pt";
 
 let controller: vscode.TestController;
 let extensionContext: vscode.ExtensionContext;
+let outputChannel: vscode.OutputChannel;
 const roots = new Map<string, vscode.TestItem>();
 const records = new Map<vscode.TestItem, TestRecord>();
 const coverageData = new WeakMap<vscode.FileCoverage, vscode.FileCoverageDetail[]>();
 
 export function activate(context: vscode.ExtensionContext): void {
     extensionContext = context;
+    outputChannel = vscode.window.createOutputChannel("Buck2 Test");
     controller = vscode.tests.createTestController("buck2-test", "Buck2");
     controller.refreshHandler = () => refreshAll();
     controller.createRunProfile(
@@ -91,6 +93,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     context.subscriptions.push(
         controller,
+        outputChannel,
         vscode.commands.registerCommand("buck2Test.refresh", () => refreshAll()),
         vscode.commands.registerCommand("buck2Test.runWithPt", async (item?: vscode.TestItem) => {
             if (!item) {
@@ -108,12 +111,14 @@ export function activate(context: vscode.ExtensionContext): void {
             }
         }),
     );
+    log("Extension activated");
     void refreshAll();
 }
 
 export function deactivate(): void {}
 
 async function refreshAll(): Promise<void> {
+    log(`Refreshing tests for ${(vscode.workspace.workspaceFolders ?? []).length} workspace folder(s)`);
     await Promise.all((vscode.workspace.workspaceFolders ?? []).map(refreshFolder));
 }
 
@@ -134,6 +139,7 @@ async function refreshFolder(folder: vscode.WorkspaceFolder): Promise<void> {
 
     const config = vscode.workspace.getConfiguration("buck2Test", folder.uri);
     const patterns = config.get<string[]>("targetPatterns", ["//..."]);
+    log(`Discovering tests in ${rootPath}: targets=${JSON.stringify(patterns)}`);
     try {
         const response = await withTempOutput(async output => {
             await runBuck2(folder, patterns, output, ["--vscode-list-only"], undefined);
@@ -154,8 +160,10 @@ async function refreshFolder(folder: vscode.WorkspaceFolder): Promise<void> {
             suite.children.add(item);
         }
         root.children.replace([...suites.values()]);
+        log(`Discovery completed for ${rootPath}: ${response.tests.length} test case(s)`);
     } catch (error) {
         root.children.replace([]);
+        logError(`Discovery failed for ${rootPath}`, error);
         void vscode.window.showErrorMessage(`Buck2 test discovery failed: ${errorMessage(error)}`);
     }
 }
@@ -190,12 +198,16 @@ async function runTests(
 ): Promise<void> {
     const withCoverage = mode === "coverage";
     const withPt = mode === "pt";
+    if (withPt) {
+        outputChannel.show(true);
+    }
     const run = controller.createTestRun(request);
     const selected = [...records.values()].filter(record => {
         const included = !request.include || request.include.some(item => contains(item, record.item));
         const excluded = request.exclude?.some(item => contains(item, record.item)) ?? false;
         return included && !excluded;
     });
+    log(`Starting ${mode} run: ${selected.length} selected test case(s)`);
     const groups = new Map<string, { folder: string; target: string; records: TestRecord[] }>();
     for (const record of selected) {
         run.enqueued(record.item);
@@ -241,7 +253,9 @@ async function runTests(
                 target: group.target,
                 case_name: record.case_name,
             })));
+            log(`Running ${mode} target(s) in ${project.folder}: ${JSON.stringify(targets)} cases=${JSON.stringify(cases)}`);
             const response = await withTempOutput(async output => {
+                const ptOutput = withPt ? path.join(path.dirname(output), "perf.data") : undefined;
                 await runBuck2(
                     folder,
                     targets,
@@ -251,7 +265,11 @@ async function runTests(
                     cancellation,
                     withCoverage ? "root//:coverage" : undefined,
                     withPt,
+                    ptOutput,
                 );
+                if (ptOutput) {
+                    await decodePtTrace(folder, ptOutput, path.join(path.dirname(output), "perf.ftf"), cancellation);
+                }
                 const response = await readOutput(output);
                 if (withCoverage) {
                     await addCoverageFiles(run, response.coverage ?? []);
@@ -259,11 +277,14 @@ async function runTests(
                 return response;
             });
             const results = new Map(response.results.map(result => [caseKey(result.target, result.case_name), result]));
+            log(`Received ${response.results.length} result(s) for ${mode} run`);
             for (const group of targetGroups) {
                 for (const record of group.records) {
                     const result = results.get(caseKey(record.target, record.case_name));
                     if (!result) {
-                        run.errored(record.item, new vscode.TestMessage("Buck2 returned no result for this test case."));
+                        const available = response.results.map(item => caseKey(item.target, item.case_name));
+                        log(`Missing result for ${caseKey(record.target, record.case_name)}; available=${JSON.stringify(available)}`);
+                        run.errored(record.item, new vscode.TestMessage("Buck2 returned no result for this test case. See the Buck2 Test output channel for details."));
                     } else {
                         const output = normalizeCrlf(result.output);
                         if (output) {
@@ -281,6 +302,7 @@ async function runTests(
             }
         }
     } catch (error) {
+        logError(`${mode} test run failed`, error);
         const message = new vscode.TestMessage(errorMessage(error));
         selected.forEach(record => {
             if (cancellation.isCancellationRequested) {
@@ -602,7 +624,12 @@ async function withTempOutput<T>(action: (output: string) => Promise<T>): Promis
 
 async function readOutput(output: string): Promise<ExecutorOutput> {
     const content = await fs.promises.readFile(output, "utf8");
-    return JSON.parse(content) as ExecutorOutput;
+    const response = JSON.parse(content) as ExecutorOutput;
+    log(`Read executor output ${output}: tests=${response.tests.length}, results=${response.results.length}, coverage=${response.coverage?.length ?? 0}, debug=${response.debug?.length ?? 0}`);
+    if (response.results.length) {
+        log(`Executor result keys: ${JSON.stringify(response.results.map(result => caseKey(result.target, result.case_name)))}`);
+    }
+    return response;
 }
 
 async function runBuck2(
@@ -614,6 +641,7 @@ async function runBuck2(
     cancellation?: vscode.CancellationToken,
     modifier?: string,
     localOnly = false,
+    ptOutput?: string,
 ): Promise<void> {
     const config = vscode.workspace.getConfiguration("buck2Test", folder.uri);
     const buck2 = config.get<string>("buck2Path", "buck2");
@@ -628,6 +656,9 @@ async function runBuck2(
         "--vscode-case-arg", caseArg,
         ...modeArgs,
     ];
+    if (ptOutput) {
+        runnerArgs.push("--vscode-pt-output", ptOutput);
+    }
     if (cases) {
         const selectionFile = path.join(path.dirname(output), "selection.json");
         await fs.promises.writeFile(selectionFile, JSON.stringify(cases), "utf8");
@@ -645,14 +676,18 @@ async function runBuck2(
         ...runnerArgs,
     ];
 
+    log(`Spawning Buck2 in ${folder.uri.fsPath}: ${formatCommand(buck2, args)}`);
+
     await new Promise<void>((resolve, reject) => {
         const child = spawn(buck2, args, { cwd: folder.uri.fsPath });
+        let stdout = "";
         let stderr = "";
         let cancelled = false;
         const subscription = cancellation?.onCancellationRequested(() => {
             cancelled = true;
             child.kill();
         });
+        child.stdout.on("data", data => { stdout += data.toString(); });
         child.stderr.on("data", data => { stderr += data.toString(); });
         child.on("error", error => {
             subscription?.dispose();
@@ -660,10 +695,56 @@ async function runBuck2(
         });
         child.on("close", code => {
             subscription?.dispose();
+            log(`Buck2 exited with code ${code}; output file exists=${fs.existsSync(output)}`);
+            logProcessOutput("Buck2 stdout", stdout);
+            logProcessOutput("Buck2 stderr", stderr);
             if (cancelled) {
                 reject(new Error("Buck2 test run was cancelled."));
             } else if (code !== 0 && !fs.existsSync(output)) {
                 reject(new Error(stderr.trim() || `buck2 test exited with code ${code}`));
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
+async function decodePtTrace(
+    folder: vscode.WorkspaceFolder,
+    perfData: string,
+    ftf: string,
+    cancellation?: vscode.CancellationToken,
+): Promise<void> {
+    const ptTrace = path.join(folder.uri.fsPath, "tools", "pt-trace");
+    if (!fs.existsSync(ptTrace)) {
+        throw new Error(`PT tracer not found at ${ptTrace}`);
+    }
+    const args = ["run", "--perfetto", "--decode-only", "--output", perfData, "--ftf", ftf];
+    log(`Decoding PT capture outside Buck2: ${formatCommand(ptTrace, args)}`);
+    await new Promise<void>((resolve, reject) => {
+        const child = spawn(ptTrace, args, { cwd: folder.uri.fsPath });
+        let stdout = "";
+        let stderr = "";
+        let cancelled = false;
+        const subscription = cancellation?.onCancellationRequested(() => {
+            cancelled = true;
+            child.kill();
+        });
+        child.stdout.on("data", data => { stdout += data.toString(); });
+        child.stderr.on("data", data => { stderr += data.toString(); });
+        child.on("error", error => {
+            subscription?.dispose();
+            reject(error);
+        });
+        child.on("close", code => {
+            subscription?.dispose();
+            log(`PT decode exited with code ${code}; capture exists=${fs.existsSync(perfData)}, FTF exists=${fs.existsSync(ftf)}`);
+            logProcessOutput("PT decode stdout", stdout);
+            logProcessOutput("PT decode stderr", stderr);
+            if (cancelled) {
+                reject(new Error("PT decode was cancelled."));
+            } else if (code !== 0) {
+                reject(new Error(stderr.trim() || `pt-trace decode exited with code ${code}`));
             } else {
                 resolve();
             }
@@ -689,4 +770,27 @@ function executorPath(configured: string): string {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+function log(message: string): void {
+    outputChannel?.appendLine(`[${new Date().toISOString()}] ${message}`);
+}
+
+function logError(message: string, error: unknown): void {
+    log(`${message}: ${errorMessage(error)}`);
+    if (error instanceof Error && error.stack) {
+        log(error.stack);
+    }
+}
+
+function logProcessOutput(label: string, output: string): void {
+    const limit = 4000;
+    if (!output) {
+        return;
+    }
+    log(`${label}: ${output.length > limit ? `${output.slice(0, limit)}… (truncated)` : output}`);
+}
+
+function formatCommand(command: string, args: string[]): string {
+    return [command, ...args].map(arg => /[^\w@%+=:,./-]/.test(arg) ? JSON.stringify(arg) : arg).join(" ");
 }

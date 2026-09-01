@@ -60,6 +60,7 @@ struct Cli {
 #[derive(Debug, Default)]
 struct Options {
     output: Option<PathBuf>,
+    pt_output: Option<PathBuf>,
     list_only: bool,
     coverage: bool,
     debug: bool,
@@ -293,6 +294,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
         let (key, value) = arg.split_once('=').unwrap_or((arg, ""));
         match key {
             "--vscode-output" => options.output = Some(PathBuf::from(value_or_next(args, index, value)?)),
+            "--vscode-pt-output" => options.pt_output = Some(PathBuf::from(value_or_next(args, index, value)?)),
             "--vscode-list-only" => options.list_only = true,
             "--vscode-coverage" => options.coverage = true,
             "--vscode-debug" => options.debug = true,
@@ -311,7 +313,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<Options> {
             "--vscode-case-arg" => options.case_arg = value_or_next(args, index, value)?.to_owned(),
             _ => {}
         }
-        if value.is_empty() && matches!(key, "--vscode-output" | "--vscode-case" | "--vscode-selection-file" | "--vscode-list-arg" | "--vscode-location-arg" | "--vscode-case-arg") {
+        if value.is_empty() && matches!(key, "--vscode-output" | "--vscode-pt-output" | "--vscode-case" | "--vscode-selection-file" | "--vscode-list-arg" | "--vscode-location-arg" | "--vscode-case-arg") {
             index += 1;
         }
         index += 1;
@@ -531,7 +533,7 @@ async fn process_spec(
             .map(|case| escape_doctest_filter(&case.name))
             .collect::<Vec<_>>()
             .join(",");
-        let command = test_command(&spec, options, &case_filter);
+        let command = test_command(&spec, options, &case_filter)?;
         let stage = TestStage {
             item: Some(test_stage::Item::Testing(Testing {
                 suite: target_name.clone(),
@@ -635,7 +637,7 @@ async fn process_spec(
         } else {
             case_name.clone()
         };
-        let command = test_command(&spec, options, &case_filter);
+        let command = test_command(&spec, options, &case_filter)?;
         let stage = TestStage { item: Some(test_stage::Item::Testing(Testing { suite: target_name.clone(), testcases: vec![case_name.clone()], variant: None, repeat_count: None })) };
         let coverage_output = coverage_output_name(&target_name, &case_name);
         let env = execution_env(&spec, options.coverage.then(|| declared_output(&coverage_output)));
@@ -950,19 +952,24 @@ fn command_with_arg(command: &[ExternalRunnerSpecValue], arg: &str) -> Vec<ArgVa
     }).chain([verbatim_arg(arg)]).collect()
 }
 
-fn test_command(spec: &ExternalRunnerSpec, options: &Options, case_filter: &str) -> Vec<ArgValue> {
+fn test_command(spec: &ExternalRunnerSpec, options: &Options, case_filter: &str) -> anyhow::Result<Vec<ArgValue>> {
     let mut command = command_with_arg(&spec.command, &options.case_arg.replace("{}", case_filter));
     let reporter = if options.pt { "vscode-results-pt" } else { "vscode-results" };
     command.push(verbatim_arg(&format!("--reporters=console,{reporter}")));
     if options.pt {
+        let output = options
+            .pt_output
+            .as_ref()
+            .ok_or_else(|| anyhow!("PT mode requires --vscode-pt-output"))?;
         command = [
             verbatim_arg("tools/pt-trace"),
             verbatim_arg("run"),
-            verbatim_arg("--perfetto"),
+            verbatim_arg("--output"),
+            verbatim_arg(&output.to_string_lossy()),
             verbatim_arg("--"),
         ].into_iter().chain(command).collect();
     }
-    command
+    Ok(command)
 }
 
 fn verbatim_arg(arg: &str) -> ArgValue {
@@ -1349,17 +1356,19 @@ mod tests {
         };
         let options = Options {
             pt: true,
+            pt_output: Some(PathBuf::from("/tmp/pt-capture.data")),
             case_arg: "--test-case={}".to_owned(),
             ..Default::default()
         };
 
-        let command = test_command(&spec, &options, "one case");
+        let command = test_command(&spec, &options, "one case").unwrap();
         assert_eq!(
             command.iter().map(arg_text).collect::<Vec<_>>(),
             vec![
                 "tools/pt-trace",
                 "run",
-                "--perfetto",
+                "--output",
+                "/tmp/pt-capture.data",
                 "--",
                 "test-bin",
                 "--test-case=one case",

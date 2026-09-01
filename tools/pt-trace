@@ -313,6 +313,7 @@ def open_in_perfetto(ftf_path):
         pass
     finally:
         httpd.server_close()
+    print(f"pt-trace: finished serving trace to Perfetto", file=sys.stderr)
     return True
 
 
@@ -354,6 +355,12 @@ def main(argv):
         "--",
     ] + args.command
 
+    # perf and the traced program share these descriptors. Keep perf quiet in
+    # the normal mode, but inherit the descriptors so the program's stdout and
+    # stderr (including machine-readable test results) reach the caller.
+    if not args.verbose:
+        perf_cmd.insert(perf_cmd.index("--"), "--quiet")
+
     if args.verbose:
         print("pt-trace:", " ".join(perf_cmd), file=sys.stderr)
 
@@ -363,7 +370,7 @@ def main(argv):
     env[CTL_ENV] = ctl_fifo
     env[ACK_ENV] = ack_fifo
 
-    perf_stdio = None if args.verbose else subprocess.DEVNULL
+    perf_stdio = None
 
     rc = 0
     perf = None

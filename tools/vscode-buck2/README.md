@@ -87,7 +87,8 @@ and the extension loads the resulting files through VS Code's coverage API.
 
 The `Run with PT` profile is also available directly from a test item's
 context menu and from the editor gutter menu. It forces `buck2 test
---local-only`, runs the selected test under `tools/pt-trace run --perfetto`,
-and selects the `vscode-results-pt` reporter. The reporter enables Intel PT for
-the doctest run and disables it before returning, after which the trace is
-opened in Perfetto.
+--local-only`, captures the selected test with `tools/pt-trace run` to a
+unique temporary `perf.data`, and selects the `vscode-results-pt` reporter.
+After Buck2 exits, the extension runs `tools/pt-trace run --perfetto
+--decode-only` on that capture, opening the decoded trace in Perfetto. The
+reporter enables Intel PT for the doctest run and disables it before returning.
