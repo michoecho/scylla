@@ -60,9 +60,11 @@ mistake does not announce itself — see the empty-trace note in Troubleshooting
   must show `intel_pt//`. Without it, `perf record -e intel_pt//u` fails.
 - The binary you intend to trace, built: `buck2 build //modules/...:<module>_test`.
 - For `run --ftf` / `run --perfetto`: the `perf2perfetto` dlfilter. Nothing to do —
-  it is vendored at `third-party/rust/perf2perfetto`, and pt-trace builds
-  `//:perf2perfetto` itself to find it. Without a working `buck2` you must pass
-  `--dlfilter PATH`.
+  it lives at `modules/perf2perfetto`, and pt-trace builds
+  `//modules/perf2perfetto:dlfilter` itself to find it. Without a working
+  `buck2` you must pass `--dlfilter PATH`. (The original Rust implementation is
+  still vendored at `third-party/rust/perf2perfetto` and still builds as
+  `//:perf2perfetto`; it writes byte-identical traces.)
 
 ## 1. Make the test traceable
 
@@ -183,7 +185,7 @@ rejected up front rather than loaded as an empty trace.
   use `i0ns` for full per-instruction decode). The `--ftf` path always uses
   `bei0ns` because the dlfilter needs branch records.
 - `--dlfilter PATH` — use this `libperf2perfetto.so` instead of building
-  `//:perf2perfetto`.
+  `//modules/perf2perfetto:dlfilter`.
 - `-e, --event SPEC` — perf event (default `intel_pt/cyc=1/u`, user space only).
 - `-v, --verbose` — print the perf command lines and keep perf's own output.
 
@@ -201,8 +203,9 @@ and `perf.data` are throwaway artifacts — delete them when done.
 ## Troubleshooting
 
 - `cannot find perf binary` — install `perf` or pass `--perf /path/to/perf`.
-- `buck2 not found` / `failed to build //:perf2perfetto` — run inside
-  `nix develop`, or pass `--dlfilter PATH` to a prebuilt `libperf2perfetto.so`.
+- `buck2 not found` / `failed to build //modules/perf2perfetto:dlfilter` — run
+  inside `nix develop`, or pass `--dlfilter PATH` to a prebuilt
+  `libperf2perfetto.so`.
 - `perf record` fails with an event error — the host has no Intel PT
   (`/sys/devices/intel_pt` missing); tracing is not possible there.
 - Empty / tiny trace — the program never entered a `pt::Trace` scope, or the

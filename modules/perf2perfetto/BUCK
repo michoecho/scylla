@@ -1,0 +1,63 @@
+load("//buck:module.bzl", "add_module")
+
+# The conversion itself: the .ftf writer and the call-stack state machine, with
+# no dependency on perf's ABI, so `perf2perfetto_test` exercises them without a
+# recording.
+add_module(
+    name = "perf2perfetto",
+    srcs = [
+        "converter.cc",
+        "converter_test.cc",
+        "ftf.cc",
+        "ftf_test.cc",
+    ],
+    exported_headers = {
+        "perf2perfetto/converter.h": "include/perf2perfetto/converter.h",
+        "perf2perfetto/ftf.h": "include/perf2perfetto/ftf.h",
+    },
+    deps = [
+        "//:doctest",
+    ],
+    compiler_flags = ["-Wall", "-Wextra"],
+    module_source_dir = "modules/perf2perfetto",
+)
+
+# The dlfilter proper: the same conversion sources plus the perf entry points,
+# linked into a shared object for `perf script --dlfilter` to dlopen.
+#
+# It compiles the sources again rather than depending on `:perf2perfetto`,
+# because that library also holds the module's test translation units. Linking
+# those into the filter would put doctest, and a registry of test cases, inside
+# a library perf loads into its own process.
+cxx_library(
+    name = "dlfilter_lib",
+    srcs = [
+        "converter.cc",
+        "dlfilter.cc",
+        "ftf.cc",
+    ],
+    headers = {
+        "perf_dlfilter.h": "perf_dlfilter.h",
+    },
+    exported_headers = {
+        "perf2perfetto/converter.h": "include/perf2perfetto/converter.h",
+        "perf2perfetto/ftf.h": "include/perf2perfetto/ftf.h",
+    },
+    header_namespace = "",
+    compiler_flags = ["-Wall", "-Wextra", "-O2"],
+    # perf finds the entry points by dlsym, so they have to stay in a real
+    # shared object rather than being folded into a static archive.
+    preferred_linkage = "shared",
+    soname = "libperf2perfetto.so",
+    visibility = ["PUBLIC"],
+)
+
+# perf loads the filter by the path it is given, so the file name is cosmetic
+# -- but everything that refers to this filter, upstream's README included,
+# calls it libperf2perfetto.so, so hand it out under that name.
+genrule(
+    name = "dlfilter",
+    out = "libperf2perfetto.so",
+    cmd = "cp -- $(location :dlfilter_lib[shared]) $OUT",
+    visibility = ["PUBLIC"],
+)

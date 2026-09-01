@@ -319,8 +319,13 @@ cxx_library(
     compiler_flags = ["-O2"],
 )
 
-# The `perf script` dlfilter that turns an Intel PT trace into a Fuchsia trace
-# for Perfetto; see tools/pt-trace. The crate is vendored as a submodule under
+# The original Rust `perf script` dlfilter that turns an Intel PT trace into a
+# Fuchsia trace for Perfetto; see tools/pt-trace.
+#
+# It is no longer what pt-trace uses -- modules/perf2perfetto is a C++ port that
+# writes byte-identical traces, and pt-trace builds that instead -- but it is
+# kept buildable as the reference the port is checked against, and as the
+# fallback for `--dlfilter`. The crate is vendored as a submodule under
 # third-party/rust/perf2perfetto and built by the reindeer-generated rules, which
 # name their output after the Buck target rather than the crate. perf loads the
 # filter by the path it is given, so the name is cosmetic -- but everything that

@@ -57,10 +57,14 @@ import webbrowser
 CTL_ENV = "PERF_CTL_FIFO"
 ACK_ENV = "PERF_ACK_FIFO"
 
-# The perf2perfetto dlfilter is vendored in this repo (third-party/rust/
-# perf2perfetto) and built by Buck2, so rather than being told where it is,
-# pt-trace asks the build system -- see dlfilter_from_buck().
-DLFILTER_TARGET = "//:perf2perfetto"
+# The perf2perfetto dlfilter lives in this repo (modules/perf2perfetto) and is
+# built by Buck2, so rather than being told where it is, pt-trace asks the
+# build system -- see dlfilter_from_buck().
+#
+# The original Rust implementation is still vendored at
+# third-party/rust/perf2perfetto and still buildable as `//:perf2perfetto`; the
+# two write byte-identical traces. Pass --dlfilter with its path to use it.
+DLFILTER_TARGET = "//modules/perf2perfetto:dlfilter"
 
 # The repo root, so pt-trace can find the build system regardless of the
 # directory it was invoked from.
@@ -231,7 +235,7 @@ def dlfilter_from_buck():
     """Build the dlfilter and return an absolute path to it, or None.
 
     Building rather than merely locating it is the point: the library is
-    vendored source in this repo, so "where is it" and "is it up to date with
+    built from source in this repo, so "where is it" and "is it up to date with
     the source" are the same question, and only the build system can answer
     either. `--show-simple-output` prints the one output path and nothing else.
 
