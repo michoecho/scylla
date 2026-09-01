@@ -35,6 +35,7 @@
     target:fuzztest//...->prelude//platforms:default \
     target:imgui//...->prelude//platforms:default \
     target:implot//...->prelude//platforms:default \
+    target:rust_third_party//...->prelude//platforms:default \
     target:toolchains//...->prelude//platforms:default
 
 [build]

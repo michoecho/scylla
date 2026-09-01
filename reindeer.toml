@@ -1,6 +1,7 @@
 vendor = false
-manifest_path = "Cargo.toml"
+manifest_path = "third-party/rust/Cargo.toml"
 third_party_dir = "third-party/rust"
+include_workspace_members = true
 cargo_env = [
     "CARGO_BIN_NAME",
     "CARGO_CRATE_NAME",
@@ -17,3 +18,29 @@ cargo_env = [
     "CARGO_PKG_VERSION_PATCH",
     "CARGO_PKG_VERSION_PRE",
 ]
+
+[buck]
+# Front matter for the generated BUCK file.
+#
+# Setting this at all replaces the two `load()` lines reindeer would otherwise
+# insert on its own, and with them the defaulting of `rust_library`/`rust_binary`
+# to the `cargo.` macros -- hence the explicit loads and rule names below.
+#
+# The alias exists because the C++ side of modules/libafl needs the *output
+# directory* of libafl_targets' build script, which is where LibAFL compiles the
+# SanCov C archives that the instrumented C++ objects call into. Reindeer emits
+# buildscript rules as package-private and offers no fixup to publish one, so
+# the alias is added here instead of being appended to the generated file by
+# hand -- where `reindeer buckify` would delete it again.
+rust_library = "cargo.rust_library"
+rust_binary = "cargo.rust_binary"
+buckfile_imports = """
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+alias(
+    name = "libafl_targets-build-script-run-public",
+    actual = ":libafl_targets-0.15-build-script-run",
+    visibility = ["PUBLIC"],
+)
+"""

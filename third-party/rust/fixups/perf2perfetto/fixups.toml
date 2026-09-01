@@ -1,0 +1,13 @@
+# build.rs runs bindgen over include/wrapper.h to generate bindings for perf's
+# dlfilter ABI.
+[buildscript.run]
+
+[buildscript.run.env]
+# bindgen dlopen()s libclang at build-script runtime, so it needs a directory to
+# search rather than a link-time dependency.
+LIBCLANG_PATH = "$(location toolchains//:libclang[lib])"
+
+# perf_dlfilter.h includes <linux/perf_event.h>. bindgen invokes clang itself
+# rather than going through the cxx toolchain, so it sees none of that
+# toolchain's include path and has to be given the kernel UAPI headers here.
+BINDGEN_EXTRA_CLANG_ARGS = "-isystem $(location toolchains//:linux_headers[include])"

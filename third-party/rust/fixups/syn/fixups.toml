@@ -1,0 +1,4 @@
+# syn 1.x (reached through strum_macros) has a build script whose only job is to
+# probe the compiler for a `doc_cfg`-style nightly feature. Nothing downstream
+# reads the cfg it would emit, so skip running it.
+buildscript.run = false

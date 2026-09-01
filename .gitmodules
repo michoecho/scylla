@@ -7,3 +7,6 @@
 [submodule "third-party/implot"]
 	path = third-party/implot
 	url = https://github.com/epezent/implot.git
+[submodule "third-party/rust/perf2perfetto"]
+	path = third-party/rust/perf2perfetto
+	url = https://github.com/michoecho/perf2perfetto.git

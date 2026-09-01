@@ -316,3 +316,17 @@ cxx_library(
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
 )
+
+# The `perf script` dlfilter that turns an Intel PT trace into a Fuchsia trace
+# for Perfetto; see tools/pt-trace. The crate is vendored as a submodule under
+# third-party/rust/perf2perfetto and built by the reindeer-generated rules, which
+# name their output after the Buck target rather than the crate. perf loads the
+# filter by the path it is given, so the name is cosmetic -- but everything that
+# refers to this file, upstream's README included, calls it
+# libperf2perfetto.so, so hand it out under that name.
+genrule(
+    name = "perf2perfetto",
+    out = "libperf2perfetto.so",
+    cmd = "cp -- $(location rust_third_party//:perf2perfetto[cdylib]) $OUT",
+    visibility = ["PUBLIC"],
+)

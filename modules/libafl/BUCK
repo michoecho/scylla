@@ -1,7 +1,7 @@
 prebuilt_cxx_library(
     name = "libafl_c",
     header_dirs = ["include"],
-    shared_lib = "//modules/libafl/rust:libafl-wrapper[cdylib]",
+    shared_lib = "rust_third_party//:libafl-c[cdylib]",
     soname = "liblibafl_c.so",
     # The Rust buildscript runner forwards lib/search flags but drops
     # rustc-link-arg, and Rust hides native archive symbols in a cdylib. Link
