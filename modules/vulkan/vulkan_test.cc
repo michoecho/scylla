@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
@@ -120,17 +121,40 @@ std::unique_ptr<Renderer> try_make_renderer() {
     if (no_display()) {
         return nullptr;
     }
+
+    // The first extension enumeration makes the Vulkan loader load the ICDs
+    // and their dependencies. Start that work before Renderer calls SDL_Init,
+    // so the two independent startup paths can make progress concurrently.
+    // Function-local static initialization makes this happen only once per
+    // program, even though both test cases construct a Renderer.
+    static std::thread extension_enumerator([] {
+        uint32_t extension_count = 0;
+        (void)vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
+    });
+    const auto join_extension_enumerator = [&] {
+        if (extension_enumerator.joinable()) {
+            extension_enumerator.join();
+        }
+    };
+
     try {
-        return std::make_unique<Renderer>(test_config());
+        auto renderer = std::make_unique<Renderer>(test_config());
+        join_extension_enumerator();
+        return renderer;
     } catch (const vulkan_module::sdl_error& e) {
+        join_extension_enumerator();
         MESSAGE("skipping: SDL could not start: " << e.what());
         return nullptr;
     } catch (const vulkan_module::vulkan_error& e) {
+        join_extension_enumerator();
         if (e.result == VK_ERROR_FEATURE_NOT_PRESENT || e.result == VK_ERROR_INCOMPATIBLE_DRIVER
             || e.result == VK_ERROR_INITIALIZATION_FAILED) {
             MESSAGE("skipping: no usable Vulkan device: " << e.what());
             return nullptr;
         }
+        throw;
+    } catch (...) {
+        join_extension_enumerator();
         throw;
     }
 }
