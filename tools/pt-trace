@@ -51,6 +51,7 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+import time
 import webbrowser
 
 # Must match the env var names read by modules/pt/pt_control.cc.
@@ -74,6 +75,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 # open_trace_in_ui helper.
 PERFETTO_PORT = 9001
 PERFETTO_ORIGIN = "https://ui.perfetto.dev"
+
+
+def log_timing(label, started):
+    """Report a completed phase without contaminating the test's stdout."""
+    print(f"pt-trace: timing {label}: {time.monotonic() - started:.3f}s",
+          file=sys.stderr)
 
 
 def view_main(args):
@@ -135,9 +142,9 @@ def parse_args(argv):
              "user-space only).",
     )
     run.add_argument(
-        "--aux-pages", default="256M",
+        "--aux-pages", default="8M",
         help="Size of the PT AUX buffer, as perf's --mmap-pages accepts it "
-             "(default: 256M). Lower it only to deliberately provoke dropped "
+             "(default: 8M). Lower it only to deliberately provoke dropped "
              "data; a small buffer shows up as gaps and reset call stacks.",
     )
     run.add_argument(
@@ -244,6 +251,7 @@ def dlfilter_from_buck():
     absolutise it before handing it over, since pt-trace can be run from
     anywhere.
     """
+    started = time.monotonic()
     cmd = ["buck2", "build", "--show-simple-output", DLFILTER_TARGET]
     try:
         # Build output goes to stderr, so it stays visible: this can take a
@@ -257,17 +265,21 @@ def dlfilter_from_buck():
             "--dlfilter with a path to libperf2perfetto.so",
             file=sys.stderr,
         )
+        log_timing("dlfilter build (buck2 missing)", started)
         return None
     except subprocess.CalledProcessError as e:
         print(f"pt-trace: failed to build {DLFILTER_TARGET} "
               f"(buck2 exited {e.returncode})", file=sys.stderr)
+        log_timing("dlfilter build (failed)", started)
         return None
 
     path = out.strip()
     if not path:
         print(f"pt-trace: {DLFILTER_TARGET} produced no output path",
               file=sys.stderr)
+        log_timing("dlfilter build (no output)", started)
         return None
+    log_timing("dlfilter build", started)
     return os.path.join(REPO_ROOT, path)
 
 
@@ -278,11 +290,14 @@ def decode_ftf(args):
     for errors (e) and full instructions (i0ns) so the cycle/instruction
     counters in the trace are as accurate as the dlfilter can make them.
     """
+    started = time.monotonic()
     dlfilter = args.dlfilter or dlfilter_from_buck()
     if not dlfilter:
+        log_timing("FTF decode (no dlfilter)", started)
         return False
     if not os.path.exists(dlfilter):
         print(f"pt-trace: dlfilter not found at {dlfilter}", file=sys.stderr)
+        log_timing("FTF decode (missing dlfilter)", started)
         return False
 
     script_cmd = [
@@ -299,7 +314,10 @@ def decode_ftf(args):
         script_cmd += ["--time", args.time]
     if args.verbose:
         print("pt-trace:", " ".join(script_cmd), file=sys.stderr)
+    script_started = time.monotonic()
     rc = subprocess.run(script_cmd).returncode
+    log_timing("perf script FTF decode", script_started)
+    log_timing("FTF decode total", started)
     if rc != 0:
         print(f"pt-trace: perf script (ftf decode) exited with {rc}",
               file=sys.stderr)
@@ -371,6 +389,7 @@ def open_in_perfetto(ftf_path):
 
 
 def main(argv):
+    overall_started = time.monotonic()
     args = parse_args(argv)
 
     if args.subcommand == "view":
@@ -392,10 +411,12 @@ def main(argv):
         return 0
 
     tmp = tempfile.mkdtemp(prefix="pt-trace.")
+    fifo_started = time.monotonic()
     ctl_fifo = os.path.join(tmp, "ctl.fifo")
     ack_fifo = os.path.join(tmp, "ack.fifo")
     os.mkfifo(ctl_fifo)
     os.mkfifo(ack_fifo)
+    log_timing(f"FIFO setup (AUX {args.aux_pages})", fifo_started)
 
     perf_cmd = [
         args.perf, "record",
@@ -440,18 +461,26 @@ def main(argv):
     rc = 0
     perf = None
     try:
+        perf_start_started = time.monotonic()
         perf = subprocess.Popen(
             perf_cmd, env=env,
             stdout=perf_stdio, stderr=perf_stdio,
         )
+        log_timing("perf process startup", perf_start_started)
+        record_started = time.monotonic()
         rc = perf.wait()
+        log_timing("target + perf record shutdown", record_started)
     except KeyboardInterrupt:
         # Forward Ctrl-C to perf so it flushes perf.data cleanly.
         if perf is not None:
             perf.send_signal(signal.SIGINT)
             rc = perf.wait()
     finally:
+        cleanup_started = time.monotonic()
         shutil.rmtree(tmp, ignore_errors=True)
+        log_timing("FIFO cleanup", cleanup_started)
+
+    log_timing("record phase", overall_started)
 
     if rc != 0:
         print(f"pt-trace: perf record exited with {rc}", file=sys.stderr)
@@ -472,7 +501,9 @@ def main(argv):
                       f"--itrace={args.itrace}"]
         if args.verbose:
             print("pt-trace:", " ".join(script_cmd), file=sys.stderr)
+        script_started = time.monotonic()
         subprocess.run(script_cmd)
+        log_timing("perf script text decode", script_started)
 
     if args.ftf:
         if not decode_ftf(args):
@@ -480,6 +511,7 @@ def main(argv):
         if args.perfetto:
             open_in_perfetto(args.ftf)
 
+    log_timing("total", overall_started)
     return rc
 
 
