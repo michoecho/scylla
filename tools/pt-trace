@@ -157,13 +157,6 @@ def parse_args(argv):
              "branches+errors). Use e.g. 'i0ns' for full instruction decode.",
     )
     run.add_argument(
-        "--jobs", "-j", default="0", metavar="N",
-        help="Decode with N parallel jobs (0 = one per online CPU, the "
-             "default; 1 = the serial decoder). perf declines to decode in "
-             "parallel for traces it cannot split -- system-wide captures, "
-             "--time ranges -- and falls back to serial on its own.",
-    )
-    run.add_argument(
         "--ftf", nargs="?", const="perf.ftf", default=None, metavar="FILE",
         help="After recording, decode the trace to a Fuchsia trace (.ftf) via "
              "the perf2perfetto dlfilter (default file: perf.ftf).",
@@ -290,17 +283,6 @@ def dlfilter_from_buck():
     return os.path.join(REPO_ROOT, path)
 
 
-def itrace(spec, jobs):
-    """An --itrace spec with the parallel-decode suffix appended.
-
-    `j` on its own means one job per online CPU; `--jobs 1` is the serial
-    decoder, which is what perf does without the letter at all.
-    """
-    if jobs == "1":
-        return spec
-    return spec + ("j" if jobs == "0" else f"j{jobs}")
-
-
 def decode_ftf(args):
     """Decode args.output to args.ftf via the perf2perfetto dlfilter.
 
@@ -320,7 +302,7 @@ def decode_ftf(args):
 
     script_cmd = [
         args.perf, "script", "-i", args.output,
-        f"--itrace={itrace('be', args.jobs)}",
+        "--itrace=be",
         "--dlfilter", dlfilter,
         # perf2perfetto reads two --dlargs: output filename, then mode char.
         "--dlarg", args.ftf,
@@ -516,7 +498,7 @@ def main(argv):
         # explicit spec makes the traced control flow obvious. Pass i0ns for
         # full per-instruction decode.
         script_cmd = [args.perf, "script", "-i", args.output,
-                      f"--itrace={itrace(args.itrace, args.jobs)}"]
+                      f"--itrace={args.itrace}"]
         if args.verbose:
             print("pt-trace:", " ".join(script_cmd), file=sys.stderr)
         script_started = time.monotonic()
