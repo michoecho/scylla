@@ -5,9 +5,11 @@ add_module(
     srcs = [
         "pt_control.cc",
         "pt_control_test.cc",
+        "pt_trace.cc",
     ],
     exported_headers = {
         "pt/pt_control.h": "include/pt/pt_control.h",
+        "pt/pt_trace.h": "include/pt/pt_trace.h",
     },
     deps = [
         "//:doctest",
