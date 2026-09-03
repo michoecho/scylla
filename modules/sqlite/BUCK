@@ -1,0 +1,14 @@
+load("//buck:module.bzl", "add_module")
+
+add_module(
+    name = "sqlite",
+    srcs = [
+        "sqlite_test.cc",
+    ],
+    deps = [
+        "//:doctest",
+        "//:sqlite",
+    ],
+    compiler_flags = ["-Wall", "-Wextra"],
+    module_source_dir = "modules/sqlite",
+)

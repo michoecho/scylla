@@ -108,6 +108,13 @@ flake.prebuilt_pkgconfig_library(
     path = "root//:flake",
 )
 
+flake.prebuilt_pkgconfig_library(
+    name = "sqlite",
+    package = "sqlite",
+    module = "sqlite3",
+    path = "root//:flake",
+)
+
 flake.package(
     name = "glaze_package",
     package = "glaze",

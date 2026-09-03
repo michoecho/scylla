@@ -298,6 +298,7 @@
 
           fmt = pkgs.fmt;
           glaze = pkgs.glaze;
+          sqlite = pkgs.sqlite;
           # The OpenGL loader and development headers used by SDL's GL
           # context and Dear ImGui's OpenGL3 renderer.
           libGL = pkgs.libglvnd;
