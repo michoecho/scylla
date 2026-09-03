@@ -1290,6 +1290,10 @@ int main(int argc, char** argv) {
     // Stack samples become entries only now, because where a sample belongs in
     // the timeline is its own CLOCK_REALTIME timestamp read back as ticks, and
     // that needs the clock the pass above built. Without a clock they fall back
+    fmt::print("{} distinct source locations: {} resolved, {} not\n",
+               locations_resolved + locations_unresolved, locations_resolved,
+               locations_unresolved);
+
     // to the tick count they already sort at -- which is when the poll loop
     // drained them, a poll period late, and the best that can be done.
     if (!samples.empty()) {
@@ -1304,9 +1308,6 @@ int main(int argc, char** argv) {
             }
             entries.push_back({0xc, 0, i, samples[i].ts, 0, samples[i].shard, samples[i].node});
         }
-        fmt::print("{} distinct source locations: {} resolved, {} not\n",
-                   locations_resolved + locations_unresolved, locations_resolved,
-                   locations_unresolved);
         fmt::print("{} stack samples, {} placed on the trace's clock\n", samples.size(), dated);
         fmt::print("  (a cpu-clock event only ticks while the shard is on the cpu, so a mostly "
                    "idle node has far fewer than {} Hz x shards x seconds)\n",
@@ -1535,27 +1536,84 @@ int main(int argc, char** argv) {
     }
 
     if (std::getenv("TRACE_DUMP_RPC") != nullptr) {
-        if (queries.empty()) {
-            fmt::print("no CQL requests to correlate\n");
-        } else {
-            const auto spans = make_rpc_spans(rpc_events, queries.back().id);
-            std::set<std::pair<uint32_t, uint32_t>> shards;
-            for (const rpc_span& span : spans) {
-                shards.emplace(span.source.first, span.source_shard);
-                shards.emplace(span.destination.first, span.destination_shard);
+        // What the joins had to work with, before any request is picked. A walk
+        // that comes back empty is nearly always one of these counts being zero,
+        // and which one says where to look: no paired connections means the
+        // connection snapshot is missing -- switching the tracepoints off before
+        // taking the snapshot writes it through a tracepoint that is no longer
+        // recording -- while sends without a task mean the send records are not
+        // carrying the caller's id.
+        std::map<rpc_key, std::pair<std::string, std::string>> known;
+        size_t sent = 0, sent_with_task = 0, received = 0, handled = 0;
+        for (const rpc_event& e : rpc_events) {
+            switch (e.kind) {
+            case rpc_event_kind::connection_open:
+            case rpc_event_kind::snapshot_entry:
+                known[{e.node, e.connection}] = {e.local, e.remote};
+                break;
+            case rpc_event_kind::message_sent:
+                ++sent;
+                sent_with_task += e.task != 0;
+                break;
+            case rpc_event_kind::message_received: ++received; break;
+            case rpc_event_kind::request_handled: ++handled; break;
+            default: break;
             }
-            fmt::print("distributed query {:x}: {} RPC messages across {} node/shards\n",
-                       queries.back().id, spans.size(), shards.size());
-            for (const rpc_span& span : spans) {
-                fmt::print("  node{}:shard{} task {:x} -> node{}:shard{} task {:x}"
-                           "  {:.3f} ms on the wire, sequence {}{}\n",
-                           span.source.first, span.source_shard, span.source_task,
-                           span.destination.first, span.destination_shard,
-                           span.destination_task,
-                           double(span.received - span.sent) * MULTIPLIER / 1e6,
-                           span.sequence,
-                           span.reply_id ? fmt::format(", reply-msg-id {}", *span.reply_id) : "");
+        }
+        size_t paired = 0;
+        for (const auto& [a_key, a] : known) {
+            for (const auto& [b_key, b] : known) {
+                if (a_key != b_key && a.first == b.second && a.second == b.first) {
+                    ++paired;
+                    break;
+                }
             }
+        }
+        fmt::print("{} connections known, {} paired with the far end\n", known.size(), paired);
+        fmt::print("{} messages sent ({} from a task), {} received, {} opened a task chain\n",
+                   sent, sent_with_task, received, handled);
+
+        // `queries` is in ascending latency, so the last that correlates is the
+        // slowest one the walk can say anything about. The slowest *overall* is
+        // usually some local request that never left the node.
+        std::optional<query> slowest;
+        size_t reached = 0;
+        for (const auto& q : queries) {
+            if (make_rpc_spans(rpc_events, q.id).empty()) {
+                continue;
+            }
+            ++reached;
+            slowest = q;
+        }
+        fmt::print("{} of {} CQL requests reach at least one other node\n",
+                   reached, queries.size());
+        if (!slowest) {
+            fmt::print("nothing to correlate\n");
+            return 0;
+        }
+
+        const auto spans = make_rpc_spans(rpc_events, slowest->id);
+        std::set<std::pair<uint32_t, uint32_t>> shards;
+        std::set<uint64_t> tasks;
+        for (const rpc_span& span : spans) {
+            shards.emplace(span.source.first, span.source_shard);
+            shards.emplace(span.destination.first, span.destination_shard);
+            tasks.insert(span.source_task);
+            if (span.destination_task != 0) {
+                tasks.insert(span.destination_task);
+            }
+        }
+        fmt::print("\nslowest distributed request {:x} ({:.3f} ms): {} RPC messages over"
+                   " {} node/shards, {} tasks\n",
+                   slowest->id, slowest->latency.count() * 1e3, spans.size(), shards.size(),
+                   tasks.size());
+        for (const rpc_span& span : spans) {
+            fmt::print("  node{}:shard{} task {:x} -> node{}:shard{} task {:x}"
+                       "  {:.3f} ms on the wire, sequence {}{}\n",
+                       span.source.first, span.source_shard, span.source_task,
+                       span.destination.first, span.destination_shard, span.destination_task,
+                       double(span.received - span.sent) * MULTIPLIER / 1e6, span.sequence,
+                       span.reply_id ? fmt::format(", reply-msg-id {}", *span.reply_id) : "");
         }
         return 0;
     }

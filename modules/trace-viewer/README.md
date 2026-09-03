@@ -337,8 +337,34 @@ carry the normal RPC `msg_id`, which is what to look at when inspecting a single
 connection.
 
 It takes snapshot **directories**, not files, and decodes every `*.trace` in
-them. Set `TRACE_DUMP_RPC=1` to print the correlated RPC edges for the
-slowest request and exit without opening a window.
+them. Set `TRACE_DUMP_RPC=1` to print what the joins had to work with, which
+requests reach another node, and the edges of the slowest one that does, then
+exit without opening a window:
+
+```
+68 connections known, 68 paired with the far end
+110 messages sent (75 from a task), 110 received, 65 opened a task chain
+10 of 29 CQL requests reach at least one other node
+
+slowest distributed request 1000000000101 (0.410 ms): 4 RPC messages over 3 node/shards, 5 tasks
+  node0:shard1 task 1000000000101 -> node2:shard1 task af5d04065c6d50eb  0.008 ms on the wire, sequence 106
+  node0:shard1 task 1000000000101 -> node1:shard1 task 5554fb943c418bb3  0.134 ms on the wire, sequence 106
+  node2:shard1 task af5d04065c6d50eb -> node0:shard1 task 1000000000102  0.066 ms on the wire, sequence 53
+  node1:shard1 task 5554fb943c418bb3 -> node0:shard1 task 1000000000103  0.070 ms on the wire, sequence 53
+```
+
+That is one `CL=ALL` write against a three-node `RF=3` cluster: the coordinator
+fans out to both replicas, each opens a task chain of its own, and each answers
+into a *new* chain back on the coordinator. None of the four carries a
+`reply-msg-id`, which is the tell that Scylla's mutation path answers with a
+fresh `MUTATION_DONE` request rather than an RPC-level reply.
+
+**Take the snapshot before switching the tracepoints off.** The connection map
+and the prepared-statement cache are written *through* tracepoints, so a
+snapshot taken with them already off contains neither, and without the
+connection map nothing pairs the two ends of an RPC -- the walk finds nothing
+and the rows never appear. `TRACE_DUMP_RPC=1`'s first line is the check:
+`0 connections known` means exactly this.
 
 ### The sample viewer
 
@@ -470,18 +496,20 @@ binary, and pass it explicitly to the viewer:
 ```sh
 cd third-party/scylladb
 nix develop -c ../../tools/gather-dsos build/Dev/scylla \
-    ignored/rpc-e2e-phases-139123/dsos
+    ignored/rpc-task-attribution/dsos
 cd ../..
-TRACE_DSO_DIR="$PWD/third-party/scylladb/ignored/rpc-e2e-phases-139123/dsos" \
+RUN="$PWD/third-party/scylladb/ignored/rpc-task-attribution"
+TRACE_DSO_DIR="$RUN/dsos" \
   buck2 run //modules/trace-viewer:trace_viewer -- \
-  third-party/scylladb/ignored/rpc-e2e-phases-139123/node1/traces/1788457246486 \
-  third-party/scylladb/ignored/rpc-e2e-phases-139123/node2/traces/1788457246490 \
-  third-party/scylladb/ignored/rpc-e2e-phases-139123/node3/traces/1788457246495
+  "$RUN/node1/traces/1788463349684" \
+  "$RUN/node2/traces/1788463349690" \
+  "$RUN/node3/traces/1788463349695"
 ```
 
 Do not use `--strip-debug` when stack backtraces with file and line information
 are wanted. The viewer prints the resolved/unresolved location count on startup;
-for the invocation above it should report `705 resolved, 0 not`.
+for the invocation above it should report `151 resolved, 0 not`, and without
+`TRACE_DSO_DIR` the same 151 come out unresolved.
 
 It resolves the binary's libraries with `ldd` -- DT_NEEDED transitively, under
 the same RUNPATH rules the loader will use -- rather than looking at a running
