@@ -99,6 +99,7 @@ struct OutputFile {
     results: Vec<CaseResult>,
     coverage: Vec<String>,
     debug: Vec<DebugCommand>,
+    errors: Vec<String>,
 }
 
 /// A resolved, ready-to-launch invocation for one selected test case. The
@@ -248,7 +249,13 @@ async fn main() -> anyhow::Result<()> {
 
     let channel = client_channel(orchestrator_io).await?;
     let mut orchestrator = test_orchestrator_client::TestOrchestratorClient::new(channel);
-    let mut output = OutputFile { tests: Vec::new(), results: Vec::new(), coverage: Vec::new(), debug: Vec::new() };
+    let mut output = OutputFile {
+        tests: Vec::new(),
+        results: Vec::new(),
+        coverage: Vec::new(),
+        debug: Vec::new(),
+        errors: Vec::new(),
+    };
     let mut coverage_inputs = Vec::new();
     let mut exit_code = 0;
 
@@ -258,6 +265,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(()) => {}
             Err(error) => {
                 eprintln!("buck2-vscode-test-executor: {error:#}");
+                output.errors.push(format!("{error:#}"));
                 exit_code = 32;
             }
         }
@@ -584,7 +592,8 @@ async fn process_spec(
         let machine_results = parse_machine_results(&stdout)?;
         if machine_results.is_empty() {
             return Err(anyhow!(
-                "startup_shared test produced no per-case results for {target_name}"
+                "startup_shared test produced no per-case results for {target_name}\n{}",
+                execution_output(&result),
             ));
         }
         for case_name in case_names {

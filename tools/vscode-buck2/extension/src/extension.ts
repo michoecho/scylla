@@ -35,6 +35,7 @@ interface ExecutorOutput {
     results: CaseResult[];
     coverage?: string[];
     debug?: DebugCommand[];
+    errors?: string[];
 }
 
 interface TestRecord {
@@ -240,9 +241,6 @@ async function runTests(
                 }
                 continue;
             }
-            for (const group of project.groups.values()) {
-                group.records.forEach(record => run.started(record.item));
-            }
             const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(project.folder));
             if (!folder) {
                 throw new Error(`No workspace folder for ${project.folder}`);
@@ -267,15 +265,25 @@ async function runTests(
                     withPt,
                     ptOutput,
                 );
-                if (ptOutput) {
+                const response = await readOutput(output);
+                // If the test executor could not obtain a test result, its
+                // errors contain the original subprocess stderr. Do not let a
+                // second failure decoding an empty perf.data hide that cause.
+                if (ptOutput && !(response.errors?.length)) {
                     await decodePtTrace(folder, ptOutput, path.join(path.dirname(output), "perf.ftf"), cancellation);
                 }
-                const response = await readOutput(output);
                 if (withCoverage) {
                     await addCoverageFiles(run, response.coverage ?? []);
                 }
                 return response;
             });
+            if (response.errors?.length) {
+                outputChannel.show(true);
+                for (const error of response.errors) {
+                    log(`Executor error: ${error}`);
+                    run.appendOutput(normalizeCrlf(`${error}\n`));
+                }
+            }
             const results = new Map(response.results.map(result => [caseKey(result.target, result.case_name), result]));
             log(`Received ${response.results.length} result(s) for ${mode} run`);
             for (const group of targetGroups) {
@@ -284,8 +292,11 @@ async function runTests(
                     if (!result) {
                         const available = response.results.map(item => caseKey(item.target, item.case_name));
                         log(`Missing result for ${caseKey(record.target, record.case_name)}; available=${JSON.stringify(available)}`);
-                        run.errored(record.item, new vscode.TestMessage("Buck2 returned no result for this test case. See the Buck2 Test output channel for details."));
+                        // No result means the test did not run. Leave it
+                        // enqueued, with the executor diagnostic attached to
+                        // the run above, instead of manufacturing a failure.
                     } else {
+                        run.started(record.item);
                         const output = normalizeCrlf(result.output);
                         if (output) {
                             run.appendOutput(output, locationFor(record.item), record.item);
@@ -303,12 +314,10 @@ async function runTests(
         }
     } catch (error) {
         logError(`${mode} test run failed`, error);
-        const message = new vscode.TestMessage(errorMessage(error));
+        run.appendOutput(normalizeCrlf(`${errorMessage(error)}\n`));
         selected.forEach(record => {
             if (cancellation.isCancellationRequested) {
                 run.skipped(record.item);
-            } else {
-                run.errored(record.item, message);
             }
         });
     } finally {
@@ -625,7 +634,7 @@ async function withTempOutput<T>(action: (output: string) => Promise<T>): Promis
 async function readOutput(output: string): Promise<ExecutorOutput> {
     const content = await fs.promises.readFile(output, "utf8");
     const response = JSON.parse(content) as ExecutorOutput;
-    log(`Read executor output ${output}: tests=${response.tests.length}, results=${response.results.length}, coverage=${response.coverage?.length ?? 0}, debug=${response.debug?.length ?? 0}`);
+    log(`Read executor output ${output}: tests=${response.tests.length}, results=${response.results.length}, errors=${response.errors?.length ?? 0}, coverage=${response.coverage?.length ?? 0}, debug=${response.debug?.length ?? 0}`);
     if (response.results.length) {
         log(`Executor result keys: ${JSON.stringify(response.results.map(result => caseKey(result.target, result.case_name)))}`);
     }
