@@ -338,6 +338,9 @@ add_scylla_test(symmetric_key_test
 add_scylla_test(tablet_aware_restore_test
   KIND SEASTAR)
 
+add_scylla_test(pt_trace_manual_test
+  KIND SEASTAR)
+
 add_scylla_test(combined_tests
   KIND SEASTAR
   SOURCES

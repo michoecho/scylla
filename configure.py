@@ -677,6 +677,7 @@ scylla_tests = set([
     'test/boost/unique_view_test',
     'test/boost/scoped_item_list_test',
     'test/manual/ec2_snitch_test',
+    'test/boost/pt_trace_manual_test',
     'test/manual/enormous_table_scan_test',
     'test/manual/gce_snitch_test',
     'test/manual/gossip',
@@ -1687,6 +1688,8 @@ for t in sorted(scylla_tests):
         deps[t] += scylla_tests_dependencies
     else:
         deps[t] += scylla_core + alternator + idls + scylla_tests_generic_dependencies
+    if t in pure_boost_tests:
+        deps[t] += ['test/lib/pt_trace_boost.cc']
 
 for t in sorted(perf_tests | perf_standalone_tests):
     deps[t] = [t + '.cc'] + scylla_tests_dependencies
@@ -2775,7 +2778,7 @@ def write_build_file(f,
                 if binary not in tests_not_using_seastar_test_framework:
                     local_libs += f' {seastar_testing_libs}'
                 else:
-                    local_libs += ' ' + '-lgnutls' + ' ' + '-lboost_unit_test_framework'
+                    local_libs += ' ' + seastar_testing_libs + ' ' + '-lgnutls' + ' ' + '-lboost_unit_test_framework'
                 # Our code's debugging information is huge, and multiplied
                 # by many tests yields ridiculous amounts of disk space.
                 # So we strip the tests by default; The user can very

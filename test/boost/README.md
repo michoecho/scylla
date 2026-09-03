@@ -115,3 +115,21 @@ source file (during development) at reasonable levels.
 When adding new source files in test/boost, don't forget to list the new
 source file in configure.py and also in CMakeLists.txt. The former is
 needed by our CI, but the latter is preferred by some developers.
+
+## Manual Intel PT traces
+
+Boost tests can record the selected run when `PT_TRACE` is present. The
+recorder starts after the Seastar reactor is initialized and stops before it
+is finalized. It writes both files below `$TMPDIR` and reports their paths:
+
+```bash
+export PT_TRACE=1
+export PT_TRACE_DLFILTER=/absolute/path/to/libperf2perfetto.so
+export PT_TRACE_BROWSER=/path/to/fake-browser
+build/dev/test/boost/pt_trace_manual_test -- -t pt_trace_manual_workload -- -c1 -m1G
+```
+
+`PT_TRACE_BROWSER` receives the Perfetto URL as its only argument. Set it to
+`none` to skip launching a browser, or to a small script that prints the URL
+for a headless sanity check. Optional overrides are `PT_TRACE_PERF`,
+`PT_TRACE_EVENT`, and `PT_TRACE_AUX_PAGES`.

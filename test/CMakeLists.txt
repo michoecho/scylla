@@ -53,6 +53,10 @@ function(add_scylla_test name)
   set(target "${_target_prefix}_${name}")
 
   add_executable(${target} ${src})
+  if(kind STREQUAL "BOOST")
+    target_sources(${target} PRIVATE
+      ${CMAKE_SOURCE_DIR}/test/lib/pt_trace_boost.cc)
+  endif()
   set_target_properties(${target} PROPERTIES OUTPUT_NAME ${name})
   add_dependencies(tests ${target})
 
@@ -76,7 +80,8 @@ function(add_scylla_test name)
   elseif(kind STREQUAL "BOOST")
     target_link_libraries(${target}
       PRIVATE
-        Boost::unit_test_framework)
+        Boost::unit_test_framework
+        Seastar::seastar_testing)
   elseif(kind STREQUAL "UNIT")
     target_link_libraries(${target}
       PRIVATE
