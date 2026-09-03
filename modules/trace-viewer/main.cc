@@ -32,10 +32,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <map>
+#include <set>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <limits>
 #include "address_decoder/address_decoder.h"
 #include "decoder.h"
 
@@ -67,9 +69,9 @@ struct clock_sync_point {
     uint64_t ticks_per_second;
 };
 
-// Every shard's rings are stamped by the same rdtsc and the same wall clock, so
-// the syncs out of all the files go into one list rather than one per shard.
-static std::vector<clock_sync_point> clock_syncs;
+// Shards in one process share a clock; nodes do not. Keep the syncs per input
+// snapshot so multiple machines can be aligned through CLOCK_REALTIME.
+static std::unordered_map<uint32_t, std::vector<clock_sync_point>> clock_syncs;
 
 class wall_clock {
 public:
@@ -265,6 +267,7 @@ inline int64_t rdtsc() {
 //   0xd prepared_query_run            a prepared query ran; metadata is attached below
 //   0xe/f prepared_statement_{added,removed} cache-set deltas
 //   0x10..12 prepared-statement snapshot begin, entry, end
+//   RPC records are kept in rpc_event rather than this task-oriented list.
 //
 // (0x3, the admission decision of the original experiment, is not emitted by
 // this build; the formatter for it is left in place.)
@@ -285,6 +288,7 @@ struct entry {
     // honest answer to "which cpu was this on" is which file it was in. Stack
     // samples are matched to tasks per shard, and that is what needs it.
     uint32_t shard = 0;
+    uint32_t node = 0;
 
     // Prepared-query metadata is copied out of the trace buffer while it is
     // still alive. Runs acquire the two text fields during the reverse info
@@ -296,12 +300,51 @@ struct entry {
     // Which request this record belongs to. For a *switch* that is the task
     // being switched to; for everything else, the task it happened under.
     uint64_t query() const {
-        if (event == 0 || event == 1 || event == 0xa || event == 0xb) {
+        if (event == 0 || event == 1 || event == 0xa || event == 0xb || event == 0x13) {
             return arg;
         } else {
             return id;
         }
     }
+};
+
+// Scylla's task counter is process-local.  When several node snapshots are
+// loaded, the same numeric task id can therefore occur independently on every
+// node.  Keep node 0's ids unchanged for compatibility with the existing UI,
+// and namespace the others with a stable 64-bit mixer.
+static uint64_t namespace_task(uint32_t node, uint64_t task) {
+    if (node == 0 || task == 0) {
+        return task;
+    }
+    uint64_t x = task ^ (uint64_t(node) * 0x9e3779b97f4a7c15ULL);
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x ? x : 1;
+}
+
+enum class rpc_event_kind { connection_open, connection_close, message_sent,
+                            message_received, reply_sent, reply_received,
+                            snapshot_entry, request_handled };
+
+struct rpc_event {
+    rpc_event_kind kind;
+    uint64_t connection = 0;
+    uint64_t sequence = 0;
+    int64_t msg_id = 0;
+    // The task this record is *about*, which for the two send records and for
+    // request_handled is not the task that emitted it: see the comment on the
+    // RPC tracepoints in seastar/include/seastar/core/scylla_tracer.hh. Zero on
+    // the records that have no such task -- a receive is read by the connection's
+    // receive loop and there is nothing better to say about it.
+    uint64_t task = 0;
+    int64_t ts = 0;
+    uint32_t shard = 0;
+    uint32_t node = 0;
+    std::string local;
+    std::string remote;
 };
 
 // The decoded source locations, interned.
@@ -371,6 +414,7 @@ struct stack_sample {
     // interrupted. See wall_clock::ticks_from_realtime().
     int64_t ts = 0;
     uint32_t shard = 0;
+    uint32_t node = 0;
     // The task that was on the cpu, filled in below by walking the merged
     // timeline; zero if the shard was between tasks or the trace does not reach
     // back far enough to say.
@@ -528,6 +572,7 @@ static std::string entry_message(const entry& e) {
                                   e.prepared_keyspace.empty() ? "" : e.prepared_keyspace + ".",
                                   e.prepared_statement, prepared_id_string(e));
     case 0x12: return "PREP_SNAPSHOT_END";
+    case 0x13: return fmt::format("{:10s} from {:16x}", "RPC_HANDLE", e.id);
     default: return fmt::format("UNKNOWN ({})", e.event);
     }
 }
@@ -601,6 +646,9 @@ static void update_log_cache(log_cache& cache, uint64_t task_id, int threshold,
     auto range = std::ranges::equal_range(sorted, task_id, std::ranges::less(),
                                           [] (const auto& e) { return e.query(); });
     cache.item_count = range.size();
+    if (range.empty()) {
+        return;
+    }
     cache.source_begin = range.begin() - sorted.begin();
 
     const size_t cached_count = std::min(cache.item_count, static_cast<size_t>(threshold));
@@ -613,6 +661,13 @@ static void update_log_cache(log_cache& cache, uint64_t task_id, int threshold,
     }
 }
 
+// The log lines are every record in the request's window, over every node
+// loaded; the plot below them is not. A blue rectangle means "this shard was
+// running something else", which is a statement about one reactor: letting
+// another node's records end an interval would cut the selected task's green
+// bars short in proportion to how many snapshots happen to be open. So the plot
+// walks the coordinator's records only, which is what a single-node trace --
+// where they are all there is -- has always drawn.
 static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int threshold,
                                   const std::vector<entry>& sorted,
                                   std::span<const entry> span) {
@@ -625,6 +680,9 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
     cache.threshold = threshold;
     auto sorted_range = std::ranges::equal_range(sorted, task_id, std::ranges::less(),
                                                  [] (const auto& e) { return e.query(); });
+    if (sorted_range.empty()) {
+        return;
+    }
     auto span_range = std::ranges::equal_range(
         span, 1, std::ranges::less(), [&sorted_range] (const auto& e) {
             return (e.ts >= sorted_range.front().ts) + (e.ts > sorted_range.back().ts);
@@ -643,6 +701,7 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
         cache.lines.push_back({source_index, record, log_line_text(record, cache.start_ts, true)});
     }
 
+    const uint32_t node = sorted_range.front().node;
     uint64_t iostack = 0;
     int64_t iostart = 0;
     int64_t prev_ts = cache.start_ts;
@@ -650,6 +709,9 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
     for (size_t source_index = cache.source_begin;
          source_index < cache.source_begin + cached_count; ++source_index) {
         const auto& record = span[source_index];
+        if (record.node != node) {
+            continue;
+        }
         const double x_min = double(prev_ts - cache.start_ts) * MULTIPLIER / 1e6;
         const double x_max = double(record.ts - cache.start_ts) * MULTIPLIER / 1e6;
         cache.plot_items.push_back({
@@ -688,13 +750,10 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
     }
 }
 
-// Task ids are *not* namespaced by shard here, deliberately. A request
-// coordinated on one shard reaches a tablet on another, and the continuations
-// that run there inherit its id -- so one request's records are spread over two
-// shards' files under a single id, and separating them by shard would cut every
-// cross-shard request in half. Scylla mints the ids with the shard already in
-// the top bits, which is what makes that safe; see fresh_task_id in
-// seastar/src/core/scylla_tracer.cc.
+// Task ids are not namespaced by shard here: a request coordinated on one shard
+// reaches a tablet on another, and inherited continuations must stay together.
+// When snapshots from several processes are loaded, namespace_task() adds a
+// viewer-only process namespace before this grouping happens.
 
 static std::string copy_bytes(std::span<const std::byte> bytes) {
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
@@ -703,8 +762,8 @@ static std::string copy_bytes(std::span<const std::byte> bytes) {
 static void add_prepared_entry(std::vector<entry>& out, uint64_t event,
                                std::string_view keyspace, std::string_view statement,
                                std::span<const std::byte> id, int64_t timestamp,
-                               uint32_t shard) {
-    entry result{event, 0, 0, timestamp, 0, shard};
+                               uint32_t shard, uint32_t node) {
+    entry result{event, 0, 0, timestamp, 0, shard, node};
     result.prepared_id = copy_bytes(id);
     result.prepared_keyspace = keyspace;
     result.prepared_statement = statement;
@@ -715,18 +774,23 @@ static void add_prepared_entry(std::vector<entry>& out, uint64_t event,
 // tracepoint the viewer has a use for, and a template that swallows the rest.
 struct sink {
     std::vector<entry>& out;
+    std::vector<rpc_event>& rpc;
     // Which file this is, so that every record knows which cpu wrote it. See
     // entry::shard.
     uint32_t shard;
+    uint32_t node;
 
     void operator()(const trace::run_task& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0, e.prev, e.task, int64_t(m.timestamp), intern_location(e.at), shard});
+        out.push_back({0, namespace_task(node, e.prev), namespace_task(node, e.task),
+                       int64_t(m.timestamp), intern_location(e.at), shard, node});
     }
     void operator()(const trace::cql_request& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({1, e.prev, e.task, int64_t(m.timestamp), 0, shard});
+        out.push_back({1, namespace_task(node, e.prev), namespace_task(node, e.task),
+                       int64_t(m.timestamp), 0, shard, node});
     }
     void operator()(const trace::execution_stage& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0xb, e.prev, e.task, int64_t(m.timestamp), 0, shard});
+        out.push_back({0xb, namespace_task(node, e.prev), namespace_task(node, e.task),
+                       int64_t(m.timestamp), 0, shard, node});
     }
     // The reader concurrency semaphore's hop, and a switch in exactly the sense
     // the ones above are: the read the loop is about to run belongs to the task
@@ -735,40 +799,41 @@ struct sink {
     // queued read, and every stack sample taken inside one, to whichever
     // request happened to spin the loop up.
     void operator()(const trace::semaphore_execute& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0xa, e.prev, e.task, int64_t(m.timestamp), 0, shard});
+        out.push_back({0xa, namespace_task(node, e.prev), namespace_task(node, e.task),
+                       int64_t(m.timestamp), 0, shard, node});
     }
     void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0x4, e.task, e.io, int64_t(m.timestamp), 0, shard});
+        out.push_back({0x4, namespace_task(node, e.task), e.io, int64_t(m.timestamp), 0, shard, node});
     }
     void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
-        out.push_back({0x5, e.task, e.io, int64_t(m.timestamp), 0, shard});
+        out.push_back({0x5, namespace_task(node, e.task), e.io, int64_t(m.timestamp), 0, shard, node});
     }
     void operator()(const trace::prepared_statement_added& e,
                     const trace::tracepoint_metadata& m) const {
         add_prepared_entry(out, 0xe, e.keyspace, e.statement, e.id,
-                           int64_t(m.timestamp), shard);
+                           int64_t(m.timestamp), shard, node);
     }
     void operator()(const trace::prepared_statement_removed& e,
                     const trace::tracepoint_metadata& m) const {
         add_prepared_entry(out, 0xf, e.keyspace, e.statement, e.id,
-                           int64_t(m.timestamp), shard);
+                           int64_t(m.timestamp), shard, node);
     }
     void operator()(const trace::prepared_query_run& e,
                     const trace::tracepoint_metadata& m) const {
-        add_prepared_entry(out, 0xd, {}, {}, e.id, int64_t(m.timestamp), shard);
+        add_prepared_entry(out, 0xd, {}, {}, e.id, int64_t(m.timestamp), shard, node);
     }
     void operator()(const trace::prepared_statements_snapshot_begin&,
                     const trace::tracepoint_metadata& m) const {
-        out.push_back({0x10, 0, 0, int64_t(m.timestamp), 0, shard});
+        out.push_back({0x10, 0, 0, int64_t(m.timestamp), 0, shard, node});
     }
     void operator()(const trace::prepared_statement_snapshot_entry& e,
                     const trace::tracepoint_metadata& m) const {
         add_prepared_entry(out, 0x11, e.keyspace, e.statement, e.id,
-                           int64_t(m.timestamp), shard);
+                           int64_t(m.timestamp), shard, node);
     }
     void operator()(const trace::prepared_statements_snapshot_end&,
                     const trace::tracepoint_metadata& m) const {
-        out.push_back({0x12, 0, 0, int64_t(m.timestamp), 0, shard});
+        out.push_back({0x12, 0, 0, int64_t(m.timestamp), 0, shard, node});
     }
     // A sample is put aside rather than turned into an entry here: its place in
     // the timeline is its *own* timestamp converted to ticks, and no sync record
@@ -777,15 +842,55 @@ struct sink {
         stack_sample sample;
         sample.realtime_ns = e.time_ns;
         sample.shard = e.shard;
+        sample.node = node;
         const auto* const words = reinterpret_cast<const uint64_t*>(e.frames.data());
         sample.frames.assign(words, words + e.frames.size() / sizeof(uint64_t));
         samples.push_back(std::move(sample));
     }
     // Pass one of the wall clock conversion: a sync record is not an event of
     // the program's own, so it never becomes an entry -- it is put aside, and
-    // the whole collection is handed to the_clock once every file is decoded.
+    // the whole per-node collection is handed to a wall_clock once every file
+    // is decoded.
     void operator()(const trace::clock_sync& e, const trace::tracepoint_metadata& m) const {
-        clock_syncs.push_back({int64_t(m.timestamp), e.realtime_ns, e.ticks_per_second});
+        clock_syncs[node].push_back({int64_t(m.timestamp), e.realtime_ns, e.ticks_per_second});
+    }
+    void operator()(const trace::rpc_connection_open& e, const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::connection_open, e.connection, 0, 0, 0,
+                       int64_t(m.timestamp), shard, node, std::string(e.local), std::string(e.remote)});
+    }
+    void operator()(const trace::rpc_connection_close& e, const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::connection_close, e.connection, 0, 0, 0,
+                       int64_t(m.timestamp), shard, node});
+    }
+    void operator()(const trace::rpc_message_sent& e, const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::message_sent, e.connection, e.sequence, 0,
+                       namespace_task(node, e.task), int64_t(m.timestamp), shard, node});
+    }
+    void operator()(const trace::rpc_message_received& e, const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::message_received, e.connection, e.sequence, 0, 0,
+                       int64_t(m.timestamp), shard, node});
+    }
+    void operator()(const trace::rpc_reply_sent& e, const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::reply_sent, e.connection, e.sequence, e.msg_id,
+                       namespace_task(node, e.task), int64_t(m.timestamp), shard, node});
+    }
+    void operator()(const trace::rpc_reply_received& e, const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::reply_received, e.connection, e.sequence, e.msg_id, 0,
+                       int64_t(m.timestamp), shard, node});
+    }
+    void operator()(const trace::rpc_request_handled& e, const trace::tracepoint_metadata& m) const {
+        // The task chain the inbound message opened on this shard. It is also a
+        // task switch, so the timeline needs it as an entry too -- without one,
+        // the plot has nothing marking where the replica's work begins.
+        rpc.push_back({rpc_event_kind::request_handled, e.connection, e.sequence, 0,
+                       namespace_task(node, e.task), int64_t(m.timestamp), shard, node});
+        out.push_back({0x13, namespace_task(node, e.prev), namespace_task(node, e.task),
+                       int64_t(m.timestamp), 0, shard, node});
+    }
+    void operator()(const trace::rpc_connection_snapshot_entry& e,
+                    const trace::tracepoint_metadata& m) const {
+        rpc.push_back({rpc_event_kind::snapshot_entry, e.connection, 0, 0, 0,
+                       int64_t(m.timestamp), shard, node, std::string(e.local), std::string(e.remote)});
     }
     template <typename Event>
     void operator()(const Event&, const trace::tracepoint_metadata&) const {}
@@ -796,8 +901,9 @@ struct sink {
 // `shard` is which file this is rather than anything the file says: a trace has
 // no field for the cpu it came off, and it does not need one, because there is
 // one file per shard.
-static void load_trace(const std::filesystem::path& path, uint32_t shard,
-                       std::vector<entry>& out, trace::dso_directory& dsos) {
+static void load_trace(const std::filesystem::path& path, uint32_t shard, uint32_t node,
+                       std::vector<entry>& out, std::vector<rpc_event>& rpc,
+                       trace::dso_directory& dsos) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::system_error(errno, std::generic_category(), path.string());
@@ -806,7 +912,7 @@ static void load_trace(const std::filesystem::path& path, uint32_t shard,
                                 std::istreambuf_iterator<char>()};
     const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
                                            raw.size()};
-    trace::decode(bytes, sink{out, shard}, dsos);
+    trace::decode(bytes, sink{out, rpc, shard, node}, dsos);
 
     // The objects this thread had mapped, for the raw addresses in a stack
     // sample. Every shard of one process saw the same objects at the same
@@ -829,6 +935,240 @@ static std::optional<uint32_t> shard_of(const std::filesystem::path& path) {
         return std::nullopt;
     }
 }
+
+using rpc_key = std::pair<uint32_t, uint64_t>; // node, local connection id
+
+struct rpc_endpoint {
+    rpc_key key;
+    std::string local;
+    std::string remote;
+};
+
+struct rpc_span {
+    rpc_key source;
+    rpc_key destination;
+    uint32_t source_shard = 0;
+    uint32_t destination_shard = 0;
+    uint64_t source_task = 0;
+    uint64_t destination_task = 0;
+    int64_t sent = 0;
+    int64_t received = 0;
+    uint64_t sequence = 0;
+    std::optional<int64_t> reply_id;
+};
+
+struct task_plot_cache {
+    uint64_t task_id = 0;
+    int threshold = -1;
+    int64_t start_ts = 0;
+    int64_t end_ts = 0;
+    std::vector<cached_plot_item> plot_items;
+};
+
+struct distributed_plot_row {
+    uint32_t node = 0;
+    uint32_t shard = 0;
+    uint64_t task_id = 0;
+    task_plot_cache cache;
+};
+
+static void update_task_plot_cache(task_plot_cache& cache, uint64_t task_id, int threshold,
+                                   const std::vector<const entry*>& lane_entries) {
+    if (cache.task_id == task_id && cache.threshold == threshold) {
+        return;
+    }
+
+    cache = {};
+    cache.task_id = task_id;
+    cache.threshold = threshold;
+
+    std::vector<const entry*> task_entries;
+    for (const entry* const e : lane_entries) {
+        if (e->query() == task_id) {
+            task_entries.push_back(e);
+        }
+    }
+    if (task_entries.empty()) {
+        return;
+    }
+
+    cache.start_ts = task_entries.front()->ts;
+    cache.end_ts = task_entries.back()->ts;
+    const auto first = std::ranges::lower_bound(
+        lane_entries, cache.start_ts, std::ranges::less(), [](const entry* e) { return e->ts; });
+    const auto last = std::upper_bound(
+        lane_entries.begin(), lane_entries.end(), cache.end_ts,
+        [](int64_t ts, const entry* e) { return ts < e->ts; });
+    const size_t item_count = last - first;
+    const size_t cached_count = std::min(item_count, static_cast<size_t>(threshold));
+    cache.plot_items.reserve(cached_count);
+
+    uint64_t iostack = 0;
+    int64_t iostart = 0;
+    int64_t prev_ts = cache.start_ts;
+    bool cpu = true;
+    for (size_t i = 0; i < cached_count; ++i) {
+        const entry& record = *first[i];
+        const double x_min = double(prev_ts - cache.start_ts) * MULTIPLIER / 1e6;
+        const double x_max = double(record.ts - cache.start_ts) * MULTIPLIER / 1e6;
+        cache.plot_items.push_back({
+            {x_min, 1.0},
+            {x_max, 0.0},
+            {x_min, 0.0},
+            cpu ? IM_COL32(0, 128, 0, 255) : IM_COL32(0, 0, 128, 32),
+            cpu,
+        });
+
+        if (record.query() == task_id) {
+            if (record.event != 0x5) {
+                cpu = true;
+            }
+            if (record.event == 0x4) {
+                if (iostack == 0) {
+                    iostart = record.ts;
+                }
+                ++iostack;
+            } else if (record.event == 0x5) {
+                --iostack;
+                if (iostack == 0) {
+                    cache.plot_items.push_back({
+                        {double(iostart - cache.start_ts) * MULTIPLIER / 1e6, 1.0},
+                        {x_max, 0.0},
+                        {},
+                        IM_COL32(255, 255, 255, 32),
+                        false,
+                    });
+                }
+            }
+        } else {
+            cpu = false;
+        }
+        prev_ts = record.ts;
+    }
+}
+
+// The RPC edges one request is responsible for, as a causal walk over task ids.
+//
+// Two joins do the work, and neither needs a tracing id on the wire:
+//
+//   sent -> received   by (connection, sequence). The connection ids are local
+//                      to their processes, so the two ends are paired first
+//                      through the local/remote endpoints in the connection
+//                      snapshot; the sequence is then a per-direction counter
+//                      that both ends keep over the same set of frames.
+//   received -> task   by (connection, sequence) again, against the
+//                      request_handled record the server emits when it opens a
+//                      task chain for the message.
+//
+// The walk starts at the selected task -- the messages *it* enqueued, which is
+// what rpc_message_sent's task field says -- and follows each message into the
+// task that handled it. Nothing here looks at what happened to be running on a
+// shard at a timestamp: a message is written by the connection's send loop and
+// read by its receive loop, so the running task at either instant is the
+// connection's, not the request's, and seeding off it pulls in every unrelated
+// request the node handled while this one was in flight.
+static std::vector<rpc_span> make_rpc_spans(const std::vector<rpc_event>& events,
+                                             uint64_t task_id) {
+    if (task_id == 0) {
+        return {};
+    }
+
+    std::vector<rpc_event> ordered = events;
+    std::ranges::sort(ordered, {}, &rpc_event::ts);
+    std::map<rpc_key, rpc_endpoint> endpoints;
+    for (const rpc_event& e : ordered) {
+        const rpc_key key{e.node, e.connection};
+        if (e.kind == rpc_event_kind::connection_open ||
+            e.kind == rpc_event_kind::snapshot_entry) {
+            endpoints[key] = {key, e.local, e.remote};
+        } else if (e.kind == rpc_event_kind::connection_close) {
+            endpoints.erase(key);
+        }
+    }
+
+    // A connection and the one at the other end of the same socket. Both ends
+    // agree on the pair of addresses and disagree on which is which, and a
+    // (address, port) pair identifies one socket, so the match is unique.
+    std::map<rpc_key, rpc_key> peers;
+    for (const auto& [a_key, a] : endpoints) {
+        for (const auto& [b_key, b] : endpoints) {
+            if (a_key != b_key && a.local == b.remote && a.remote == b.local) {
+                peers[a_key] = b_key;
+                break;
+            }
+        }
+    }
+
+    struct message_key {
+        rpc_key connection;
+        uint64_t sequence;
+        auto operator<=>(const message_key&) const = default;
+    };
+    std::map<message_key, const rpc_event*> received;
+    std::map<message_key, const rpc_event*> handled;
+    std::map<message_key, int64_t> reply_ids;
+    for (const rpc_event& e : ordered) {
+        const message_key key{{e.node, e.connection}, e.sequence};
+        if (e.kind == rpc_event_kind::message_received) {
+            received.try_emplace(key, &e);
+        } else if (e.kind == rpc_event_kind::request_handled) {
+            handled.try_emplace(key, &e);
+        } else if (e.kind == rpc_event_kind::reply_sent) {
+            reply_ids[key] = e.msg_id;
+        }
+    }
+
+    std::vector<rpc_span> all;
+    for (const rpc_event& e : ordered) {
+        if (e.kind != rpc_event_kind::message_sent) {
+            continue;
+        }
+        const rpc_key source{e.node, e.connection};
+        const auto peer = peers.find(source);
+        if (peer == peers.end()) {
+            continue;
+        }
+        const message_key far{peer->second, e.sequence};
+        const auto target = received.find(far);
+        if (target == received.end()) {
+            continue;
+        }
+        const rpc_event& r = *target->second;
+        rpc_span span{source, peer->second, e.shard, r.shard, e.task, 0, e.ts, r.ts, e.sequence};
+        // A reply is a message too, and it has no request_handled: the client
+        // resumes the task that was waiting on it rather than opening a chain.
+        if (const auto h = handled.find(far); h != handled.end()) {
+            span.destination_task = h->second->task;
+        }
+        if (const auto reply = reply_ids.find({source, e.sequence}); reply != reply_ids.end()) {
+            span.reply_id = reply->second;
+        }
+        all.push_back(std::move(span));
+    }
+
+    std::vector<rpc_span> selected;
+    std::vector<char> included(all.size(), 0);
+    std::unordered_set<uint64_t> reached{task_id};
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 0; i < all.size(); ++i) {
+            const rpc_span& span = all[i];
+            if (included[i] || !reached.contains(span.source_task)) {
+                continue;
+            }
+            included[i] = 1;
+            selected.push_back(span);
+            if (span.destination_task != 0) {
+                reached.insert(span.destination_task);
+            }
+            changed = true;
+        }
+    }
+    std::ranges::sort(selected, {}, &rpc_span::sent);
+    return selected;
+}
+
 template <> struct fmt::formatter<entry> : formatter<string_view> {
     auto format(const entry& e, auto& ctx) const -> decltype(ctx.out()) {
         // ctx.out() is an output iterator to write to.
@@ -837,25 +1177,32 @@ template <> struct fmt::formatter<entry> : formatter<string_view> {
 };
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s SNAPSHOT-DIR\n", argv[0]);
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s SNAPSHOT-DIR [SNAPSHOT-DIR ...]\n", argv[0]);
         fprintf(stderr, "  a directory of shard-N.trace files, as written by Scylla's\n"
-                        "  POST /system/trace_snapshot into <workdir>/traces/<stamp>/\n");
+                        "  POST /system/trace_snapshot into <workdir>/traces/<stamp>/\n"
+                        "  pass one directory per node to align and correlate RPC traffic\n");
         return 2;
     }
 
     // One file per shard, and one metadata stream per file: a trace describes
     // the objects *its own* thread saw loaded, so the shards are decoded
     // separately and merged afterwards rather than concatenated.
-    std::vector<std::filesystem::path> files;
-    for (const auto& e : std::filesystem::directory_iterator(argv[1])) {
-        if (e.path().extension() == ".trace") {
-            files.push_back(e.path());
+    struct trace_file {
+        std::filesystem::path path;
+        uint32_t node;
+    };
+    std::vector<trace_file> files;
+    for (int node = 0; node < argc - 1; ++node) {
+        for (const auto& e : std::filesystem::directory_iterator(argv[node + 1])) {
+            if (e.path().extension() == ".trace") {
+                files.push_back({e.path(), uint32_t(node)});
+            }
         }
     }
-    std::ranges::sort(files);
+    std::ranges::sort(files, {}, &trace_file::path);
     if (files.empty()) {
-        fprintf(stderr, "no *.trace files in %s\n", argv[1]);
+        fprintf(stderr, "no *.trace files in the supplied snapshot directories\n");
         return 1;
     }
 
@@ -879,29 +1226,64 @@ int main(int argc, char** argv) {
     the_decoder = std::make_unique<addrdec::address_decoder>();
 
     std::vector<entry> entries;
+    std::vector<rpc_event> rpc_events;
     for (size_t i = 0; i < files.size(); ++i) {
         const auto& file = files[i];
         // The name if it has a number in it, and the position in the sorted
         // list otherwise -- all this has to be is distinct per file.
-        const uint32_t shard = shard_of(file).value_or(uint32_t(i));
-        load_trace(file, shard, entries, dsos);
-        fmt::print("{}: {} records so far\n", file.string(), entries.size());
+        const uint32_t shard = shard_of(file.path).value_or(uint32_t(i));
+        load_trace(file.path, shard, file.node, entries, rpc_events, dsos);
+        fmt::print("{}: {} records so far\n", file.path.string(), entries.size());
     }
     if (entries.empty()) {
-        fprintf(stderr, "no records in %s\n", argv[1]);
+        fprintf(stderr, "no records in the supplied snapshot directories\n");
         return 1;
     }
+    fmt::print("{} RPC transport records\n", rpc_events.size());
 
-    // Every file has been read, so every sync record in the trace is in hand:
-    // pass two can now convert any record against the syncs either side of it.
-    // A trace from a tracer older than the sync records -- or from one with them
-    // switched off -- simply has none, and the log columns come out blank while
-    // everything else works as before.
-    the_clock.build(std::move(clock_syncs));
+    // Every file has been read, so every sync record in the trace is in hand.
+    // Build one clock per node first: rdtsc values from different machines are
+    // unrelated.  The first supplied snapshot is the reference timeline, and
+    // all records are then converted through CLOCK_REALTIME into that clock.
+    std::unordered_map<uint32_t, wall_clock> node_clocks;
+    for (const auto& [node, points] : clock_syncs) {
+        node_clocks[node].build(points);
+    }
+    // Node numbering follows the command-line order, not filesystem order
+    // (the files were sorted by path above). Keep the first supplied directory
+    // as the reference even when its path sorts after another directory.
+    constexpr uint32_t reference_node = 0;
+    if (const auto found = node_clocks.find(reference_node); found != node_clocks.end()) {
+        the_clock = found->second;
+    }
+    size_t sync_count = 0;
+    for (const auto& [node, points] : clock_syncs) {
+        sync_count += points.size();
+    }
+    for (entry& e : entries) {
+        const auto node = node_clocks.find(e.node);
+        if (node != node_clocks.end()) {
+            if (const auto ns = node->second.realtime_ns(e.ts)) {
+                if (const auto ticks = the_clock.ticks_from_realtime(*ns)) {
+                    e.ts = *ticks;
+                }
+            }
+        }
+    }
+    for (rpc_event& e : rpc_events) {
+        const auto node = node_clocks.find(e.node);
+        if (node != node_clocks.end()) {
+            if (const auto ns = node->second.realtime_ns(e.ts)) {
+                if (const auto ticks = the_clock.ticks_from_realtime(*ns)) {
+                    e.ts = *ticks;
+                }
+            }
+        }
+    }
     if (const auto ns_per_tick = the_clock.ns_per_tick()) {
         MULTIPLIER = *ns_per_tick;
     }
-    fmt::print("{} clock sync records, {:.6f} ns/tick ({:.4f} GHz){}\n", the_clock.size(),
+    fmt::print("{} clock sync records, {:.6f} ns/tick ({:.4f} GHz){}\n", sync_count,
                MULTIPLIER, 1.0 / MULTIPLIER,
                the_clock.empty() ? " -- no sync records, times unavailable" : "");
 
@@ -920,7 +1302,7 @@ int main(int argc, char** argv) {
             } else if (!entries.empty()) {
                 samples[i].ts = entries.back().ts;
             }
-            entries.push_back({0xc, 0, i, samples[i].ts, 0, samples[i].shard});
+            entries.push_back({0xc, 0, i, samples[i].ts, 0, samples[i].shard, samples[i].node});
         }
         fmt::print("{} distinct source locations: {} resolved, {} not\n",
                    locations_resolved + locations_unresolved, locations_resolved,
@@ -937,6 +1319,15 @@ int main(int argc, char** argv) {
     // which makes that meaningful.
     std::ranges::sort(entries, {}, &entry::ts);
 
+    // Keep the timestamp-ordered records for each node/shard. Distributed
+    // rows use these same records as the ordinary Full log plot, but restrict
+    // the view to the task running on that shard.
+    using task_lane = std::pair<uint32_t, uint32_t>;
+    std::map<task_lane, std::vector<const entry*>> entries_by_lane;
+    for (const entry& e : entries) {
+        entries_by_lane[{e.node, e.shard}].push_back(&e);
+    }
+
     // Reconstruct prepared statements at every prepared-query run. The latest
     // snapshot is the anchor for this reverse walk: a forward add is undone by
     // removing the entry, while a forward remove is undone by adding its
@@ -948,11 +1339,11 @@ int main(int argc, char** argv) {
             std::string statement;
         };
         using prepared_set = std::unordered_map<std::string, prepared_metadata>;
-        std::unordered_map<uint32_t, prepared_set> sets;
+        std::map<std::pair<uint32_t, uint32_t>, prepared_set> sets;
 
         for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
             entry& e = *it;
-            auto& set = sets[e.shard];
+            auto& set = sets[{e.node, e.shard}];
             switch (e.event) {
             case 0xd: {
                 const auto found = set.find(e.prepared_id);
@@ -982,16 +1373,17 @@ int main(int argc, char** argv) {
     // the two windows below. A sample taken while the shard was between tasks
     // keeps task 0 and appears only in the sample list.
     {
-        std::unordered_map<uint32_t, uint64_t> running;
+        std::map<std::pair<uint32_t, uint32_t>, uint64_t> running;
         for (entry& e : entries) {
+            const auto cpu = std::make_pair(e.node, e.shard);
             if (e.event == 0 || e.event == 1 || e.event == 0xa || e.event == 0xb) {
-                running[e.shard] = e.arg;
+                running[cpu] = e.arg;
             } else if (e.event == 0xd || e.event == 0xe || e.event == 0xf ||
                        e.event == 0x10 || e.event == 0x11 || e.event == 0x12) {
-                const auto found = running.find(e.shard);
+                const auto found = running.find(cpu);
                 e.id = found == running.end() ? 0 : found->second;
             } else if (e.event == 0xc) {
-                const auto found = running.find(e.shard);
+                const auto found = running.find(cpu);
                 e.id = found == running.end() ? 0 : found->second;
                 samples[e.arg].task = e.id;
             }
@@ -1142,6 +1534,32 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (std::getenv("TRACE_DUMP_RPC") != nullptr) {
+        if (queries.empty()) {
+            fmt::print("no CQL requests to correlate\n");
+        } else {
+            const auto spans = make_rpc_spans(rpc_events, queries.back().id);
+            std::set<std::pair<uint32_t, uint32_t>> shards;
+            for (const rpc_span& span : spans) {
+                shards.emplace(span.source.first, span.source_shard);
+                shards.emplace(span.destination.first, span.destination_shard);
+            }
+            fmt::print("distributed query {:x}: {} RPC messages across {} node/shards\n",
+                       queries.back().id, spans.size(), shards.size());
+            for (const rpc_span& span : spans) {
+                fmt::print("  node{}:shard{} task {:x} -> node{}:shard{} task {:x}"
+                           "  {:.3f} ms on the wire, sequence {}{}\n",
+                           span.source.first, span.source_shard, span.source_task,
+                           span.destination.first, span.destination_shard,
+                           span.destination_task,
+                           double(span.received - span.sent) * MULTIPLIER / 1e6,
+                           span.sequence,
+                           span.reply_id ? fmt::format(", reply-msg-id {}", *span.reply_id) : "");
+            }
+        }
+        return 0;
+    }
+
     std::vector<double> xx;
     std::vector<double> yy;
     if (queries.size()) {
@@ -1260,13 +1678,13 @@ int main(int argc, char** argv) {
     size_t w = 0;
     double line_x = 1.0;
     auto select_task = [&] (uint64_t task_id, bool update_full_log) {
+        id_log = task_id;
+        if (update_full_log) {
+            id_full_log = task_id;
+        }
         for (size_t i = 0; i < queries.size(); ++i) {
             if (queries[i].id != task_id) {
                 continue;
-            }
-            id_log = task_id;
-            if (update_full_log) {
-                id_full_log = task_id;
             }
             w = i;
             // Put the marker in the middle of the histogram bucket for this
@@ -1705,42 +2123,163 @@ int main(int argc, char** argv) {
             }
 #endif
             {
+                static uint64_t distributed_for = 0;
+                static bool distributed_initialized = false;
+                static std::vector<rpc_span> distributed_spans;
+                static std::vector<distributed_plot_row> distributed_rows;
+                if (!distributed_initialized || distributed_for != id_full_log) {
+                    distributed_initialized = true;
+                    distributed_for = id_full_log;
+                    distributed_spans = make_rpc_spans(rpc_events, id_full_log);
+
+                    // One row per (node, shard, task) the walk reached, in the
+                    // order the request reached them -- the spans are sorted by
+                    // send time, so the rows come out roughly top-down in causal
+                    // order. The selected task is row 0 and never repeats here.
+                    distributed_rows.clear();
+                    const auto add_row = [](uint32_t node, uint32_t shard, uint64_t task_id) {
+                        if (task_id == 0 || std::ranges::any_of(
+                                distributed_rows, [=](const distributed_plot_row& row) {
+                                    return row.node == node && row.shard == shard &&
+                                           row.task_id == task_id;
+                                })) {
+                            return;
+                        }
+                        distributed_rows.push_back({node, shard, task_id, {}});
+                    };
+                    for (const rpc_span& rpc : distributed_spans) {
+                        if (rpc.source_task != id_full_log) {
+                            add_row(rpc.source.first, rpc.source_shard, rpc.source_task);
+                        }
+                        if (rpc.destination_task != id_full_log) {
+                            add_row(rpc.destination.first, rpc.destination_shard,
+                                    rpc.destination_task);
+                        }
+                    }
+                }
+
+                for (distributed_plot_row& row : distributed_rows) {
+                    const auto lane = entries_by_lane.find({row.node, row.shard});
+                    if (lane != entries_by_lane.end()) {
+                        update_task_plot_cache(row.cache, row.task_id, log_task_threshold,
+                                               lane->second);
+                    }
+                }
+
+                int64_t plot_start_ts = full_log_cache_state.start_ts;
+                int64_t plot_end_ts = full_log_cache_state.end_ts;
+                for (const distributed_plot_row& row : distributed_rows) {
+                    if (!row.cache.plot_items.empty()) {
+                        plot_start_ts = std::min(plot_start_ts, row.cache.start_ts);
+                        plot_end_ts = std::max(plot_end_ts, row.cache.end_ts);
+                    }
+                }
+                const double plot_width = std::max(
+                    0.001, double(plot_end_ts - plot_start_ts) * MULTIPLIER / 1e6);
+
                 ImGui::Begin("Full log plot");
                 if (full_log_cache_state.task_count > static_cast<size_t>(log_task_threshold)) {
                     render_truncation_warning(full_log_cache_state.task_count, log_task_threshold, true);
                 }
-                if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, 100), ImPlotFlags_NoTitle)) {
+                const size_t plot_rows = 1 + distributed_rows.size();
+                const float plot_height = std::max(150.f, 55.f * float(plot_rows));
+                if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, plot_height), ImPlotFlags_NoTitle)) {
                     static uint64_t prev_id;
                     auto flag = prev_id == id_full_log ? ImPlotCond_Once : ImPlotCond_Always;
                     prev_id = id_full_log;
 
-                    const int64_t start_ts = full_log_cache_state.start_ts;
-                    const int64_t end_ts = full_log_cache_state.end_ts;
                     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoGridLines, ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoDecorations);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, double(end_ts - start_ts)*MULTIPLIER/1e6);
-                    ImPlot::SetupAxesLimits(0, double(end_ts - start_ts)*MULTIPLIER/1e6, 0, 1, flag);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, plot_width);
+                    ImPlot::SetupAxesLimits(0, plot_width, 0, double(plot_rows), flag);
                     ImPlot::PushPlotClipRect();
 
-                    for (const auto& item : full_log_cache_state.plot_items) {
-                        ImVec2 rmin = ImPlot::PlotToPixels(item.min);
-                        ImVec2 rmax = ImPlot::PlotToPixels(item.max);
-                        if (item.draw_line) {
-                            ImVec2 line_end = ImPlot::PlotToPixels(item.line_end);
-                            ImPlot::GetPlotDrawList()->AddLine(rmin, line_end, IM_COL32(0,128,0,255));
+                    const auto draw_row = [&](const std::vector<cached_plot_item>& items,
+                                              int64_t row_start_ts, double row) {
+                        const double x_offset = double(row_start_ts - plot_start_ts) * MULTIPLIER / 1e6;
+                        for (const auto& item : items) {
+                            const ImPlotPoint min{item.min.x + x_offset, row + item.min.y};
+                            const ImPlotPoint max{item.max.x + x_offset, row + item.max.y};
+                            ImVec2 rmin = ImPlot::PlotToPixels(min);
+                            ImVec2 rmax = ImPlot::PlotToPixels(max);
+                            if (item.draw_line) {
+                                const ImPlotPoint line_end{item.line_end.x + x_offset,
+                                                          row + item.line_end.y};
+                                ImPlot::GetPlotDrawList()->AddLine(
+                                    rmin, ImPlot::PlotToPixels(line_end), IM_COL32(0, 128, 0, 255));
+                            }
+                            ImPlot::GetPlotDrawList()->AddRectFilled(rmin, rmax, item.color);
                         }
-                        ImPlot::GetPlotDrawList()->AddRectFilled(rmin, rmax, item.color);
+                    };
+
+                    draw_row(full_log_cache_state.plot_items, full_log_cache_state.start_ts, 0);
+                    ImPlot::PlotText("selected task", 0, 0.5, ImVec2(4, 0));
+                    for (size_t row_index = 0; row_index < distributed_rows.size(); ++row_index) {
+                        const distributed_plot_row& row = distributed_rows[row_index];
+                        const double y = double(row_index + 1);
+                        draw_row(row.cache.plot_items, row.cache.start_ts, y);
+                        ImPlot::PlotText(
+                            fmt::format("node {} / shard {} / task {:x}", row.node, row.shard,
+                                        row.task_id)
+                                .c_str(),
+                            0, y + 0.5, ImVec2(4, 0));
                     }
                     ImPlot::PopPlotClipRect();
 
+                    // IsMouseDown, not IsMouseClicked: holding the button and
+                    // dragging scrubs the selection along the row, which is how
+                    // this plot has always been read.
                     if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(0)) {
                         ImPlotPoint pt = ImPlot::GetPlotMousePos();
-                        uint64_t ts = start_ts + pt.x * 1e6 / MULTIPLIER;
-                        chosen_one = std::ranges::lower_bound(span, ts, std::ranges::less(), [] (const auto& e) {return e.ts;}) - span.begin() - 1;
-                        chosen_one = std::clamp(chosen_one, size_t(0), span.size() - 1);
-                        just_chosen = true;
-                        chosen_unfull = std::ranges::lower_bound(sorted, std::make_pair<uint64_t, uint64_t>(uint64_t(id_log), uint64_t(ts)), std::ranges::less(), [] (const auto& e) {return std::make_pair<uint64_t, uint64_t>(e.query(), e.ts);}) - sorted.begin() - 1;
-                        chosen_unfull = std::clamp(chosen_unfull, size_t(0), sorted.size() - 1);
-                        just_chosen_unfull = true;
+                        bool selected_rpc_row = false;
+                        for (size_t row_index = 0; row_index < distributed_rows.size() &&
+                                                    !selected_rpc_row;
+                             ++row_index) {
+                            const distributed_plot_row& row = distributed_rows[row_index];
+                            const double y = double(row_index + 1);
+                            const double x_offset =
+                                double(row.cache.start_ts - plot_start_ts) * MULTIPLIER / 1e6;
+                            if (pt.y < y || pt.y > y + 1) {
+                                continue;
+                            }
+                            for (const cached_plot_item& item : row.cache.plot_items) {
+                                const double x0 = item.min.x + x_offset;
+                                const double x1 = item.max.x + x_offset;
+                                if (pt.x < std::min(x0, x1) || pt.x > std::max(x0, x1)) {
+                                    continue;
+                                }
+                                // The row's own task, and the record of it at
+                                // or before the click -- the same "what was
+                                // running here" convention the row below uses.
+                                select_task(row.task_id, false);
+                                const auto task_range = std::ranges::equal_range(
+                                    sorted, row.task_id, std::ranges::less(),
+                                    [](const auto& e) { return e.query(); });
+                                if (!task_range.empty()) {
+                                    const int64_t ts =
+                                        plot_start_ts + int64_t(pt.x * 1e6 / MULTIPLIER);
+                                    const auto after = std::ranges::upper_bound(
+                                        task_range, ts, std::ranges::less(),
+                                        [](const auto& e) { return e.ts; });
+                                    const auto at = after == task_range.begin() ? after
+                                                                                : after - 1;
+                                    chosen_unfull = at - sorted.begin();
+                                    just_chosen_unfull = true;
+                                }
+                                selected_rpc_row = true;
+                                break;
+                            }
+                        }
+
+                        if (!selected_rpc_row) {
+                            const int64_t start_ts = plot_start_ts;
+                            uint64_t ts = start_ts + pt.x * 1e6 / MULTIPLIER;
+                            chosen_one = std::ranges::lower_bound(span, ts, std::ranges::less(), [] (const auto& e) {return e.ts;}) - span.begin() - 1;
+                            chosen_one = std::clamp(chosen_one, size_t(0), span.size() - 1);
+                            just_chosen = true;
+                            chosen_unfull = std::ranges::lower_bound(sorted, std::make_pair<uint64_t, uint64_t>(uint64_t(id_log), uint64_t(ts)), std::ranges::less(), [] (const auto& e) {return std::make_pair<uint64_t, uint64_t>(e.query(), e.ts);}) - sorted.begin() - 1;
+                            chosen_unfull = std::clamp(chosen_unfull, size_t(0), sorted.size() - 1);
+                            just_chosen_unfull = true;
+                        }
                     }
                     ImPlot::EndPlot();
                 }

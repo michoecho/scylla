@@ -280,8 +280,65 @@ buck2 run //modules/trace-viewer:trace_viewer -- \
     third-party/scylladb/ignored/workdir_01/traces/<stamp>/
 ```
 
-It takes the snapshot **directory**, not a file, and decodes every `*.trace` in
-it. This opens a window; there is no headless mode.
+To inspect a distributed request, pass one snapshot directory per node, in a
+stable order. The viewer aligns their clocks through each node's clock-sync
+records and adds time-aligned rows to the existing `Full log plot`: the selected
+task is the first row, and under it one row for every other task the request
+reached, in the order it reached them.
+
+```sh
+buck2 run //modules/trace-viewer:trace_viewer -- \
+    node0/traces/<stamp>/ node1/traces/<stamp>/ node2/traces/<stamp>/
+```
+
+Every row is the plot that was there before, drawn for one task: the same green
+on-CPU, blue preempted and white in-I/O rectangles, on the same x axis. Clicking
+a rectangle selects that row's task -- the log and the histogram follow it --
+and leaves the plot itself anchored on the request, so the rows do not move
+under the pointer. Holding the button scrubs, as it always has.
+
+Row 0 is drawn from its own node's records and each row under it from its own
+node and shard's, and that scoping is load-bearing: blue means "this reactor was
+running something else", so counting another node's records as an interruption
+would cut the green bars short in proportion to how many snapshots happen to be
+open.
+
+### How a request is followed across nodes
+
+Nothing is added to the RPC protocol -- no tracing id goes on the wire. Three
+joins reconstruct the graph instead:
+
+  * **A connection to the one at the other end of the socket**, by the
+    local/remote endpoint metadata in the connection snapshot. Both ends name
+    the same pair of addresses and disagree about which is which.
+  * **A sent message to its arrival**, by a sequence number each direction of
+    each connection counts locally over the frames it actually writes and reads.
+    It is not a protocol field either.
+  * **An arrival to the work it caused**, by `rpc_request_handled` -- the record
+    the server emits when it opens a task chain for an inbound request, the way
+    the CQL server opens one per frame.
+
+The walk then starts at the selected task, takes the messages that task
+enqueued, and follows each into the task that handled it, repeating until it
+stops finding new ones.
+
+The task on each end has to be recorded explicitly, because neither end of the
+wire runs in it: a message is written by the connection's send loop and read by
+its receive loop, and both outlive every request on the connection. So
+`rpc_message_sent` carries the task that *queued* the buffer, captured by
+`outgoing_entry` where it is constructed in the caller. Asking instead what
+happened to be running on the shard at the timestamp -- which is all a trace
+without those fields can do -- answers "the connection", and a walk seeded on it
+pulls in every unrelated request the node handled while this one was in flight.
+
+Replies have no `rpc_request_handled`: a reply resumes the task that was waiting
+for it rather than opening a chain, so it already belongs to a row. They do
+carry the normal RPC `msg_id`, which is what to look at when inspecting a single
+connection.
+
+It takes snapshot **directories**, not files, and decodes every `*.trace` in
+them. Set `TRACE_DUMP_RPC=1` to print the correlated RPC edges for the
+slowest request and exit without opening a window.
 
 ### The sample viewer
 
@@ -399,11 +456,32 @@ Without it the rest of the trace still decodes and each location comes out as
 business copying its own text into its workdir on every snapshot, and in a real
 deployment it would not: a trace names its objects by build ID, and a build-ID
 server -- debuginfod serves exactly this namespace -- hands them to whoever is
-reading the trace. Here it is `tools/gather-dsos`, run by hand:
+reading the trace. Here it is `tools/gather-dsos`, run by hand from Scylla's
+devshell:
 
 ```sh
-tools/gather-dsos BINARY OUTDIR [--strip-debug] [--link]
+nix develop -c ../../tools/gather-dsos build/Dev/scylla \
+    ignored/<run>/dsos
 ```
+
+For a multi-node trace, use one shared directory when all nodes ran the same
+binary, and pass it explicitly to the viewer:
+
+```sh
+cd third-party/scylladb
+nix develop -c ../../tools/gather-dsos build/Dev/scylla \
+    ignored/rpc-e2e-phases-139123/dsos
+cd ../..
+TRACE_DSO_DIR="$PWD/third-party/scylladb/ignored/rpc-e2e-phases-139123/dsos" \
+  buck2 run //modules/trace-viewer:trace_viewer -- \
+  third-party/scylladb/ignored/rpc-e2e-phases-139123/node1/traces/1788457246486 \
+  third-party/scylladb/ignored/rpc-e2e-phases-139123/node2/traces/1788457246490 \
+  third-party/scylladb/ignored/rpc-e2e-phases-139123/node3/traces/1788457246495
+```
+
+Do not use `--strip-debug` when stack backtraces with file and line information
+are wanted. The viewer prints the resolved/unresolved location count on startup;
+for the invocation above it should report `705 resolved, 0 not`.
 
 It resolves the binary's libraries with `ldd` -- DT_NEEDED transitively, under
 the same RUNPATH rules the loader will use -- rather than looking at a running
