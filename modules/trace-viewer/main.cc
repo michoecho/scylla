@@ -310,11 +310,30 @@ struct entry {
 
 // Scylla's task counter is process-local.  When several node snapshots are
 // loaded, the same numeric task id can therefore occur independently on every
-// node.  Keep node 0's ids unchanged for compatibility with the existing UI,
-// and namespace the others with a stable 64-bit mixer.
+// node, so the viewer adds a namespace of its own.
+//
+// It goes in the top byte, which a task id leaves free: seastar seeds the
+// counter at `(this_shard_id() << 48) | 1`, so bits 48-55 are the shard and
+// everything above is spare while a process has fewer than 256 shards.  An id
+// then still reads as what it is -- `0101000000000101` is node 1, shard 1,
+// counter 0x101 -- which a hash of the same two numbers does not, and node 0
+// keeps its ids byte for byte.
+//
+// Above 255 shards the shard would run into the byte, and there is nothing
+// clever to do about it: fall back to mixing, and say so once, because ids that
+// silently collided across nodes would merge two requests into one.
 static uint64_t namespace_task(uint32_t node, uint64_t task) {
     if (node == 0 || task == 0) {
         return task;
+    }
+    if ((task >> 56) == 0 && node < 256) {
+        return (uint64_t(node) << 56) | task;
+    }
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        fmt::print("task ids use the top byte, so node namespaces are hashed and"
+                   " will not read as node/shard/counter\n");
     }
     uint64_t x = task ^ (uint64_t(node) * 0x9e3779b97f4a7c15ULL);
     x ^= x >> 30;
@@ -1735,16 +1754,24 @@ int main(int argc, char** argv) {
     uint64_t id_full_log = id_log;
     size_t w = 0;
     double line_x = 1.0;
+    // Whether `id_log` names a CQL request, and so whether queries[w] describes
+    // it. A replica's task chain is not one -- it was opened by an inbound RPC,
+    // not by a CQL frame -- and before this the header just kept showing
+    // whichever request was selected last, which reads as the window having
+    // ignored the click.
+    bool id_log_is_query = !queries.empty();
     auto select_task = [&] (uint64_t task_id, bool update_full_log) {
         id_log = task_id;
         if (update_full_log) {
             id_full_log = task_id;
         }
+        id_log_is_query = false;
         for (size_t i = 0; i < queries.size(); ++i) {
             if (queries[i].id != task_id) {
                 continue;
             }
             w = i;
+            id_log_is_query = true;
             // Put the marker in the middle of the histogram bucket for this
             // query.  The half-bucket offset avoids floating-point rounding
             // making the histogram's inverse mapping select the next query.
@@ -2059,10 +2086,19 @@ int main(int argc, char** argv) {
 
             {
                 ImGui::Begin("Log");
-                ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "CPU", std::chrono::duration<double, std::milli>(queries[w].cputime).count()).c_str());
-                ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "STARVE", std::chrono::duration<double, std::milli>(queries[w].starvetime).count()).c_str());
-                ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "IO", std::chrono::duration<double, std::milli>(queries[w].iotime).count()).c_str());
-                ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "TOTAL", std::chrono::duration<double, std::milli>(queries[w].latency).count()).c_str());
+                // Every record of one *task*, wherever it ran -- not everything
+                // that ran on one shard. A task that hops shards brings its
+                // records with it, and its neighbours on those shards are not
+                // here.
+                ImGui::Text("%s", fmt::format("task {:16x}", id_log).c_str());
+                if (id_log_is_query) {
+                    ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "CPU", std::chrono::duration<double, std::milli>(queries[w].cputime).count()).c_str());
+                    ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "STARVE", std::chrono::duration<double, std::milli>(queries[w].starvetime).count()).c_str());
+                    ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "IO", std::chrono::duration<double, std::milli>(queries[w].iotime).count()).c_str());
+                    ImGui::Text("%s", fmt::format("{:10s} {:12.9f}", "TOTAL", std::chrono::duration<double, std::milli>(queries[w].latency).count()).c_str());
+                } else {
+                    ImGui::Text("not a CQL request: no latency breakdown");
+                }
                 update_log_cache(log_cache_state, id_log, log_task_threshold, sorted);
                 if (log_cache_state.item_count > static_cast<size_t>(log_task_threshold)) {
                     render_truncation_warning(log_cache_state.item_count, log_task_threshold, false);
@@ -2329,6 +2365,11 @@ int main(int argc, char** argv) {
                         }
 
                         if (!selected_rpc_row) {
+                            // Row 0 is a row like the others and selects its own
+                            // task. Without this, clicking back onto the request
+                            // after visiting a replica row left the log showing
+                            // the replica.
+                            select_task(id_full_log, false);
                             const int64_t start_ts = plot_start_ts;
                             uint64_t ts = start_ts + pt.x * 1e6 / MULTIPLIER;
                             chosen_one = std::ranges::lower_bound(span, ts, std::ranges::less(), [] (const auto& e) {return e.ts;}) - span.begin() - 1;
