@@ -28,6 +28,7 @@
 #include <seastar/util/short_streams.hh>
 
 #include "utils/log.hh"
+#include "utils/UUID_gen.hh"
 
 #include <filesystem>
 #include <fstream>
@@ -211,13 +212,41 @@ void set_system(http_context& ctx, routes& r, sharded<cql3::query_processor>& qp
             out << decoder;
         });
 
-        co_await smp::invoke_on_all([&dir, &qp] {
+        const auto build_id = seastar::trace_build_id();
+        const auto boot_id = seastar::boot_id_to_string(seastar::this_boot_id());
+
+        co_await smp::invoke_on_all([&dir, &qp, &build_id, &boot_id] {
             qp.local().trace_prepared_statements_snapshot();
-            auto blob = seastar::trace_snapshot();
-            return seastar::async([&dir, blob = std::move(blob)] {
-                std::ofstream out(fmt::format("{}/shard-{}.trace", dir, this_shard_id()),
-                        std::ios::binary);
-                out.write(reinterpret_cast<const char*>(blob.data()), blob.size());
+            seastar::trace_rpc_connections_snapshot();
+            auto parts = seastar::trace_snapshot();
+            return seastar::async([&dir, &build_id, &boot_id, parts = std::move(parts)] {
+                for (const auto& part : parts) {
+                    // A fresh time-based UUID names the pair. Not the shard and
+                    // not the level: those are *in* the file's metadata, and a
+                    // name that repeats between two snapshots -- which
+                    // shard-N.trace did -- is one that cannot be copied into a
+                    // directory beside another run's without a collision.
+                    const auto name = fmt::format("{}", utils::UUID_gen::get_time_UUID());
+                    std::ofstream out(fmt::format("{}/{}.trace", dir, name), std::ios::binary);
+                    out.write(reinterpret_cast<const char*>(part.data.data()), part.data.size());
+
+                    // Everything a reader has to know before it opens the trace:
+                    // which build the addresses inside belong to, which process
+                    // and shard wrote them, what is in it, and when it is from.
+                    std::ofstream meta(fmt::format("{}/{}.metadata.json", dir, name));
+                    meta << fmt::format(
+                            "{{\n"
+                            "  \"trace\": \"{}.trace\",\n"
+                            "  \"build_id\": \"{}\",\n"
+                            "  \"boot_id\": \"{}\",\n"
+                            "  \"shard\": {},\n"
+                            "  \"level\": \"{}\",\n"
+                            "  \"first_record_ns\": {},\n"
+                            "  \"last_record_ns\": {}\n"
+                            "}}\n",
+                            name, build_id, boot_id, this_shard_id(), part.level_name,
+                            part.first_record_ns, part.last_record_ns);
+                }
             });
         });
 
