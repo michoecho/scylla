@@ -67,6 +67,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "source_location/source_location.h"
@@ -181,7 +182,7 @@ public:
     // the middle of the stream.
     [[gnu::always_inline]] std::byte* write(std::size_t n) {
         assert(n <= buffer_size_ && "record larger than one trace buffer");
-        if (current_.size() - cur_pos_ < n) [[unlikely]] {
+        if (current_.bytes.size() - cur_pos_ < n) [[unlikely]] {
             rotate();
         }
         return write_unchecked(n);
@@ -191,7 +192,7 @@ public:
     // Used by trace_buffers::write() so its hot path does not repeat the
     // bounds check after handling rotation in its slow path.
     [[gnu::always_inline]] std::byte* write_unchecked(std::size_t n) {
-        std::byte* result = current_.data() + cur_pos_;
+        std::byte* result = current_.bytes.data() + cur_pos_;
         cur_pos_ += n;
         return result;
     }
@@ -210,7 +211,7 @@ public:
     // the fresh buffer *before* the record that forced the rotation, rather
     // than after it; see below.
     [[nodiscard, gnu::always_inline]] bool fits(std::size_t n) const {
-        return current_.size() - cur_pos_ >= n;
+        return current_.bytes.size() - cur_pos_ >= n;
     }
 
     // Retire the live buffer and recycle the oldest in its place. write() does
@@ -220,9 +221,30 @@ public:
 
     [[nodiscard]] std::size_t buffer_size() const noexcept { return buffer_size_; }
 
+    // When the records this ring still holds were written, on the wall clock:
+    // the moment the oldest buffer that still has anything in it became the live
+    // one, and the moment of this call -- which is when the buffer being written
+    // stops being written, from the point of view of whoever is collecting.
+    //
+    // Not derivable from the records themselves. Their timestamps are rdtsc
+    // ticks, and turning ticks into times is the two-pass job described under
+    // "reading a sync record back"; a snapshot wants to say *when* it is from
+    // without its reader having to do that first, so each buffer notes the wall
+    // clock as it is activated and retired. Rotation is rare enough for a
+    // clock_gettime to be free there.
+    [[nodiscard]] std::pair<std::uint64_t, std::uint64_t> time_range() const;
+
 private:
 
-    using buffer = std::vector<std::byte>;
+    // A buffer and the two moments that bracket it. The times are a property of
+    // the buffer rather than of the group because a ring outlives its contents:
+    // the oldest buffer is recycled as the newest, and what a snapshot covers is
+    // whatever survived.
+    struct buffer {
+        std::vector<std::byte> bytes;
+        std::uint64_t activated_ns = 0;  // wall clock when it became the live one
+        std::uint64_t retired_ns = 0;    // ... and when it stopped being it
+    };
 
     buffer current_;
     std::size_t cur_pos_ = 0;
@@ -828,6 +850,11 @@ struct trace_object {
 // fix (-Wl,--build-id) rather than a trace to write half of.
 [[nodiscard]] std::vector<trace_object> trace_objects();
 
+// The build ID of the main executable, as lowercase hex, or empty if it has
+// none. What a snapshot writes down to say which build it came out of -- the
+// name a reader hands to a build-ID server, or looks up under `dsos/`.
+[[nodiscard]] std::string executable_build_id();
+
 // --- handing the objects to a decoder ------------------------------------------
 //
 // A trace names its objects by build ID, and a source location in one is an
@@ -989,6 +1016,17 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 
 // A whole trace of one tracer's rings: the magic, then a chunk per level.
 [[nodiscard]] std::vector<std::byte> collect_trace(const trace_buffers& buffers);
+
+// One level as a trace of its own: the magic, the metadata chunk, then that
+// level's records. Self-contained, because the metadata chunk goes in whichever
+// level was asked for -- a file holding the info stream alone still says where
+// the objects its records name were mapped.
+//
+// Why anyone would want that: the debug ring is an order of magnitude larger
+// than the info one, and a snapshot that keeps them apart is a snapshot whose
+// expensive half can be thrown away without losing the cheap one.
+[[nodiscard]] std::vector<std::byte> collect_trace_level(const trace_buffers& buffers,
+                                                         event_level level);
 
 // The static description of a tracepoint: everything about it that is known at
 // compile time, in the sections the linker collects.

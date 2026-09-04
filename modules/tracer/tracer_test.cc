@@ -472,6 +472,94 @@ TEST_CASE("buffer_group keeps whole records") {
     CHECK(group.collect().size() == 80);
 }
 
+// A snapshot has to say when it is from, and the records cannot say it: their
+// timestamps are rdtsc ticks. So each buffer notes the wall clock as it goes
+// live and as it is retired, and the group reports the span the buffers it still
+// holds cover -- which shrinks as the ring evicts, and that is the point.
+TEST_CASE("a buffer group says when the records it still holds were written") {
+    const std::uint64_t before = tracer::realtime_nanoseconds();
+    tracer::buffer_group group(256, 64);
+
+    // Nothing written: the range starts when the group was built and ends now.
+    {
+        const auto [first, last] = group.time_range();
+        CHECK(first >= before);
+        CHECK(last >= first);
+    }
+
+    const auto write_marker = [&group] {
+        std::byte* out = group.write(32);
+        for (std::size_t i = 0; i < 32; ++i) {
+            out[i] = std::byte{0xAA};
+        }
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        write_marker();
+    }
+    const auto [early_first, early_last] = group.time_range();
+    CHECK(early_first >= before);
+
+    // Fill it several times over. The oldest buffer that survives is now one
+    // that went live after the group was built, so the range begins later than
+    // it did -- the ring has forgotten the beginning.
+    for (int i = 0; i < 64; ++i) {
+        write_marker();
+    }
+    const auto [late_first, late_last] = group.time_range();
+    CHECK(late_first > early_first);
+    CHECK(late_last >= early_last);
+    CHECK(late_last >= late_first);
+}
+
+// A snapshot writes one file per record level, so a file has to be readable on
+// its own -- which means it carries the metadata chunk whatever level it holds.
+// Without it the records inside are addresses against no object.
+TEST_CASE("one level collected on its own still carries the metadata chunk") {
+    const without_clock_sync quiet;
+    tracer::trace_buffers buffers(4096, 4096, 4096, 512);
+    tracer::local_tracer = &buffers;
+
+    REQUIRE(tracer::set_tracepoint_enabled("level_split_seen", true) == 1);
+    TRACEPOINT(tracer::event_level::info, "level_split_seen", "value", std::uint32_t{7});
+    REQUIRE(tracer::set_tracepoint_enabled("level_split_seen", false) == 1);
+    tracer::local_tracer = nullptr;
+
+    // The chunk headers of a collected trace: the magic, then a level and a
+    // length per chunk.
+    const auto chunks = [](const std::vector<std::byte>& trace) {
+        std::vector<std::pair<std::uint8_t, std::uint64_t>> out;
+        std::uint32_t magic = 0;
+        REQUIRE(trace.size() >= sizeof(magic));
+        std::memcpy(&magic, trace.data(), sizeof(magic));
+        CHECK(magic == tracer::trace_magic);
+        std::size_t at = sizeof(magic);
+        while (at + 1 + sizeof(std::uint64_t) <= trace.size()) {
+            const auto level = std::to_integer<std::uint8_t>(trace[at]);
+            std::uint64_t length = 0;
+            std::memcpy(&length, trace.data() + at + 1, sizeof(length));
+            out.emplace_back(level, length);
+            at += 1 + sizeof(length) + length;
+        }
+        CHECK(at == trace.size());
+        return out;
+    };
+
+    const auto info = chunks(tracer::collect_trace_level(buffers, tracer::event_level::info));
+    REQUIRE(info.size() == 2);
+    CHECK(info[0].first == std::uint8_t(tracer::event_level::metadata));
+    CHECK(info[0].second > 0);  // the load events the constructor wrote
+    CHECK(info[1].first == std::uint8_t(tracer::event_level::info));
+    CHECK(info[1].second == tracer::record_header_size + sizeof(std::uint32_t));
+
+    // The debug part of the same snapshot: the same metadata, and none of the
+    // info ring's records. Splitting by level must not duplicate a record.
+    const auto debug = chunks(tracer::collect_trace_level(buffers, tracer::event_level::debug));
+    REQUIRE(debug.size() == 2);
+    CHECK(debug[0] == info[0]);
+    CHECK(debug[1].first == std::uint8_t(tracer::event_level::debug));
+    CHECK(debug[1].second == 0);
+}
 
 // --- clock sync ---------------------------------------------------------------
 

@@ -499,7 +499,7 @@ inline std::string field_to_string(const source_location& v) { return v.to_strin
 
 }  // namespace detail
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1127
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1165
 struct clock_sync {
     std::uint64_t realtime_ns;
     std::uint64_t ticks_per_second;
@@ -511,7 +511,7 @@ struct clock_sync {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:116
+// seastar/src/core/scylla_tracer.cc:206
 struct run_task {
     std::uint64_t prev;
     std::uint64_t task;
@@ -525,7 +525,7 @@ struct run_task {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:121
+// seastar/src/core/scylla_tracer.cc:211
 struct execution_stage {
     std::uint64_t prev;
     std::uint64_t task;
@@ -537,7 +537,7 @@ struct execution_stage {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:126
+// seastar/src/core/scylla_tracer.cc:216
 struct cql_request {
     std::uint64_t prev;
     std::uint64_t task;
@@ -549,7 +549,7 @@ struct cql_request {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:131
+// seastar/src/core/scylla_tracer.cc:221
 struct semaphore_execute {
     std::uint64_t prev;
     std::uint64_t task;
@@ -561,7 +561,7 @@ struct semaphore_execute {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:136
+// seastar/src/core/scylla_tracer.cc:226
 struct io_begin {
     std::uint64_t task;
     std::uint64_t io;
@@ -573,7 +573,7 @@ struct io_begin {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:141
+// seastar/src/core/scylla_tracer.cc:231
 struct io_end {
     std::uint64_t task;
     std::uint64_t io;
@@ -585,7 +585,7 @@ struct io_end {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:148
+// seastar/src/core/scylla_tracer.cc:238
 struct prepared_statement_added {
     std::string_view keyspace;
     std::string_view statement;
@@ -599,7 +599,7 @@ struct prepared_statement_added {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:155
+// seastar/src/core/scylla_tracer.cc:245
 struct prepared_statement_removed {
     std::string_view keyspace;
     std::string_view statement;
@@ -613,7 +613,7 @@ struct prepared_statement_removed {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:160
+// seastar/src/core/scylla_tracer.cc:250
 struct prepared_query_run {
     std::span<const std::byte> id;
 
@@ -623,14 +623,14 @@ struct prepared_query_run {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:165
+// seastar/src/core/scylla_tracer.cc:255
 struct prepared_statements_snapshot_begin {
     [[nodiscard]] std::string to_string() const {
         return std::format("prepared_statements_snapshot_begin{{}}");
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:172
+// seastar/src/core/scylla_tracer.cc:262
 struct prepared_statement_snapshot_entry {
     std::string_view keyspace;
     std::string_view statement;
@@ -644,38 +644,50 @@ struct prepared_statement_snapshot_entry {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:177
+// seastar/src/core/scylla_tracer.cc:267
 struct prepared_statements_snapshot_end {
     [[nodiscard]] std::string to_string() const {
         return std::format("prepared_statements_snapshot_end{{}}");
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:191
+// seastar/src/core/scylla_tracer.cc:283
 struct rpc_connection_open {
     std::uint64_t connection;
     std::string_view local;
     std::string_view remote;
+    std::uint64_t peer_boot_msb;
+    std::uint64_t peer_boot_lsb;
+    std::uint32_t peer_shard;
 
     [[nodiscard]] std::string to_string() const {
-        return std::format("rpc_connection_open{{connection={}, local={}, remote={}}}",
+        return std::format("rpc_connection_open{{connection={}, local={}, remote={}, peer_boot_msb={}, peer_boot_lsb={}, peer_shard={}}}",
                            detail::field_to_string(connection),
                            detail::field_to_string(local),
-                           detail::field_to_string(remote));
+                           detail::field_to_string(remote),
+                           detail::field_to_string(peer_boot_msb),
+                           detail::field_to_string(peer_boot_lsb),
+                           detail::field_to_string(peer_shard));
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:202
+// seastar/src/core/scylla_tracer.cc:297
 struct rpc_connection_close {
     std::uint64_t connection;
+    std::uint64_t peer_boot_msb;
+    std::uint64_t peer_boot_lsb;
+    std::uint32_t peer_shard;
 
     [[nodiscard]] std::string to_string() const {
-        return std::format("rpc_connection_close{{connection={}}}",
-                           detail::field_to_string(connection));
+        return std::format("rpc_connection_close{{connection={}, peer_boot_msb={}, peer_boot_lsb={}, peer_shard={}}}",
+                           detail::field_to_string(connection),
+                           detail::field_to_string(peer_boot_msb),
+                           detail::field_to_string(peer_boot_lsb),
+                           detail::field_to_string(peer_shard));
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:210
+// seastar/src/core/scylla_tracer.cc:305
 struct rpc_message_sent {
     std::uint64_t connection;
     std::uint64_t sequence;
@@ -689,7 +701,7 @@ struct rpc_message_sent {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:216
+// seastar/src/core/scylla_tracer.cc:311
 struct rpc_message_received {
     std::uint64_t connection;
     std::uint64_t sequence;
@@ -701,7 +713,7 @@ struct rpc_message_received {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:223
+// seastar/src/core/scylla_tracer.cc:318
 struct rpc_reply_sent {
     std::uint64_t connection;
     std::uint64_t sequence;
@@ -717,7 +729,7 @@ struct rpc_reply_sent {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:229
+// seastar/src/core/scylla_tracer.cc:324
 struct rpc_reply_received {
     std::uint64_t connection;
     std::uint64_t sequence;
@@ -731,35 +743,41 @@ struct rpc_reply_received {
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:235
+// seastar/src/core/scylla_tracer.cc:330
 struct rpc_connections_snapshot_begin {
     [[nodiscard]] std::string to_string() const {
         return std::format("rpc_connections_snapshot_begin{{}}");
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:239
+// seastar/src/core/scylla_tracer.cc:337
 struct rpc_connection_snapshot_entry {
     std::uint64_t connection;
     std::string_view local;
     std::string_view remote;
+    std::uint64_t peer_boot_msb;
+    std::uint64_t peer_boot_lsb;
+    std::uint32_t peer_shard;
 
     [[nodiscard]] std::string to_string() const {
-        return std::format("rpc_connection_snapshot_entry{{connection={}, local={}, remote={}}}",
+        return std::format("rpc_connection_snapshot_entry{{connection={}, local={}, remote={}, peer_boot_msb={}, peer_boot_lsb={}, peer_shard={}}}",
                            detail::field_to_string(connection),
                            detail::field_to_string(local),
-                           detail::field_to_string(remote));
+                           detail::field_to_string(remote),
+                           detail::field_to_string(peer_boot_msb),
+                           detail::field_to_string(peer_boot_lsb),
+                           detail::field_to_string(peer_shard));
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:241
+// seastar/src/core/scylla_tracer.cc:339
 struct rpc_connections_snapshot_end {
     [[nodiscard]] std::string to_string() const {
         return std::format("rpc_connections_snapshot_end{{}}");
     }
 };
 
-// seastar/src/core/scylla_tracer.cc:250
+// seastar/src/core/scylla_tracer.cc:348
 struct rpc_request_handled {
     std::uint64_t connection;
     std::uint64_t sequence;
@@ -775,7 +793,7 @@ struct rpc_request_handled {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1153
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1191
 struct trace_objects_loaded {
     std::uint32_t count;
 
@@ -785,7 +803,7 @@ struct trace_objects_loaded {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1168
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1206
 struct trace_object_unloaded {
     std::string_view build_id;
     std::uint64_t base_address;
@@ -797,7 +815,7 @@ struct trace_object_unloaded {
     }
 };
 
-// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1181
+// /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1219
 struct trace_object_loaded {
     std::string_view build_id;
     std::uint64_t table_address;
@@ -924,12 +942,18 @@ inline rpc_connection_open read_rpc_connection_open(const std::byte*& p, const s
     out.connection = detail::read_unaligned<std::uint64_t>(p, end);
     out.local = detail::read_str(p, end);
     out.remote = detail::read_str(p, end);
+    out.peer_boot_msb = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_boot_lsb = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_shard = detail::read_unaligned<std::uint32_t>(p, end);
     return out;
 }
 
 inline rpc_connection_close read_rpc_connection_close(const std::byte*& p, const std::byte* end) {
     rpc_connection_close out{};
     out.connection = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_boot_msb = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_boot_lsb = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_shard = detail::read_unaligned<std::uint32_t>(p, end);
     return out;
 }
 
@@ -975,6 +999,9 @@ inline rpc_connection_snapshot_entry read_rpc_connection_snapshot_entry(const st
     out.connection = detail::read_unaligned<std::uint64_t>(p, end);
     out.local = detail::read_str(p, end);
     out.remote = detail::read_str(p, end);
+    out.peer_boot_msb = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_boot_lsb = detail::read_unaligned<std::uint64_t>(p, end);
+    out.peer_shard = detail::read_unaligned<std::uint32_t>(p, end);
     return out;
 }
 
@@ -1022,32 +1049,32 @@ inline stacktrace_sample read_stacktrace_sample(const std::byte*& p, const std::
     return out;
 }
 
-inline constexpr tracepoint_metadata metadata_0{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1127, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
-inline constexpr tracepoint_metadata metadata_1{"run_task", "seastar/src/core/scylla_tracer.cc", 116, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
-inline constexpr tracepoint_metadata metadata_2{"execution_stage", "seastar/src/core/scylla_tracer.cc", 121, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_3{"cql_request", "seastar/src/core/scylla_tracer.cc", 126, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_4{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 131, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_5{"io_begin", "seastar/src/core/scylla_tracer.cc", 136, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_6{"io_end", "seastar/src/core/scylla_tracer.cc", 141, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_7{"prepared_statement_added", "seastar/src/core/scylla_tracer.cc", 148, "void seastar::trace_prepared_statement_added(std::string_view, std::string_view, std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_8{"prepared_statement_removed", "seastar/src/core/scylla_tracer.cc", 155, "void seastar::trace_prepared_statement_removed(std::string_view, std::string_view, std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_9{"prepared_query_run", "seastar/src/core/scylla_tracer.cc", 160, "void seastar::trace_prepared_query_run(std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_10{"prepared_statements_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 165, "void seastar::trace_prepared_statements_snapshot_begin()", 0};
-inline constexpr tracepoint_metadata metadata_11{"prepared_statement_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 172, "void seastar::trace_prepared_statement_snapshot_entry(std::string_view, std::string_view, std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_12{"prepared_statements_snapshot_end", "seastar/src/core/scylla_tracer.cc", 177, "void seastar::trace_prepared_statements_snapshot_end()", 0};
-inline constexpr tracepoint_metadata metadata_13{"rpc_connection_open", "seastar/src/core/scylla_tracer.cc", 191, "void seastar::trace_rpc_connection_open(uint64_t, std::string_view, std::string_view)", 0};
-inline constexpr tracepoint_metadata metadata_14{"rpc_connection_close", "seastar/src/core/scylla_tracer.cc", 202, "void seastar::trace_rpc_connection_close(uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_15{"rpc_message_sent", "seastar/src/core/scylla_tracer.cc", 210, "void seastar::trace_rpc_message_sent(uint64_t, uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_16{"rpc_message_received", "seastar/src/core/scylla_tracer.cc", 216, "void seastar::trace_rpc_message_received(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_17{"rpc_reply_sent", "seastar/src/core/scylla_tracer.cc", 223, "void seastar::trace_rpc_reply_sent(uint64_t, uint64_t, int64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_18{"rpc_reply_received", "seastar/src/core/scylla_tracer.cc", 229, "void seastar::trace_rpc_reply_received(uint64_t, uint64_t, int64_t)", 0};
-inline constexpr tracepoint_metadata metadata_19{"rpc_connections_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 235, "void seastar::trace_rpc_connections_snapshot()", 0};
-inline constexpr tracepoint_metadata metadata_20{"rpc_connection_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 239, "void seastar::trace_rpc_connections_snapshot()", 0};
-inline constexpr tracepoint_metadata metadata_21{"rpc_connections_snapshot_end", "seastar/src/core/scylla_tracer.cc", 241, "void seastar::trace_rpc_connections_snapshot()", 0};
-inline constexpr tracepoint_metadata metadata_22{"rpc_request_handled", "seastar/src/core/scylla_tracer.cc", 250, "void seastar::trace_rpc_request_handled(uint64_t, uint64_t, uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_23{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1153, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_24{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1168, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_25{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1181, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_0{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1165, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
+inline constexpr tracepoint_metadata metadata_1{"run_task", "seastar/src/core/scylla_tracer.cc", 206, "void seastar::trace_run_task(uint64_t, uint64_t, srcloc::location)", 0};
+inline constexpr tracepoint_metadata metadata_2{"execution_stage", "seastar/src/core/scylla_tracer.cc", 211, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_3{"cql_request", "seastar/src/core/scylla_tracer.cc", 216, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_4{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 221, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_5{"io_begin", "seastar/src/core/scylla_tracer.cc", 226, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_6{"io_end", "seastar/src/core/scylla_tracer.cc", 231, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_7{"prepared_statement_added", "seastar/src/core/scylla_tracer.cc", 238, "void seastar::trace_prepared_statement_added(std::string_view, std::string_view, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_8{"prepared_statement_removed", "seastar/src/core/scylla_tracer.cc", 245, "void seastar::trace_prepared_statement_removed(std::string_view, std::string_view, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_9{"prepared_query_run", "seastar/src/core/scylla_tracer.cc", 250, "void seastar::trace_prepared_query_run(std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_10{"prepared_statements_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 255, "void seastar::trace_prepared_statements_snapshot_begin()", 0};
+inline constexpr tracepoint_metadata metadata_11{"prepared_statement_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 262, "void seastar::trace_prepared_statement_snapshot_entry(std::string_view, std::string_view, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_12{"prepared_statements_snapshot_end", "seastar/src/core/scylla_tracer.cc", 267, "void seastar::trace_prepared_statements_snapshot_end()", 0};
+inline constexpr tracepoint_metadata metadata_13{"rpc_connection_open", "seastar/src/core/scylla_tracer.cc", 283, "void seastar::trace_rpc_connection_open(uint64_t, std::string_view, std::string_view, boot_id, uint32_t)", 0};
+inline constexpr tracepoint_metadata metadata_14{"rpc_connection_close", "seastar/src/core/scylla_tracer.cc", 297, "void seastar::trace_rpc_connection_close(uint64_t, boot_id, uint32_t)", 0};
+inline constexpr tracepoint_metadata metadata_15{"rpc_message_sent", "seastar/src/core/scylla_tracer.cc", 305, "void seastar::trace_rpc_message_sent(uint64_t, uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_16{"rpc_message_received", "seastar/src/core/scylla_tracer.cc", 311, "void seastar::trace_rpc_message_received(uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_17{"rpc_reply_sent", "seastar/src/core/scylla_tracer.cc", 318, "void seastar::trace_rpc_reply_sent(uint64_t, uint64_t, int64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_18{"rpc_reply_received", "seastar/src/core/scylla_tracer.cc", 324, "void seastar::trace_rpc_reply_received(uint64_t, uint64_t, int64_t)", 0};
+inline constexpr tracepoint_metadata metadata_19{"rpc_connections_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 330, "void seastar::trace_rpc_connections_snapshot()", 0};
+inline constexpr tracepoint_metadata metadata_20{"rpc_connection_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 337, "void seastar::trace_rpc_connections_snapshot()", 0};
+inline constexpr tracepoint_metadata metadata_21{"rpc_connections_snapshot_end", "seastar/src/core/scylla_tracer.cc", 339, "void seastar::trace_rpc_connections_snapshot()", 0};
+inline constexpr tracepoint_metadata metadata_22{"rpc_request_handled", "seastar/src/core/scylla_tracer.cc", 348, "void seastar::trace_rpc_request_handled(uint64_t, uint64_t, uint64_t, uint64_t)", 0};
+inline constexpr tracepoint_metadata metadata_23{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1191, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_24{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1206, "void tracer::trace_buffers::note_objects_changed()", 0};
+inline constexpr tracepoint_metadata metadata_25{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1219, "void tracer::trace_buffers::note_objects_changed()", 0};
 inline constexpr tracepoint_metadata metadata_26{"stacktrace_sample", "seastar/src/core/scylla_stacktrace_sampler.cc", 82, "void seastar::(anonymous namespace)::trace_stacktrace_sample(std::uint32_t, std::uint64_t, std::span<const std::byte>)", 0};
 
 }  // namespace detail
@@ -1074,17 +1101,17 @@ inline constexpr object_descriptor objects[] = {
     {"341e289fdd8a934c5ec6359ac67bc10efd15b21e", 0, 0},
     {"37d40ae813bd56440d2e4b796177d94b70e6f5b1", 0, 0},
     {"3890fe5da8e54c0ebce0c03d20e72836424d8f94", 0, 0},
-    {"45fac33f3d7fea1b3ee833c3d96e1e9cc373a45b", 0, 0},
     {"48f14782322a959c65ae96b2ce9d6b5919180831", 0, 0},
-    {"73bc6a358850e94d3579addc493bea451dcb9469", 0, 27},
-    {"7b4d84838262e842fbf03a46d3e3d60135b8a20a", 27, 0},
-    {"812dbcc86f2a2d6a6ec964d488cc071e17d0bcf6", 27, 0},
-    {"b4ccadde6bdd8a27427bde094488cb299d811bae", 27, 0},
-    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 27, 0},
-    {"d6d480ae454bd1d2a366c447666e5817eb998437", 27, 0},
+    {"7b4d84838262e842fbf03a46d3e3d60135b8a20a", 0, 0},
+    {"812dbcc86f2a2d6a6ec964d488cc071e17d0bcf6", 0, 0},
+    {"b4ccadde6bdd8a27427bde094488cb299d811bae", 0, 0},
+    {"ce14072b4bac73de75d9bdc6f3327320e6b9db65", 0, 0},
+    {"d6d480ae454bd1d2a366c447666e5817eb998437", 0, 0},
+    {"d74bb9a66f1a7cfda8d12e16056241f9c6c52738", 0, 27},
     {"dd2ef14422fd9a8bf53ec27d8abba234e8fae440", 27, 0},
     {"eab16d42136776e092b375ec994661ecf3de14b9", 27, 0},
     {"f1a1ae2bd27498f870ff37e4819ef13634ca8954", 27, 0},
+    {"f6837b4173bba7095abc7bce5a5a04589fe776df", 27, 0},
 };
 
 namespace detail {

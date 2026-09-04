@@ -104,9 +104,10 @@ buffer_group::buffer_group(std::size_t capacity, std::size_t buffer_size)
     // calls into the allocator: rotation recycles these rather than growing.
     for (used_ = 0; used_ < capacity_; used_ += buffer_size_) {
         old_.emplace_back();
-        old_.back().reserve(buffer_size_);
+        old_.back().bytes.reserve(buffer_size_);
     }
-    current_.resize(buffer_size_);
+    current_.bytes.resize(buffer_size_);
+    current_.activated_ns = TRACER_REALTIME_NS();
 }
 
 std::byte* trace_buffers::write_slow(event_level level, std::size_t n) {
@@ -126,30 +127,51 @@ std::byte* trace_buffers::write_slow(event_level level, std::size_t n) {
 void buffer_group::rotate() {
     // Trim to what was actually written before retiring, so that the slack at
     // the end of the buffer is not part of the record stream.
-    current_.resize(cur_pos_);
-    used_ += current_.capacity();
+    current_.bytes.resize(cur_pos_);
+    current_.retired_ns = TRACER_REALTIME_NS();
+    used_ += current_.bytes.capacity();
     old_.push_back(std::move(current_));
     while (used_ > capacity_) {
-        used_ -= old_.front().capacity();
+        used_ -= old_.front().bytes.capacity();
         current_ = std::move(old_.front());
         old_.pop_front();
     }
-    current_.resize(buffer_size_);
+    current_.bytes.resize(buffer_size_);
+    // A recycled buffer keeps nothing of the life it had: it is live from now,
+    // and not retired at all.
+    current_.activated_ns = TRACER_REALTIME_NS();
+    current_.retired_ns = 0;
     cur_pos_ = 0;
+}
+
+std::pair<std::uint64_t, std::uint64_t> buffer_group::time_range() const {
+    // The oldest buffer that still holds records. The ones in front of it are
+    // the empty ones the constructor put there, which have never been written
+    // and whose activation time would place the snapshot before the process
+    // started tracing.
+    std::uint64_t start = current_.activated_ns;
+    for (const buffer& b : old_) {
+        if (!b.bytes.empty()) {
+            start = b.activated_ns;
+            break;
+        }
+    }
+    return {start, TRACER_REALTIME_NS()};
 }
 
 std::vector<std::byte> buffer_group::collect() const {
     std::size_t total = cur_pos_;
     for (const buffer& b : old_) {
-        total += b.size();
+        total += b.bytes.size();
     }
 
     std::vector<std::byte> out;
     out.reserve(total);
     for (const buffer& b : old_) {
-        out.insert(out.end(), b.begin(), b.end());
+        out.insert(out.end(), b.bytes.begin(), b.bytes.end());
     }
-    out.insert(out.end(), current_.begin(), current_.begin() + static_cast<std::ptrdiff_t>(cur_pos_));
+    out.insert(out.end(), current_.bytes.begin(),
+               current_.bytes.begin() + static_cast<std::ptrdiff_t>(cur_pos_));
     return out;
 }
 
@@ -252,6 +274,21 @@ std::vector<const tracepoint_entry*> tracepoints() {
         }
     }
     return all;
+}
+
+std::string executable_build_id() {
+    // The main executable is the first object dl_iterate_phdr reports, and the
+    // one the loader names with the empty string. Taken from the walk rather
+    // than from trace_objects(), which sorts by build ID and so loses which one
+    // this is.
+    std::vector<object_query> loaded;
+    ::dl_iterate_phdr(&collect_object, &loaded);
+    for (const object_query& object : loaded) {
+        if (object.path.empty()) {
+            return object.build_id;
+        }
+    }
+    return {};
 }
 
 std::vector<trace_object> trace_objects() {
@@ -388,6 +425,21 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
     put(static_cast<std::uint8_t>(level));
     put(static_cast<std::uint64_t>(records.size()));
     out.insert(out.end(), records.begin(), records.end());
+}
+
+std::vector<std::byte> collect_trace_level(const trace_buffers& buffers, event_level level) {
+    std::vector<std::byte> out;
+    const auto* magic = reinterpret_cast<const std::byte*>(&trace_magic);
+    out.insert(out.end(), magic, magic + sizeof(trace_magic));
+    // The metadata chunk first and always: it is what says where the objects
+    // were mapped, and without it the level's records are a heap of addresses.
+    // Cheap enough to repeat in every file -- it is one record per loaded
+    // object -- and the alternative is a file that only decodes beside another.
+    append_chunk(out, event_level::metadata, buffers.group(event_level::metadata).collect());
+    if (level != event_level::metadata) {
+        append_chunk(out, level, buffers.group(level).collect());
+    }
+    return out;
 }
 
 std::vector<std::byte> collect_trace(const trace_buffers& buffers) {

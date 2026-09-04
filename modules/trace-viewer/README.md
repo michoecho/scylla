@@ -63,6 +63,11 @@ numeric event ids its analysis keys off.
 | `prepared_statement_removed{keyspace, statement, id}` | a prepared statement left the shard cache | `0xf` |
 | `prepared_statements_snapshot_{begin,end}` / `prepared_statement_snapshot_entry{keyspace, statement, id}` | the full prepared-statement cache at dump time | `0x10`–`0x12` |
 
+`rpc_connection_open{connection, local, remote, peer_boot_msb, peer_boot_lsb,
+peer_shard}` and `rpc_connection_close{connection, peer_boot_msb, peer_boot_lsb,
+peer_shard}` carry the far end's identity from the handshake; see "The boot id"
+below.
+
 Prepared-query records are reconstructed during load. The viewer walks each
 shard's info stream backwards from its snapshot, undoing additions and undoing
 removals with the metadata carried by both deltas. It then attaches the
@@ -195,10 +200,84 @@ records.
 The endpoint returns the directory it wrote, under `<workdir>/traces/<stamp>/`:
 
 ```
-decoder.h        generated from this binary's tracepoint table
-shard-0.trace    one file per shard
-shard-1.trace
+decoder.h                       generated from this binary's tracepoint table
+<uuid>.trace                    one file per shard *and level*
+<uuid>.metadata.json            what that file is: build, process, shard, level, times
+...
 ```
+
+A file is named after a fresh time-based UUID and says nothing about itself in
+its name. Everything a reader needs before it opens one is in the
+`.metadata.json` beside it:
+
+```json
+{
+  "trace": "a97c2ba0-a83b-11f1-b83c-2aa316de99ac.trace",
+  "build_id": "f6837b4173bba7095abc7bce5a5a04589fe776df",
+  "boot_id": "7160e7d6-a83b-11f1-bf69-9bcbd4501077",
+  "shard": 0,
+  "level": "info",
+  "first_record_ns": 1788510868391888616,
+  "last_record_ns": 1788510962519339954
+}
+```
+
+- **`build_id`** is the executable's, which is the name to hand a build-ID server
+  -- or to look up under `dsos/` -- for the objects the addresses inside point
+  into.
+- **`boot_id`** is the *process*: see "The boot id" below.
+- **`level`** is `info` or `debug`. There is one file per level now, and each is
+  self-contained -- it carries the metadata chunk saying where the objects were
+  mapped, so the info file decodes without the debug one beside it. The debug
+  ring is an order of magnitude the larger, and a snapshot split this way can
+  have its expensive half deleted and stay readable.
+- **`first_record_ns`/`last_record_ns`** bracket the *records*, not the snapshot.
+  A ring evicts, so a busy shard's debug file may reach back a second while the
+  info file beside it reaches back minutes. The times come from the buffers: each
+  one notes the wall clock as it goes live and as it is retired, and the range is
+  from the activation of the oldest buffer that survived to the moment the
+  snapshot stopped the live one. The records themselves cannot answer this --
+  their timestamps are rdtsc ticks, and converting those is the two-pass job in
+  "reading a sync record back".
+
+The old `shard-N.trace` naming carried the shard and nothing else, and carried
+it badly: two nodes' snapshots could not be copied into one directory without
+colliding. The viewer still reads a `shard-N.trace` with no metadata beside it,
+falling back to the directory for the node and the name for the shard.
+
+## The boot id
+
+Every Seastar process picks a **boot id** during reactor construction: a
+version-1 (time-based) UUID, one per process and shared by every shard. It is in
+`seastar/include/seastar/core/scylla_tracer.hh`, and the reactor's constructor is
+what makes the first call, so it is fixed before any shard can trace or open a
+connection.
+
+A build ID is not enough to tell processes apart -- every node of a cluster runs
+the same package, and so does the same node after a restart -- and neither is an
+address, which a restarted node takes back. What a reader of a distributed trace
+actually has to know is which files came out of one address space (so that their
+task ids, unique only within one, may be merged) and which process is at the far
+end of a connection. That is the boot id's job. Being time-based, it also orders
+the runs it names: two snapshot directories from one node sort by when the node
+booted.
+
+It goes in two places:
+
+- **Every snapshot's metadata**, as above. The viewer numbers nodes by boot id
+  rather than by which directory a file was handed over in, so two snapshots of
+  one node merge into a single timeline instead of pretending to be two
+  machines.
+- **The RPC handshake.** `protocol_features::PEER_IDENTITY` carries the boot id
+  and the shard both ways, so each end learns who the other is and puts it in its
+  own `rpc_connection_open` / `rpc_connection_close` records. A peer that does
+  not know the feature simply does not answer it and the records carry a zero
+  identity.
+
+Because the identity is only known once the handshake is done,
+`rpc_connection_open` is emitted **after** negotiation rather than when the
+socket is set. A connection that never negotiates therefore has no records at
+all, which is the right answer -- it never carried a message either.
 
 The `run_task` locations need the objects they point into, and **the node does
 not write them** -- see "Source locations" below. Gather them beside the traces
@@ -280,6 +359,14 @@ buck2 run //modules/trace-viewer:trace_viewer -- \
     third-party/scylladb/ignored/workdir_01/traces/<stamp>/
 ```
 
+Node numbers come from the **boot ids** in the snapshots' metadata, in the order
+the directories were given, so node 0 -- the reference clock everything else is
+converted into -- is still the first directory on the command line. Files from
+one process land under one node number wherever they were handed over. The
+**Nodes** window says which process each number is, along with its build ID, its
+shards and the stretch of time its files cover; the same lines are printed on the
+way in.
+
 To inspect a distributed request, pass one snapshot directory per node, in a
 stable order. The viewer aligns their clocks through each node's clock-sync
 records and adds time-aligned rows to the existing `Full log plot`: the selected
@@ -305,12 +392,16 @@ open.
 
 ### How a request is followed across nodes
 
-Nothing is added to the RPC protocol -- no tracing id goes on the wire. Three
-joins reconstruct the graph instead:
+No tracing id goes on the wire -- the handshake carries who the peer *is*, not
+which request is in flight. Three joins reconstruct the graph:
 
   * **A connection to the one at the other end of the socket**, by the
     local/remote endpoint metadata in the connection snapshot. Both ends name
-    the same pair of addresses and disagree about which is which.
+    the same pair of addresses and disagree about which is which. The peer
+    identity from the handshake is checked against it where both ends have one:
+    `a` must name `b`'s process and shard and `b` must name `a`'s. That rules out
+    what the addresses cannot -- a socket whose far end belongs to a node that
+    has since restarted and taken the address back.
   * **A sent message to its arrival**, by a sequence number each direction of
     each connection counts locally over the frames it actually writes and reads.
     It is not a protocol field either.
@@ -336,6 +427,12 @@ for it rather than opening a chain, so it already belongs to a row. They do
 carry the normal RPC `msg_id`, which is what to look at when inspecting a single
 connection.
 
+The second line is the one an endpoint join could never produce: a connection
+whose peer boot id is not among the loaded snapshots is a connection to a node
+whose trace is simply not here, and saying so is different from failing to pair
+it. Loading two nodes of the three above gives `28 paired` and `22 of those to a
+node not in these snapshots`.
+
 It takes snapshot **directories**, not files, and decodes every `*.trace` in
 them. Set `TRACE_DUMP_RPC=1` to print what the joins had to work with, which
 requests reach another node, and the edges of the slowest one that does, then
@@ -343,6 +440,7 @@ exit without opening a window:
 
 ```
 68 connections known, 68 paired with the far end
+68 named their peer in the handshake, 0 of those to a node not in these snapshots
 110 messages sent (75 from a task), 110 received, 65 opened a task chain
 10 of 29 CQL requests reach at least one other node
 

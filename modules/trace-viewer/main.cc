@@ -364,6 +364,12 @@ struct rpc_event {
     uint32_t node = 0;
     std::string local;
     std::string remote;
+    // Who the far end said it was, in the RPC handshake: its boot id's two
+    // words and the shard the connection landed on. Zero when the peer does not
+    // speak PEER_IDENTITY, or on a record kind that does not carry it.
+    uint64_t peer_boot_msb = 0;
+    uint64_t peer_boot_lsb = 0;
+    uint32_t peer_shard = 0;
 };
 
 // The decoded source locations, interned.
@@ -875,11 +881,13 @@ struct sink {
     }
     void operator()(const trace::rpc_connection_open& e, const trace::tracepoint_metadata& m) const {
         rpc.push_back({rpc_event_kind::connection_open, e.connection, 0, 0, 0,
-                       int64_t(m.timestamp), shard, node, std::string(e.local), std::string(e.remote)});
+                       int64_t(m.timestamp), shard, node, std::string(e.local), std::string(e.remote),
+                       e.peer_boot_msb, e.peer_boot_lsb, e.peer_shard});
     }
     void operator()(const trace::rpc_connection_close& e, const trace::tracepoint_metadata& m) const {
         rpc.push_back({rpc_event_kind::connection_close, e.connection, 0, 0, 0,
-                       int64_t(m.timestamp), shard, node});
+                       int64_t(m.timestamp), shard, node, {}, {},
+                       e.peer_boot_msb, e.peer_boot_lsb, e.peer_shard});
     }
     void operator()(const trace::rpc_message_sent& e, const trace::tracepoint_metadata& m) const {
         rpc.push_back({rpc_event_kind::message_sent, e.connection, e.sequence, 0,
@@ -909,7 +917,8 @@ struct sink {
     void operator()(const trace::rpc_connection_snapshot_entry& e,
                     const trace::tracepoint_metadata& m) const {
         rpc.push_back({rpc_event_kind::snapshot_entry, e.connection, 0, 0, 0,
-                       int64_t(m.timestamp), shard, node, std::string(e.local), std::string(e.remote)});
+                       int64_t(m.timestamp), shard, node, std::string(e.local), std::string(e.remote),
+                       e.peer_boot_msb, e.peer_boot_lsb, e.peer_shard});
     }
     template <typename Event>
     void operator()(const Event&, const trace::tracepoint_metadata&) const {}
@@ -941,7 +950,119 @@ static void load_trace(const std::filesystem::path& path, uint32_t shard, uint32
     }
 }
 
-// The number in `shard-N.trace`, or nothing if the name is not that shape.
+// --- what a snapshot file says about itself -----------------------------------
+//
+// A trace file used to be called `shard-N.trace`, and the viewer read the shard
+// out of the name. That was the only thing the name could carry, and it carried
+// it badly: two nodes' snapshots could not be copied into one directory without
+// colliding, and nothing in the file said which process, which build or which
+// stretch of time it was.
+//
+// Now a file is named after a fresh time-based UUID and a `<uuid>.metadata.json`
+// beside it says the rest. See the trace_snapshot endpoint in Scylla's
+// api/system.cc, which writes both.
+struct snapshot_metadata {
+    std::string build_id;   // the executable the addresses inside belong to
+    std::string boot_id;    // the *process*: see boot_id in scylla_tracer.hh
+    uint32_t shard = 0;
+    std::string level;      // "info" or "debug" -- one file per level now
+    uint64_t first_record_ns = 0;
+    uint64_t last_record_ns = 0;
+    bool present = false;   // false for a .trace with no metadata beside it
+};
+
+// A reader for exactly the object Scylla writes: a flat map of strings and
+// integers, no nesting and no arrays. Hand-rolled rather than a JSON library
+// because that is the whole of the grammar this has to accept, and a field it
+// does not find keeps its default -- an old snapshot decodes as far as it can
+// rather than not at all.
+static std::optional<std::string> json_field(const std::string& text, const char* key) {
+    const std::string quoted = std::string("\"") + key + "\"";
+    const auto at = text.find(quoted);
+    if (at == std::string::npos) {
+        return std::nullopt;
+    }
+    auto p = text.find(':', at + quoted.size());
+    if (p == std::string::npos) {
+        return std::nullopt;
+    }
+    ++p;
+    while (p < text.size() && (text[p] == ' ' || text[p] == '\t')) {
+        ++p;
+    }
+    if (p < text.size() && text[p] == '"') {
+        const auto end = text.find('"', p + 1);
+        if (end == std::string::npos) {
+            return std::nullopt;
+        }
+        return text.substr(p + 1, end - p - 1);
+    }
+    const auto end = text.find_first_of(",}\n", p);
+    return text.substr(p, (end == std::string::npos ? text.size() : end) - p);
+}
+
+static snapshot_metadata read_metadata(const std::filesystem::path& trace_path) {
+    std::filesystem::path meta_path = trace_path;
+    meta_path.replace_extension();  // drop ".trace"
+    meta_path += ".metadata.json";
+    std::ifstream in(meta_path);
+    if (!in) {
+        return {};
+    }
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+
+    snapshot_metadata meta;
+    meta.present = true;
+    if (const auto v = json_field(text, "build_id")) meta.build_id = *v;
+    if (const auto v = json_field(text, "boot_id")) meta.boot_id = *v;
+    if (const auto v = json_field(text, "level")) meta.level = *v;
+    const auto number = [&text](const char* key, uint64_t& into) {
+        if (const auto v = json_field(text, key)) {
+            try {
+                into = std::stoull(*v);
+            } catch (const std::exception&) {
+            }
+        }
+    };
+    uint64_t shard = 0;
+    number("shard", shard);
+    meta.shard = uint32_t(shard);
+    number("first_record_ns", meta.first_record_ns);
+    number("last_record_ns", meta.last_record_ns);
+    return meta;
+}
+
+// A boot id's 32 hex digits as the two words the tracepoints carry. Zero for
+// anything that is not a UUID, which is also what a peer that did not answer
+// the handshake's PEER_IDENTITY leaves in a connection record -- so an unparsed
+// id and an unknown peer compare equal, and both mean "no idea".
+static std::pair<uint64_t, uint64_t> boot_id_halves(std::string_view text) {
+    uint64_t halves[2] = {0, 0};
+    unsigned digits = 0;
+    for (const char c : text) {
+        if (c == '-') {
+            continue;
+        }
+        unsigned value;
+        if (c >= '0' && c <= '9') value = unsigned(c - '0');
+        else if (c >= 'a' && c <= 'f') value = unsigned(c - 'a') + 10;
+        else if (c >= 'A' && c <= 'F') value = unsigned(c - 'A') + 10;
+        else return {0, 0};
+        if (digits >= 32) return {0, 0};
+        halves[digits / 16] = (halves[digits / 16] << 4) | value;
+        ++digits;
+    }
+    return digits == 32 ? std::pair{halves[0], halves[1]} : std::pair<uint64_t, uint64_t>{0, 0};
+}
+
+// The boot id of each node, by node index, as the tracepoints' two words. Filled
+// in by main() as the files are gathered; used to check an endpoint pairing
+// against what the two ends said about each other in the RPC handshake.
+static std::vector<std::pair<uint64_t, uint64_t>> node_boot_ids;
+static std::vector<std::string> node_boot_id_strings;
+
+// The number in `shard-N.trace`, or nothing if the name is not that shape. Kept
+// for a snapshot written before the metadata files existed.
 static std::optional<uint32_t> shard_of(const std::filesystem::path& path) {
     const std::string stem = path.stem().string();
     const auto dash = stem.rfind('-');
@@ -961,6 +1082,11 @@ struct rpc_endpoint {
     rpc_key key;
     std::string local;
     std::string remote;
+    uint32_t shard = 0;
+    // What this end said about the other one, from the handshake.
+    uint64_t peer_boot_msb = 0;
+    uint64_t peer_boot_lsb = 0;
+    uint32_t peer_shard = 0;
 };
 
 struct rpc_span {
@@ -1099,7 +1225,8 @@ static std::vector<rpc_span> make_rpc_spans(const std::vector<rpc_event>& events
         const rpc_key key{e.node, e.connection};
         if (e.kind == rpc_event_kind::connection_open ||
             e.kind == rpc_event_kind::snapshot_entry) {
-            endpoints[key] = {key, e.local, e.remote};
+            endpoints[key] = {key, e.local, e.remote, e.shard,
+                              e.peer_boot_msb, e.peer_boot_lsb, e.peer_shard};
         } else if (e.kind == rpc_event_kind::connection_close) {
             endpoints.erase(key);
         }
@@ -1108,10 +1235,32 @@ static std::vector<rpc_span> make_rpc_spans(const std::vector<rpc_event>& events
     // A connection and the one at the other end of the same socket. Both ends
     // agree on the pair of addresses and disagree on which is which, and a
     // (address, port) pair identifies one socket, so the match is unique.
+    //
+    // The handshake's identities are a second opinion on the same question, and
+    // where both ends have one they must agree: `a` names `b`'s process and
+    // shard, and `b` names `a`'s. That rules out the case the addresses cannot,
+    // which is a socket whose far end belongs to a node that has since
+    // restarted and taken the address back -- two snapshots from the same
+    // address, one of them stale. A peer that did not answer the feature leaves
+    // zeroes, and a zero matches anything: the addresses are then all there is.
+    const auto identity_agrees = [](const rpc_endpoint& a, const rpc_endpoint& b) {
+        if (a.peer_boot_msb == 0 && a.peer_boot_lsb == 0) {
+            return true;
+        }
+        if (b.key.first >= node_boot_ids.size()) {
+            return true;  // a node whose files carried no metadata
+        }
+        const auto& [msb, lsb] = node_boot_ids[b.key.first];
+        if (msb == 0 && lsb == 0) {
+            return true;
+        }
+        return a.peer_boot_msb == msb && a.peer_boot_lsb == lsb && a.peer_shard == b.shard;
+    };
     std::map<rpc_key, rpc_key> peers;
     for (const auto& [a_key, a] : endpoints) {
         for (const auto& [b_key, b] : endpoints) {
-            if (a_key != b_key && a.local == b.remote && a.remote == b.local) {
+            if (a_key != b_key && a.local == b.remote && a.remote == b.local &&
+                identity_agrees(a, b) && identity_agrees(b, a)) {
                 peers[a_key] = b_key;
                 break;
             }
@@ -1198,31 +1347,116 @@ template <> struct fmt::formatter<entry> : formatter<string_view> {
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s SNAPSHOT-DIR [SNAPSHOT-DIR ...]\n", argv[0]);
-        fprintf(stderr, "  a directory of shard-N.trace files, as written by Scylla's\n"
-                        "  POST /system/trace_snapshot into <workdir>/traces/<stamp>/\n"
+        fprintf(stderr, "  a directory of <uuid>.trace files and their <uuid>.metadata.json,\n"
+                        "  as written by Scylla's POST /system/trace_snapshot into\n"
+                        "  <workdir>/traces/<stamp>/\n"
                         "  pass one directory per node to align and correlate RPC traffic\n");
         return 2;
     }
 
-    // One file per shard, and one metadata stream per file: a trace describes
-    // the objects *its own* thread saw loaded, so the shards are decoded
+    // One file per shard *and level*, and one metadata stream per file: a trace
+    // describes the objects its own thread saw loaded, so the files are decoded
     // separately and merged afterwards rather than concatenated.
+    //
+    // Which shard and which process a file came from is in its metadata now, not
+    // in its name -- see snapshot_metadata above. The node numbering that the
+    // rest of the viewer keys off is therefore over *boot ids*: one node is one
+    // traced process, whichever directory its files were handed over in, and two
+    // snapshots of the same node taken minutes apart merge into one timeline
+    // instead of pretending to be two machines.
     struct trace_file {
         std::filesystem::path path;
-        uint32_t node;
+        snapshot_metadata meta;
+        uint32_t node = 0;
+        uint32_t shard = 0;
     };
     std::vector<trace_file> files;
-    for (int node = 0; node < argc - 1; ++node) {
-        for (const auto& e : std::filesystem::directory_iterator(argv[node + 1])) {
+    for (int dir = 0; dir < argc - 1; ++dir) {
+        std::vector<trace_file> in_dir;
+        for (const auto& e : std::filesystem::directory_iterator(argv[dir + 1])) {
             if (e.path().extension() == ".trace") {
-                files.push_back({e.path(), uint32_t(node)});
+                in_dir.push_back({e.path(), read_metadata(e.path()), 0, 0});
             }
         }
+        // Within a directory by path, so that the order a filesystem happens to
+        // report is not part of the answer.
+        std::ranges::sort(in_dir, {}, &trace_file::path);
+        files.insert(files.end(), in_dir.begin(), in_dir.end());
     }
-    std::ranges::sort(files, {}, &trace_file::path);
     if (files.empty()) {
         fprintf(stderr, "no *.trace files in the supplied snapshot directories\n");
         return 1;
+    }
+
+    // Node ids in first-seen order, which -- because the directories were walked
+    // in the order they were given -- keeps the first supplied directory's node
+    // as node 0, the reference clock the others are converted into.
+    //
+    // A file whose metadata is missing falls back to its directory: an old
+    // snapshot, from before the metadata files existed, still loads and still
+    // has its shards kept apart from another directory's.
+    {
+        std::map<std::string, uint32_t> by_boot_id;
+        size_t at = 0;
+        for (trace_file& file : files) {
+            const std::string identity = file.meta.present && !file.meta.boot_id.empty()
+                    ? file.meta.boot_id
+                    : std::string("directory:") + file.path.parent_path().string();
+            const auto [it, fresh] = by_boot_id.emplace(identity, uint32_t(node_boot_ids.size()));
+            if (fresh) {
+                node_boot_ids.push_back(boot_id_halves(identity));
+                node_boot_id_strings.push_back(identity);
+            }
+            file.node = it->second;
+            file.shard = file.meta.present ? file.meta.shard
+                                           : shard_of(file.path).value_or(uint32_t(at));
+            ++at;
+        }
+    }
+    // By node, then shard, then path, so that the load order and the counts
+    // printed below read in the order somebody thinks about them.
+    std::ranges::sort(files, [](const trace_file& a, const trace_file& b) {
+        return std::tie(a.node, a.shard, a.path) < std::tie(b.node, b.shard, b.path);
+    });
+
+    // Kept for the Nodes window as well as printed: which process each node
+    // number is, so that a row labelled "node 2" in the plot can be tied back to
+    // a machine and a boot without going to the shell.
+    struct node_summary {
+        std::string boot_id;
+        std::string build_id;
+        std::string shards;
+        double seconds = 0;
+        uint64_t first_ns = 0;
+        uint64_t last_ns = 0;
+    };
+    std::vector<node_summary> node_summaries(node_boot_ids.size());
+
+    for (uint32_t node = 0; node < node_boot_ids.size(); ++node) {
+        uint64_t first = std::numeric_limits<uint64_t>::max();
+        uint64_t last = 0;
+        std::set<uint32_t> shards;
+        std::set<std::string> builds;
+        for (const trace_file& file : files) {
+            if (file.node != node || !file.meta.present) {
+                continue;
+            }
+            shards.insert(file.shard);
+            builds.insert(file.meta.build_id);
+            first = std::min(first, file.meta.first_record_ns);
+            last = std::max(last, file.meta.last_record_ns);
+        }
+        if (first > last) {
+            node_summaries[node] = {node_boot_id_strings[node], "?", "?", 0, 0, 0};
+            fmt::print("node {}: {} (no metadata)\n", node, node_boot_id_strings[node]);
+            continue;
+        }
+        node_summaries[node] = {node_boot_id_strings[node], fmt::format("{}", fmt::join(builds, ",")),
+                                fmt::format("{}", fmt::join(shards, ",")),
+                                double(last - first) / 1e9, first, last};
+        fmt::print("node {}: boot {} build {} shards {} covering {:.3f} s\n", node,
+                   node_boot_id_strings[node], fmt::join(builds, ","), fmt::join(shards, ","),
+                   double(last - first) / 1e9);
     }
 
     // The objects the trace's source locations point into, as gathered beside
@@ -1246,13 +1480,11 @@ int main(int argc, char** argv) {
 
     std::vector<entry> entries;
     std::vector<rpc_event> rpc_events;
-    for (size_t i = 0; i < files.size(); ++i) {
-        const auto& file = files[i];
-        // The name if it has a number in it, and the position in the sorted
-        // list otherwise -- all this has to be is distinct per file.
-        const uint32_t shard = shard_of(file.path).value_or(uint32_t(i));
-        load_trace(file.path, shard, file.node, entries, rpc_events, dsos);
-        fmt::print("{}: {} records so far\n", file.path.string(), entries.size());
+    for (const auto& file : files) {
+        load_trace(file.path, file.shard, file.node, entries, rpc_events, dsos);
+        fmt::print("{} (node {} shard {} {}): {} records so far\n", file.path.filename().string(),
+                   file.node, file.shard,
+                   file.meta.level.empty() ? "all levels" : file.meta.level, entries.size());
     }
     if (entries.empty()) {
         fprintf(stderr, "no records in the supplied snapshot directories\n");
@@ -1268,9 +1500,9 @@ int main(int argc, char** argv) {
     for (const auto& [node, points] : clock_syncs) {
         node_clocks[node].build(points);
     }
-    // Node numbering follows the command-line order, not filesystem order
-    // (the files were sorted by path above). Keep the first supplied directory
-    // as the reference even when its path sorts after another directory.
+    // Node numbering is by boot id in first-seen order, and the directories are
+    // walked in the order they were given, so node 0 is the first supplied
+    // directory's process however the paths happen to sort.
     constexpr uint32_t reference_node = 0;
     if (const auto found = node_clocks.find(reference_node); found != node_clocks.end()) {
         the_clock = found->second;
@@ -1563,12 +1795,23 @@ int main(int argc, char** argv) {
         // recording -- while sends without a task mean the send records are not
         // carrying the caller's id.
         std::map<rpc_key, std::pair<std::string, std::string>> known;
+        // What the handshake said about the far end, by connection, and which
+        // of those processes are in the snapshots that were opened. A peer that
+        // is *not* is the thing an endpoint pairing could never report: the
+        // connection is real, the node it goes to is named, and its trace is
+        // simply not here.
+        std::map<rpc_key, std::pair<uint64_t, uint64_t>> peer_identity;
+        std::set<std::pair<uint64_t, uint64_t>> loaded_boots(node_boot_ids.begin(),
+                                                             node_boot_ids.end());
         size_t sent = 0, sent_with_task = 0, received = 0, handled = 0;
         for (const rpc_event& e : rpc_events) {
             switch (e.kind) {
             case rpc_event_kind::connection_open:
             case rpc_event_kind::snapshot_entry:
                 known[{e.node, e.connection}] = {e.local, e.remote};
+                if (e.peer_boot_msb != 0 || e.peer_boot_lsb != 0) {
+                    peer_identity[{e.node, e.connection}] = {e.peer_boot_msb, e.peer_boot_lsb};
+                }
                 break;
             case rpc_event_kind::message_sent:
                 ++sent;
@@ -1588,7 +1831,13 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        size_t peer_off_snapshot = 0;
+        for (const auto& [key, boot] : peer_identity) {
+            peer_off_snapshot += !loaded_boots.contains(boot);
+        }
         fmt::print("{} connections known, {} paired with the far end\n", known.size(), paired);
+        fmt::print("{} named their peer in the handshake, {} of those to a node not in these"
+                   " snapshots\n", peer_identity.size(), peer_off_snapshot);
         fmt::print("{} messages sent ({} from a task), {} received, {} opened a task chain\n",
                    sent, sent_with_task, received, handled);
 
@@ -1837,6 +2086,39 @@ int main(int argc, char** argv) {
             ImGui::Begin("Config", &show_config_window);
             ImGui::InputInt("Log task threshold", &log_task_threshold);
             log_task_threshold = std::max(log_task_threshold, 0);
+            ImGui::End();
+        }
+
+        // What each node number is. The plot rows and the RPC edges name nodes
+        // by index; this is the one place that says which process an index is,
+        // which build it ran, and what stretch of time its files cover.
+        {
+            ImGui::Begin("Nodes");
+            if (ImGui::BeginTable("nodes", 5,
+                                  ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_SizingFixedFit)) {
+                ImGui::TableSetupColumn("node");
+                ImGui::TableSetupColumn("boot id");
+                ImGui::TableSetupColumn("build id");
+                ImGui::TableSetupColumn("shards");
+                ImGui::TableSetupColumn("covers");
+                ImGui::TableHeadersRow();
+                for (size_t i = 0; i < node_summaries.size(); ++i) {
+                    const node_summary& n = node_summaries[i];
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%zu", i);
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(n.boot_id.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(n.build_id.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(n.shards.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.3f s", n.seconds);
+                }
+                ImGui::EndTable();
+            }
             ImGui::End();
         }
 
