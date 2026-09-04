@@ -654,7 +654,6 @@ struct full_log_cache {
     int64_t start_ts = 0;
     int64_t end_ts = 0;
     std::vector<cached_log_line> lines;
-    std::vector<cached_plot_item> plot_items;
 };
 
 static std::string log_line_text(const entry& e, int64_t start_ts, bool include_task_id) {
@@ -741,59 +740,10 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
     cache.end_ts = sorted_range.back().ts;
     const size_t cached_count = std::min(cache.task_count, static_cast<size_t>(threshold));
     cache.lines.reserve(cached_count);
-    cache.plot_items.reserve(cached_count);
     for (size_t source_index = cache.source_begin;
          source_index < cache.source_begin + cached_count; ++source_index) {
         const auto& record = span[source_index];
         cache.lines.push_back({source_index, record, log_line_text(record, cache.start_ts, true)});
-    }
-
-    const uint32_t node = sorted_range.front().node;
-    uint64_t iostack = 0;
-    int64_t iostart = 0;
-    int64_t prev_ts = cache.start_ts;
-    bool cpu = true;
-    for (size_t source_index = cache.source_begin;
-         source_index < cache.source_begin + cached_count; ++source_index) {
-        const auto& record = span[source_index];
-        if (record.node != node) {
-            continue;
-        }
-        const double x_min = double(prev_ts - cache.start_ts) * MULTIPLIER / 1e6;
-        const double x_max = double(record.ts - cache.start_ts) * MULTIPLIER / 1e6;
-        cache.plot_items.push_back({
-            {x_min, 1.0},
-            {x_max, 0.0},
-            {x_min, 0.0},
-            cpu ? IM_COL32(0, 128, 0, 255) : IM_COL32(0, 0, 128, 32),
-            cpu,
-        });
-
-        if (record.query() == task_id) {
-            if (record.event != 0x5) {
-                cpu = true;
-            }
-            if (record.event == 0x4) {
-                if (iostack == 0) {
-                    iostart = record.ts;
-                }
-                ++iostack;
-            } else if (record.event == 0x5) {
-                --iostack;
-                if (iostack == 0) {
-                    cache.plot_items.push_back({
-                        {double(iostart - cache.start_ts) * MULTIPLIER / 1e6, 1.0},
-                        {x_max, 0.0},
-                        {},
-                        IM_COL32(255, 255, 255, 32),
-                        false,
-                    });
-                }
-            }
-        } else {
-            cpu = false;
-        }
-        prev_ts = record.ts;
     }
 }
 
@@ -1096,7 +1046,7 @@ static std::string lane_label(uint32_t node, uint32_t shard) {
             head = boot.substr(0, dash);
         }
     }
-    return fmt::format("{} shard {}", head, shard);
+    return fmt::format("{}/shard{}", head, shard);
 }
 
 // The full boot id, for the tooltip, or a placeholder for a snapshot that
@@ -1216,6 +1166,15 @@ static void update_task_plot_cache(task_plot_cache& cache, uint64_t task_id, int
                 cpu = true;
             }
             if (record.event == 0x4) {
+                // Submitting an I/O takes the task off the cpu until it
+                // completes, so the stretch that follows is not green. It used
+                // to be: io_begin fell under the "any record of ours means we
+                // are running" rule above, and the white in-I/O wash is drawn
+                // at alpha 32 over whatever is underneath -- legible over blue,
+                // invisible over green. On a shard with other work the green was
+                // broken up by that work and the I/O showed anyway; on an idle
+                // one the whole wait came out as one solid green bar.
+                cpu = false;
                 if (iostack == 0) {
                     iostart = record.ts;
                 }

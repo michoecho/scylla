@@ -389,8 +389,8 @@ gaps are where the task was preempted or in an I/O, and what the request was
 doing then is a fair thing to click on. Holding the button scrubs, as it always has.
 
 A row is named by the **process and cpu it belongs to**, not by the task drawn on
-it: `<boot-id-head> shard <N>`, as a y-axis tick label rather than text inside
-the plot. The boot id is cut to its first group -- a time-based UUID's `time_low`,
+it: `<boot-id-head>/shard<N>`, as a y-axis tick label rather than text inside the
+plot. The boot id is cut to its first group -- a time-based UUID's `time_low`,
 which differs between two nodes booted a second apart -- because a whole one is
 36 characters of axis; the tooltip and the Nodes window have all of it. Text
 drawn inside the plot was clipped by the plot rect as soon as anybody panned,
@@ -405,6 +405,13 @@ running there, how long it held the cpu, and -- for a `run_task` -- the source
 location it was created at, with the function this time. The stretch that task
 held the cpu is washed lightly white, so what the tooltip is describing is
 visible rather than inferred from where the pointer is.
+
+Green is only ever bounded by *another task's record on the same shard*. There is
+no "task ended" tracepoint, so a stretch where the reactor ran nothing at all --
+the request is waiting on an RPC reply, and the shard has no other work -- is
+green to the next record. Read a long green bar on an otherwise idle shard as
+"nothing else ran here", not as "on the cpu all of it". The worst case in the
+three-node trace here is 0.75 ms over eight consecutive switches to one task.
 
 Every row is scoped to its own node **and shard**, and that scoping is
 load-bearing: blue means "this reactor was running something else", so counting
