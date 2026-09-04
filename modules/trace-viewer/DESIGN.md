@@ -227,6 +227,7 @@ decode is reported and skipped rather than killing the run.
 | `.query_of_task` | which request each task on this reactor belongs to |
 | `.log_lines` + `.log_text` | every record of it, rendered |
 | `.slices` + `.slice_reach` | every rectangle of it, in ms, sorted by start |
+| `.lods` | the same rectangles at coarser and coarser scales, one level per scale, finest first |
 
 The `*_by_task` indices are sorted arrays rather than hash maps on purpose:
 built once, read many times, and `equal_range` over one is two cache lines.
@@ -272,6 +273,7 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 15 | `pass_cost` | `switches` + io spans → `query.t1`, `.cpu_ticks`, `by_latency` |
 | 16 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
 | 17 | `pass_render` | every event table → `log_lines`, `slices` |
+| 18 | `pass_lod` | `slices` → `lods`, the same rectangles at coarser scales |
 
 Three orderings in there are real constraints rather than convention, and each
 is commented at the call site: `pass_attribute` must precede `pass_index`,
@@ -313,7 +315,7 @@ reach it.
 
 ## Honesty, and where it is spent
 
-Three places where the obvious implementation would lie, and what is done
+Four places where the obvious implementation would lie, and what is done
 instead. Do not "simplify" these away.
 
 **What extends a request.** Only records that *carry* a task extend
@@ -322,6 +324,15 @@ statement-cache and connection snapshots are written when the trace is taken,
 and on an idle shard the ambient task is whichever request was last -- so
 without this rule every request that happened to be last on a shard would
 stretch to the end of the trace.
+
+**What a summary of concurrent I/O says.** A bin's density is the time the
+rectangles in it covered, over the width of the bin, clamped at one. For the
+cpu band nothing is ever clamped -- a reactor runs one task at a time, so the
+levels conserve on-cpu time exactly, which is worth keeping true. Two I/Os in
+flight together *do* overlap, so an I/O summary says how much of the stretch
+had some I/O outstanding rather than how many I/O-seconds were spent in it.
+That is the same thing the row draws when it draws them, one over the other,
+and it is why the two bands are never added together.
 
 **What counts as on the cpu.** There is still no "task ended" tracepoint, but
 there is something better: the reactor says when it *gave the cpu back*. A task
@@ -386,6 +397,21 @@ was *picked*: then the new selection's fit is what was asked for and there is
 nothing to give back, which arrives as a preview ending with a different
 `clicked.query` than it began with.
 
+**The keyboard writes an instruction, it does not move the axis.** `w`/`s`
+zoom and `a`/`d` pan, and `apply_keys` runs between the histogram and the
+windows -- the same slot as `follow_selection`, and for the same reason: the
+axis has to be decided before anything reads it. It works off `view::axis_lo/
+axis_hi`, the axis the plot last *drew*, and leaves `view::key_axis` for the
+plot to consume, so the axis is the user's again the moment the key comes up.
+Rates rather than steps, scaled by the frame's delta time, so the speed is the
+same on a 60 Hz display and a 144 Hz one. It is ordered last of the three
+things that can seize the axis (`refit`, then `restore_axis`, then the keys),
+so a request picked this frame still wins and a held key resumes next frame.
+
+Guard it on `io.WantTextInput` and **not** `io.WantCaptureKeyboard`: with
+`NavEnableKeyboard` set, which this program sets, the latter is true whenever
+any window has nav focus, and these keys would be permanently dead.
+
 **Row order encodes that.** Pinned reactors, then the picked request's, then
 whatever the hovered request needs that is not there yet. Rows the hover adds
 go at the **bottom**, where rows appearing and disappearing cannot move
@@ -395,6 +421,44 @@ anything above them out from under the pointer.
 `s.table` (cpu is the full row height, I/O a narrow bar inside it), colour from
 `s.query` against the two selections. Both are pure functions of a row and the
 selection, which is exactly why the rectangles never need rebuilding.
+
+**What is too thin to draw is summarised, not dropped.** Zoomed out, a
+reactor's hundred thousand rectangles land on two thousand pixels, and drawing
+them all was most of a frame for a picture in which nine tenths of them were
+smears the next rectangle overwrote. So `pass_lod` builds a pyramid per
+reactor: the level with scale `s` holds every rectangle at least `s` wide
+verbatim, plus one *summary* per `s`-wide bin standing for the narrower ones
+inside it, carrying how much of the bin they covered and how many they were. A
+frame picks the coarsest level whose scale is under half a pixel and draws it
+with the code that drew `.slices` -- the arrays are the same shape, so it is
+still one binary search and a scan, **one array per row per frame**. Not a
+query per gap, and no merging of levels: that is what the pyramid is bought
+for.
+
+Three properties of it are load-bearing. The scales double and every bin is
+aligned to a multiple of its own scale, so bins *nest exactly* and each level
+is coarsened from the one below rather than from `.slices` -- which is what
+makes a coarse summary an exact sum of finer ones, and the whole pyramid one
+pass plus a geometric tail (~0.3x the rectangles, ~1.5% of startup). The cpu
+and the I/O bands are accumulated separately, because a stretch of cpu and an
+I/O drawn over it are different bands of the picture and adding them up would
+say the reactor was busier than it was. And the pyramid *starts* at a small
+multiple of the average time between one rectangle and the next: below that,
+the zoom that would pick such a level has only a couple of thousand rectangles
+in view anyway, and the plot reads `.slices` as it always did. `.lods` empty is
+a legal state -- delete `pass_lod` and the plot draws `.slices` at every zoom,
+which is exactly what it did before.
+
+**A summary belongs to no request, so the selection is drawn over it.** Its
+colour is its band's washed colour with the alpha saying how busy the stretch
+was; it has no `query`, and hovering one leaves the selection alone and offers
+to zoom rather than naming a record. That would make a request whose every
+rectangle is thinner than a pixel vanish from a zoomed-out plot -- which is the
+plot you are looking at when you ask where a request went -- so the picked and
+hovered requests' own rectangles are drawn again, verbatim, over the summaries.
+It costs a binary search and a scan of the request's own stretch of time, not
+of the row: a request's rectangles are contiguous in time, because a stretch of
+time is what a request is.
 
 ---
 

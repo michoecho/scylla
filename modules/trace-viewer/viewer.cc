@@ -72,6 +72,9 @@
 //   pass_render       every event table        -> log_lines, slices: the text
 //                                                 and the rectangles, for the
 //                                                 whole trace, once
+//   pass_lod          slices                   -> lods: the same rectangles at
+//                                                 coarser scales, with what is
+//                                                 too thin to draw summarised
 //
 // Everything above happens once, at startup, for the whole trace -- including
 // pass_render, which turns every record into the line of text and the
@@ -309,12 +312,31 @@ struct timeline_row {
 // A rectangle. Which kind it is comes from the table it was drawn from, and
 // which colour it takes comes from `query` against the selection, so the same
 // row serves a request that is selected and one that is not.
+//
+// It is also what a *summary* is: one rectangle standing for all the ones too
+// narrow to draw at some zoom (see pass_lod). A summary belongs to no request,
+// covers no single record, and says with `density` how much of its span the
+// rectangles it replaced covered. The fields that change meaning are marked
+// below; everything that draws a rectangle draws both kinds the same
+// way and only asks about `summary` to pick the colour.
 struct slice_row {
     double t0 = 0;  // milliseconds from the start of the trace
     double t1 = 0;
-    int32_t query = none;
-    uint16_t table = 0;  // tab_switch: on the cpu. tab_io_begin: in an I/O.
-    uint32_t index = 0;
+    int32_t query = none;  // summary: always none -- it is nobody's work
+    uint32_t index = 0;    // the row of `table` it was drawn from.
+                           // summary: how many rectangles it stands for
+    float density = 1.0f;  // summary: the fraction of its span they covered
+    uint16_t table = 0;    // tab_switch: on the cpu. tab_io_begin: in an I/O.
+    bool summary = false;
+};
+
+// One level of detail: the same reactor's rectangles, with everything narrower
+// than `scale` replaced by summaries exactly `scale` wide. Built by pass_lod,
+// which is where the shape of this is explained.
+struct lod_level {
+    double scale = 0;               // ms
+    std::vector<slice_row> slices;  // sorted by t0, as cpu_tables::slices is
+    std::vector<double> reach;      // running maximum of their ends, as slice_reach is
 };
 
 struct cpu_tables {
@@ -348,6 +370,12 @@ struct cpu_tables {
     arena log_text;
     std::vector<slice_row> slices;
     std::vector<double> slice_reach;
+
+    // Built by pass_lod: the same rectangles again at coarser and coarser
+    // scales, finest first, so that a zoomed-out frame draws one summary per
+    // half pixel instead of a hundred thousand rectangles it cannot show.
+    // Empty is a legal state: the plot then draws .slices, as it always did.
+    std::vector<lod_level> lods;
 };
 
 // Visit every event table of a cpu. This is what lets the generic passes --
@@ -2138,6 +2166,16 @@ inline ImU32 colour_of(uint16_t table, int32_t query, int32_t primary, int32_t s
     return is_io ? IM_COL32(88, 100, 128, 255) : IM_COL32(84, 108, 84, 255);
 }
 
+// A summary is nobody's work -- it stands for everything that was in that
+// stretch -- so it takes the washed colour of its band and says how busy the
+// stretch was with its alpha. Never transparent: a bin with something in it
+// must not read as one with nothing in it, however little that something was.
+inline ImU32 summary_colour(uint16_t table, float density) {
+    const ImU32 base = colour_of(table, none, none, none);
+    const auto alpha = ImU32(255.0f * (0.25f + 0.75f * std::clamp(density, 0.0f, 1.0f)));
+    return (base & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+}
+
 // The rightmost pixel of a bar, darkened. Two stretches of cpu that meet --
 // which is most of them, a reactor running one task after another -- are
 // otherwise one unbroken block of colour with no boundary in it.
@@ -2193,8 +2231,8 @@ void pass_render(trace_data& d) {
         const auto emit = [&](int64_t from, int64_t to, int32_t query, uint16_t table,
                               uint32_t index) {
             if (to > from) {
-                t.slices.push_back({d.ms(from - d.origin), d.ms(to - d.origin), query, table,
-                                    index});
+                t.slices.push_back({d.ms(from - d.origin), d.ms(to - d.origin), query, index,
+                                    1.0f, table, false});
             }
         };
         for (uint32_t i = 0; i < t.switches.size(); ++i) {
@@ -2227,7 +2265,185 @@ void pass_render(trace_data& d) {
 }
 
 // ============================================================================
-//  21. the view -- which part of all that is on screen
+//  21. pass_lod -- the same rectangles, at coarser and coarser scales
+// ============================================================================
+//
+// reads: .slices (of every cpu)   ->  writes: .lods (of every cpu)
+//
+// Zoomed all the way out, a reactor's hundred thousand rectangles land on two
+// thousand pixels. Drawing them all is most of a frame, and nine tenths of the
+// work is invisible: a rectangle a fifth of a pixel wide is a smear the next
+// one overwrites. But it cannot simply be dropped -- a stretch where a reactor
+// was flat out and a stretch where it was idle must not come out looking the
+// same -- so what is not drawn has to be *said* rather than omitted.
+//
+// So each cpu gets a pyramid. The level with scale `s` holds:
+//
+//   - every rectangle at least `s` wide, verbatim, exactly as .slices has it;
+//   - one *summary* per `s`-wide bin (aligned to multiples of `s` from the
+//     start of the trace) standing for the narrower ones that fall in it,
+//     carrying the fraction of the bin they covered and how many they were.
+//
+// A frame picks the coarsest level whose scale is still under half a pixel and
+// draws it the way it drew .slices: one binary search, then a scan. Not a
+// query per gap, and no merging of levels -- one array per row per frame is
+// the whole point of paying for the pyramid up front.
+//
+// Two things keep the build cheap. Each level is coarsened from the one below
+// it rather than from .slices, so the pyramid is one pass over the rectangles
+// plus a geometric tail; and because the scales double and every bin is
+// aligned to a multiple of its own scale, the bins nest exactly, which makes a
+// coarse summary an exact sum of finer ones rather than a resampling of them.
+// The pyramid also *starts* at the scale where a level first costs less than
+// half of .slices, because below that a level is a copy of .slices under
+// another name -- everything is wider than the scale, nothing is summarised,
+// and the plot may as well read .slices, which is what it does.
+//
+// What a summary loses is whose work it was. That matters in exactly one
+// place: the selected request would vanish from a zoomed-out plot, which is
+// where you most want to see where it went. The plot draws that one request's
+// own rectangles again, over the summaries -- see the timeline window.
+
+// Everything in `src` narrower than `scale` collapsed into summaries `scale`
+// wide, everything wider carried over as it stands. `src` is in t0 order and
+// so is what comes out.
+//
+// Two accumulators rather than one, because a stretch of cpu and an I/O drawn
+// over it are different bands of the picture: adding them together would say
+// the reactor was busier than it was.
+//
+// Within a band the density is the time covered over the width of the bin,
+// clamped at one. A reactor runs one task at a time, so the cpu band never
+// reaches that clamp and on-cpu time is conserved exactly by every level. Two
+// I/Os in flight together do overlap, so an I/O summary says how much of the
+// bin had some I/O outstanding rather than how many I/O-seconds went into it
+// -- which is what the row draws anyway when it draws them one over the other.
+std::vector<slice_row> coarsen(const std::vector<slice_row>& src, double scale) {
+    // What one band has accumulated in the bin being filled. `carry` is the
+    // part that belongs to the *next* bin: a rectangle narrower than a bin can
+    // still straddle two of them, and it is clipped between them rather than
+    // credited to whichever it started in.
+    struct band_acc {
+        double busy = 0;
+        uint32_t count = 0;
+        double carry = 0;
+    };
+    band_acc acc[2];
+    int64_t cur = std::numeric_limits<int64_t>::min();
+    std::vector<slice_row> out;
+    std::vector<slice_row> wide;  // the wide rectangles of `cur`, held back
+    out.reserve(src.size() / 2 + 16);
+
+    const auto summary = [&](int k, int64_t bin, double busy, uint32_t count) {
+        if (busy <= 0) {
+            return;
+        }
+        const double t0 = double(bin) * scale;
+        out.push_back({t0, t0 + scale, none, count, float(std::min(1.0, busy / scale)),
+                       uint16_t(k == 1 ? tab_io_begin : tab_switch), true});
+    };
+    // Close the bin being filled and open `next`. Its summaries go out first
+    // and the wide rectangles that start inside it after, which is what keeps
+    // the output in t0 order without ever sorting it.
+    const auto close = [&](int64_t next) {
+        summary(0, cur, acc[0].busy, acc[0].count);
+        summary(1, cur, acc[1].busy, acc[1].count);
+        out.insert(out.end(), wide.begin(), wide.end());
+        wide.clear();
+        for (int k = 0; k < 2; ++k) {
+            band_acc& a = acc[k];
+            if (next == cur + 1) {
+                a.busy = a.carry;  // what straddled into the bin we are opening
+            } else {
+                summary(k, cur + 1, a.carry, 0);
+                a.busy = 0;
+            }
+            a.count = 0;
+            a.carry = 0;
+        }
+        cur = next;
+    };
+
+    for (const slice_row& s : src) {
+        const int64_t bin = int64_t(std::floor(s.t0 / scale));
+        if (bin != cur) {
+            close(bin);
+        }
+        if (s.t1 - s.t0 >= scale) {
+            wide.push_back(s);
+            continue;
+        }
+        // A summary of the level below covered `density` of its own span; a
+        // rectangle covers all of its own. Either way it is "how much time
+        // does this stand for", which is what the coarser bin adds up.
+        band_acc& a = acc[s.table == tab_io_begin ? 1 : 0];
+        const double covered = s.summary ? double(s.density) : 1.0;
+        const double bin_end = double(bin + 1) * scale;
+        a.busy += covered * (std::min(s.t1, bin_end) - s.t0);
+        a.count += s.summary ? s.index : 1;
+        if (s.t1 > bin_end) {
+            a.carry += covered * (s.t1 - bin_end);
+        }
+    }
+    if (cur != std::numeric_limits<int64_t>::min()) {
+        close(cur + 2);  // + 2 so that the last bin's carry is emitted too
+    }
+    return out;
+}
+
+void pass_lod(trace_data& d) {
+    size_t rows = 0;
+    size_t levels = 0;
+    for (cpu_tables& t : d.tables) {
+        t.lods.clear();
+        if (t.slices.size() < 64) {
+            continue;  // a reactor with this little on it is never the problem
+        }
+        // From the first rectangle to the last one to *end*, which is what
+        // .slice_reach has: the rectangles are in the order they start in, and
+        // the one that starts last is not the one that finishes last.
+        const double span = t.slice_reach.back() - t.slices.front().t0;
+        if (!(span > 0)) {
+            continue;
+        }
+        // Where to start: the finest level worth having, which is the one
+        // below which the plot may as well read .slices.
+        //
+        // A level with scale `s` is picked at the zoom where half a pixel is
+        // `s` wide, so a plot `w` pixels across then shows `2 * w * s` of the
+        // trace and `n * 2 * w * s / span` of its rectangles. A plot is a
+        // couple of thousand pixels wide and a couple of thousand rectangles
+        // in a row is cheap to draw, so the two very nearly cancel, and what
+        // is left is a small multiple of the average time between one
+        // rectangle and the next. Below that there is nothing to save.
+        double scale = std::ldexp(1.0, int(std::ceil(std::log2(
+            2.0 * span / double(t.slices.size())))));
+        if (!(scale > 0) || scale >= span) {
+            continue;
+        }
+        // Coarser until one bin covers the whole trace: past that there is
+        // nothing left to summarise and no zoom that could ask for it.
+        const std::vector<slice_row>* below = &t.slices;
+        for (; scale < span * 2; scale *= 2) {
+            t.lods.push_back({scale, coarsen(*below, scale), {}});
+            lod_level& l = t.lods.back();
+            l.reach.reserve(l.slices.size());
+            double reach = -std::numeric_limits<double>::infinity();
+            for (const slice_row& s : l.slices) {
+                reach = std::max(reach, s.t1);
+                l.reach.push_back(reach);
+            }
+            below = &l.slices;
+            rows += l.slices.size();
+        }
+        levels += t.lods.size();
+    }
+    fmt::print("{} levels of detail over {} reactors, {} rectangles in them\n", levels,
+               d.tables.size(), rows);
+}
+
+// ============================================================================
+//  22. the view -- which part of all that is on screen
 // ============================================================================
 //
 // What is left once everything is rendered in advance: a selection, and where
@@ -2321,6 +2537,14 @@ struct view {
     bool restore_axis = false;
     bool restore_log = false;
 
+    // Where the keyboard has moved the timeline to, and whether it moved it
+    // this frame. The same shape as `refit`: an instruction the plot consumes
+    // and forgets, so that the axis is the user's again the moment the key
+    // comes up. See apply_keys.
+    bool key_axis = false;
+    double key_lo = 0;
+    double key_hi = 0;
+
     // The plot's geometry, kept from the frame that drew it: the row
     // checkboxes are put beside the rows they belong to, and the widget is
     // sized so that a row is the same height whatever the row count.
@@ -2373,16 +2597,41 @@ void build_rows(const trace_data& d, view& v) {
     add_query(v.rows_secondary);
 }
 
-// The slices of one cpu that can be seen between two milliseconds. The first
-// one that can reach into view is found by binary search over the running
-// maximum of their ends; from there they are scanned until they start past the
-// right edge.
-std::span<const slice_row> slices_in(const cpu_tables& t, double from, double to) {
-    const auto first = std::ranges::lower_bound(t.slice_reach, from);
-    const auto begin = t.slices.begin() + (first - t.slice_reach.begin());
-    const auto end = std::upper_bound(begin, t.slices.end(), to,
+// The rectangles of one array that can be seen between two milliseconds. The
+// first one that can reach into view is found by binary search over the
+// running maximum of their ends; from there they are scanned until they start
+// past the right edge.
+//
+// The two arrays are the same shape whether they are a reactor's rectangles or
+// one of its levels of detail, which is what lets the plot draw a level with
+// the code it already had.
+std::span<const slice_row> slices_in(std::span<const slice_row> slices,
+                                     std::span<const double> reach, double from, double to) {
+    const auto first = std::ranges::lower_bound(reach, from);
+    const auto begin = slices.begin() + (first - reach.begin());
+    const auto end = std::upper_bound(begin, slices.end(), to,
                                       [](double x, const slice_row& s) { return x < s.t0; });
     return {begin, end};
+}
+
+std::span<const slice_row> slices_in(const cpu_tables& t, double from, double to) {
+    return slices_in(t.slices, t.slice_reach, from, to);
+}
+
+// The level to draw a reactor at when a rectangle narrower than `thinnest`
+// milliseconds is not worth drawing: the coarsest one that still draws
+// everything wider than that verbatim. Null means there is no such level and
+// the rectangles themselves are what to draw -- which is the answer whenever
+// the plot is zoomed in far enough to show them.
+const lod_level* level_for(const cpu_tables& t, double thinnest) {
+    const lod_level* pick = nullptr;
+    for (const lod_level& l : t.lods) {
+        if (l.scale > thinnest) {
+            break;  // .lods is in increasing scale order
+        }
+        pick = &l;
+    }
+    return pick;
 }
 
 // The record a click at `ts` on `cpu` landed on: the last one at or before it,
@@ -2500,8 +2749,57 @@ void follow_selection(const trace_data& d, view& v) {
     }
 }
 
+// The keyboard's hold on the timeline: w and s zoom, a and d pan.
+//
+// Rates rather than steps, scaled by the frame's own delta time: a doubling of
+// the zoom per second, one screenful of pan per second, for as long as the key
+// is held. That way the speed is the same on a 60 Hz display and a 144 Hz one,
+// and a tap is a small movement rather than a fixed jump.
+//
+// It works off the axis the plot last *drew* (view::axis_lo/axis_hi) rather
+// than off the selection, for the same reason a preview borrows the view: the
+// pan and the zoom are the user's. It writes an instruction for the plot to
+// consume rather than moving anything itself, because the axis belongs to
+// ImPlot and the frame has not begun the plot yet.
+//
+// Zoom is about the centre of what is on screen. The pointer is not part of
+// this gesture -- the mouse wheel is the gesture that zooms where you point,
+// and a keyboard zoom that chased the pointer would move the plot out from
+// under a hand that was nowhere near the mouse.
+void apply_keys(view& v) {
+    v.key_axis = false;
+    const ImGuiIO& io = ImGui::GetIO();
+    // WantTextInput and not WantCaptureKeyboard: the latter is also true
+    // whenever ImGui's keyboard navigation is live, which it is as soon as any
+    // window has focus, and guarding on it would leave these keys permanently
+    // dead. What must not be stolen is a field someone is typing into.
+    if (io.WantTextInput) {
+        return;
+    }
+    if (!(v.axis_hi > v.axis_lo)) {
+        return;  // nothing has been drawn yet, so there is nothing to move
+    }
+    const double zoom = (ImGui::IsKeyDown(ImGuiKey_S) ? 1.0 : 0.0) -
+                        (ImGui::IsKeyDown(ImGuiKey_W) ? 1.0 : 0.0);
+    const double pan = (ImGui::IsKeyDown(ImGuiKey_D) ? 1.0 : 0.0) -
+                       (ImGui::IsKeyDown(ImGuiKey_A) ? 1.0 : 0.0);
+    if (zoom == 0 && pan == 0) {
+        return;
+    }
+    const double dt = std::clamp(double(io.DeltaTime), 0.0, 0.25);
+    // A floor on the width, and no ceiling: zoomed in far enough the axis is
+    // millionths of a millisecond apart and the plot has nothing left to say,
+    // whereas zooming out past the trace is how you find out you have panned
+    // off the end of it.
+    const double width = std::max((v.axis_hi - v.axis_lo) * std::pow(100.0, zoom * dt), 1e-6);
+    const double middle = 0.5 * (v.axis_lo + v.axis_hi) + pan * dt * width;
+    v.key_axis = true;
+    v.key_lo = middle - 0.5 * width;
+    v.key_hi = middle + 0.5 * width;
+}
+
 // ============================================================================
-//  22. the latency histogram
+//  23. the latency histogram
 // ============================================================================
 //
 // The picture the whole tool hangs off. x is 1/(1-quantile) on a log axis, so
@@ -2584,7 +2882,7 @@ aggregate build_aggregate(const trace_data& d, size_t from, size_t to) {
 }
 
 // ============================================================================
-//  23. the windows
+//  24. the windows
 // ============================================================================
 
 constexpr ImU32 colour_hover = IM_COL32(255, 255, 255, 70);
@@ -2769,6 +3067,11 @@ void draw_plot_window(const trace_data& d, view& v) {
             // is that the axis need not be on it.
             ImPlot::SetupAxisLimits(ImAxis_X1, v.borrowed_lo, v.borrowed_hi,
                                     ImPlotCond_Always);
+        } else if (v.key_axis) {
+            // Where w/a/s/d have moved it to. Last of the three, so that a
+            // request picked this frame still wins the axis: a key held down
+            // is a continuous thing and picks itself up again next frame.
+            ImPlot::SetupAxisLimits(ImAxis_X1, v.key_lo, v.key_hi, ImPlotCond_Always);
         }
         v.restore_axis = false;
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, double(v.rows.size()), ImPlotCond_Always);
@@ -2790,39 +3093,83 @@ void draw_plot_window(const trace_data& d, view& v) {
         const ImPlotPoint pt = ImPlot::GetPlotMousePos();
         const bool hovering = ImPlot::IsPlotHovered();
 
+        // One rectangle, wherever it came from. A verbatim one is coloured by
+        // whose work it is; a summary, which is nobody's, by how busy it says
+        // that stretch was.
+        const auto draw_slice = [&](const slice_row& s, size_t row) {
+            const ImU32 colour =
+                s.summary ? summary_colour(s.table, s.density)
+                          : colour_of(s.table, s.query, v.clicked.query, v.hover.query);
+            const band at = band_of(s.table);
+            ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(row) + at.top});
+            ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(row) + at.bottom});
+            if (b.x - a.x < 1.0f) {
+                b.x = a.x + 1.0f;  // a slice thinner than a pixel is still a slice
+            }
+            draw->AddRectFilled(a, b, colour);
+            // Its own trailing edge, so that a run of stretches on one reactor
+            // reads as a run of them rather than as one block. Only where
+            // there is room for it: at one pixel wide the bar *is* its edge,
+            // and darkening it would turn a dense stretch of the plot into a
+            // dark smear. Summaries tile, and are never that wide.
+            if (b.x - a.x >= 3.0f && !s.summary) {
+                draw->AddRectFilled(ImVec2{b.x - 1.0f, a.y}, b, darker(colour, 0.45f));
+            }
+            // The topmost bar the pointer is inside, in both axes: an I/O
+            // drawn over a stretch of cpu leaves that stretch hoverable above
+            // and below it.
+            if (hovering && int(std::floor(pt.y)) == int(row) && pt.x >= s.t0 &&
+                pt.x <= s.t1 && pt.y >= double(row) + at.top &&
+                pt.y <= double(row) + at.bottom) {
+                hit = {&s, row};
+            }
+        };
+
+        // What is too narrow to be worth a rectangle, in milliseconds. Below
+        // this the plot reads a level of detail instead, where everything
+        // narrower has been summarised into how busy it was -- which is what
+        // keeps a frame's work proportional to the width of the plot rather
+        // than to the length of the trace.
+        const double per_pixel =
+            (limits.X.Max - limits.X.Min) / double(std::max(1.0f, ImPlot::GetPlotSize().x));
+        const double thinnest = 0.5 * per_pixel;
+
         for (size_t row = 0; row < v.rows.size(); ++row) {
             const cpu_tables& t = d.tables[v.rows[row]];
+            const lod_level* const lod = level_for(t, thinnest);
             const std::span<const slice_row> visible =
-                slices_in(t, limits.X.Min, limits.X.Max);
+                lod != nullptr ? slices_in(lod->slices, lod->reach, limits.X.Min, limits.X.Max)
+                               : slices_in(t, limits.X.Min, limits.X.Max);
             for (int layer = 0; layer < 2; ++layer) {
                 for (const slice_row& s : visible) {
-                    if (layer_of(s.table) != layer) {
+                    if (layer_of(s.table) == layer) {
+                        draw_slice(s, row);
+                    }
+                }
+            }
+            // The two selected requests, drawn again over the summaries that
+            // swallowed them. A summary belongs to no request, so without this
+            // a request whose every rectangle is thinner than a pixel would be
+            // invisible on a zoomed-out plot -- which is exactly the plot you
+            // are looking at when you ask where a request went.
+            //
+            // It costs a binary search and a scan of the request's own stretch
+            // of time, not of the row: a request's rectangles are contiguous
+            // in time, because a stretch of time is what a request is.
+            if (lod != nullptr) {
+                for (const int32_t q : {v.clicked.query, v.hover.query}) {
+                    if (q < 0) {
                         continue;
                     }
-                    const ImU32 colour =
-                        colour_of(s.table, s.query, v.clicked.query, v.hover.query);
-                    const band at = band_of(s.table);
-                    ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(row) + at.top});
-                    ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(row) + at.bottom});
-                    if (b.x - a.x < 1.0f) {
-                        b.x = a.x + 1.0f;  // a slice thinner than a pixel is still a slice
-                    }
-                    draw->AddRectFilled(a, b, colour);
-                    // Its own trailing edge, so that a run of stretches on one
-                    // reactor reads as a run of them rather than as one block.
-                    // Only where there is room for it: at one pixel wide the
-                    // bar *is* its edge, and darkening it would turn a dense
-                    // stretch of the plot into a dark smear.
-                    if (b.x - a.x >= 3.0f) {
-                        draw->AddRectFilled(ImVec2{b.x - 1.0f, a.y}, b, darker(colour, 0.45f));
-                    }
-                    // The topmost bar the pointer is inside, in both axes: an
-                    // I/O drawn over a stretch of cpu leaves that stretch
-                    // hoverable above and below it.
-                    if (hovering && int(std::floor(pt.y)) == int(row) && pt.x >= s.t0 &&
-                        pt.x <= s.t1 && pt.y >= double(row) + at.top &&
-                        pt.y <= double(row) + at.bottom) {
-                        hit = {&s, row};
+                    const query_row& qr = d.queries[q];
+                    const std::span<const slice_row> mine =
+                        slices_in(t, d.ms(qr.t0 - d.origin), d.ms(qr.t1 - d.origin));
+                    for (int layer = 0; layer < 2; ++layer) {
+                        for (const slice_row& s : mine) {
+                            if (s.query == q && layer_of(s.table) == layer) {
+                                draw_slice(s, row);
+                            }
+                        }
                     }
                 }
             }
@@ -2842,24 +3189,36 @@ void draw_plot_window(const trace_data& d, view& v) {
                     ImGui::BeginTooltip();
                     ImGui::Text("%s  %.3f ms", d.cpus[v.rows[hit.row]].label.c_str(),
                                 s.t1 - s.t0);
-                    ImGui::TextUnformatted(
-                        format_event(d, v.rows[hit.row], s.table, s.index).c_str());
-                    if (s.table == tab_switch) {
-                        const switch_row& sw = d.tables[v.rows[hit.row]].switches[s.index];
-                        if (sw.loc != 0 && d.locations[sw.loc].resolved) {
-                            const location_row& l = d.locations[sw.loc];
-                            ImGui::Text("created at %s:%u in %s",
-                                        std::string(d.text(l.file)).c_str(), l.line,
-                                        std::string(d.text(l.function)).c_str());
+                    // A summary stands for records rather than being one, so
+                    // it says how many and how much of the stretch they took,
+                    // and the way to see them is to zoom until they are drawn.
+                    if (s.summary) {
+                        ImGui::Text("%u %s here, %.0f%% of the time", s.index,
+                                    s.table == tab_io_begin ? "I/Os" : "stretches on the cpu",
+                                    100.0 * double(s.density));
+                        ImGui::TextUnformatted("too narrow to draw -- zoom in for the records");
+                        ImGui::EndTooltip();
+                    } else {
+                        ImGui::TextUnformatted(
+                            format_event(d, v.rows[hit.row], s.table, s.index).c_str());
+                        if (s.table == tab_switch) {
+                            const switch_row& sw = d.tables[v.rows[hit.row]].switches[s.index];
+                            if (sw.loc != 0 && d.locations[sw.loc].resolved) {
+                                const location_row& l = d.locations[sw.loc];
+                                ImGui::Text("created at %s:%u in %s",
+                                            std::string(d.text(l.file)).c_str(), l.line,
+                                            std::string(d.text(l.function)).c_str());
+                            }
                         }
+                        ImGui::Text("%s%s", s.table == tab_io_begin ? "waiting for this I/O"
+                                                                   : "on the cpu",
+                                    s.query < 0 ? ", no request"
+                                    : s.query == v.clicked.query ? ", the picked request"
+                                    : s.query == v.hover.query
+                                        ? ", the request under the pointer"
+                                        : ", another request");
+                        ImGui::EndTooltip();
                     }
-                    ImGui::Text("%s%s", s.table == tab_io_begin ? "waiting for this I/O"
-                                                                : "on the cpu",
-                                s.query < 0                  ? ", no request"
-                                : s.query == v.clicked.query ? ", the picked request"
-                                : s.query == v.hover.query   ? ", the request under the pointer"
-                                                             : ", another request");
-                    ImGui::EndTooltip();
                 }
                 // Hovering a row previews the record under the pointer in
                 // the log; clicking keeps it. Both come from the same place:
@@ -3074,7 +3433,7 @@ struct pass_clock {
 }  // namespace
 
 // ============================================================================
-//  24. main
+//  25. main
 // ============================================================================
 
 // The whole of the program, so that main is the one place that has to decide
@@ -3128,6 +3487,8 @@ static int run(int argc, char** argv) {
     timing.run("pass_cost", [&] { pass_cost(d); });
     timing.run("pass_query_statement", [&] { pass_query_statement(d); });
     timing.run("pass_render", [&] { pass_render(d); });
+    // After pass_render, which is where the rectangles it coarsens come from.
+    timing.run("pass_lod", [&] { pass_lod(d); });
     timing.report();
 
     if (d.queries.empty()) {
@@ -3276,6 +3637,9 @@ static int run(int argc, char** argv) {
         // than at the one before it.
         draw_queries_window(d, v, hist, rect);
         follow_selection(d, v);
+        // After it, so that a request picked this frame gets the axis and the
+        // keys act on what was actually on screen last frame.
+        apply_keys(v);
 
         draw_selected_query(d, v);
         draw_plot_window(d, v);

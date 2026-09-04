@@ -308,6 +308,20 @@ away wherever you had scrolled. A preview now borrows the view and gives it
 back. **Not verified by driving the GUI** -- it compiles and the headless path
 is unchanged, but the interaction itself is unconfirmed.
 
+**Levels of detail on the plot.** Drawing every rectangle was most of a
+zoomed-out frame, and nine tenths of that work was invisible -- a rectangle a
+fifth of a pixel wide is a smear the next one overwrites. `pass_lod` now builds
+a pyramid per reactor (see `DESIGN.md`): each level holds everything wider than
+its scale verbatim and summarises the rest into how busy each of its bins was,
+so a frame picks one level and draws it with the code that drew `.slices`. On
+`sched-group-run` a fully zoomed-out plot goes from 578 591 rectangles to about
+21 000, and the pyramid costs 4.6 ms of startup and 0.32x the rectangles.
+**The frame time itself is not measured** -- there is no way to drive the GUI
+from here -- so those are counts, not milliseconds. What has been checked is
+the pass counts, the headless dump (unchanged: the median request is still 6
+parts, 0.108 ms, 0.088 ms of cpu), that on-cpu time is conserved exactly
+through every level of every reactor, and that the window comes up and runs.
+
 ---
 
 ## Fixtures
@@ -343,7 +357,7 @@ covered" time -- and a query whose `t0` precedes it on its root cpu should be
 counted and kept out of `by_latency` rather than ranked among the complete
 ones. Not done.
 
-**`pass_render` is still 53% of startup**, and its slice loop is most of that.
+**`pass_render` is still half of startup** (159 ms of 306 ms), and its slice loop is most of that.
 The `equal_range` that used to dominate it went with the I/O subtraction, so
 what is left is 822k `format_event` calls and the emit loop. Rendering
 everything up front is a deliberate choice (`DESIGN.md` rule 7) -- if it needs

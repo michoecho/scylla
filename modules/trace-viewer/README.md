@@ -437,6 +437,7 @@ files nodes cpus                   what the snapshot directories describe
              .timeline             all of the above, in time order
              .log_lines            every record of it, rendered as text
              .slices               every rectangle of it, in milliseconds
+             .lods                 the same, at coarser and coarser scales
 locations statements connections   interned, and joined end to end
 queries parts by_latency           one CQL request, and where it ran
 ```
@@ -465,6 +466,7 @@ The passes, in the order `run()` calls them:
 | `pass_query_rows` | parts | `row.query`, on every row |
 | `pass_cost` | switches, io spans | `query.t1`, `query.cpu_ticks`, by_latency |
 | `pass_render` | every event table | log_lines, slices |
+| `pass_lod` | slices | lods: the same rectangles at coarser scales |
 
 All of it runs once, at startup: 27 MB of traces over three nodes and six
 shards -- 630 000 events -- is 3.7 seconds to the window, of which the last
@@ -483,6 +485,17 @@ cost what they look like; the plot culls its rectangles to the visible x range
 with a binary search over `slice_reach`, a running maximum of where the
 rectangles end, which is what makes "the first slice that can reach into view"
 a lookup rather than a scan.
+
+Culling is not enough when the whole trace is in view: everything is visible
+then, and most of it is thinner than a pixel. So `pass_lod` builds a pyramid of
+levels per reactor -- at scale `s`, every rectangle at least `s` wide as it is,
+and one summary per `s`-wide bin standing for the narrower ones inside it,
+saying how much of the bin they covered. A frame picks the coarsest level whose
+scale is under half a pixel and draws it exactly as it draws the rectangles
+themselves, which turns a zoomed-out row from a hundred thousand rectangles
+into a couple of thousand. What the summaries lose is whose work they were, so
+the picked request's own rectangles are drawn over them; hovering a summary
+says how many records are in there and offers the zoom that would show them.
 
 ### Reading a trace with it
 
@@ -507,6 +520,13 @@ A **query** is a CQL request, and the tool is four windows around it.
 - **Timeline** is one row per reactor the request ran on, opened on the
   request's own time range and pannable and zoomable along it -- the y axis is
   a list of reactors rather than a quantity, so it is locked.
+
+  The mouse pans and the wheel zooms where you point; **`w` and `s` zoom, `a`
+  and `d` pan**, at a doubling of the zoom and a screenful of pan per second
+  for as long as the key is held. The keyboard zoom is about the centre of what
+  is on screen, because the hand holding it need not be on the mouse. A request
+  picked while a key is down still gets the axis -- the key picks it up again
+  the frame after.
 
   A bar's *shape* says what it is and its *colour* says whose it is. A stretch
   on the cpu is the full height of the row and an I/O is a narrow bar inside
