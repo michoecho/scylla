@@ -2176,11 +2176,13 @@ struct view {
     // would take it away.
     bool refit = false;
 
-    // The plot's geometry, kept from the frame that drew it, so the row
-    // checkboxes can be put beside the rows they belong to.
+    // The plot's geometry, kept from the frame that drew it: the row
+    // checkboxes are put beside the rows they belong to, and the widget is
+    // sized so that a row is the same height whatever the row count.
     float plot_top = 0;
     float plot_left = 0;
     float row_height = 0;
+    float plot_chrome = 40;  // what ImPlot spends on axes and padding
 };
 
 // The plot's rows: the pinned reactors, then the picked request's, then
@@ -2514,7 +2516,18 @@ void draw_plot_window(const trace_data& d, view& v) {
         ImGui::End();
         return;
     }
-    const float height = std::max(120.0f, float(v.rows.size()) * 34.0f + 40.0f);
+    // A row is `row_pixels` tall, exactly, however many rows there are.
+    //
+    // The widget's height is not a row's height: ImPlot spends some of it on
+    // the x axis' labels and its own padding, and what is left over is the
+    // data area the rows are divided out of. Sizing the widget at
+    // rows * 34 + 40 -- a *guess* at that overhead -- left a row
+    // 34 + (40 - overhead)/rows tall, so every row changed height slightly
+    // whenever a row was added, and the boundary under the pointer moved with
+    // it. The overhead is measured below instead, from the frame that drew it,
+    // and it is stable after the first.
+    constexpr float row_pixels = 34.0f;
+    const float height = float(v.rows.size()) * row_pixels + v.plot_chrome;
 
     std::vector<double> ticks;
     std::vector<const char*> labels;
@@ -2674,6 +2687,7 @@ void draw_plot_window(const trace_data& d, view& v) {
         v.plot_top = ImPlot::GetPlotPos().y;
         v.plot_left = gutter_x;
         v.row_height = ImPlot::GetPlotSize().y / float(v.rows.size());
+        v.plot_chrome = height - ImPlot::GetPlotSize().y;
 
         ImPlot::PopPlotClipRect();
         ImPlot::EndPlot();
