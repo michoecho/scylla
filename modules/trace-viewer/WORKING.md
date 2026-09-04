@@ -72,10 +72,13 @@ Four edits, in this order:
 
 1. **`seastar/include/seastar/core/scylla_tracer.hh`** -- declare the hook.
 2. **`seastar/src/core/scylla_tracer.cc`** -- define it, one `TRACEPOINT()`
-   inside. *Every* call site lives in this file; the header comment explains
-   why (a tracepoint's static key needs a link-time-constant address, which it
-   does not have inside an inline or template function in a shared library).
-   Add it to the event list in the file comment while you are there.
+   inside. *Every* call site lives in this file, by convention rather than by
+   constraint: it keeps the whole table inside `libseastar.so`, and it keeps
+   the hook out of a header that costs 15 minutes to touch. A gated tracepoint
+   in an inline or template function in a shared library does work -- see
+   `modules/tracer/plugin/common_tracepoints.h` -- so do not believe an older
+   comment that says it cannot compile. Add it to the event list in the file
+   comment while you are there.
 3. **the call site**, which just calls the hook.
 4. the viewer -- see `DESIGN.md`, "How to do the usual things".
 

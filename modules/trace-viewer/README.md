@@ -167,9 +167,12 @@ detection and no fallback.
 Everything lives in `libseastar.so` and nowhere else: one tracepoint table, one
 static-key jump table, one registry. That is why every `TRACEPOINT()` call site
 is in `scylla_tracer.cc` behind an out-of-line hook rather than inlined where it
-is wanted -- a tracepoint's static key needs a link-time-constant address, which
-it does not have inside an inline or template function in a shared library. The
-header comment on `scylla_tracer.hh` has the full reasoning.
+is wanted -- that, and that `scylla_tracer.hh` is included by `task.hh` and so
+costs a full rebuild to touch. It is a placement convention, not a language
+constraint: a gated tracepoint inside an inline or template function in a shared
+library compiles and works, which `modules/tracer/plugin/common_tracepoints.h`
+exercises on purpose. The header comment on `scylla_tracer.hh` has the full
+reasoning, and `key_ref` in `static_keys.h` has the mechanism.
 
 ## Building Scylla
 

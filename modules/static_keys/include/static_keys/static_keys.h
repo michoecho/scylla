@@ -174,18 +174,20 @@ extern static_key_desc __start___static_keys[] __attribute__((weak));
 extern static_key_desc __stop___static_keys[] __attribute__((weak));
 }
 
-// Keys are hidden, which is a hard requirement rather than hygiene.
+// Keys are hidden by default, so that each object's keys are its own.
 //
-// A branch site stores its key as a link-time constant (see JUMP_TABLE_ENTRY),
-// and in position-independent code a symbol's address is only a link-time
-// constant if the symbol cannot be preempted by another object. Defining a key
-// with default visibility in a shared library does not merely risk the wrong
-// key being patched -- it fails to compile, with "impossible constraint in
-// 'asm'". Hidden visibility is what makes the address foldable again.
+// This was once a hard requirement. A branch site stored its key's address as a
+// link-time constant, and in position-independent code that is only constant
+// for a symbol no other object can preempt, so defining a key with default
+// visibility in a shared library failed to compile with "impossible constraint
+// in 'asm'". key_ref removed that: what the entry names is the hidden slot, and
+// the key it points at may be anything the loader can resolve.
 //
-// Hidden also means private to the defining DSO. A key other objects branch on
-// wants DEFINE_STATIC_KEY_*_EXPORTED below instead, which is default-visibility
-// and reaches its branch sites through key_ref.
+// So hidden is now a default rather than a requirement, and what it buys is
+// separation -- two objects that each define a key of the same name keep two
+// keys, rather than collapsing onto whichever the loader picked. A key other
+// objects are meant to branch on wants DEFINE_STATIC_KEY_*_EXPORTED below,
+// which is default-visibility and reaches its branch sites through key_ref.
 #define STATIC_KEY_VISIBILITY __attribute__((visibility("hidden")))
 
 // Defining a key: the wrapper object, plus the descriptor that names it.
