@@ -2530,11 +2530,18 @@ void draw_plot_window(const trace_data& d, view& v) {
     const float gutter_x = ImGui::GetCursorScreenPos().x;
     ImGui::Indent(gutter);
     if (ImPlot::BeginPlot("##timeline", ImVec2(-1, height))) {
-        // The y axis is a list of reactors rather than a quantity, so it is
-        // locked: a drag or a scroll moves along the trace and never shears
-        // the rows off the plot.
+        // The y axis is a list of reactors rather than a quantity. Locked, so
+        // that a drag or a scroll moves along the trace and never shears the
+        // rows off the plot -- and inverted, so that row 0 is the top one.
+        //
+        // Inverted with the flag rather than by handing SetupAxisLimits its
+        // bounds the other way round, which does not invert anything: the
+        // limits come back normalised, row 0 lands at the bottom, and rows
+        // appended for a hovered request appear above the rows they were
+        // supposed to go under.
         ImPlot::SetupAxes("ms from the start of the trace", nullptr, ImPlotAxisFlags_None,
-                          ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Lock);
+                          ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Lock |
+                              ImPlotAxisFlags_Invert);
         ImPlot::SetupAxisTicks(ImAxis_Y1, ticks.data(), int(ticks.size()), labels.data());
         // Pinned to the request when it has just changed, and the user's after
         // that: everything is drawn already, so panning and zooming out of the
@@ -2549,7 +2556,7 @@ void draw_plot_window(const trace_data& d, view& v) {
             ImPlot::SetupAxisLimits(ImAxis_X1, v.t0 - pad, v.t1 + pad, ImPlotCond_Always);
             v.refit = false;
         }
-        ImPlot::SetupAxisLimits(ImAxis_Y1, double(v.rows.size()), 0, ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, double(v.rows.size()), ImPlotCond_Always);
         ImPlot::PushPlotClipRect();
         ImDrawList* draw = ImPlot::GetPlotDrawList();
 
