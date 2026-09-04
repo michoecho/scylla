@@ -2167,6 +2167,8 @@ struct view {
     int32_t rows_primary = none;
     int32_t rows_secondary = none;
     uint32_t rows_pins = uint32_t(-1);
+    // ... and which request its x axis was last sent to.
+    int32_t range_for = none - 1;
 
     int32_t scrolled_cpu = none;
     int32_t scrolled_to = none;
@@ -2277,23 +2279,41 @@ selection selection_of_query(const trace_data& d, int32_t query) {
 // Run once a frame, before anything is drawn: the plot's rows and its time
 // range follow both selections and the pins.
 void follow_selection(const trace_data& d, view& v) {
-    if (v.clicked.query == v.rows_primary && v.hover.query == v.rows_secondary &&
-        v.pins == v.rows_pins) {
+    // The two hovers are not the same gesture.
+    //
+    // A hover from the histogram is a *preview*: it asks "what does this
+    // request look like", and the answer is the plot it would get if it were
+    // picked -- its rows, and its stretch of time -- with the picked request's
+    // rows out of the way. A hover from the timeline is a highlight on the
+    // plot that is already there: it asks "whose is this bar", and moving the
+    // plot to answer would take the bar out from under the pointer.
+    const bool preview = v.hover.query >= 0 && !v.hover.from_timeline;
+    const int32_t primary = preview ? none : v.clicked.query;
+    const int32_t secondary = v.hover.query;
+
+    if (primary != v.rows_primary || secondary != v.rows_secondary || v.pins != v.rows_pins) {
+        v.rows_primary = primary;
+        v.rows_secondary = secondary;
+        v.rows_pins = v.pins;
+        build_rows(d, v);
+    }
+
+    // What the times are measured from: the previewed request if there is one,
+    // the picked one otherwise. It is also what the x axis is sent to -- but
+    // only when the request did not come off the timeline itself, where it was
+    // already on screen and moving the axis would take it away.
+    const int32_t against = preview                ? v.hover.query
+                            : v.clicked.query >= 0 ? v.clicked.query
+                                                   : v.hover.query;
+    if (against == v.range_for) {
         return;
     }
-    v.rows_primary = v.clicked.query;
-    v.rows_secondary = v.hover.query;
-    v.rows_pins = v.pins;
-    build_rows(d, v);
-
-    // The times everything is measured from are the picked request's, and the
-    // hovered one's only while nothing is picked. A hover must not move the
-    // origin of the log's column under the pointer.
-    const int32_t against = v.clicked.query >= 0 ? v.clicked.query : v.hover.query;
+    v.range_for = against;
     if (against >= 0) {
         const query_row& q = d.queries[against];
         v.t0 = d.ms(q.t0 - d.origin);
         v.t1 = d.ms(std::max(q.t1, q.t0 + 1) - d.origin);
+        v.refit = !(preview ? v.hover.from_timeline : v.clicked.from_timeline);
     } else {
         // Nothing picked, which happens only with pinned rows on the plot:
         // the whole trace, then.
@@ -2420,9 +2440,6 @@ void draw_queries_window(const trace_data& d, view& v, const histogram& h, doubl
             const ImPlotPoint pt = ImPlot::GetPlotMousePos();
             const auto under = int32_t(d.by_latency[query_at_quantile(d, pt.x)]);
             if (ImGui::IsMouseDown(0)) {
-                if (under != v.clicked.query) {
-                    v.refit = true;  // asked to look at it, so go there
-                }
                 v.clicked = selection_of_query(d, under);
             } else {
                 v.pending = selection_of_query(d, under);
@@ -2679,6 +2696,7 @@ void draw_plot_window(const trace_data& d, view& v) {
                     if (at.query >= 0) {
                         v.clicked.query = at.query;
                     }
+                    v.clicked.from_timeline = true;
                 } else {
                     v.pending = at;
                 }

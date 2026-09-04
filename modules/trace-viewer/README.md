@@ -522,12 +522,22 @@ and far too late for the windows drawn before it. So a window writes
 every window in a frame then sees the same answer. One frame's lag, which at
 60 Hz is not a thing you can see.
 
-The plot's rows are the pinned reactors, then the picked request's, then
-whatever the hovered request needs that is not there yet -- in that order and
-no other. The pins are at the top because they were put there deliberately,
-the picked request's rows are stable for as long as it is picked, and the
-hovered request's extra rows come and go at the *bottom*, where rows appearing
-and disappearing cannot move anything above them out from under the pointer.
+The two hovers are not the same gesture, and the plot treats them
+differently. A hover **from the histogram** is a *preview*: it asks "what does
+this request look like", so the plot shows it the way picking it would -- its
+rows, its stretch of time -- with the picked request's rows out of the way. A
+hover **from the timeline** is a highlight on the plot that is already there:
+it asks "whose is this bar", and moving the plot to answer would take the bar
+out from under the pointer, so the rows and the axis stay and only the colours
+change.
+
+The plot's rows are therefore the pinned reactors, then the picked request's
+(unless a preview has displaced it), then whatever the hovered request needs
+that is not there yet. The pins are at the top because they were put there
+deliberately, the picked request's rows are stable for as long as it is
+picked, and rows the hover adds come and go at the *bottom*, where rows
+appearing and disappearing cannot move anything above them out from under the
+pointer.
 
 ### What a query is, given that nothing carries a query id
 
