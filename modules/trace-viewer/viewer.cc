@@ -69,6 +69,9 @@
 //   pass_cost         switches + io + parts     -> query.t1, query.cpu_ticks,
 //                                                 by_latency
 //   pass_query_statement  prep_runs + queries  -> query.statement
+//   pass_render       every event table        -> log_lines, slices: the text
+//                                                 and the rectangles, for the
+//                                                 whole trace, once
 //
 // Everything above happens once, at startup. The UI then only ever reads.
 // What the UI does build is `view`: the rows of the plot and the lines of the
@@ -97,6 +100,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <span>
@@ -279,6 +283,17 @@ struct timeline_row {
     uint32_t index = 0;
 };
 
+// A rectangle. Which kind it is comes from the table it was drawn from, and
+// which colour it takes comes from `query` against the selection, so the same
+// row serves a request that is selected and one that is not.
+struct slice_row {
+    double t0 = 0;  // milliseconds from the start of the trace
+    double t1 = 0;
+    int32_t query = none;
+    uint16_t table = 0;  // tab_switch: on the cpu. tab_io_begin: in an I/O.
+    uint32_t index = 0;
+};
+
 struct cpu_tables {
     std::vector<switch_row> switches;
     std::vector<io_begin_row> io_begins;
@@ -300,6 +315,16 @@ struct cpu_tables {
 
     // Built by pass_query_rows: which query each task on this cpu belongs to.
     std::unordered_map<uint64_t, int32_t> query_of_task;
+
+    // Built by pass_render: this reactor's whole trace, drawn. One log line
+    // per timeline entry, in this table's own arena, and every rectangle of
+    // its timeline sorted by where it starts. slice_reach is a running maximum
+    // of the slices' ends, which is what makes culling to the visible x range
+    // a binary search.
+    std::vector<str> log_lines;
+    arena log_text;
+    std::vector<slice_row> slices;
+    std::vector<double> slice_reach;
 };
 
 // Visit every event table of a cpu. This is what lets the generic passes --
@@ -420,10 +445,17 @@ struct trace_data {
     std::vector<std::vector<clock_sync_row>> syncs;  // parallel to nodes
 
     double ns_per_tick = 0.2941171840072451;  // until the syncs say otherwise
+    // The earliest record in the trace. Both plot axes and every rendered
+    // rectangle are milliseconds from here, so that two reactors' rows are the
+    // same axis and a rectangle never has to be rebuilt for a new selection.
+    int64_t origin = 0;
 
     [[nodiscard]] std::string_view text(str s) const { return strings.get(s); }
     [[nodiscard]] double seconds(int64_t ticks) const {
         return double(ticks) * ns_per_tick * 1e-9;
+    }
+    [[nodiscard]] double ms(int64_t ticks) const {
+        return double(ticks) * ns_per_tick * 1e-6;
     }
 };
 
@@ -1896,23 +1928,45 @@ int32_t query_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
 }
 
 // ============================================================================
-//  19. the view -- what is drawn for one selected query
+//  19. pass_render -- the event tables -> the text and the rectangles
 // ============================================================================
 //
-// Everything above is built once and never touched again. This is the other
-// half: the tables the UI draws from, rebuilt when -- and only when -- the
-// selection changes. A frame does no work beyond turning these rows into
-// rectangles and text.
+// The last preprocessing pass, and the one the UI draws straight out of. Every
+// record's log line and every rectangle of every reactor's whole timeline is
+// built here, once, for the entire trace -- not for a selected request.
+//
+// That is what lets the log and the plot be scrolled *past* the request that
+// is selected. A selection moves the window and recolours what is in it; it
+// never decides what exists. Nothing is rebuilt when it changes.
+//
+// Two tables per cpu:
+//
+//   .log_lines   one str per timeline entry, in the cpu's own arena
+//   .slices      every rectangle: a stretch on the cpu, or an I/O in flight,
+//                in milliseconds from the start of the trace, carrying the
+//                query it belongs to so a frame's only decision is the colour
+//
+// Kept alongside the slices, .slice_reach is a running maximum of their ends.
+// It is what makes culling to the visible x range a binary search rather than
+// a scan: the slices are sorted by where they start, so the first one that can
+// possibly reach into view is the first whose reach does.
 
-// The kinds are in *drawing* order, back to front, and the slices are sorted
-// by it: what is on top is the last thing written over the same pixels, and
-// what is on top is also what a hover reports. I/O last, because an I/O
-// overlapping a stretch of cpu is the thing worth being able to see.
+// The kinds, in *drawing* order, back to front. What is on top is the last
+// thing written over the same pixels, and is also what a hover reports. I/O
+// last, because an I/O overlapping a stretch of cpu is the thing worth being
+// able to see.
 enum slice_kind : uint8_t {
-    slice_other = 0,   // this reactor, busy with something else
-    slice_query_cpu,   // one of this query's tasks, on the cpu
-    slice_query_io,    // one of this query's I/Os, in flight
+    slice_other = 0,   // this reactor, on some other request's work
+    slice_query_cpu,   // the selected request, on the cpu
+    slice_query_io,    // the selected request, waiting for an I/O
 };
+
+inline uint8_t kind_of(const slice_row& s, int32_t selected) {
+    if (s.query != selected || selected < 0) {
+        return slice_other;
+    }
+    return s.table == tab_io_begin ? slice_query_io : slice_query_cpu;
+}
 
 // How tall a bar of each kind is, as a fraction of its row. Three widths, so
 // that a bar drawn over another still leaves the one underneath visible at the
@@ -1931,37 +1985,117 @@ inline band band_of(uint8_t kind) {
     }
 }
 
-struct slice_row {
-    double t0 = 0;  // milliseconds from the query's start
-    double t1 = 0;
-    uint16_t row = 0;    // which plot row, i.e. which entry of view::rows
-    uint8_t kind = 0;
-    uint16_t table = 0;  // the record this slice was drawn from
-    uint32_t index = 0;
-};
+void pass_render(trace_data& d) {
+    // One origin for every reactor, so that two rows of the plot are the same
+    // axis and a time in the log is a time in the plot.
+    d.origin = std::numeric_limits<int64_t>::max();
+    for (const cpu_tables& t : d.tables) {
+        if (!t.timeline.empty()) {
+            d.origin = std::min(d.origin, t.timeline.front().ts);
+        }
+    }
+    if (d.origin == std::numeric_limits<int64_t>::max()) {
+        d.origin = 0;
+    }
 
-struct log_row {
-    uint32_t timeline = 0;  // the entry in the cpu's timeline
-    str text;
-    bool in_query = false;
-};
+    size_t bytes = 0;
+    size_t slices = 0;
+    for (uint32_t cpu = 0; cpu < d.tables.size(); ++cpu) {
+        cpu_tables& t = d.tables[cpu];
+
+        t.log_lines.clear();
+        t.log_lines.reserve(t.timeline.size());
+        for (const timeline_row& e : t.timeline) {
+            t.log_lines.push_back(t.log_text.put(format_event(d, cpu, e.table, e.index)));
+        }
+
+        // A stretch on the cpu is bounded by the next record of any kind on
+        // the same shard -- there is no "task ended" tracepoint -- and is cut
+        // back by whatever of that task's own I/O fell inside it, because a
+        // shard waiting for a disk is not running even when nothing else is.
+        // The cut is the same one pass_cost makes, so the picture and the
+        // number agree.
+        t.slices.clear();
+        const int64_t cpu_end = t.timeline.empty() ? 0 : t.timeline.back().ts;
+        const auto emit = [&](int64_t from, int64_t to, int32_t query, uint16_t table,
+                              uint32_t index) {
+            if (to > from) {
+                t.slices.push_back({d.ms(from - d.origin), d.ms(to - d.origin), query, table,
+                                    index});
+            }
+        };
+        std::vector<std::pair<int64_t, int64_t>> waits;
+        for (uint32_t i = 0; i < t.switches.size(); ++i) {
+            const switch_row& sw = t.switches[i];
+            const int64_t from = sw.ts;
+            const int64_t to = i + 1 < t.switches.size() ? t.switches[i + 1].ts : cpu_end;
+            if (to <= from) {
+                continue;
+            }
+            waits.clear();
+            for (const auto& [ignored, at] : rows_of_task(t.io_by_task, sw.task)) {
+                const io_begin_row& b = t.io_begins[at];
+                const int64_t b_end = b.end >= 0 ? t.io_ends[b.end].ts : to;
+                const int64_t lo = std::max(from, b.ts);
+                const int64_t hi = std::min(to, b_end);
+                if (lo < hi) {
+                    waits.emplace_back(lo, hi);
+                }
+            }
+            std::ranges::sort(waits);
+            int64_t at = from;
+            for (const auto& [lo, hi] : waits) {
+                emit(at, lo, sw.query, tab_switch, i);
+                at = std::max(at, hi);
+            }
+            emit(at, to, sw.query, tab_switch, i);
+        }
+        for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
+            const io_begin_row& b = t.io_begins[i];
+            emit(b.ts, b.end >= 0 ? t.io_ends[b.end].ts : cpu_end, b.query, tab_io_begin, i);
+        }
+
+        std::ranges::sort(t.slices, {}, &slice_row::t0);
+        t.slice_reach.clear();
+        t.slice_reach.reserve(t.slices.size());
+        double reach = -std::numeric_limits<double>::infinity();
+        for (const slice_row& sl : t.slices) {
+            reach = std::max(reach, sl.t1);
+            t.slice_reach.push_back(reach);
+        }
+
+        bytes += t.log_text.bytes.size();
+        slices += t.slices.size();
+    }
+    fmt::print("{} log lines ({:.1f} MB of text), {} rectangles, all rendered up front\n",
+               std::accumulate(d.tables.begin(), d.tables.end(), size_t(0),
+                               [](size_t n, const cpu_tables& t) {
+                                   return n + t.log_lines.size();
+                               }),
+               double(bytes) / (1 << 20), slices);
+}
+
+// ============================================================================
+//  20. the view -- which part of all that is on screen
+// ============================================================================
+//
+// What is left once everything is rendered in advance: a selection, and where
+// each window is looking. Changing the selection recolours the plot and the
+// log and moves them to the request; it does not rebuild anything, and both
+// windows can then be scrolled anywhere in the trace.
 
 struct view {
     int32_t query = none;
-    int64_t t0 = 0;
-    int64_t t1 = 0;
+    double t0 = 0;  // the selected request, in the plot's milliseconds
+    double t1 = 0;
 
-    std::vector<uint32_t> rows;     // one cpu per plot row
-    std::vector<slice_row> slices;  // sorted by row, then by t0
+    std::vector<uint32_t> rows;  // one cpu per plot row
 
     int32_t log_cpu = none;
-    std::vector<log_row> lines;
-    arena text;
-    int32_t focus = none;  // the line a click on the plot landed on
-    bool scroll = false;
+    int32_t focus = none;  // the timeline entry a click on the plot landed on
+    bool scroll = false;   // ... and whether the log has yet moved to it
     // The plot's axes are pinned to the request only when the request just
-    // changed; after that the axes are the user's, so panning and zooming
-    // into a stretch of it works.
+    // changed; after that the axes are the user's.
     bool refit = false;
 };
 
@@ -1980,121 +2114,27 @@ void build_rows(const trace_data& d, view& v) {
     });
 }
 
-// One row's rectangles. Three kinds, and the interesting one is the first:
-// what a task holds the cpu for is the stretch to the next record on the same
-// shard, cut back by whatever of its own I/O fell inside -- the shard was
-// waiting on a disk there, not running.
-void build_slices(const trace_data& d, view& v) {
-    v.slices.clear();
-    const double scale = d.ns_per_tick * 1e-6;  // ticks -> milliseconds
-    const auto x = [&](int64_t ts) { return double(ts - v.t0) * scale; };
-
-    for (uint16_t row = 0; row < v.rows.size(); ++row) {
-        const uint32_t cpu = v.rows[row];
-        const cpu_tables& t = d.tables[cpu];
-        const int64_t cpu_end = t.timeline.empty() ? v.t1 : t.timeline.back().ts;
-
-        // The switches covering [t0, t1]: from the one at or before the start,
-        // because that is the task the reactor was already running.
-        int32_t first = switch_at(t, v.t0);
-        if (first < 0) {
-            first = 0;
-        }
-        for (uint32_t i = uint32_t(first); i < t.switches.size(); ++i) {
-            const switch_row& s = t.switches[i];
-            if (s.ts > v.t1) {
-                break;
-            }
-            const int64_t from = std::max(s.ts, v.t0);
-            const int64_t to = std::min(
-                i + 1 < t.switches.size() ? t.switches[i + 1].ts : cpu_end, v.t1);
-            if (to <= from) {
-                continue;
-            }
-            if (s.query != v.query) {
-                v.slices.push_back({x(from), x(to), row, slice_other, tab_switch, i});
-                continue;
-            }
-            // Split around this task's I/O.
-            std::vector<std::pair<int64_t, int64_t>> waits;
-            for (const auto& [ignored, at] : rows_of_task(t.io_by_task, s.task)) {
-                const io_begin_row& b = t.io_begins[at];
-                const int64_t b_end = b.end >= 0 ? t.io_ends[b.end].ts : to;
-                const int64_t lo = std::max(from, b.ts);
-                const int64_t hi = std::min(to, b_end);
-                if (lo < hi) {
-                    waits.emplace_back(lo, hi);
-                }
-            }
-            std::ranges::sort(waits);
-            int64_t at = from;
-            for (const auto& [lo, hi] : waits) {
-                if (lo > at) {
-                    v.slices.push_back({x(at), x(lo), row, slice_query_cpu, tab_switch, i});
-                }
-                at = std::max(at, hi);
-            }
-            if (at < to) {
-                v.slices.push_back({x(at), x(to), row, slice_query_cpu, tab_switch, i});
-            }
-        }
-
-        // The I/O itself, drawn over the gaps the loop above left.
-        for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
-            const io_begin_row& b = t.io_begins[i];
-            if (b.query != v.query) {
-                continue;
-            }
-            const int64_t b_end = b.end >= 0 ? t.io_ends[b.end].ts : v.t1;
-            const int64_t from = std::max(b.ts, v.t0);
-            const int64_t to = std::min(b_end, v.t1);
-            if (from < to) {
-                v.slices.push_back({x(from), x(to), row, slice_query_io, tab_io_begin, i});
-            }
-        }
-    }
-    // By row, then by kind, which is the drawing order: the grey goes down
-    // first, the query's cpu over it, and its I/O over that.
-    std::ranges::sort(v.slices, [](const slice_row& a, const slice_row& b) {
-        return std::tie(a.row, a.kind, a.t0) < std::tie(b.row, b.kind, b.t0);
-    });
-}
-
-// One shard's whole timeline over the query's range, as text. Every record,
-// not only the query's: what else the reactor was doing is most of why a
-// request was slow, and the query's own lines are marked rather than filtered.
-constexpr size_t log_line_limit = 100'000;
-
-void build_log(const trace_data& d, view& v) {
-    v.lines.clear();
-    v.text.bytes.assign(1, '\0');
-    v.focus = none;
-    if (v.log_cpu < 0) {
-        return;
-    }
-    const cpu_tables& t = d.tables[v.log_cpu];
-    const auto first = std::ranges::lower_bound(t.timeline, v.t0, {}, &timeline_row::ts);
-    for (auto it = first; it != t.timeline.end() && it->ts <= v.t1; ++it) {
-        if (v.lines.size() >= log_line_limit) {
-            break;
-        }
-        const uint32_t at = uint32_t(it - t.timeline.begin());
-        const std::string line = format_event(d, uint32_t(v.log_cpu), it->table, it->index);
-        v.lines.push_back({at, v.text.put(line),
-                           query_of(d, uint32_t(v.log_cpu), it->table, it->index) == v.query});
-    }
+// The slices of one cpu that can be seen between two milliseconds. The first
+// one that can reach into view is found by binary search over the running
+// maximum of their ends; from there they are scanned until they start past the
+// right edge.
+std::span<const slice_row> slices_in(const cpu_tables& t, double from, double to) {
+    const auto first = std::ranges::lower_bound(t.slice_reach, from);
+    const auto begin = t.slices.begin() + (first - t.slice_reach.begin());
+    const auto end = std::upper_bound(begin, t.slices.end(), to,
+                                      [](double x, const slice_row& s) { return x < s.t0; });
+    return {begin, end};
 }
 
 // The record a click at `ts` on `cpu` landed on: the last one at or before it,
 // which is the event that "owns" that moment.
-int32_t owning_line(const trace_data& d, const view& v, int64_t ts) {
-    if (v.lines.empty()) {
+int32_t owning_line(const trace_data& d, uint32_t cpu, int64_t ts) {
+    const cpu_tables& t = d.tables[cpu];
+    if (t.timeline.empty()) {
         return none;
     }
-    const cpu_tables& t = d.tables[v.log_cpu];
-    const auto after = std::ranges::upper_bound(
-        v.lines, ts, {}, [&](const log_row& l) { return t.timeline[l.timeline].ts; });
-    return after == v.lines.begin() ? 0 : int32_t((after - 1) - v.lines.begin());
+    const auto after = std::ranges::upper_bound(t.timeline, ts, {}, &timeline_row::ts);
+    return after == t.timeline.begin() ? 0 : int32_t((after - 1) - t.timeline.begin());
 }
 
 void select_query(const trace_data& d, view& v, int32_t query) {
@@ -2103,22 +2143,18 @@ void select_query(const trace_data& d, view& v, int32_t query) {
     }
     const query_row& q = d.queries[query];
     v.query = query;
-    v.t0 = q.t0;
-    v.t1 = std::max(q.t1, q.t0 + 1);
+    v.t0 = d.ms(q.t0 - d.origin);
+    v.t1 = d.ms(std::max(q.t1, q.t0 + 1) - d.origin);
     build_rows(d, v);
-    build_slices(d, v);
     v.log_cpu = v.rows.empty() ? none : int32_t(v.rows.front());
-    build_log(d, v);
+    v.focus = v.log_cpu < 0 ? none : owning_line(d, uint32_t(v.log_cpu), q.t0);
     v.scroll = true;
     v.refit = true;
 }
 
 void select_log_cpu(const trace_data& d, view& v, uint32_t cpu, int64_t ts) {
-    if (int32_t(cpu) != v.log_cpu) {
-        v.log_cpu = int32_t(cpu);
-        build_log(d, v);
-    }
-    v.focus = owning_line(d, v, ts);
+    v.log_cpu = int32_t(cpu);
+    v.focus = owning_line(d, cpu, ts);
     v.scroll = true;
 }
 
@@ -2295,7 +2331,6 @@ void draw_plot_window(const trace_data& d, view& v) {
         ImGui::End();
         return;
     }
-    const double span = double(v.t1 - v.t0) * d.ns_per_tick * 1e-6;
     const float height = std::max(120.0f, float(v.rows.size()) * 34.0f + 40.0f);
 
     std::vector<double> ticks;
@@ -2306,75 +2341,98 @@ void draw_plot_window(const trace_data& d, view& v) {
     }
 
     if (ImPlot::BeginPlot("##timeline", ImVec2(-1, height))) {
-        ImPlot::SetupAxes("ms from the request", nullptr, ImPlotAxisFlags_None,
+        ImPlot::SetupAxes("ms from the start of the trace", nullptr, ImPlotAxisFlags_None,
                           ImPlotAxisFlags_NoGridLines);
         ImPlot::SetupAxisTicks(ImAxis_Y1, ticks.data(), int(ticks.size()), labels.data());
-        ImPlot::SetupAxesLimits(0, span, double(v.rows.size()), 0,
+        // Pinned to the request when it has just changed, and the user's after
+        // that: everything is drawn already, so panning and zooming out of the
+        // request and into what the reactor did before and after it costs the
+        // same as looking at the request itself.
+        const double pad = std::max(0.02 * (v.t1 - v.t0), 0.001);
+        ImPlot::SetupAxesLimits(v.t0 - pad, v.t1 + pad, double(v.rows.size()), 0,
                                 v.refit ? ImPlotCond_Always : ImPlotCond_Once);
         v.refit = false;
         ImPlot::PushPlotClipRect();
         ImDrawList* draw = ImPlot::GetPlotDrawList();
 
-        for (const slice_row& s : v.slices) {
-            const ImU32 colour = s.kind == slice_query_cpu  ? colour_query_cpu
-                                 : s.kind == slice_query_io ? colour_query_io
-                                                            : colour_other;
-            const band at = band_of(s.kind);
-            ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(s.row) + at.top});
-            ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(s.row) + at.bottom});
-            if (b.x - a.x < 1.0f) {
-                b.x = a.x + 1.0f;  // a slice thinner than a pixel is still a slice
-            }
-            draw->AddRectFilled(a, b, colour);
-        }
+        const ImPlotRect limits = ImPlot::GetPlotLimits();
+        // Two passes over each row rather than one, because what is drawn on
+        // top has to be drawn last and the slices are in time order, not in
+        // depth order. Two is enough: the request's own bars go over the grey,
+        // and its I/O over its cpu.
+        struct hit_row {
+            const slice_row* slice;
+            size_t row;
+        };
+        hit_row hit{nullptr, 0};
+        const ImPlotPoint pt = ImPlot::GetPlotMousePos();
+        const bool hovering = ImPlot::IsPlotHovered();
 
-        if (ImPlot::IsPlotHovered()) {
-            const ImPlotPoint pt = ImPlot::GetPlotMousePos();
-            const auto row = int(std::floor(pt.y));
-            if (row >= 0 && row < int(v.rows.size())) {
-                // The slice under the pointer, in both axes: a bar is only hit
-                // where it is actually drawn, so the I/O on top and the cpu
-                // stretch it overlaps are each hoverable at their own edges.
-                // The slices are in drawing order, so the last match is the
-                // topmost one.
-                const slice_row* hit = nullptr;
-                for (const slice_row& s : v.slices) {
-                    if (s.row != row || pt.x < s.t0 || pt.x > s.t1) {
+        for (size_t row = 0; row < v.rows.size(); ++row) {
+            const cpu_tables& t = d.tables[v.rows[row]];
+            const std::span<const slice_row> visible =
+                slices_in(t, limits.X.Min, limits.X.Max);
+            for (int layer = 0; layer < 3; ++layer) {
+                for (const slice_row& s : visible) {
+                    const uint8_t kind = kind_of(s, v.query);
+                    if (kind != layer) {
                         continue;
                     }
-                    const band at = band_of(s.kind);
-                    if (pt.y >= double(row) + at.top && pt.y <= double(row) + at.bottom) {
-                        hit = &s;
+                    const ImU32 colour = kind == slice_query_cpu  ? colour_query_cpu
+                                         : kind == slice_query_io ? colour_query_io
+                                                                  : colour_other;
+                    const band at = band_of(kind);
+                    ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(row) + at.top});
+                    ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(row) + at.bottom});
+                    if (b.x - a.x < 1.0f) {
+                        b.x = a.x + 1.0f;  // a slice thinner than a pixel is still a slice
+                    }
+                    draw->AddRectFilled(a, b, colour);
+                    // The topmost bar the pointer is inside, in both axes: an
+                    // I/O drawn over a stretch of cpu leaves that stretch
+                    // hoverable at its exposed edges.
+                    if (hovering && int(std::floor(pt.y)) == int(row) && pt.x >= s.t0 &&
+                        pt.x <= s.t1 && pt.y >= double(row) + at.top &&
+                        pt.y <= double(row) + at.bottom) {
+                        hit = {&s, row};
                     }
                 }
+            }
+        }
+
+        if (hovering) {
+            const auto row = int(std::floor(pt.y));
+            if (row >= 0 && row < int(v.rows.size())) {
                 const uint32_t cpu = v.rows[row];
-                if (hit != nullptr) {
-                    const band at = band_of(hit->kind);
+                if (hit.slice != nullptr) {
+                    const slice_row& s = *hit.slice;
+                    const uint8_t kind = kind_of(s, v.query);
+                    const band at = band_of(kind);
                     draw->AddRectFilled(
-                        ImPlot::PlotToPixels(ImPlotPoint{hit->t0, double(row) + at.top}),
-                        ImPlot::PlotToPixels(ImPlotPoint{hit->t1, double(row) + at.bottom}),
+                        ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(hit.row) + at.top}),
+                        ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(hit.row) + at.bottom}),
                         colour_hover);
                     ImGui::BeginTooltip();
-                    ImGui::Text("%s  %.3f ms", d.cpus[cpu].label.c_str(), hit->t1 - hit->t0);
+                    ImGui::Text("%s  %.3f ms", d.cpus[v.rows[hit.row]].label.c_str(),
+                                s.t1 - s.t0);
                     ImGui::TextUnformatted(
-                        format_event(d, cpu, hit->table, hit->index).c_str());
-                    if (hit->table == tab_switch) {
-                        const switch_row& s = d.tables[cpu].switches[hit->index];
-                        if (s.loc != 0 && d.locations[s.loc].resolved) {
-                            const location_row& l = d.locations[s.loc];
+                        format_event(d, v.rows[hit.row], s.table, s.index).c_str());
+                    if (s.table == tab_switch) {
+                        const switch_row& sw = d.tables[v.rows[hit.row]].switches[s.index];
+                        if (sw.loc != 0 && d.locations[sw.loc].resolved) {
+                            const location_row& l = d.locations[sw.loc];
                             ImGui::Text("created at %s:%u in %s",
                                         std::string(d.text(l.file)).c_str(), l.line,
                                         std::string(d.text(l.function)).c_str());
                         }
                     }
-                    ImGui::Text("%s", hit->kind == slice_query_cpu  ? "on the cpu, this request"
-                                      : hit->kind == slice_query_io ? "waiting for this I/O"
-                                                                    : "this reactor, other work");
+                    ImGui::Text("%s", kind == slice_query_cpu  ? "on the cpu, this request"
+                                      : kind == slice_query_io ? "waiting for this I/O"
+                                                               : "this reactor, other work");
                     ImGui::EndTooltip();
                 }
                 if (ImGui::IsMouseClicked(0)) {
-                    const auto ts = v.t0 + int64_t(pt.x * 1e6 / d.ns_per_tick);
-                    select_log_cpu(d, v, cpu, ts);
+                    select_log_cpu(d, v, cpu, d.origin + int64_t(pt.x * 1e6 / d.ns_per_tick));
                 }
             }
         }
@@ -2384,6 +2442,10 @@ void draw_plot_window(const trace_data& d, view& v) {
     ImGui::End();
 }
 
+// One reactor's whole trace, scrolled to the request. Every line is rendered
+// already, so the clipper draws the handful on screen out of a hundred
+// thousand and the scrollbar reaches the rest of the trace -- what the shard
+// was doing before the request arrived and after it answered is one drag away.
 void draw_log_window(const trace_data& d, view& v) {
     ImGui::Begin("Log");
     if (v.log_cpu < 0) {
@@ -2391,37 +2453,40 @@ void draw_log_window(const trace_data& d, view& v) {
         ImGui::End();
         return;
     }
-    ImGui::Text("%s, %.3f ms, %zu records%s", d.cpus[v.log_cpu].label.c_str(),
-                d.seconds(v.t1 - v.t0) * 1e3, v.lines.size(),
-                v.lines.size() >= log_line_limit ? " (truncated)" : "");
+    const cpu_tables& t = d.tables[v.log_cpu];
+    ImGui::Text("%s, %zu records over the whole trace", d.cpus[v.log_cpu].label.c_str(),
+                t.timeline.size());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("back to the request") && v.focus >= 0) {
+        v.scroll = true;
+    }
     ImGui::Separator();
 
     ImGui::BeginChild("##lines", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-    const cpu_tables& t = d.tables[v.log_cpu];
     ImGuiListClipper clipper;
-    clipper.Begin(int(v.lines.size()));
+    clipper.Begin(int(t.timeline.size()));
     if (v.scroll && v.focus >= 0) {
         clipper.IncludeItemByIndex(v.focus);
     }
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-            const log_row& line = v.lines[i];
-            const timeline_row& e = t.timeline[line.timeline];
+            const timeline_row& e = t.timeline[i];
             const bool focused = i == v.focus;
-            if (focused) {
-                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 220, 100, 255));
-            } else if (line.in_query) {
-                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 240, 120, 255));
-            } else {
-                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(170, 170, 178, 255));
-            }
-            ImGui::Text("%+10.3f ms  %s", d.seconds(e.ts - v.t0) * 1e3,
-                        std::string(v.text.get(line.text)).c_str());
+            const bool in_query =
+                v.query >= 0 && query_of(d, uint32_t(v.log_cpu), e.table, e.index) == v.query;
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  focused    ? IM_COL32(255, 220, 100, 255)
+                                  : in_query ? IM_COL32(120, 240, 120, 255)
+                                             : IM_COL32(150, 150, 158, 255));
+            // Relative to the request, wherever in the trace the line is, so
+            // that scrolling away from it reads as a distance from it.
+            ImGui::Text("%+10.3f ms  %s", d.ms(e.ts - d.origin) - v.t0,
+                        std::string(t.log_text.get(t.log_lines[i])).c_str());
             ImGui::PopStyleColor();
-            // Scrolled to from the line itself rather than from an estimate of
-            // where it is, which is the one way of getting it right when the
-            // clipper means most lines were never laid out.
             if (focused && v.scroll) {
+                // From the line itself rather than from an estimate of where
+                // it is, which is the one way of getting it right when the
+                // clipper means most lines were never laid out.
                 ImGui::SetScrollHereY(0.4f);
             }
         }
@@ -2505,6 +2570,7 @@ static int run(int argc, char** argv) {
     pass_query_rows(d);
     pass_cost(d);
     pass_query_statement(d);
+    pass_render(d);
 
     if (d.queries.empty()) {
         fprintf(stderr, "no CQL requests in these snapshots: nothing to look at\n");
@@ -2531,31 +2597,35 @@ static int run(int argc, char** argv) {
                        d.parts[p].task);
         }
         for (size_t row = 0; row < v.rows.size(); ++row) {
-            const uint32_t cpu = v.rows[row];
+            const cpu_tables& t = d.tables[v.rows[row]];
             double on_cpu = 0;
             double in_io = 0;
             size_t bars = 0;
-            for (const slice_row& sl : v.slices) {
-                if (sl.row != row) {
-                    continue;
-                }
-                on_cpu += sl.kind == slice_query_cpu ? sl.t1 - sl.t0 : 0;
-                in_io += sl.kind == slice_query_io ? sl.t1 - sl.t0 : 0;
-                bars += sl.kind == slice_other ? 0 : 1;
+            for (const slice_row& sl : slices_in(t, v.t0, v.t1)) {
+                const uint8_t kind = kind_of(sl, v.query);
+                // Clipped to the request, because a bar is drawn to the next
+                // record on the shard and the last one runs past the answer --
+                // which is what pass_cost cuts back, so cutting it back here
+                // too is what makes this agree with the headline number.
+                const double covered =
+                    std::max(0.0, std::min(sl.t1, v.t1) - std::max(sl.t0, v.t0));
+                on_cpu += kind == slice_query_cpu ? covered : 0;
+                in_io += kind == slice_query_io ? covered : 0;
+                bars += kind == slice_other ? 0 : 1;
             }
             fmt::print("  row {} {}: {} bars, {:.3f} ms on the cpu, {:.3f} ms in I/O\n", row,
-                       d.cpus[cpu].label, bars, on_cpu, in_io);
+                       d.cpus[v.rows[row]].label, bars, on_cpu, in_io);
         }
         for (const uint32_t cpu : v.rows) {
-            select_log_cpu(d, v, cpu, q.t0);
-            fmt::print("\n{}: {} records over the request\n", d.cpus[cpu].label, v.lines.size());
-            for (const log_row& line : v.lines) {
-                if (!line.in_query) {
+            const cpu_tables& t = d.tables[cpu];
+            fmt::print("\n{}: this request's records\n", d.cpus[cpu].label);
+            for (uint32_t i = 0; i < t.timeline.size(); ++i) {
+                const timeline_row& e = t.timeline[i];
+                if (query_of(d, cpu, e.table, e.index) != v.query) {
                     continue;
                 }
-                fmt::print("  {:+10.3f} ms  {}\n",
-                           d.seconds(d.tables[cpu].timeline[line.timeline].ts - v.t0) * 1e3,
-                           v.text.get(line.text));
+                fmt::print("  {:+10.3f} ms  {}\n", d.ms(e.ts - d.origin) - v.t0,
+                           t.log_text.get(t.log_lines[i]));
             }
         }
         return 0;

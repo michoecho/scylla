@@ -392,6 +392,8 @@ files nodes cpus                   what the snapshot directories describe
              .conns                a connection opened, closed, or was dumped
              .rpcs                 a message crossed the wire
              .timeline             all of the above, in time order
+             .log_lines            every record of it, rendered as text
+             .slices               every rectangle of it, in milliseconds
 locations statements connections   interned, and joined end to end
 queries parts by_latency           one CQL request, and where it ran
 ```
@@ -419,11 +421,25 @@ The passes, in the order `run()` calls them:
 | `pass_queries` | switches, rpcs | queries, parts |
 | `pass_query_rows` | parts | `row.query`, on every row |
 | `pass_cost` | switches, io spans | `query.t1`, `query.cpu_ticks`, by_latency |
+| `pass_render` | every event table | log_lines, slices |
 
 All of it runs once, at startup: 27 MB of traces over three nodes and six
-shards -- 630 000 events -- is 1.7 seconds to the window. After that the UI
-only ever reads, except for one cache: `view`, the plot rows and log lines of
-the selected query, rebuilt when the selection changes and not per frame.
+shards -- 630 000 events -- is 3.7 seconds to the window, of which the last
+pass is half. After that **the UI only reads.** There is no cache to
+invalidate and nothing is rebuilt when the selection changes, because
+`pass_render` renders the whole trace rather than the selected request:
+618 000 log lines into a per-reactor arena (41 MB of text) and 530 000
+rectangles, in milliseconds from one origin every row shares.
+
+That is what lets both windows be scrolled *past* the request. A selection
+moves them to it and recolours what is in it -- a rectangle takes its colour
+from its own `query` field against the selection -- but what exists on screen
+does not depend on it. The log is one reactor's whole trace under an
+`ImGuiListClipper`, so the handful of visible lines out of a hundred thousand
+cost what they look like; the plot culls its rectangles to the visible x range
+with a binary search over `slice_reach`, a running maximum of where the
+rectangles end, which is what makes "the first slice that can reach into view"
+a lookup rather than a scan.
 
 ### Reading a trace with it
 
@@ -442,18 +458,23 @@ A **query** is a CQL request, and the tool is four windows around it.
   and three replicas reading in parallel spend more cpu than the wall clock
   they take.
 
-- **Timeline** is one row per reactor the request ran on, over the request's
-  own time range. Green is that request on the cpu, blue is an I/O it is
-  waiting for, and the thin grey band is the reactor busy with something else.
-  Hovering says what the bars cannot -- the task, the source location the
-  continuation was created at, how long the stretch is. Clicking a row points
-  the log at that shard and at the record under the pointer.
+- **Timeline** is one row per reactor the request ran on, opened on the
+  request's own time range and pannable and zoomable out of it. Green is that
+  request on the cpu, blue is an I/O it is waiting for, and the thin grey band
+  is the reactor busy with something else. The three are drawn at three widths,
+  back to front, so an I/O over a stretch of cpu leaves that stretch visible --
+  and hoverable -- at its edges. Hovering says what the bars cannot: the task,
+  the source location the continuation was created at, how long the stretch
+  is. Clicking a row points the log at that shard and at the record under the
+  pointer.
 
-- **Log** is one shard's *whole* timeline over the request's range, not the
-  request's own records only: what else the reactor was doing is most of why a
-  request was slow. The selected request's lines are green, the record a click
-  landed on is yellow, and everything else is grey. There is no second "full
-  log" window, because this is it.
+- **Log** is one shard's *whole* trace, scrolled to the request: what else the
+  reactor was doing is most of why a request was slow, and so is what it was
+  doing before the request arrived. The selected request's lines are green, the
+  record a click landed on is yellow, everything else is grey, and the timestamp
+  column is relative to the request wherever in the trace the line is. "Back to
+  the request" returns after a scroll. There is no second "full log" window,
+  because this is it.
 
 - **Nodes** is which process each node number is.
 
@@ -474,6 +495,14 @@ carried; a sent frame to its arrival, by the sequence number each direction
 counts locally; and an arrival to the work it caused, by `rpc_request_handled`.
 
 ### Two things it will tell you that look wrong and are not
+
+**A green bar running past the end of the request.** A stretch on the cpu is
+bounded by the next task the reactor picked up, and if nothing else ran there
+the last bar of a request reaches to whatever came next -- possibly much later.
+That is the trace's own information and the plot draws it, but it is not
+counted: `pass_cost` clips a request's cpu time at its last record, which is
+why the number under the histogram and the bar on screen can disagree about the
+final stretch.
 
 **A request whose latency is a second.** There is no "task ended" tracepoint,
 so a request reaches as far as the last record any of its parts wrote -- and
