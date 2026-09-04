@@ -216,14 +216,14 @@ decode is reported and skipped rather than killing the run.
 | table | one row per |
 |---|---|
 | `.switches` | the reactor picked up a task (five tracepoints; `cause` says which) |
-| `.tq_runs` | the reactor gave the cpu to a task queue, or took it back |
+| `.tq_runs` | the reactor gave the cpu to a task queue, or took it back. The end is what bounds every switch inside it |
 | `.io_begins` / `.io_ends` | an I/O was submitted, and completed |
 | `.prep_runs` | a prepared statement was executed |
 | `.prep_deltas` | the statement cache changed, or was dumped |
 | `.conns` | a connection opened, closed, or was dumped |
 | `.rpcs` | a message crossed the wire, or opened a task chain |
 | `.timeline` | **all of the above**, in time order |
-| `.switch_by_task` etc. | `(task, row)` sorted by task -- built once, read many |
+| `.switch_by_task`, `.rpc_by_task` | `(task, row)` sorted by task -- built once, read many |
 | `.query_of_task` | which request each task on this reactor belongs to |
 | `.log_lines` + `.log_text` | every record of it, rendered |
 | `.slices` + `.slice_reach` | every rectangle of it, in ms, sorted by start |
@@ -261,7 +261,7 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 4 | `pass_retime` | `syncs` → every `ts`, in node 0's clock |
 | 5 | `pass_order` | again: retiming is monotone only if the clocks are |
 | 6 | `pass_attribute` | `switches` → `row.task` where the record carried none |
-| 7 | `pass_sched_group` | `tq_runs` + `timeline` → `switch.group` |
+| 7 | `pass_task_queue_runs` | `tq_runs` + `timeline` → `switch.run`, `.group`, `tq_run.end` |
 | 8 | `pass_index` | event tables → the `*_by_task` indices |
 | 9 | `pass_io_spans` | `io_begins` + `io_ends` → `io_begin.end` |
 | 10 | `pass_statements` | `prep_deltas` + `prep_runs` → `statements`, `prep_run.statement` |
@@ -276,7 +276,7 @@ In the order `run()` calls them. The middle column is the whole contract.
 Three orderings in there are real constraints rather than convention, and each
 is commented at the call site: `pass_attribute` must precede `pass_index`,
 because the index is keyed on the task it fills in; `pass_order` runs again
-after `pass_retime`; and `pass_sched_group` must follow the last `pass_order`,
+after `pass_retime`; and `pass_task_queue_runs` must follow the last `pass_order`,
 because it walks the timeline and wants it in the order the rings hold it.
 
 ### The three joins worth understanding
@@ -323,13 +323,25 @@ and on an idle shard the ambient task is whichever request was last -- so
 without this rule every request that happened to be last on a shard would
 stretch to the end of the trace.
 
-**What counts as on the cpu.** A stretch is bounded by the next task the
-reactor picked up, because there is no "task ended" tracepoint. `pass_cost`
-additionally clips it at the request's last record and cuts out the request's
-own I/O. The *plot* does not clip at the last record -- it cannot, because
-rectangles are rendered before anything is selected -- so a green bar can run
-past the end of a request while the number does not count it. That is a
-documented disagreement, not a bug.
+**What counts as on the cpu.** There is still no "task ended" tracepoint, but
+there is something better: the reactor says when it *gave the cpu back*. A task
+queue run's end bounds every switch inside it, and the next switch on the shard
+bounds it too; `switch_ends()` takes whichever the snapshot has. `pass_cost`
+additionally clips at the request's last record. The *plot* does not clip at
+the last record -- it cannot, because rectangles are rendered before anything
+is selected -- so a green bar can run past the end of a request while the
+number does not count it. That is a documented disagreement, not a bug.
+
+An earlier version of this had no run end to work with, and bounded a stretch
+by the next switch alone. That is wrong whenever the reactor had nothing else
+to do: the idle time until the task's own continuation was billed to it as cpu.
+It was patched by subtracting the task's own I/O from its stretch, on the
+grounds that a shard waiting for a disk is not running -- which made the median
+request in `sched-group-run` read 0.412 ms of cpu against 0.108 ms of latency.
+With the real bound it reads 0.088 ms. **Do not put the subtraction back.** An
+I/O is now drawn *over* the cpu it overlaps rather than out of it, because a
+task holding the cpu while its own read is outstanding is a different thing
+from one blocked on it, and the overlap is what shows which.
 
 **Ambient attribution.** `pass_attribute` gives a record that carries no task
 the one the shard was last running. It is deliberately *not* applied to the two
@@ -433,8 +445,10 @@ rather than adding printf to the render loop.
   headless dump against `ignored/sched-group-run` -- the snapshot `decoder.h`
   here was copied from, three nodes of two shards, made by
   `third-party/scylladb/capture-trace.sh`. A median request there comes out as
-  a coordinator and two replicas, six parts, ~0.108 ms latency and ~0.412 ms of
-  cpu, and every switch is inside a task queue run. (`ignored/boot-id-run`
+  a coordinator and two replicas, six parts, ~0.108 ms latency and ~0.088 ms of
+  cpu, and every switch is inside a task queue run (99280 of the 99286 runs are
+  closed in the snapshot -- the six open ones are the run each of the six
+  reactors was in when it was asked). (`ignored/boot-id-run`
   before it reads only with *its* `decoder.h`: a snapshot and the decoder
   beside it are one pair, so an older run needs its own.) That is thin; the
   table-per-pass shape makes a real test of one pass easy to write, and it has

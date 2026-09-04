@@ -121,8 +121,13 @@ the same reasoning about whose job that is.
 A `SWITCH` line also carries `sg N`, the scheduling group the reactor was
 running under when it picked the task up.  A `run_task` record does not say
 that -- it would be a field on the hottest record in the trace -- and the
-`task_queue_run_{begin,end}` bracket around it does instead; `pass_sched_group`
-in the viewer is what turns the bracket into a column.  A switch whose bracket
+`task_queue_run_{begin,end}` bracket around it does instead;
+`pass_task_queue_runs` in the viewer is what turns the bracket into a column.
+The bracket's *end* is load-bearing for a second reason: it is the reactor
+saying it gave the cpu back, which is what bounds a green bar and what
+`pass_cost` counts to. Before those records existed there was nothing to bound
+a stretch but the next switch, and the idle time until a task's own
+continuation was billed to it as cpu.  A switch whose bracket
 the ring evicted has no `sg` at all rather than a guessed one.
 
 `at` is `seastar::task::location()` -- the `then()` call site, or the `co_await`

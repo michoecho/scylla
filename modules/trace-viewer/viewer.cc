@@ -232,15 +232,19 @@ struct switch_row {
     uint32_t loc = 0;     // trace::locations, where `task` was created
     uint8_t cause = 0;    // switch_cause
     int32_t rpc = none;   // for sw_rpc_handled: the rpc row that opened it
-    int32_t group = none; // scheduling group, filled by pass_sched_group
+    int32_t run = none;   // the tq_begin row of the run this is in, or none
+    int32_t group = none; // that run's scheduling group. Both by pass_task_queue_runs
 };
 
 // The reactor gave the cpu to one task queue, or took it back. A run is a
-// begin and the end that follows it, and every switch between them ran under
-// the begin's scheduling group -- which is what pass_sched_group makes of it.
+// begin and the end that follows it: every switch between them ran under the
+// begin's scheduling group, and the end is the moment the reactor stopped
+// running them. pass_task_queue_runs is what joins the pair and hands both
+// facts to the switches inside.
 struct tq_run_row {
     ROW_COMMON;
     int32_t group = none;  // the scheduling group id, on a tq_begin
+    int32_t end = none;    // on a tq_begin: the tq_end that closed it
     uint8_t kind = 0;      // tq_kind
 };
 
@@ -325,12 +329,11 @@ struct cpu_tables {
 
     std::vector<timeline_row> timeline;
 
-    // Built by pass_index: (task, row) pairs sorted by task, for the three
+    // Built by pass_index: (task, row) pairs sorted by task, for the two
     // tables a query walk has to ask "what did task T do here" of. A sorted
     // array rather than a hash map because it is built once, read many times,
     // and equal_range over it is two cache lines.
     std::vector<std::pair<uint64_t, uint32_t>> switch_by_task;
-    std::vector<std::pair<uint64_t, uint32_t>> io_by_task;
     std::vector<std::pair<uint64_t, uint32_t>> rpc_by_task;
 
     // Built by pass_query_rows: which query each task on this cpu belongs to.
@@ -1158,8 +1161,14 @@ void pass_retime(trace_data& d) {
 // ============================================================================
 //
 // "What did task T do on this cpu" is asked once per part per query walk, and
-// a linear scan of a shard's switches would make the walk quadratic. Three
+// a linear scan of a shard's switches would make the walk quadratic. Two
 // sorted (task, row) arrays answer it with an equal_range.
+//
+// There was a third, over the I/O begins, for when pass_render and pass_cost
+// subtracted a task's own I/O from its stretch of cpu. They no longer do --
+// the task queue run's end says when the cpu was given back, and the I/O is
+// drawn over the cpu rather than out of it -- so nothing asks that question
+// any more and the index is gone with it.
 
 void pass_index(trace_data& d) {
     for (cpu_tables& t : d.tables) {
@@ -1168,11 +1177,6 @@ void pass_index(trace_data& d) {
         for (uint32_t i = 0; i < t.switches.size(); ++i) {
             t.switch_by_task.emplace_back(t.switches[i].task, i);
         }
-        t.io_by_task.clear();
-        t.io_by_task.reserve(t.io_begins.size());
-        for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
-            t.io_by_task.emplace_back(t.io_begins[i].task, i);
-        }
         t.rpc_by_task.clear();
         t.rpc_by_task.reserve(t.rpcs.size());
         for (uint32_t i = 0; i < t.rpcs.size(); ++i) {
@@ -1180,7 +1184,6 @@ void pass_index(trace_data& d) {
         }
         // By task, and by row within a task, so a range is also in time order.
         std::ranges::sort(t.switch_by_task);
-        std::ranges::sort(t.io_by_task);
         std::ranges::sort(t.rpc_by_task);
     }
 }
@@ -1242,15 +1245,27 @@ void pass_attribute(trace_data& d) {
 }
 
 // ============================================================================
-//  10. pass_sched_group -- tq_runs + switches -> switch.group
+//  10. pass_task_queue_runs -- tq_runs + timeline -> switch.run, .group, tq.end
 // ============================================================================
 //
-// A run_task record does not say which scheduling group ran it, and making it
-// carry one would be a field on the hottest record in the trace for something
-// that changes a few times a millisecond. What says it instead is the bracket
-// around it: the reactor gives the cpu to one task queue, runs whatever that
-// queue holds, and takes it back, so every switch between a tq_begin and the
-// tq_end after it ran under that begin's group.
+// The reactor gives the cpu to one task queue, runs whatever that queue holds,
+// and takes it back. Two records bracket that, and joining them answers two
+// questions at once for every switch in between:
+//
+//   which scheduling group ran it    the begin carries the id. A run_task
+//                                    record does not, and making it would be a
+//                                    field on the hottest record in the trace
+//                                    for something that changes a few times a
+//                                    millisecond.
+//   when it stopped being on the cpu the end. This is the record the trace
+//                                    never had: there is no "task ended"
+//                                    tracepoint, but the *reactor* says when it
+//                                    gave the cpu back, and nothing it picked
+//                                    up is running after that.
+//
+// So a switch gets `run` -- the tq_begin row it is inside -- and the begin gets
+// `end`, and switch_ends() below turns the pair into the one number both
+// pass_render and pass_cost want.
 //
 // The walk is over the *timeline* rather than over the two tables in parallel,
 // and that is the reason to prefer it: two records of one shard can share an
@@ -1258,27 +1273,57 @@ void pass_attribute(trace_data& d) {
 // timeline is the one place their order survives, because it is stable-sorted
 // and so still in the order the ring holds them.
 //
-// A switch outside any run keeps `none`. That is not a failure to explain: the
-// debug ring evicts, and the oldest surviving records of a shard are the tail
-// of a run whose begin is gone.
+// Both sentinels stay `none` rather than being guessed at, and a snapshot is a
+// ring of a running system, so both happen at its edges: a switch older than
+// the first begin in the file is the tail of a run that was evicted, and the
+// run that was open when the snapshot was taken has no end in it.
 
-void pass_sched_group(trace_data& d) {
-    size_t runs = 0, attributed = 0, orphaned = 0;
+void pass_task_queue_runs(trace_data& d) {
+    size_t runs = 0, closed = 0, attributed = 0, orphaned = 0;
     for (cpu_tables& t : d.tables) {
-        int32_t group = none;
+        int32_t open = none;
         for (const timeline_row& e : t.timeline) {
             if (e.table == tab_tq_run) {
-                const tq_run_row& r = t.tq_runs[e.index];
-                group = r.kind == tq_begin ? r.group : none;
-                runs += r.kind == tq_begin ? 1 : 0;
+                if (t.tq_runs[e.index].kind == tq_begin) {
+                    open = int32_t(e.index);
+                    ++runs;
+                } else {
+                    if (open >= 0) {
+                        t.tq_runs[open].end = int32_t(e.index);
+                        ++closed;
+                    }
+                    open = none;
+                }
             } else if (e.table == tab_switch) {
-                t.switches[e.index].group = group;
-                ++(group >= 0 ? attributed : orphaned);
+                switch_row& sw = t.switches[e.index];
+                sw.run = open;
+                sw.group = open >= 0 ? t.tq_runs[open].group : none;
+                ++(open >= 0 ? attributed : orphaned);
             }
         }
     }
-    fmt::print("{} task queue runs: {} switches in one, {} before the first\n", runs,
-               attributed, orphaned);
+    fmt::print("{} task queue runs, {} of them closed in the snapshot: {} switches in one, "
+               "{} before the first\n", runs, closed, attributed, orphaned);
+}
+
+// When the reactor stopped running the task a switch picked up.
+//
+// The end of its task queue run is the honest answer -- that record is the
+// reactor saying it gave the cpu back, and nothing it picked up is running
+// after it. The next switch on the shard bounds it too, and is all there is
+// when the run's end is not in the snapshot; `cpu_end` is the reactor's last
+// record, for the switch that is still the newest one.
+//
+// Reads switch.run and tq_run.end, so without pass_task_queue_runs it falls
+// back to the next switch on its own -- which is all this could do before there
+// were task queue records at all.
+inline int64_t switch_ends(const cpu_tables& t, uint32_t i, int64_t cpu_end) {
+    int64_t to = i + 1 < t.switches.size() ? t.switches[i + 1].ts : cpu_end;
+    const int32_t run = t.switches[i].run;
+    if (run >= 0 && t.tq_runs[run].end >= 0) {
+        to = std::min(to, t.tq_runs[t.tq_runs[run].end].ts);
+    }
+    return to;
 }
 
 // ============================================================================
@@ -1826,12 +1871,16 @@ void pass_cost(trace_data& d) {
         }
     }
 
-    // What a task holds the cpu for is the stretch to the next record on the
-    // same shard: there is no "task ended" tracepoint, so a stretch where the
-    // reactor ran nothing else is counted to the last task it picked up. Two
-    // things cut it back -- the query's own end, because a request cannot be
-    // on the cpu after its last record, and its I/O, because a shard waiting
-    // for a disk is not running even when nothing else is.
+    // What a task holds the cpu for is switch_ends() -- the end of the task
+    // queue run it was picked up in, or the next switch on the shard when the
+    // snapshot does not have that end. One further thing cuts it back: the
+    // query's own end, because a request cannot be on the cpu after the last
+    // record it wrote.
+    //
+    // Its I/O does not. A shard is on the cpu or it is not, and the run's end
+    // already says which; time a task spends with a read outstanding *and* the
+    // reactor still running it is cpu time, and the plot draws the overlap for
+    // the same reason.
     for (const cpu_tables& t : d.tables) {
         const int64_t cpu_end = t.timeline.empty() ? 0 : t.timeline.back().ts;
         for (uint32_t i = 0; i < t.switches.size(); ++i) {
@@ -1840,19 +1889,11 @@ void pass_cost(trace_data& d) {
                 continue;
             }
             const int64_t from = s.ts;
-            const int64_t to =
-                std::min(i + 1 < t.switches.size() ? t.switches[i + 1].ts : cpu_end,
-                         d.queries[s.query].t1);
+            const int64_t to = std::min(switch_ends(t, i, cpu_end), d.queries[s.query].t1);
             if (to <= from) {
                 continue;
             }
-            int64_t on_cpu = to - from;
-            for (const auto& [ignored, at] : rows_of_task(t.io_by_task, s.task)) {
-                const io_begin_row& b = t.io_begins[at];
-                const int64_t b_end = b.end >= 0 ? t.io_ends[b.end].ts : to;
-                on_cpu -= std::max<int64_t>(0, std::min(to, b_end) - std::max(from, b.ts));
-            }
-            d.queries[s.query].cpu_ticks += std::max<int64_t>(0, on_cpu);
+            d.queries[s.query].cpu_ticks += to - from;
         }
     }
 
@@ -2137,12 +2178,16 @@ void pass_render(trace_data& d) {
             t.log_lines.push_back(t.log_text.put(format_event(d, cpu, e.table, e.index)));
         }
 
-        // A stretch on the cpu is bounded by the next record of any kind on
-        // the same shard -- there is no "task ended" tracepoint -- and is cut
-        // back by whatever of that task's own I/O fell inside it, because a
-        // shard waiting for a disk is not running even when nothing else is.
-        // The cut is the same one pass_cost makes, so the picture and the
-        // number agree.
+        // A stretch on the cpu runs from the switch that picked the task up to
+        // switch_ends() -- the end of its task queue run, or the next switch on
+        // the shard, whichever the snapshot has. The same bound pass_cost uses,
+        // so the picture and the number agree.
+        //
+        // Nothing is cut out of it. An I/O is drawn *over* the cpu it overlaps,
+        // as a narrow bar inside the row (see band_of), because that overlap is
+        // the thing worth seeing: a task holding the cpu while its own read is
+        // outstanding looks different from one blocked on it, and subtracting
+        // one from the other would hide both.
         t.slices.clear();
         const int64_t cpu_end = t.timeline.empty() ? 0 : t.timeline.back().ts;
         const auto emit = [&](int64_t from, int64_t to, int32_t query, uint16_t table,
@@ -2152,31 +2197,9 @@ void pass_render(trace_data& d) {
                                     index});
             }
         };
-        std::vector<std::pair<int64_t, int64_t>> waits;
         for (uint32_t i = 0; i < t.switches.size(); ++i) {
             const switch_row& sw = t.switches[i];
-            const int64_t from = sw.ts;
-            const int64_t to = i + 1 < t.switches.size() ? t.switches[i + 1].ts : cpu_end;
-            if (to <= from) {
-                continue;
-            }
-            waits.clear();
-            for (const auto& [ignored, at] : rows_of_task(t.io_by_task, sw.task)) {
-                const io_begin_row& b = t.io_begins[at];
-                const int64_t b_end = b.end >= 0 ? t.io_ends[b.end].ts : to;
-                const int64_t lo = std::max(from, b.ts);
-                const int64_t hi = std::min(to, b_end);
-                if (lo < hi) {
-                    waits.emplace_back(lo, hi);
-                }
-            }
-            std::ranges::sort(waits);
-            int64_t at = from;
-            for (const auto& [lo, hi] : waits) {
-                emit(at, lo, sw.query, tab_switch, i);
-                at = std::max(at, hi);
-            }
-            emit(at, to, sw.query, tab_switch, i);
+            emit(sw.ts, switch_ends(t, i, cpu_end), sw.query, tab_switch, i);
         }
         for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
             const io_begin_row& b = t.io_begins[i];
@@ -3017,7 +3040,7 @@ static int run(int argc, char** argv) {
     timing.run("pass_attribute", [&] { pass_attribute(d); });
     // After the second pass_order, because the walk is over the timeline and
     // relies on it being in the order the rings hold the records.
-    timing.run("pass_sched_group", [&] { pass_sched_group(d); });
+    timing.run("pass_task_queue_runs", [&] { pass_task_queue_runs(d); });
     timing.run("pass_index", [&] { pass_index(d); });
     timing.run("pass_io_spans", [&] { pass_io_spans(d); });
     timing.run("pass_statements", [&] { pass_statements(d); });
