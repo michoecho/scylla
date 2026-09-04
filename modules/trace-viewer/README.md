@@ -523,8 +523,10 @@ A **query** is a CQL request, and the tool is four windows around it.
 
   The mouse pans and the wheel zooms where you point; **`w` and `s` zoom, `a`
   and `d` pan**, at a doubling of the zoom and a screenful of pan per second
-  for as long as the key is held. The keyboard zoom is about the centre of what
-  is on screen, because the hand holding it need not be on the mouse. A request
+  for as long as the key is held. The keyboard zoom pivots on the pointer when
+  the pointer is over the plot, so holding `w` keeps what you are pointing at
+  where it is, and on the centre of the screen when it is not, because a hand
+  that is nowhere near the plot has said nothing about where to zoom. A request
   picked while a key is down still gets the axis -- the key picks it up again
   the frame after.
 

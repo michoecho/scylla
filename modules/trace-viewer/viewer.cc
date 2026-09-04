@@ -2524,6 +2524,11 @@ struct view {
     double axis_lo = 0;
     double axis_hi = 0;
     float log_scroll = 0;
+    // Where the pointer was on that axis, if it was over the plot at all.
+    // Kept for the same reason and from the same frame: the keyboard zoom runs
+    // before the plot begins and has no other way to ask. See apply_keys.
+    bool axis_hovered = false;
+    double axis_mouse = 0;
 
     // Set while a preview is holding the view, with what it took. See the
     // borrow/return in follow_selection.
@@ -2762,10 +2767,12 @@ void follow_selection(const trace_data& d, view& v) {
 // consume rather than moving anything itself, because the axis belongs to
 // ImPlot and the frame has not begun the plot yet.
 //
-// Zoom is about the centre of what is on screen. The pointer is not part of
-// this gesture -- the mouse wheel is the gesture that zooms where you point,
-// and a keyboard zoom that chased the pointer would move the plot out from
-// under a hand that was nowhere near the mouse.
+// Zoom is about the pointer when the pointer is over the timeline, and about
+// the centre of what is on screen when it is not. Pointing at a stretch and
+// holding w is the same gesture as scrolling the wheel over it, and it should
+// keep the same thing under the cursor; but a hand that is nowhere near the
+// plot has said nothing about where to zoom, and the middle of the screen is
+// the only place left that does not throw the view somewhere arbitrary.
 void apply_keys(view& v) {
     v.key_axis = false;
     const ImGuiIO& io = ImGui::GetIO();
@@ -2791,11 +2798,22 @@ void apply_keys(view& v) {
     // millionths of a millisecond apart and the plot has nothing left to say,
     // whereas zooming out past the trace is how you find out you have panned
     // off the end of it.
-    const double width = std::max((v.axis_hi - v.axis_lo) * std::pow(100.0, zoom * dt), 1e-6);
-    const double middle = 0.5 * (v.axis_lo + v.axis_hi) + pan * dt * width;
+    const double was = v.axis_hi - v.axis_lo;
+    const double width = std::max(was * std::pow(100.0, zoom * dt), 1e-6);
+    // The point that stays where it is. Clamped to the axis because the
+    // pointer can be over the plot's padding, a hair outside the limits, and
+    // a pivot outside the view drags it rather than holding it still.
+    const double pivot = v.axis_hovered
+                             ? std::clamp(v.axis_mouse, v.axis_lo, v.axis_hi)
+                             : 0.5 * (v.axis_lo + v.axis_hi);
+    // Ratio rather than std::pow(100, ...) again: the width has been through a
+    // floor, and the pivot only stays put if the shrink applied to the offset
+    // is the one the width actually took.
+    const double shrink = width / was;
+    const double lo = pivot - (pivot - v.axis_lo) * shrink + pan * dt * width;
     v.key_axis = true;
-    v.key_lo = middle - 0.5 * width;
-    v.key_hi = middle + 0.5 * width;
+    v.key_lo = lo;
+    v.key_hi = lo + width;
 }
 
 // ============================================================================
@@ -3092,6 +3110,10 @@ void draw_plot_window(const trace_data& d, view& v) {
         hit_row hit{nullptr, 0};
         const ImPlotPoint pt = ImPlot::GetPlotMousePos();
         const bool hovering = ImPlot::IsPlotHovered();
+        // For the keyboard zoom next frame, which pivots on the pointer when
+        // it is over the plot.
+        v.axis_hovered = hovering;
+        v.axis_mouse = pt.x;
 
         // One rectangle, wherever it came from. A verbatim one is coloured by
         // whose work it is; a summary, which is nobody's, by how busy it says

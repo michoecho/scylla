@@ -404,7 +404,10 @@ axis has to be decided before anything reads it. It works off `view::axis_lo/
 axis_hi`, the axis the plot last *drew*, and leaves `view::key_axis` for the
 plot to consume, so the axis is the user's again the moment the key comes up.
 Rates rather than steps, scaled by the frame's delta time, so the speed is the
-same on a 60 Hz display and a 144 Hz one. It is ordered last of the three
+same on a 60 Hz display and a 144 Hz one. The zoom pivots on the pointer, taken
+from `view::axis_hovered/axis_mouse` -- the plot's own hover test and mouse
+position, kept from the frame that drew them for the same reason the axis is --
+and on the centre of the view when the pointer is elsewhere. It is ordered last of the three
 things that can seize the axis (`refit`, then `restore_axis`, then the keys),
 so a request picked this frame still wins and a held key resumes next frame.
 
