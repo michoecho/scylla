@@ -449,7 +449,8 @@ A **query** is a CQL request, and the tool is four windows around it.
   so a click picks a *tier* rather than a request -- the median at 2, the 99th
   at 100, the tail at 10000. Holding the left button scrubs through the tiers;
   the button belongs to the picker here rather than to the plot, so panning is
-  on the middle button and the wheel still zooms. That is the whole method: look at a median
+  on the middle button and the wheel still zooms. Two markers: the picked
+  request in white, and under it in grey whichever one the pointer is over. That is the whole method: look at a median
   request, look at one from the tail, and find the difference. The magenta
   DragRect selects a range of quantiles, and the numbers under the plot are the
   aggregate over exactly the requests between them.
@@ -461,14 +462,22 @@ A **query** is a CQL request, and the tool is four windows around it.
   they take.
 
 - **Timeline** is one row per reactor the request ran on, opened on the
-  request's own time range and pannable and zoomable out of it. Green is that
-  request on the cpu, blue is an I/O it is waiting for, and the thin grey band
-  is the reactor busy with something else. The three are drawn at three widths,
-  back to front, so an I/O over a stretch of cpu leaves that stretch visible --
-  and hoverable -- at its edges. Hovering says what the bars cannot: the task,
-  the source location the continuation was created at, how long the stretch
-  is. Clicking a row points the log at that shard and at the record under the
-  pointer.
+  request's own time range and pannable and zoomable along it -- the y axis is
+  a list of reactors rather than a quantity, so it is locked.
+
+  A bar's *shape* says what it is and its *colour* says whose it is. A stretch
+  on the cpu is the full height of the row and an I/O is a narrow bar inside
+  it, so an I/O in flight over a stretch of cpu leaves that stretch visible --
+  and hoverable -- above and below it. Green and blue are the selected
+  request's; the same two colours washed out to about a third of their
+  saturation are everything else the reactor did, which makes a row the
+  reactor's real timeline with this request picked out of it. Each bar's last
+  pixel is darkened, because a run of stretches that meet would otherwise be
+  one unbroken block with no boundary in it.
+
+  Hovering says what the bars cannot: the task, the source location the
+  continuation was created at, how long the stretch is. Clicking a row points
+  the log at that shard and at the record under the pointer.
 
 - **Log** is one shard's *whole* trace, scrolled to the request: what else the
   reactor was doing is most of why a request was slow, and so is what it was

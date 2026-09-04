@@ -1951,38 +1951,50 @@ int32_t query_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
 // a scan: the slices are sorted by where they start, so the first one that can
 // possibly reach into view is the first whose reach does.
 
-// The kinds, in *drawing* order, back to front. What is on top is the last
-// thing written over the same pixels, and is also what a hover reports. I/O
-// last, because an I/O overlapping a stretch of cpu is the thing worth being
-// able to see.
-enum slice_kind : uint8_t {
-    slice_other = 0,   // this reactor, on some other request's work
-    slice_query_cpu,   // the selected request, on the cpu
-    slice_query_io,    // the selected request, waiting for an I/O
-};
+// What a slice looks like, which is two independent questions.
+//
+// Its *shape* comes from what it is: a stretch on the cpu is the full height
+// of its row, an I/O is a narrow bar inside that, so an I/O in flight over a
+// stretch of cpu leaves the stretch visible -- and hoverable -- above and
+// below it. Every reactor's whole timeline is drawn this way, whoever the work
+// belonged to.
+//
+// Its *colour* comes from whether it is the selected request's: the same two
+// colours either way, washed out to about a third of their saturation for
+// everything else. A row is then the reactor's real timeline, with this
+// request picked out of it, rather than a request over a grey band.
 
-inline uint8_t kind_of(const slice_row& s, int32_t selected) {
-    if (s.query != selected || selected < 0) {
-        return slice_other;
-    }
-    return s.table == tab_io_begin ? slice_query_io : slice_query_cpu;
-}
-
-// How tall a bar of each kind is, as a fraction of its row. Three widths, so
-// that a bar drawn over another still leaves the one underneath visible at the
-// edges -- and so that the pointer can be over one or the other, which is what
-// makes both of them hoverable.
 struct band {
     double top;
     double bottom;
 };
 
-inline band band_of(uint8_t kind) {
-    switch (kind) {
-        case slice_query_cpu: return {0.08, 0.92};
-        case slice_query_io: return {0.22, 0.78};
-        default: return {0.40, 0.60};
+inline band band_of(uint16_t table) {
+    return table == tab_io_begin ? band{0.40, 0.60} : band{0.08, 0.92};
+}
+
+// Drawn in this order, back to front: an I/O sits inside the stretch of cpu it
+// interrupts, so it goes over it.
+inline int layer_of(uint16_t table) {
+    return table == tab_io_begin ? 1 : 0;
+}
+
+inline ImU32 colour_of(uint16_t table, bool selected) {
+    if (table == tab_io_begin) {
+        return selected ? IM_COL32(90, 140, 240, 255) : IM_COL32(88, 100, 128, 255);
     }
+    return selected ? IM_COL32(64, 200, 64, 255) : IM_COL32(84, 108, 84, 255);
+}
+
+// The rightmost pixel of a bar, darkened. Two stretches of cpu that meet --
+// which is most of them, a reactor running one task after another -- are
+// otherwise one unbroken block of colour with no boundary in it.
+inline ImU32 darker(ImU32 colour, float by) {
+    const auto channel = [&](int shift) {
+        return ImU32(float((colour >> shift) & 0xff) * by) << shift;
+    };
+    return channel(IM_COL32_R_SHIFT) | channel(IM_COL32_G_SHIFT) | channel(IM_COL32_B_SHIFT) |
+           (colour & (0xffu << IM_COL32_A_SHIFT));
 }
 
 void pass_render(trace_data& d) {
@@ -2296,9 +2308,6 @@ aggregate build_aggregate(const trace_data& d, size_t from, size_t to) {
 //  22. the windows
 // ============================================================================
 
-constexpr ImU32 colour_query_cpu = IM_COL32(64, 200, 64, 255);
-constexpr ImU32 colour_query_io = IM_COL32(90, 140, 240, 255);
-constexpr ImU32 colour_other = IM_COL32(70, 70, 78, 255);
 constexpr ImU32 colour_hover = IM_COL32(255, 255, 255, 70);
 
 void draw_queries_window(const trace_data& d, view& v, const histogram& h, double* rect) {
@@ -2335,16 +2344,21 @@ void draw_queries_window(const trace_data& d, view& v, const histogram& h, doubl
                 v.hover = selection_of_query(d, under);
             }
         }
-        if (v.query() >= 0) {
-            const auto at = std::ranges::find(d.by_latency, uint32_t(v.query()));
-            if (at != d.by_latency.end()) {
-                const double p =
-                    double(at - d.by_latency.begin()) / double(d.by_latency.size());
-                double marker = 1.0 / std::max(1e-6, 1.0 - p);
-                ImPlot::DragLineX(0, &marker, ImVec4(1, 1, 1, 1), 1,
-                                  ImPlotDragToolFlags_NoInputs | ImPlotDragToolFlags_NoFit);
+        // Both selections, drawn: the hovered one first and in grey, so the
+        // picked one stands on top of it and stays visible while the pointer
+        // runs over the rest of the distribution.
+        const auto marker = [&](int32_t query, ImVec4 colour, int id) {
+            const auto at = std::ranges::find(d.by_latency, uint32_t(query));
+            if (query < 0 || at == d.by_latency.end()) {
+                return;
             }
-        }
+            const double p = double(at - d.by_latency.begin()) / double(d.by_latency.size());
+            double x = 1.0 / std::max(1e-6, 1.0 - p);
+            ImPlot::DragLineX(id, &x, colour, 1,
+                              ImPlotDragToolFlags_NoInputs | ImPlotDragToolFlags_NoFit);
+        };
+        marker(v.hover.query, ImVec4(0.55f, 0.55f, 0.55f, 1), 2);
+        marker(v.clicked.query, ImVec4(1, 1, 1, 1), 0);
         rect[1] = 1e-9;
         rect[3] = 1e9;
         ImPlot::DragRect(1, &rect[0], &rect[1], &rect[2], &rect[3], ImVec4(1, 0, 1, 0.3f),
@@ -2410,8 +2424,11 @@ void draw_plot_window(const trace_data& d, view& v) {
     }
 
     if (ImPlot::BeginPlot("##timeline", ImVec2(-1, height))) {
+        // The y axis is a list of reactors rather than a quantity, so it is
+        // locked: a drag or a scroll moves along the trace and never shears
+        // the rows off the plot.
         ImPlot::SetupAxes("ms from the start of the trace", nullptr, ImPlotAxisFlags_None,
-                          ImPlotAxisFlags_NoGridLines);
+                          ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisTicks(ImAxis_Y1, ticks.data(), int(ticks.size()), labels.data());
         // Pinned to the request when it has just changed, and the user's after
         // that: everything is drawn already, so panning and zooming out of the
@@ -2427,8 +2444,7 @@ void draw_plot_window(const trace_data& d, view& v) {
         const ImPlotRect limits = ImPlot::GetPlotLimits();
         // Two passes over each row rather than one, because what is drawn on
         // top has to be drawn last and the slices are in time order, not in
-        // depth order. Two is enough: the request's own bars go over the grey,
-        // and its I/O over its cpu.
+        // depth order. Two is enough: cpu, then the I/O that interrupts it.
         struct hit_row {
             const slice_row* slice;
             size_t row;
@@ -2441,25 +2457,30 @@ void draw_plot_window(const trace_data& d, view& v) {
             const cpu_tables& t = d.tables[v.rows[row]];
             const std::span<const slice_row> visible =
                 slices_in(t, limits.X.Min, limits.X.Max);
-            for (int layer = 0; layer < 3; ++layer) {
+            for (int layer = 0; layer < 2; ++layer) {
                 for (const slice_row& s : visible) {
-                    const uint8_t kind = kind_of(s, v.query());
-                    if (kind != layer) {
+                    if (layer_of(s.table) != layer) {
                         continue;
                     }
-                    const ImU32 colour = kind == slice_query_cpu  ? colour_query_cpu
-                                         : kind == slice_query_io ? colour_query_io
-                                                                  : colour_other;
-                    const band at = band_of(kind);
+                    const ImU32 colour = colour_of(s.table, s.query == v.query());
+                    const band at = band_of(s.table);
                     ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(row) + at.top});
                     ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(row) + at.bottom});
                     if (b.x - a.x < 1.0f) {
                         b.x = a.x + 1.0f;  // a slice thinner than a pixel is still a slice
                     }
                     draw->AddRectFilled(a, b, colour);
+                    // Its own trailing edge, so that a run of stretches on one
+                    // reactor reads as a run of them rather than as one block.
+                    // Only where there is room for it: at one pixel wide the
+                    // bar *is* its edge, and darkening it would turn a dense
+                    // stretch of the plot into a dark smear.
+                    if (b.x - a.x >= 3.0f) {
+                        draw->AddRectFilled(ImVec2{b.x - 1.0f, a.y}, b, darker(colour, 0.45f));
+                    }
                     // The topmost bar the pointer is inside, in both axes: an
                     // I/O drawn over a stretch of cpu leaves that stretch
-                    // hoverable at its exposed edges.
+                    // hoverable above and below it.
                     if (hovering && int(std::floor(pt.y)) == int(row) && pt.x >= s.t0 &&
                         pt.x <= s.t1 && pt.y >= double(row) + at.top &&
                         pt.y <= double(row) + at.bottom) {
@@ -2475,8 +2496,7 @@ void draw_plot_window(const trace_data& d, view& v) {
                 const uint32_t cpu = v.rows[row];
                 if (hit.slice != nullptr) {
                     const slice_row& s = *hit.slice;
-                    const uint8_t kind = kind_of(s, v.query());
-                    const band at = band_of(kind);
+                    const band at = band_of(s.table);
                     draw->AddRectFilled(
                         ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(hit.row) + at.top}),
                         ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(hit.row) + at.bottom}),
@@ -2495,9 +2515,9 @@ void draw_plot_window(const trace_data& d, view& v) {
                                         std::string(d.text(l.function)).c_str());
                         }
                     }
-                    ImGui::Text("%s", kind == slice_query_cpu  ? "on the cpu, this request"
-                                      : kind == slice_query_io ? "waiting for this I/O"
-                                                               : "this reactor, other work");
+                    ImGui::Text("%s%s", s.table == tab_io_begin ? "waiting for this I/O"
+                                                                : "on the cpu",
+                                s.query == v.query() ? ", this request" : ", another request");
                     ImGui::EndTooltip();
                 }
                 // Hovering a row previews the record under the pointer in
@@ -2691,16 +2711,16 @@ static int run(int argc, char** argv) {
             double in_io = 0;
             size_t bars = 0;
             for (const slice_row& sl : slices_in(t, v.t0, v.t1)) {
-                const uint8_t kind = kind_of(sl, v.query());
+                const bool mine = sl.query == v.query();
                 // Clipped to the request, because a bar is drawn to the next
                 // record on the shard and the last one runs past the answer --
                 // which is what pass_cost cuts back, so cutting it back here
                 // too is what makes this agree with the headline number.
                 const double covered =
                     std::max(0.0, std::min(sl.t1, v.t1) - std::max(sl.t0, v.t0));
-                on_cpu += kind == slice_query_cpu ? covered : 0;
-                in_io += kind == slice_query_io ? covered : 0;
-                bars += kind == slice_other ? 0 : 1;
+                on_cpu += mine && sl.table == tab_switch ? covered : 0;
+                in_io += mine && sl.table == tab_io_begin ? covered : 0;
+                bars += mine ? 1 : 0;
             }
             fmt::print("  row {} {}: {} bars, {:.3f} ms on the cpu, {:.3f} ms in I/O\n", row,
                        d.cpus[v.rows[row]].label, bars, on_cpu, in_io);
