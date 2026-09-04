@@ -186,7 +186,11 @@ counts when you add passes.
 
 `pass_order` sorts and remaps rather than trusting that a tracepoint is always
 written at one level. In practice it always is, so the pass is a scan of
-`is_sorted` checks -- it is there for the trace where it is not.
+`is_sorted` checks -- it is there for the trace where it is not. The one thing
+it really does sort is the *timeline*, and only the first time: a shard's
+levels are separate files, read one after the other, so their entries arrive
+interleaved in file order and have to be merged. The second run finds it
+sorted, because retiming is monotone.
 
 The same instinct applies elsewhere: shards are found from metadata rather
 than from file names (with a documented fallback), nodes are identified by boot

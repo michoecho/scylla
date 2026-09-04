@@ -992,12 +992,17 @@ struct decode_sink {
 void pass_decode(trace_data& d, trace::dso_directory& dsos) {
     std::unordered_map<uint64_t, uint32_t> interned;
     for (const file_row& f : d.files) {
+        // Sized, rather than the std::istreambuf_iterator pair this used to be.
+        // The iterator pair reads a byte at a time through the streambuf and
+        // grows the vector as it goes, and a shard's debug file is tens of
+        // megabytes; one file_size, one allocation and one read is about 6% of
+        // the whole startup back.
+        const auto size = std::filesystem::file_size(f.path);
         std::ifstream in(f.path, std::ios::binary);
-        if (!in) {
+        std::vector<char> raw(size);
+        if (!in || (size != 0 && !in.read(raw.data(), std::streamsize(size)))) {
             throw std::system_error(errno, std::generic_category(), f.path.string());
         }
-        const std::vector<char> raw{std::istreambuf_iterator<char>(in),
-                                    std::istreambuf_iterator<char>()};
         const std::span<const std::byte> bytes{
             reinterpret_cast<const std::byte*>(raw.data()), raw.size()};
         cpu_tables& t = d.tables[f.cpu];
@@ -1082,7 +1087,14 @@ void pass_order(trace_data& d) {
                 e.index = remap[e.table][e.index];
             }
         }
-        std::ranges::stable_sort(t.timeline, {}, &timeline_row::ts);
+        // Checked first, like the tables above, and for the same reason: this
+        // pass runs twice, and the second time -- after pass_retime -- the
+        // timeline is already in order unless a node's clock went backwards.
+        // Sorting it anyway was the one part of this pass that was not a scan,
+        // and on a million-entry timeline it was most of the pass's cost.
+        if (!std::ranges::is_sorted(t.timeline, {}, &timeline_row::ts)) {
+            std::ranges::stable_sort(t.timeline, {}, &timeline_row::ts);
+        }
     }
 }
 
