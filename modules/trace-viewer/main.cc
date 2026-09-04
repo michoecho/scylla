@@ -2747,8 +2747,7 @@ int main(int argc, char** argv) {
                                 ImGui::TextUnformatted("no switch record on this shard here");
                             } else {
                                 const uint64_t task = running->query();
-                                ImGui::Text("running  %016" PRIx64 "%s", task,
-                                            task == row.task_id ? "  (this row)" : "");
+                                ImGui::Text("running  %016" PRIx64, task);
                                 ImGui::Text("%s", entry_message(*running).c_str());
                                 ImGui::Text("for %.6f ms",
                                             double(running_to - running_from) * MULTIPLIER / 1e6);
