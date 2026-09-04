@@ -475,14 +475,23 @@ A **query** is a CQL request, and the tool is four windows around it.
   pixel is darkened, because a run of stretches that meet would otherwise be
   one unbroken block with no boundary in it.
 
-  Hovering says what the bars cannot: the task, the source location the
-  continuation was created at, how long the stretch is. A bar belongs to a
-  request, so pointing at one selects that request as well as that record --
-  which is how a stretch of washed-out work is followed back to whatever it
-  was for, with the histogram's grey marker showing where in the distribution
-  it lands. Clicking commits it, along with the shard and the record for the
-  log. A bar the trace could not attribute to any request leaves the selection
-  alone.
+  Three colours, not two: green and blue are the *picked* request, amber and
+  violet are the one **under the pointer**, and the washed pair is everything
+  else. So pointing at a bar picks out that request in every row it touches at
+  once, adds the rows it needs that are not already there, moves the
+  histogram's grey marker to where it lands in the distribution, and points the
+  log at it -- all without disturbing what is picked. Clicking commits it. A
+  bar the trace could not attribute to any request leaves the selection alone,
+  and neither hovering nor clicking on the timeline moves the x axis: what you
+  are pointing at is already on screen.
+
+  Hovering also says what the bars cannot: the task, the source location the
+  continuation was created at, how long the stretch is.
+
+  The checkbox beside a row **pins** that reactor: pinned rows come first and
+  stay whatever is selected, which is how a shard worth watching -- the one a
+  request keeps waiting on -- is kept in view while requests are picked
+  through around it.
 
 - **Log** is one shard's *whole* trace, scrolled to the request: what else the
   reactor was doing is most of why a request was slow, and so is what it was
@@ -506,12 +515,19 @@ each request in the timeline and the log, and passing it along a row of the
 timeline runs the log through the records under it, both without losing what
 you picked. Taking the pointer away puts the picked one back.
 
-The plot's *rows* are the one thing a hover from the plot itself does not
-move. They are a function of the request, so letting a hovered bar re-row the
-plot would move the rows out from under the pointer, onto a different bar, of
-a different request -- so `layout_query()` follows the hover from the
-histogram and the picked request otherwise. A hovered bar recolours the plot;
-clicking it re-rows it.
+The hover a window finds while drawing is for the *next* frame: a window
+discovers what the pointer is over as it draws, which is too late for itself
+and far too late for the windows drawn before it. So a window writes
+`view::pending`, that becomes `view::hover` at the top of the next frame, and
+every window in a frame then sees the same answer. One frame's lag, which at
+60 Hz is not a thing you can see.
+
+The plot's rows are the pinned reactors, then the picked request's, then
+whatever the hovered request needs that is not there yet -- in that order and
+no other. The pins are at the top because they were put there deliberately,
+the picked request's rows are stable for as long as it is picked, and the
+hovered request's extra rows come and go at the *bottom*, where rows appearing
+and disappearing cannot move anything above them out from under the pointer.
 
 ### What a query is, given that nothing carries a query id
 

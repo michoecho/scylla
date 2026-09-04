@@ -449,6 +449,7 @@ struct trace_data {
     // rectangle are milliseconds from here, so that two reactors' rows are the
     // same axis and a rectangle never has to be rebuilt for a new selection.
     int64_t origin = 0;
+    int64_t last = 0;  // and the latest, for a plot with no request on it
 
     [[nodiscard]] std::string_view text(str s) const { return strings.get(s); }
     [[nodiscard]] double seconds(int64_t ticks) const {
@@ -1979,11 +1980,20 @@ inline int layer_of(uint16_t table) {
     return table == tab_io_begin ? 1 : 0;
 }
 
-inline ImU32 colour_of(uint16_t table, bool selected) {
-    if (table == tab_io_begin) {
-        return selected ? IM_COL32(90, 140, 240, 255) : IM_COL32(88, 100, 128, 255);
+// Three states, not two: the picked request, the one under the pointer, and
+// everything else. Green and blue are what is picked; amber and violet are
+// what is being pointed at, so that a hovered request is picked out of every
+// row it touches at once rather than only under the pointer; and the washed
+// pair is the reactor's other work.
+inline ImU32 colour_of(uint16_t table, int32_t query, int32_t primary, int32_t secondary) {
+    const bool is_io = table == tab_io_begin;
+    if (query >= 0 && query == primary) {
+        return is_io ? IM_COL32(90, 140, 240, 255) : IM_COL32(64, 200, 64, 255);
     }
-    return selected ? IM_COL32(64, 200, 64, 255) : IM_COL32(84, 108, 84, 255);
+    if (query >= 0 && query == secondary) {
+        return is_io ? IM_COL32(196, 128, 224, 255) : IM_COL32(230, 172, 64, 255);
+    }
+    return is_io ? IM_COL32(88, 100, 128, 255) : IM_COL32(84, 108, 84, 255);
 }
 
 // The rightmost pixel of a bar, darkened. Two stretches of cpu that meet --
@@ -2008,6 +2018,11 @@ void pass_render(trace_data& d) {
     }
     if (d.origin == std::numeric_limits<int64_t>::max()) {
         d.origin = 0;
+    }
+    for (const cpu_tables& t : d.tables) {
+        if (!t.timeline.empty()) {
+            d.last = std::max(d.last, t.timeline.back().ts);
+        }
     }
 
     size_t bytes = 0;
@@ -2110,17 +2125,22 @@ struct selection {
     int32_t query = none;
     int32_t log_cpu = none;
     int32_t focus = none;  // a timeline entry on log_cpu
-    // Set when this selection came from the timeline itself. A hover that did
-    // recolours the plot but must not re-row it: the rows are a function of
-    // the request, so hovering a bar into a new request would move the rows
-    // out from under the pointer, onto a different bar, of a different
-    // request. See layout_query() below.
+    // Set when this selection came from the timeline itself, which is what
+    // tells the two apart where it matters: a request picked off the timeline
+    // does not move the x axis, because it is already on screen and moving the
+    // axis would take it out from under the pointer.
     bool from_timeline = false;
 };
 
 struct view {
     selection clicked;
     selection hover;
+    // Where a window writes the hover it has just found. It becomes `hover` at
+    // the top of the *next* frame, and that indirection is the point: a window
+    // discovers what the pointer is over while it draws, which is too late for
+    // itself and for every window drawn before it. One frame's lag, and in
+    // exchange every window in a frame sees the same hover.
+    selection pending;
 
     [[nodiscard]] int32_t query() const {
         return hover.query >= 0 ? hover.query : clicked.query;
@@ -2131,40 +2151,79 @@ struct view {
     [[nodiscard]] int32_t focus() const {
         return hover.log_cpu >= 0 ? hover.focus : clicked.focus;
     }
-    // Which request the plot's rows and time range are built for, which is the
-    // effective one *except* under a hover that came from the plot itself.
-    [[nodiscard]] int32_t layout_query() const {
-        return hover.query >= 0 && !hover.from_timeline ? hover.query : clicked.query;
-    }
 
-    double t0 = 0;  // the effective request, in the plot's milliseconds
+    // Reactors kept on the plot whatever is selected. A row that is worth
+    // watching -- the shard a request keeps waiting on -- otherwise comes and
+    // goes with the selection.
+    std::vector<uint8_t> pinned;  // parallel to trace::cpus
+    uint32_t pins = 0;            // bumped on every change, so rows notice
+
+    double t0 = 0;  // the picked request, in the plot's milliseconds
     double t1 = 0;
     std::vector<uint32_t> rows;  // one cpu per plot row
 
-    // What the windows have already been laid out for. When one of these
-    // differs from the effective selection above, that window catches up --
-    // which is the whole of the bookkeeping a hover needs.
-    int32_t rows_for = none;
+    // What the plot's rows have already been built for. Three things move
+    // them: either selection, and the pins.
+    int32_t rows_primary = none;
+    int32_t rows_secondary = none;
+    uint32_t rows_pins = uint32_t(-1);
+
     int32_t scrolled_cpu = none;
     int32_t scrolled_to = none;
-    // The plot's axes are pinned to the request only when the request has just
-    // changed; after that the axes are the user's.
+    // Set only by the histogram: picking a request there is asking to look at
+    // it, so the x axis goes to it. Picking one off the timeline is asking
+    // about something already on screen, and moving the axis under the pointer
+    // would take it away.
     bool refit = false;
+
+    // The plot's geometry, kept from the frame that drew it, so the row
+    // checkboxes can be put beside the rows they belong to.
+    float plot_top = 0;
+    float plot_left = 0;
+    float row_height = 0;
 };
 
-// The plot rows for a query: the cpus its parts ran on, in a stable order, so
-// the same request always draws the same way.
+// The plot's rows: the pinned reactors, then the picked request's, then
+// whatever the hovered request needs that is not there yet.
+//
+// In that order and no other. The pins are at the top because they were put
+// there deliberately; the picked request's rows are stable for as long as it
+// is picked; and the hovered request's extra rows come and go at the bottom,
+// where rows appearing and disappearing does not move anything above them out
+// from under the pointer.
 void build_rows(const trace_data& d, view& v) {
     v.rows.clear();
-    const query_row& q = d.queries[v.rows_for];
-    std::set<uint32_t> cpus;
-    for (uint32_t p = q.parts_begin; p < q.parts_end; ++p) {
-        cpus.insert(d.parts[p].cpu);
+    std::vector<uint8_t> taken(d.cpus.size(), 0);
+    const auto add = [&](uint32_t cpu) {
+        if (!taken[cpu]) {
+            taken[cpu] = 1;
+            v.rows.push_back(cpu);
+        }
+    };
+    const auto add_query = [&](int32_t query) {
+        if (query < 0) {
+            return;
+        }
+        const query_row& q = d.queries[query];
+        std::vector<uint32_t> cpus;
+        for (uint32_t p = q.parts_begin; p < q.parts_end; ++p) {
+            cpus.push_back(d.parts[p].cpu);
+        }
+        std::ranges::sort(cpus, {}, [&](uint32_t c) {
+            return std::pair{d.cpus[c].node, d.cpus[c].shard};
+        });
+        for (const uint32_t cpu : cpus) {
+            add(cpu);
+        }
+    };
+
+    for (uint32_t cpu = 0; cpu < d.cpus.size(); ++cpu) {
+        if (cpu < v.pinned.size() && v.pinned[cpu] != 0) {
+            add(cpu);
+        }
     }
-    v.rows.assign(cpus.begin(), cpus.end());
-    std::ranges::sort(v.rows, {}, [&](uint32_t c) {
-        return std::pair{d.cpus[c].node, d.cpus[c].shard};
-    });
+    add_query(v.rows_primary);
+    add_query(v.rows_secondary);
 }
 
 // The slices of one cpu that can be seen between two milliseconds. The first
@@ -2213,23 +2272,32 @@ selection selection_of_query(const trace_data& d, int32_t query) {
     return out;
 }
 
-// Run once a frame, after the window that can hover a request and before the
-// ones that draw it: the plot's rows and its axis range follow whichever
-// request is effective, hovered or clicked.
+// Run once a frame, before anything is drawn: the plot's rows and its time
+// range follow both selections and the pins.
 void follow_selection(const trace_data& d, view& v) {
-    if (v.layout_query() == v.rows_for) {
+    if (v.clicked.query == v.rows_primary && v.hover.query == v.rows_secondary &&
+        v.pins == v.rows_pins) {
         return;
     }
-    v.rows_for = v.layout_query();
-    v.rows.clear();
-    if (v.rows_for < 0) {
-        return;
-    }
-    const query_row& q = d.queries[v.rows_for];
-    v.t0 = d.ms(q.t0 - d.origin);
-    v.t1 = d.ms(std::max(q.t1, q.t0 + 1) - d.origin);
+    v.rows_primary = v.clicked.query;
+    v.rows_secondary = v.hover.query;
+    v.rows_pins = v.pins;
     build_rows(d, v);
-    v.refit = true;
+
+    // The times everything is measured from are the picked request's, and the
+    // hovered one's only while nothing is picked. A hover must not move the
+    // origin of the log's column under the pointer.
+    const int32_t against = v.clicked.query >= 0 ? v.clicked.query : v.hover.query;
+    if (against >= 0) {
+        const query_row& q = d.queries[against];
+        v.t0 = d.ms(q.t0 - d.origin);
+        v.t1 = d.ms(std::max(q.t1, q.t0 + 1) - d.origin);
+    } else {
+        // Nothing picked, which happens only with pinned rows on the plot:
+        // the whole trace, then.
+        v.t0 = 0;
+        v.t1 = d.ms(d.last - d.origin);
+    }
 }
 
 // ============================================================================
@@ -2350,9 +2418,12 @@ void draw_queries_window(const trace_data& d, view& v, const histogram& h, doubl
             const ImPlotPoint pt = ImPlot::GetPlotMousePos();
             const auto under = int32_t(d.by_latency[query_at_quantile(d, pt.x)]);
             if (ImGui::IsMouseDown(0)) {
+                if (under != v.clicked.query) {
+                    v.refit = true;  // asked to look at it, so go there
+                }
                 v.clicked = selection_of_query(d, under);
             } else {
-                v.hover = selection_of_query(d, under);
+                v.pending = selection_of_query(d, under);
             }
         }
         // Both selections, drawn: the hovered one first and in grey, so the
@@ -2438,8 +2509,8 @@ void draw_selected_query(const trace_data& d, const view& v) {
 
 void draw_plot_window(const trace_data& d, view& v) {
     ImGui::Begin("Timeline");
-    if (v.query() < 0 || v.rows.empty()) {
-        ImGui::TextUnformatted("no query selected");
+    if (v.rows.empty()) {
+        ImGui::TextUnformatted("no query selected, and no reactor pinned");
         ImGui::End();
         return;
     }
@@ -2452,6 +2523,12 @@ void draw_plot_window(const trace_data& d, view& v) {
         labels.push_back(d.cpus[v.rows[i]].label.c_str());
     }
 
+    // A gutter for the pin checkboxes, which are ordinary ImGui widgets put
+    // beside their rows after the plot has been drawn and has said where its
+    // rows are. Indenting the plot is what reserves the room for them.
+    constexpr float gutter = 22.0f;
+    const float gutter_x = ImGui::GetCursorScreenPos().x;
+    ImGui::Indent(gutter);
     if (ImPlot::BeginPlot("##timeline", ImVec2(-1, height))) {
         // The y axis is a list of reactors rather than a quantity, so it is
         // locked: a drag or a scroll moves along the trace and never shears
@@ -2463,10 +2540,16 @@ void draw_plot_window(const trace_data& d, view& v) {
         // that: everything is drawn already, so panning and zooming out of the
         // request and into what the reactor did before and after it costs the
         // same as looking at the request itself.
+        // The x axis goes to the request only when the histogram sent it
+        // there; the y axis always spans the rows, which is not a choice the
+        // user has -- it is locked, and rows appear and disappear under it.
         const double pad = std::max(0.02 * (v.t1 - v.t0), 0.001);
-        ImPlot::SetupAxesLimits(v.t0 - pad, v.t1 + pad, double(v.rows.size()), 0,
-                                v.refit ? ImPlotCond_Always : ImPlotCond_Once);
-        v.refit = false;
+        ImPlot::SetupAxesLimits(v.t0 - pad, v.t1 + pad, 0, 1, ImPlotCond_Once);
+        if (v.refit) {
+            ImPlot::SetupAxisLimits(ImAxis_X1, v.t0 - pad, v.t1 + pad, ImPlotCond_Always);
+            v.refit = false;
+        }
+        ImPlot::SetupAxisLimits(ImAxis_Y1, double(v.rows.size()), 0, ImPlotCond_Always);
         ImPlot::PushPlotClipRect();
         ImDrawList* draw = ImPlot::GetPlotDrawList();
 
@@ -2491,7 +2574,8 @@ void draw_plot_window(const trace_data& d, view& v) {
                     if (layer_of(s.table) != layer) {
                         continue;
                     }
-                    const ImU32 colour = colour_of(s.table, s.query == v.query());
+                    const ImU32 colour =
+                        colour_of(s.table, s.query, v.clicked.query, v.hover.query);
                     const band at = band_of(s.table);
                     ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint{s.t0, double(row) + at.top});
                     ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint{s.t1, double(row) + at.bottom});
@@ -2546,7 +2630,10 @@ void draw_plot_window(const trace_data& d, view& v) {
                     }
                     ImGui::Text("%s%s", s.table == tab_io_begin ? "waiting for this I/O"
                                                                 : "on the cpu",
-                                s.query == v.query() ? ", this request" : ", another request");
+                                s.query < 0                  ? ", no request"
+                                : s.query == v.clicked.query ? ", the picked request"
+                                : s.query == v.hover.query   ? ", the request under the pointer"
+                                                             : ", another request");
                     ImGui::EndTooltip();
                 }
                 // Hovering a row previews the record under the pointer in
@@ -2573,12 +2660,48 @@ void draw_plot_window(const trace_data& d, view& v) {
                         v.clicked.query = at.query;
                     }
                 } else {
-                    v.hover = at;
+                    v.pending = at;
                 }
             }
         }
+        v.plot_top = ImPlot::GetPlotPos().y;
+        v.plot_left = gutter_x;
+        v.row_height = ImPlot::GetPlotSize().y / float(v.rows.size());
+
         ImPlot::PopPlotClipRect();
         ImPlot::EndPlot();
+    }
+    ImGui::Unindent(gutter);
+
+    // The pins. Drawn last and placed by hand, in the gutter indented above,
+    // each beside the row it holds: a checkbox cannot be a y-axis tick label,
+    // and a list of them somewhere else would not say which row is which.
+    if (v.row_height > 0) {
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        for (size_t row = 0; row < v.rows.size(); ++row) {
+            const uint32_t cpu = v.rows[row];
+            ImGui::SetCursorScreenPos(
+                ImVec2(v.plot_left,
+                       v.plot_top + (float(row) + 0.5f) * v.row_height -
+                           ImGui::GetFrameHeight() * 0.5f));
+            ImGui::PushID(int(cpu));
+            bool on = cpu < v.pinned.size() && v.pinned[cpu] != 0;
+            if (ImGui::Checkbox("##pin", &on)) {
+                v.pinned.resize(d.cpus.size(), 0);
+                v.pinned[cpu] = on ? 1 : 0;
+                ++v.pins;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("keep %s on the plot whatever is selected",
+                                  d.cpus[cpu].label.c_str());
+            }
+            ImGui::PopID();
+        }
+        // Back where the plot left it, and an empty item to say so: ImGui
+        // tracks a window's extent through the items in it, and a cursor moved
+        // by hand and not followed by one trips its check.
+        ImGui::SetCursorScreenPos(cursor);
+        ImGui::Dummy(ImVec2(0, 0));
     }
     ImGui::End();
 }
@@ -2732,6 +2855,7 @@ static int run(int argc, char** argv) {
         const auto rank = std::min(size_t(std::atof(at) * double(d.by_latency.size())),
                                    d.by_latency.size() - 1);
         v.clicked = selection_of_query(d, int32_t(d.by_latency[rank]));
+        v.pinned.assign(d.cpus.size(), 0);
         follow_selection(d, v);
         const query_row& q = d.queries[v.query()];
         fmt::print("\nquery {} at quantile {}: task {:016x} on {}, {:.3f} ms, {:.3f} ms of cpu\n",
@@ -2786,6 +2910,8 @@ static int run(int argc, char** argv) {
     const histogram hist = build_histogram(d);
     view v;
     v.clicked = selection_of_query(d, int32_t(d.by_latency[d.by_latency.size() / 2]));
+    v.pinned.assign(d.cpus.size(), 0);
+    v.refit = true;
     follow_selection(d, v);
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -2847,14 +2973,18 @@ static int run(int argc, char** argv) {
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
                                      ImGuiDockNodeFlags_PassthruCentralNode);
 
-        // The hover lives for one frame. It is cleared here, filled in by
-        // whichever window the pointer is in, and read by the ones drawn after
-        // it -- which is why the order of these calls is the order they are:
-        // the histogram can hover a request, the plot draws that request and
-        // can hover a record in it, and the log reads both.
-        v.hover = {};
-        draw_queries_window(d, v, hist, rect);
+        // What the pointer was over last frame becomes the hover for this
+        // one, and the rows follow it, before anything is drawn. A window
+        // finds out what the pointer is over *while* it draws -- too late for
+        // itself, and far too late for the windows drawn before it -- so a
+        // hover that took effect in the frame that found it would recolour
+        // nothing and describe nothing. One frame's lag buys every window in a
+        // frame the same answer.
+        v.hover = v.pending;
+        v.pending = {};
         follow_selection(d, v);
+
+        draw_queries_window(d, v, hist, rect);
         draw_selected_query(d, v);
         draw_plot_window(d, v);
         draw_log_window(d, v);
