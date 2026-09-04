@@ -3003,9 +3003,14 @@ static int run(int argc, char** argv) {
         // frame the same answer.
         v.hover = v.pending;
         v.pending = {};
+
+        // The histogram first, because a click in it picks a request *this*
+        // frame -- and then the rows and the time range, so that everything
+        // after them is looking at the request that was just picked rather
+        // than at the one before it.
+        draw_queries_window(d, v, hist, rect);
         follow_selection(d, v);
 
-        draw_queries_window(d, v, hist, rect);
         draw_selected_query(d, v);
         draw_plot_window(d, v);
         draw_log_window(d, v);
