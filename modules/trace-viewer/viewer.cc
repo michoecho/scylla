@@ -92,6 +92,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -2916,6 +2917,48 @@ void draw_nodes_window(const trace_data& d) {
     ImGui::End();
 }
 
+// --- what the startup cost ----------------------------------------------------
+//
+// Every pass says what it *found* on the way in; this says what it cost. It is
+// deliberately neither a table nor a column: the numbers are about this run of
+// the program rather than about the trace, and nothing downstream may read
+// them. So a pass stays what it was -- a free function handed tables, returning
+// nothing -- and the timing is a wrapper the caller puts around the call.
+//
+// Two outputs, because they answer different questions. A line under each pass
+// as it finishes says where a run that is still going has got to; the
+// breakdown at the end, most expensive first, says what to attack.
+
+struct pass_clock {
+    std::vector<std::pair<const char*, double>> costs;
+
+    // Runs `pass` and prints its cost beneath whatever the pass itself printed,
+    // so the log reads as "what it found, what it cost" per step.
+    template <typename F>
+    void run(const char* name, F&& pass) {
+        const auto started = std::chrono::steady_clock::now();
+        pass();
+        const double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+        costs.emplace_back(name, ms);
+        fmt::print("  [{:8.1f} ms] {}\n", ms, name);
+    }
+
+    void report() const {
+        auto sorted = costs;
+        std::ranges::stable_sort(sorted, std::greater<>{},
+                                 &std::pair<const char*, double>::second);
+        const double total = std::accumulate(costs.begin(), costs.end(), 0.0,
+                [](double sum, const auto& c) { return sum + c.second; });
+        fmt::print("\nstartup: {:.1f} ms in {} passes, most expensive first\n", total,
+                   costs.size());
+        for (const auto& [name, ms] : sorted) {
+            fmt::print("  {:8.1f} ms  {:4.1f}%  {}\n", ms,
+                       total > 0 ? 100.0 * ms / total : 0.0, name);
+        }
+    }
+};
+
 }  // namespace
 
 // ============================================================================
@@ -2937,7 +2980,8 @@ static int run(int argc, char** argv) {
     }
 
     trace_data d;
-    pass_gather(d, argc, argv);
+    pass_clock timing;
+    timing.run("pass_gather", [&] { pass_gather(d, argc, argv); });
     if (d.files.empty()) {
         fprintf(stderr, "no *.trace files in the supplied snapshot directories\n");
         return 1;
@@ -2952,26 +2996,27 @@ static int run(int argc, char** argv) {
             ? trace::dso_directory()
             : trace::dso_directory(dso_dir.string());
 
-    pass_decode(d, dsos);
-    pass_order(d);
-    pass_retime(d);
-    pass_order(d);
+    timing.run("pass_decode", [&] { pass_decode(d, dsos); });
+    timing.run("pass_order", [&] { pass_order(d); });
+    timing.run("pass_retime", [&] { pass_retime(d); });
+    timing.run("pass_order (again)", [&] { pass_order(d); });
     // Before pass_index, because it is what fills in the task of a record that
     // did not carry one -- and the index is keyed on that task.
-    pass_attribute(d);
+    timing.run("pass_attribute", [&] { pass_attribute(d); });
     // After the second pass_order, because the walk is over the timeline and
     // relies on it being in the order the rings hold the records.
-    pass_sched_group(d);
-    pass_index(d);
-    pass_io_spans(d);
-    pass_statements(d);
-    pass_connections(d);
-    pass_rpc_pair(d);
-    pass_queries(d);
-    pass_query_rows(d);
-    pass_cost(d);
-    pass_query_statement(d);
-    pass_render(d);
+    timing.run("pass_sched_group", [&] { pass_sched_group(d); });
+    timing.run("pass_index", [&] { pass_index(d); });
+    timing.run("pass_io_spans", [&] { pass_io_spans(d); });
+    timing.run("pass_statements", [&] { pass_statements(d); });
+    timing.run("pass_connections", [&] { pass_connections(d); });
+    timing.run("pass_rpc_pair", [&] { pass_rpc_pair(d); });
+    timing.run("pass_queries", [&] { pass_queries(d); });
+    timing.run("pass_query_rows", [&] { pass_query_rows(d); });
+    timing.run("pass_cost", [&] { pass_cost(d); });
+    timing.run("pass_query_statement", [&] { pass_query_statement(d); });
+    timing.run("pass_render", [&] { pass_render(d); });
+    timing.report();
 
     if (d.queries.empty()) {
         fprintf(stderr, "no CQL requests in these snapshots: nothing to look at\n");

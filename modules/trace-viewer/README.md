@@ -622,6 +622,8 @@ the end of the trace.
 
 ```sh
 TRACE_HEADLESS=1 ...       the startup counts, then exit
+                           (every run prints what each pass cost, and a
+                            breakdown of the startup, most expensive first)
 TRACE_DUMP_QUERY=0.5 ...   the request at that quantile: its parts, its rows,
                            and its own records on each reactor
 ```

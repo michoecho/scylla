@@ -409,6 +409,9 @@ still runs without the pass.
 one more read.
 
 **Debug without the GUI.** `TRACE_HEADLESS=1` prints the pass counts and exits;
+every pass is also timed, and the breakdown at the end -- most expensive first
+-- is where to look when startup is what hurts (today: `pass_render` and
+`pass_decode` are five sixths of it);
 `TRACE_DUMP_QUERY=<quantile>` prints one request's parts, its plot rows and its
 records on each reactor. `0.5` is the median, `1` the slowest. Extend these
 rather than adding printf to the render loop.
