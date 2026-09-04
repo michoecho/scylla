@@ -384,6 +384,24 @@ a rectangle selects that row's task -- the log and the histogram follow it --
 and leaves the plot itself anchored on the request, so the rows do not move
 under the pointer. Holding the button scrubs, as it always has.
 
+A row is named by the **process and cpu it belongs to**, not by the task drawn on
+it: `<boot-id-head>/shard<N>`, as a y-axis tick label rather than text inside the
+plot. The boot id is cut to its first group -- a time-based UUID's `time_low`,
+which differs between two nodes booted a second apart -- because a whole one is
+36 characters of axis; the tooltip and the Nodes window have all of it. Text
+drawn inside the plot was clipped by the plot rect as soon as anybody panned,
+which is how the first row's label came to read `ed task`.
+
+Hovering says what the bars cannot. A row's rectangles are its *own* task's, so
+the blue stretch between two green ones says only "this reactor ran something
+else"; the tooltip answers *what*, by taking the last switch record at or before
+the pointer **on that row's own node and shard** and reading the task off it. It
+gives the full boot id, the node and shard, the row's task, the task actually
+running there, how long it held the cpu, and -- for a `run_task` -- the source
+location it was created at, with the function this time. The stretch that task
+held the cpu is washed lightly white, so what the tooltip is describing is
+visible rather than inferred from where the pointer is.
+
 Row 0 is drawn from its own node's records and each row under it from its own
 node and shard's, and that scoping is load-bearing: blue means "this reactor was
 running something else", so counting another node's records as an interruption

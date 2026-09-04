@@ -22,6 +22,7 @@
 #include <system_error>
 #include <fmt/core.h>
 #include <fmt/ranges.h>
+#include <cinttypes>
 #include <cstdint>
 #include <ctime>
 #include <optional>
@@ -308,6 +309,14 @@ struct entry {
     }
 };
 
+// Whether a record is a *switch*: one of the events whose `arg` is the task the
+// shard is running from here on. The last one at or before a time says who was
+// on that cpu then, and the next one says when it came off -- which is what the
+// plot's tooltip and its highlight are built from.
+static bool is_switch(const entry& e) {
+    return e.event == 0 || e.event == 1 || e.event == 0xa || e.event == 0xb || e.event == 0x13;
+}
+
 // Scylla's task counter is process-local.  When several node snapshots are
 // loaded, the same numeric task id can therefore occur independently on every
 // node, so the viewer adds a namespace of its own.
@@ -380,6 +389,12 @@ struct rpc_event {
 // is what an unlocated event and a task with no resume point both get.
 static std::vector<std::string> location_strings{""};
 
+// The same locations with the function kept, for the one reader that has room
+// for it: the plot's tooltip. The log line deliberately drops it -- see below --
+// but "which function was this continuation created in" is most of what somebody
+// hovering a bar wants to know.
+static std::vector<std::string> location_details{""};
+
 // How the interning went, printed on the way in beside the other counts. A
 // directory of objects that is missing, stripped of the wrong thing, or simply
 // not the build the trace came from shows up here as every location unresolved,
@@ -408,6 +423,10 @@ static uint32_t intern_location(const trace::source_location& loc) {
         location_strings.push_back(loc.resolved
                                        ? fmt::format("{}:{}", file, loc.line)
                                        : loc.to_string());
+        location_details.push_back(loc.resolved
+                                       ? fmt::format("{}:{}  {}", file, loc.line,
+                                                     loc.function.empty() ? "?" : loc.function)
+                                       : loc.to_string());
     }
     return it->second;
 }
@@ -415,6 +434,11 @@ static uint32_t intern_location(const trace::source_location& loc) {
 static const std::string& location_string(uint32_t index) {
     return location_strings[index];
 }
+
+static const std::string& location_detail(uint32_t index) {
+    return location_details[index];
+}
+
 
 // --- stack samples ------------------------------------------------------------
 //
@@ -631,6 +655,11 @@ struct full_log_cache {
     size_t source_begin = 0;
     int64_t start_ts = 0;
     int64_t end_ts = 0;
+    // Where the selected task first appears. The plot for this row is scoped to
+    // the node (see below), but a row still has to be *named*, and the cpu that
+    // minted the chain is the honest answer to which one it is.
+    uint32_t node = 0;
+    uint32_t shard = 0;
     std::vector<cached_log_line> lines;
     std::vector<cached_plot_item> plot_items;
 };
@@ -717,6 +746,8 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
 
     cache.start_ts = sorted_range.front().ts;
     cache.end_ts = sorted_range.back().ts;
+    cache.node = sorted_range.front().node;
+    cache.shard = sorted_range.front().shard;
     const size_t cached_count = std::min(cache.task_count, static_cast<size_t>(threshold));
     cache.lines.reserve(cached_count);
     cache.plot_items.reserve(cached_count);
@@ -1060,6 +1091,30 @@ static std::pair<uint64_t, uint64_t> boot_id_halves(std::string_view text) {
 // against what the two ends said about each other in the RPC handshake.
 static std::vector<std::pair<uint64_t, uint64_t>> node_boot_ids;
 static std::vector<std::string> node_boot_id_strings;
+
+// A row's name in the plot: which process, which cpu. The boot id is cut to its
+// first group -- a time-based UUID's time_low, which differs between two nodes
+// booted a second apart -- because a full one is 36 characters of axis. The
+// whole of it is in the tooltip and in the Nodes window.
+static std::string lane_label(uint32_t node, uint32_t shard) {
+    std::string head = fmt::format("node{}", node);
+    if (node < node_boot_id_strings.size()) {
+        const std::string& boot = node_boot_id_strings[node];
+        if (const auto dash = boot.find('-'); dash != std::string::npos) {
+            head = boot.substr(0, dash);
+        }
+    }
+    return fmt::format("{}/shard{}", head, shard);
+}
+
+// The full boot id, for the tooltip, or a placeholder for a snapshot that
+// carried no metadata to take one from.
+static std::string node_boot_id_text(uint32_t node) {
+    if (node < node_boot_id_strings.size() && !node_boot_id_strings[node].empty()) {
+        return node_boot_id_strings[node];
+    }
+    return "(unknown)";
+}
 
 // The number in `shard-N.trace`, or nothing if the name is not that shape. Kept
 // for a snapshot written before the metadata files existed.
@@ -2557,14 +2612,55 @@ int main(int argc, char** argv) {
                 if (full_log_cache_state.task_count > static_cast<size_t>(log_task_threshold)) {
                     render_truncation_warning(full_log_cache_state.task_count, log_task_threshold, true);
                 }
-                const size_t plot_rows = 1 + distributed_rows.size();
+
+                // Every row of the plot as one thing, the selected task's
+                // included. It used to be a special case drawn and hit-tested
+                // beside a loop over the others, which is why it was the one row
+                // whose label said something different.
+                struct plot_row_view {
+                    uint32_t node;
+                    uint32_t shard;
+                    uint64_t task_id;
+                    const std::vector<cached_plot_item>* items;
+                    int64_t start_ts;
+                };
+                std::vector<plot_row_view> row_views;
+                row_views.push_back({full_log_cache_state.node, full_log_cache_state.shard,
+                                     id_full_log, &full_log_cache_state.plot_items,
+                                     full_log_cache_state.start_ts});
+                for (const distributed_plot_row& row : distributed_rows) {
+                    row_views.push_back({row.node, row.shard, row.task_id, &row.cache.plot_items,
+                                         row.cache.start_ts});
+                }
+
+                const size_t plot_rows = row_views.size();
                 const float plot_height = std::max(150.f, 55.f * float(plot_rows));
                 if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, plot_height), ImPlotFlags_NoTitle)) {
                     static uint64_t prev_id;
                     auto flag = prev_id == id_full_log ? ImPlotCond_Once : ImPlotCond_Always;
                     prev_id = id_full_log;
 
-                    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoGridLines, ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoDecorations);
+                    // The row names are y-axis tick labels rather than text
+                    // drawn inside the plot. Text at x=0 is clipped by the plot
+                    // rect the moment somebody pans, which is how "selected
+                    // task" came to read "ed task"; a tick label lives in the
+                    // axis gutter and ImPlot sizes the gutter to fit it.
+                    std::vector<std::string> row_labels;
+                    std::vector<const char*> row_label_ptrs;
+                    std::vector<double> row_ticks;
+                    row_labels.reserve(plot_rows);
+                    for (size_t i = 0; i < plot_rows; ++i) {
+                        row_labels.push_back(lane_label(row_views[i].node, row_views[i].shard));
+                        row_ticks.push_back(double(i) + 0.5);
+                    }
+                    for (const std::string& label : row_labels) {
+                        row_label_ptrs.push_back(label.c_str());
+                    }
+
+                    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoGridLines,
+                                      ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoGridLines);
+                    ImPlot::SetupAxisTicks(ImAxis_Y1, row_ticks.data(), int(row_ticks.size()),
+                                           row_label_ptrs.data());
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, plot_width);
                     ImPlot::SetupAxesLimits(0, plot_width, 0, double(plot_rows), flag);
                     ImPlot::PushPlotClipRect();
@@ -2587,17 +2683,88 @@ int main(int argc, char** argv) {
                         }
                     };
 
-                    draw_row(full_log_cache_state.plot_items, full_log_cache_state.start_ts, 0);
-                    ImPlot::PlotText("selected task", 0, 0.5, ImVec2(4, 0));
-                    for (size_t row_index = 0; row_index < distributed_rows.size(); ++row_index) {
-                        const distributed_plot_row& row = distributed_rows[row_index];
-                        const double y = double(row_index + 1);
-                        draw_row(row.cache.plot_items, row.cache.start_ts, y);
-                        ImPlot::PlotText(
-                            fmt::format("node {} / shard {} / task {:x}", row.node, row.shard,
-                                        row.task_id)
-                                .c_str(),
-                            0, y + 0.5, ImVec2(4, 0));
+                    for (size_t row_index = 0; row_index < row_views.size(); ++row_index) {
+                        draw_row(*row_views[row_index].items, row_views[row_index].start_ts,
+                                 double(row_index));
+                    }
+
+                    // What is under the pointer: which row, and -- from that
+                    // row's own node and shard -- which task the reactor was
+                    // actually running there. That last part is the point of the
+                    // tooltip. A row's bars are its *own* task's, so the blue
+                    // stretch between two green ones says only "something else
+                    // ran here"; the lane's switch records say what.
+                    if (ImPlot::IsPlotHovered()) {
+                        const ImPlotPoint pt = ImPlot::GetPlotMousePos();
+                        const auto row_index = size_t(std::max(0.0, std::floor(pt.y)));
+                        if (pt.y >= 0 && row_index < row_views.size()) {
+                            const plot_row_view& row = row_views[row_index];
+                            const int64_t ts =
+                                plot_start_ts + int64_t(pt.x * 1e6 / MULTIPLIER);
+                            const auto lane = entries_by_lane.find({row.node, row.shard});
+                            const entry* running = nullptr;
+                            int64_t running_from = 0;
+                            int64_t running_to = 0;
+                            if (lane != entries_by_lane.end()) {
+                                const auto& records = lane->second;
+                                const auto after = std::ranges::upper_bound(
+                                    records, ts, std::ranges::less(),
+                                    [](const entry* e) { return e->ts; });
+                                for (auto it = after; it != records.begin();) {
+                                    --it;
+                                    if (is_switch(**it)) {
+                                        running = *it;
+                                        running_from = (*it)->ts;
+                                        break;
+                                    }
+                                }
+                                if (running != nullptr) {
+                                    running_to = plot_end_ts;
+                                    for (auto it = after; it != records.end(); ++it) {
+                                        if (is_switch(**it)) {
+                                            running_to = (*it)->ts;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // A light wash over the stretch that task held the
+                            // cpu, so that what the tooltip is talking about is
+                            // visible rather than inferred from the pointer.
+                            if (running != nullptr && running_to > running_from) {
+                                const double x0 =
+                                    double(running_from - plot_start_ts) * MULTIPLIER / 1e6;
+                                const double x1 =
+                                    double(running_to - plot_start_ts) * MULTIPLIER / 1e6;
+                                ImPlot::GetPlotDrawList()->AddRectFilled(
+                                    ImPlot::PlotToPixels(ImPlotPoint{x0, double(row_index) + 1.0}),
+                                    ImPlot::PlotToPixels(ImPlotPoint{x1, double(row_index)}),
+                                    IM_COL32(255, 255, 255, 36));
+                            }
+
+                            ImGui::BeginTooltip();
+                            ImGui::Text("boot %s", node_boot_id_text(row.node).c_str());
+                            ImGui::Text("node %u  shard %u", row.node, row.shard);
+                            ImGui::Text("row task %016" PRIx64, row.task_id);
+                            ImGui::Separator();
+                            if (running == nullptr) {
+                                ImGui::TextUnformatted("no switch record on this shard here");
+                            } else {
+                                const uint64_t task = running->query();
+                                ImGui::Text("running  %016" PRIx64 "%s", task,
+                                            task == row.task_id ? "  (this row)" : "");
+                                ImGui::Text("%s", entry_message(*running).c_str());
+                                ImGui::Text("for %.6f ms",
+                                            double(running_to - running_from) * MULTIPLIER / 1e6);
+                                if (running->loc != 0) {
+                                    ImGui::Text("at %s", location_detail(running->loc).c_str());
+                                } else {
+                                    ImGui::TextUnformatted("at <no source location>");
+                                }
+                            }
+                            ImGui::EndTooltip();
+                        }
                     }
                     ImPlot::PopPlotClipRect();
 
