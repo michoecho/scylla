@@ -8,7 +8,8 @@ out where the viewer's startup went, and which of the traps here have already
 cost somebody a day.
 
 Everything below was done at least once in the session that wrote it. Where a
-number appears it was measured on `ignored/sched-group-run`, not estimated.
+number appears it was measured -- on `ignored/sched-group-run` unless it names
+another fixture -- not estimated.
 
 ---
 
@@ -112,6 +113,27 @@ nodes is minutes; `--fresh` wipes them.
 **Tracepoints start disabled**, and forgetting to enable them fails *silently*:
 the snapshot succeeds and every `.trace` file is ~117 bytes, which is the
 metadata prologue and no records.
+
+Millions of queries, which is what it takes to fill the rings rather than
+dribble into them, come from [latte](https://github.com/pkolaczk/latte) instead
+of `load3.py`:
+
+```sh
+cd third-party/scylladb
+LATTE=<path>/latte CYCLES=2000000 \
+    nix develop -c ./capture-trace.sh ignored/latte-run --load ./load-latte.sh
+```
+
+`--load` replaces `./load3.py` with any command; `load-latte.sh` is the same
+workload as `load3.py` -- RF=3, CL=ALL, `BYPASS CACHE` -- written as a latte
+script (`latte-tr.rn`) and run in three phases. It switches the tracepoints
+*off* around the schema and the row load and back on for the read phase, so the
+oldest record in the snapshot is a read. latte is not in the devshell; build it
+with `cargo build --release` from its checkout and point `LATTE` at the binary.
+
+Two million reads take about 45 s at ~47k op/s on this machine, with the
+tracepoints on, and come out at 381 MB. Every ring is full: 32 MiB of debug and
+4 MiB of info per shard, both wrapped.
 
 ### After a capture, before a rebuild
 
@@ -333,6 +355,7 @@ made with the binary whose `decoder.h` is checked in here.
 |---|---|
 | `sched-group-run` | the reference. 3 nodes x 2 shards, ~822k events, nothing evicted. Median request: 6 parts, 0.108 ms latency, 0.088 ms cpu. 99286 task queue runs, 99280 closed (the 6 open ones are the run each reactor was in when asked) |
 | `wrapped-run` | 12x the load, so the debug ring **wrapped** and every shard's trace starts mid-stream. The fixture for anything about missing data |
+| `latte-run` | 2M CL=ALL reads from latte at 47k op/s, both rings full on all six shards. The fixture for eviction at its worst: the debug window is 0.74-1.03 s against 8.4-8.8 s of info, and the quantile table degenerates -- see "the two windows" below. 6.75M events, ~3.0 s release startup |
 | `boot-id-run` | older, predates the task queue tracepoints. Readable only with its own `decoder.h` |
 
 ---
@@ -346,6 +369,35 @@ switches and RPCs behind it are *debug*, so nine seconds' worth of requests are
 seeded with nothing behind them. They are minted as queries anyway and come out
 as 1-part local requests: 26868 requests found but only 14947 reaching another
 node, against 98% in the unwrapped snapshot, and a p100 of 10 seconds.
+
+`latte-run` is what this looks like at full pressure, and it is worse than
+`wrapped-run` in kind, not just in degree. The two rings are sized 32 MiB to
+4 MiB, an 8x ratio, but under a real load debug records arrive about **90 times**
+as fast as info ones (1.34M/s against 14.9k/s per shard), so the debug window
+collapses to a *tenth* of the info one -- **0.74-1.03 s against 8.4-8.8 s** --
+and 93% of the requests found never reach another node:
+
+| | `sched-group-run` | `wrapped-run` | `latte-run` |
+|---|---|---|---|
+| requests found | 2239 | 26868 | 379902 |
+| reaching another node | 98.3% | 55.6% | **6.8%** |
+| median request | 6 parts, 0.108 ms | 6 parts, 0.081 ms | **1 part, 0.000 ms** |
+
+The median is now a stub: a `cql_request` and its `PREPARED` line, no switches,
+no RPC, no I/O. Everything above about p0.99 is still right -- the p0.99
+request is three nodes, 19.2 ms, which agrees with what latte measured
+client-side -- but the bottom 93% of the distribution is shells ranked among
+real requests, so every quantile below it is meaningless rather than merely
+pessimistic. The fix is the one already described: `file_row` carries
+`first_record_ns` per level, so each cpu knows when all its streams are
+covered, and a query whose `t0` precedes that on its root cpu should be counted
+and kept out of `by_latency`. Still not done, and `latte-run` is the fixture to
+do it against.
+
+Nothing else broke under that load, which is the other half of the result:
+0 errors on 2M queries, 226415 I/Os paired with none left in flight, 64588 of
+64594 task queue runs closed, 60 of 60 connections paired, 185 of 185 source
+locations resolved, and the rest of the passes reporting their losses honestly.
 
 Everything else degrades honestly under eviction and says so (11666 switches
 "before the first" task queue run; unpaired I/O ends skipped rather than
