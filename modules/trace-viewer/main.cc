@@ -653,11 +653,6 @@ struct full_log_cache {
     size_t source_begin = 0;
     int64_t start_ts = 0;
     int64_t end_ts = 0;
-    // Where the selected task first appears. The plot for this row is scoped to
-    // the node (see below), but a row still has to be *named*, and the cpu that
-    // minted the chain is the honest answer to which one it is.
-    uint32_t node = 0;
-    uint32_t shard = 0;
     std::vector<cached_log_line> lines;
     std::vector<cached_plot_item> plot_items;
 };
@@ -744,8 +739,6 @@ static void update_full_log_cache(full_log_cache& cache, uint64_t task_id, int t
 
     cache.start_ts = sorted_range.front().ts;
     cache.end_ts = sorted_range.back().ts;
-    cache.node = sorted_range.front().node;
-    cache.shard = sorted_range.front().shard;
     const size_t cached_count = std::min(cache.task_count, static_cast<size_t>(threshold));
     cache.lines.reserve(cached_count);
     cache.plot_items.reserve(cached_count);
@@ -1103,7 +1096,7 @@ static std::string lane_label(uint32_t node, uint32_t shard) {
             head = boot.substr(0, dash);
         }
     }
-    return fmt::format("{}/{}", head, shard);
+    return fmt::format("{} shard {}", head, shard);
 }
 
 // The full boot id, for the tooltip, or a placeholder for a snapshot that
@@ -2562,10 +2555,13 @@ int main(int argc, char** argv) {
                     distributed_for = id_full_log;
                     distributed_spans = make_rpc_spans(rpc_events, id_full_log);
 
-                    // One row per (node, shard, task) the walk reached, in the
-                    // order the request reached them -- the spans are sorted by
-                    // send time, so the rows come out roughly top-down in causal
-                    // order. The selected task is row 0 and never repeats here.
+                    // One row per (node, shard, task), and the selected task is
+                    // not exempt from that. It used to be drawn as a row of its
+                    // own above these, scoped to a whole *node* rather than to
+                    // one shard -- which made it the one row whose bars counted
+                    // another cpu's work as an interruption, and the one row
+                    // whose name could not be a cpu. A request that hops shards
+                    // now gets a row per shard it ran on, like everything else.
                     distributed_rows.clear();
                     const auto add_row = [](uint32_t node, uint32_t shard, uint64_t task_id) {
                         if (task_id == 0 || std::ranges::any_of(
@@ -2577,14 +2573,30 @@ int main(int argc, char** argv) {
                         }
                         distributed_rows.push_back({node, shard, task_id, {}});
                     };
+                    // The selected task's own lanes first, in shard order, so
+                    // the request is still what the top of the plot is about.
+                    // Every lane it left a record on: a continuation inherits
+                    // its id across a cross-shard hop, so "which cpu was this
+                    // request on" has more than one answer.
+                    {
+                        const auto own = std::ranges::equal_range(
+                            sorted, id_full_log, std::ranges::less(),
+                            [](const entry& e) { return e.query(); });
+                        std::set<std::pair<uint32_t, uint32_t>> lanes;
+                        for (const entry& e : own) {
+                            lanes.emplace(e.node, e.shard);
+                        }
+                        for (const auto& [node, shard] : lanes) {
+                            add_row(node, shard, id_full_log);
+                        }
+                    }
+                    // Then the rest, in the order the request reached them --
+                    // the spans are sorted by send time, so the rows come out
+                    // roughly top-down in causal order.
                     for (const rpc_span& rpc : distributed_spans) {
-                        if (rpc.source_task != id_full_log) {
-                            add_row(rpc.source.first, rpc.source_shard, rpc.source_task);
-                        }
-                        if (rpc.destination_task != id_full_log) {
-                            add_row(rpc.destination.first, rpc.destination_shard,
-                                    rpc.destination_task);
-                        }
+                        add_row(rpc.source.first, rpc.source_shard, rpc.source_task);
+                        add_row(rpc.destination.first, rpc.destination_shard,
+                                rpc.destination_task);
                     }
                 }
 
@@ -2612,29 +2624,13 @@ int main(int argc, char** argv) {
                     render_truncation_warning(full_log_cache_state.task_count, log_task_threshold, true);
                 }
 
-                // Every row of the plot as one thing, the selected task's
-                // included. It used to be a special case drawn and hit-tested
-                // beside a loop over the others, which is why it was the one row
-                // whose label said something different.
-                struct plot_row_view {
-                    uint32_t node;
-                    uint32_t shard;
-                    uint64_t task_id;
-                    const std::vector<cached_plot_item>* items;
-                    int64_t start_ts;
-                };
-                std::vector<plot_row_view> row_views;
-                row_views.push_back({full_log_cache_state.node, full_log_cache_state.shard,
-                                     id_full_log, &full_log_cache_state.plot_items,
-                                     full_log_cache_state.start_ts});
-                for (const distributed_plot_row& row : distributed_rows) {
-                    row_views.push_back({row.node, row.shard, row.task_id, &row.cache.plot_items,
-                                         row.cache.start_ts});
-                }
-
+                const std::vector<distributed_plot_row>& row_views = distributed_rows;
                 const size_t plot_rows = row_views.size();
                 const float plot_height = std::max(150.f, 55.f * float(plot_rows));
-                if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, plot_height), ImPlotFlags_NoTitle)) {
+                if (plot_rows == 0) {
+                    ImGui::TextUnformatted("no records for the selected task");
+                } else if (ImPlot::BeginPlot("Full log plot", ImVec2(-1, plot_height),
+                                             ImPlotFlags_NoTitle)) {
                     static uint64_t prev_id;
                     auto flag = prev_id == id_full_log ? ImPlotCond_Once : ImPlotCond_Always;
                     prev_id = id_full_log;
@@ -2683,8 +2679,8 @@ int main(int argc, char** argv) {
                     };
 
                     for (size_t row_index = 0; row_index < row_views.size(); ++row_index) {
-                        draw_row(*row_views[row_index].items, row_views[row_index].start_ts,
-                                 double(row_index));
+                        draw_row(row_views[row_index].cache.plot_items,
+                                 row_views[row_index].cache.start_ts, double(row_index));
                     }
 
                     // What is under the pointer: which row, and -- from that
@@ -2697,7 +2693,7 @@ int main(int argc, char** argv) {
                         const ImPlotPoint pt = ImPlot::GetPlotMousePos();
                         const auto row_index = size_t(std::max(0.0, std::floor(pt.y)));
                         if (pt.y >= 0 && row_index < row_views.size()) {
-                            const plot_row_view& row = row_views[row_index];
+                            const distributed_plot_row& row = row_views[row_index];
                             const int64_t ts =
                                 plot_start_ts + int64_t(pt.x * 1e6 / MULTIPLIER);
                             const auto lane = entries_by_lane.find({row.node, row.shard});
@@ -2771,61 +2767,46 @@ int main(int argc, char** argv) {
                     // dragging scrubs the selection along the row, which is how
                     // this plot has always been read.
                     if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(0)) {
-                        ImPlotPoint pt = ImPlot::GetPlotMousePos();
-                        bool selected_rpc_row = false;
-                        for (size_t row_index = 0; row_index < distributed_rows.size() &&
-                                                    !selected_rpc_row;
-                             ++row_index) {
-                            const distributed_plot_row& row = distributed_rows[row_index];
-                            const double y = double(row_index + 1);
-                            const double x_offset =
-                                double(row.cache.start_ts - plot_start_ts) * MULTIPLIER / 1e6;
-                            if (pt.y < y || pt.y > y + 1) {
-                                continue;
-                            }
-                            for (const cached_plot_item& item : row.cache.plot_items) {
-                                const double x0 = item.min.x + x_offset;
-                                const double x1 = item.max.x + x_offset;
-                                if (pt.x < std::min(x0, x1) || pt.x > std::max(x0, x1)) {
-                                    continue;
-                                }
-                                // The row's own task, and the record of it at
-                                // or before the click -- the same "what was
-                                // running here" convention the row below uses.
-                                select_task(row.task_id, false);
-                                const auto task_range = std::ranges::equal_range(
-                                    sorted, row.task_id, std::ranges::less(),
-                                    [](const auto& e) { return e.query(); });
-                                if (!task_range.empty()) {
-                                    const int64_t ts =
-                                        plot_start_ts + int64_t(pt.x * 1e6 / MULTIPLIER);
-                                    const auto after = std::ranges::upper_bound(
-                                        task_range, ts, std::ranges::less(),
-                                        [](const auto& e) { return e.ts; });
-                                    const auto at = after == task_range.begin() ? after
-                                                                                : after - 1;
-                                    chosen_unfull = at - sorted.begin();
-                                    just_chosen_unfull = true;
-                                }
-                                selected_rpc_row = true;
-                                break;
-                            }
-                        }
+                        const ImPlotPoint pt = ImPlot::GetPlotMousePos();
+                        const auto row_index = size_t(std::max(0.0, std::floor(pt.y)));
+                        if (pt.y >= 0 && row_index < row_views.size()) {
+                            const distributed_plot_row& row = row_views[row_index];
+                            const int64_t ts =
+                                plot_start_ts + int64_t(pt.x * 1e6 / MULTIPLIER);
 
-                        if (!selected_rpc_row) {
-                            // Row 0 is a row like the others and selects its own
-                            // task. Without this, clicking back onto the request
-                            // after visiting a replica row left the log showing
-                            // the replica.
-                            select_task(id_full_log, false);
-                            const int64_t start_ts = plot_start_ts;
-                            uint64_t ts = start_ts + pt.x * 1e6 / MULTIPLIER;
-                            chosen_one = std::ranges::lower_bound(span, ts, std::ranges::less(), [] (const auto& e) {return e.ts;}) - span.begin() - 1;
-                            chosen_one = std::clamp(chosen_one, size_t(0), span.size() - 1);
-                            just_chosen = true;
-                            chosen_unfull = std::ranges::lower_bound(sorted, std::make_pair<uint64_t, uint64_t>(uint64_t(id_log), uint64_t(ts)), std::ranges::less(), [] (const auto& e) {return std::make_pair<uint64_t, uint64_t>(e.query(), e.ts);}) - sorted.begin() - 1;
-                            chosen_unfull = std::clamp(chosen_unfull, size_t(0), sorted.size() - 1);
-                            just_chosen_unfull = true;
+                            // The row's task, and the record of it at or before
+                            // the click. Anywhere in the row, not only on one of
+                            // its rectangles: the gaps are the stretches the
+                            // task was preempted or in an I/O, and "what was
+                            // this request doing then" is a fair question to
+                            // click on.
+                            select_task(row.task_id, false);
+                            const auto task_range = std::ranges::equal_range(
+                                sorted, row.task_id, std::ranges::less(),
+                                [](const auto& e) { return e.query(); });
+                            if (!task_range.empty()) {
+                                const auto after = std::ranges::upper_bound(
+                                    task_range, ts, std::ranges::less(),
+                                    [](const auto& e) { return e.ts; });
+                                const auto at =
+                                    after == task_range.begin() ? after : after - 1;
+                                chosen_unfull = at - sorted.begin();
+                                just_chosen_unfull = true;
+                            }
+
+                            // And the full log, which spans the whole request
+                            // rather than one task, so it follows a click on any
+                            // row rather than only on the one that used to be
+                            // row 0.
+                            if (!span.empty()) {
+                                chosen_one = std::ranges::lower_bound(
+                                                 span, ts, std::ranges::less(),
+                                                 [](const auto& e) { return e.ts; }) -
+                                             span.begin();
+                                chosen_one = std::clamp(chosen_one == 0 ? 0 : chosen_one - 1,
+                                                        size_t(0), span.size() - 1);
+                                just_chosen = true;
+                            }
                         }
                     }
                     ImPlot::EndPlot();

@@ -369,9 +369,11 @@ way in.
 
 To inspect a distributed request, pass one snapshot directory per node, in a
 stable order. The viewer aligns their clocks through each node's clock-sync
-records and adds time-aligned rows to the existing `Full log plot`: the selected
-task is the first row, and under it one row for every other task the request
-reached, in the order it reached them.
+records and adds time-aligned rows to the existing `Full log plot`: one row per
+`(node, shard, task)`. The selected task's own rows come first -- one per cpu it
+ran on, because a continuation inherits its id across a cross-shard hop -- and
+under them one row for every other task the request reached, in the order it
+reached them.
 
 ```sh
 buck2 run //modules/trace-viewer:trace_viewer -- \
@@ -380,13 +382,15 @@ buck2 run //modules/trace-viewer:trace_viewer -- \
 
 Every row is the plot that was there before, drawn for one task: the same green
 on-CPU, blue preempted and white in-I/O rectangles, on the same x axis. Clicking
-a rectangle selects that row's task -- the log and the histogram follow it --
-and leaves the plot itself anchored on the request, so the rows do not move
-under the pointer. Holding the button scrubs, as it always has.
+anywhere in a row selects that row's task -- the log, the full log and the
+histogram all follow it -- and leaves the plot itself anchored on the request, so
+the rows do not move under the pointer. Anywhere, not only on a rectangle: the
+gaps are where the task was preempted or in an I/O, and what the request was
+doing then is a fair thing to click on. Holding the button scrubs, as it always has.
 
 A row is named by the **process and cpu it belongs to**, not by the task drawn on
-it: `<boot-id-head>/shard<N>`, as a y-axis tick label rather than text inside the
-plot. The boot id is cut to its first group -- a time-based UUID's `time_low`,
+it: `<boot-id-head> shard <N>`, as a y-axis tick label rather than text inside
+the plot. The boot id is cut to its first group -- a time-based UUID's `time_low`,
 which differs between two nodes booted a second apart -- because a whole one is
 36 characters of axis; the tooltip and the Nodes window have all of it. Text
 drawn inside the plot was clipped by the plot rect as soon as anybody panned,
@@ -402,11 +406,18 @@ location it was created at, with the function this time. The stretch that task
 held the cpu is washed lightly white, so what the tooltip is describing is
 visible rather than inferred from where the pointer is.
 
-Row 0 is drawn from its own node's records and each row under it from its own
-node and shard's, and that scoping is load-bearing: blue means "this reactor was
-running something else", so counting another node's records as an interruption
-would cut the green bars short in proportion to how many snapshots happen to be
-open.
+Every row is scoped to its own node **and shard**, and that scoping is
+load-bearing: blue means "this reactor was running something else", so counting
+another reactor's records as an interruption cuts the green bars short in
+proportion to how many of them there are.
+
+The selected task used to be exempt. It was drawn as row 0, scoped to a whole
+*node* rather than to one shard, which made it the one row whose green was cut by
+work on a cpu that was not preempting it, the one row that could not be named
+after a cpu, and -- once the tooltip arrived -- the one row whose highlight did
+not step at every boundary its own bars showed, because half of those boundaries
+came from the other shard's records. It is now built exactly like the rest, and a
+request that hops shards gets a row per shard.
 
 ### How a request is followed across nodes
 
