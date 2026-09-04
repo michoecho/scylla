@@ -30,3 +30,22 @@ cxx_binary(
         "implot//:implot",
     ],
 )
+
+# The rewrite: the same trace, read into a catalogue of tables and a sequence
+# of passes over them. See the header comment in viewer.cc.
+cxx_binary(
+    name = "viewer",
+    srcs = ["viewer.cc"],
+    header_namespace = "",
+    link_style = "static",
+    deps = [
+        ":decoder",
+        "//:doctest_impl",
+        "//:fmt",
+        "//:opengl",
+        "//:sdl3",
+        "imgui//:imgui",
+        "imgui//:imgui_sdl3_opengl3",
+        "implot//:implot",
+    ],
+)

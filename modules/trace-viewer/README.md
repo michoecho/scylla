@@ -352,7 +352,161 @@ A `time curl` on this endpoint reads ~5 ms, which is almost entirely curl
 starting up: `curl -w %{time_total}` puts the request itself at 0.2-0.5 ms,
 and the process-side log line at a few tens of microseconds.
 
-## Viewing it
+## The new viewer
+
+`viewer.cc` is a second viewer beside `main.cc`, and where the two disagree it
+is the one to believe. Same traces, same `decoder.h`, same questions -- written
+around its tables instead of around its control flow.
+
+```sh
+TRACE_DSO_DIR=<run>/dsos buck2 run //modules/trace-viewer:viewer -- \
+    <run>/node1 <run>/node2 <run>/node3
+```
+
+The old viewer is `:trace_viewer` and still builds. It keeps the stack sample
+window, which the new one does not have yet.
+
+### What it is made of
+
+The whole design is that there is a catalogue of arrays and a sequence of
+passes over them, and that the arrays are the part worth thinking about. A
+pass says which tables it reads and which it writes, in the comment above it;
+that comment is the dependency graph and there is no other. No pass reaches
+outside the tables it was handed, there are no globals, and nothing is
+encapsulated -- every table is a `std::vector` of a POD row and every reference
+between tables is an index into another one.
+
+The event tables are per **(node, shard, event type)**, which is the shape the
+questions have: "what did this reactor do" is a scan of one array, and "what
+did task T do here" is a lookup in an index built from one. Beside them, one
+`timeline` array per reactor holds `(timestamp, table, row)` for every record,
+which is what the log window walks and what a click on the plot resolves
+against.
+
+```
+files nodes cpus                   what the snapshot directories describe
+  tables[cpu].switches             the reactor picked up a task
+             .io_begins/.io_ends   an I/O was submitted, and completed
+             .prep_runs            a prepared statement was executed
+             .prep_deltas          the statement cache changed, or was dumped
+             .conns                a connection opened, closed, or was dumped
+             .rpcs                 a message crossed the wire
+             .timeline             all of the above, in time order
+locations statements connections   interned, and joined end to end
+queries parts by_latency           one CQL request, and where it ran
+```
+
+Strings do not have their own allocations. A row holds a `str` -- an offset and
+a length into one arena -- so a table of a million rows is one allocation and
+not a million. The offset is not a pointer precisely so that the arena may
+grow; the one pass that grows it after the decode does so in a step of its own,
+before anything takes a view.
+
+The passes, in the order `run()` calls them:
+
+| pass | reads | writes |
+|---|---|---|
+| `pass_gather` | argv | files, nodes, cpus |
+| `pass_decode` | files | every event table, syncs, locations |
+| `pass_order` | the event tables | the same, in timestamp order |
+| `pass_retime` | syncs | every timestamp, in node 0's clock |
+| `pass_attribute` | switches | `row.task` where the record carried none |
+| `pass_index` | the event tables | the per-cpu task indices |
+| `pass_io_spans` | io_begins, io_ends | `io_begin.end` |
+| `pass_statements` | prep_deltas, prep_runs | statements, `prep_run.statement` |
+| `pass_connections` | conns | connections, paired end to end |
+| `pass_rpc_pair` | rpcs, connections | `rpc.peer_cpu`, `rpc.peer_row` |
+| `pass_queries` | switches, rpcs | queries, parts |
+| `pass_query_rows` | parts | `row.query`, on every row |
+| `pass_cost` | switches, io spans | `query.t1`, `query.cpu_ticks`, by_latency |
+
+All of it runs once, at startup: 27 MB of traces over three nodes and six
+shards -- 630 000 events -- is 1.7 seconds to the window. After that the UI
+only ever reads, except for one cache: `view`, the plot rows and log lines of
+the selected query, rebuilt when the selection changes and not per frame.
+
+### Reading a trace with it
+
+A **query** is a CQL request, and the tool is four windows around it.
+
+- **Queries** is the latency histogram: x is `1/(1 - quantile)` on a log axis,
+  so a click picks a *tier* rather than a request -- the median at 2, the 99th
+  at 100, the tail at 10000. That is the whole method: look at a median
+  request, look at one from the tail, and find the difference. The magenta
+  DragRect selects a range of quantiles, and the numbers under the plot are the
+  aggregate over exactly the requests between them.
+
+  Two of them, and only two, because for a distributed request they are the two
+  that mean anything: **total latency** and **total cpu time**. Cpu time above
+  latency is not a bug -- it is summed over every reactor the request touched,
+  and three replicas reading in parallel spend more cpu than the wall clock
+  they take.
+
+- **Timeline** is one row per reactor the request ran on, over the request's
+  own time range. Green is that request on the cpu, blue is an I/O it is
+  waiting for, and the thin grey band is the reactor busy with something else.
+  Hovering says what the bars cannot -- the task, the source location the
+  continuation was created at, how long the stretch is. Clicking a row points
+  the log at that shard and at the record under the pointer.
+
+- **Log** is one shard's *whole* timeline over the request's range, not the
+  request's own records only: what else the reactor was doing is most of why a
+  request was slow. The selected request's lines are green, the record a click
+  landed on is yellow, and everything else is grey. There is no second "full
+  log" window, because this is it.
+
+- **Nodes** is which process each node number is.
+
+### What a query is, given that nothing carries a query id
+
+A CQL frame mints a task id; continuations inherit it on the shard, and it is
+carried to other shards of the same node. On the far side of an RPC a
+*different* id is minted for the work the message caused. So a query is a set
+of `(cpu, task)` **parts**, grown from the frame's own by two rules -- the same
+id on another cpu of the same node, and the task an inbound message opened on
+the far end of a connection -- and a part is claimed by the first query to
+reach it.
+
+The second rule is three joins, and none of them is a protocol field: a
+connection to the one at the other end of the socket, by the pair of addresses
+each end names swapped, checked against the boot id and shard the handshake
+carried; a sent frame to its arrival, by the sequence number each direction
+counts locally; and an arrival to the work it caused, by `rpc_request_handled`.
+
+### Two things it will tell you that look wrong and are not
+
+**A request whose latency is a second.** There is no "task ended" tracepoint,
+so a request reaches as far as the last record any of its parts wrote -- and
+the reader concurrency semaphore runs its own housekeeping continuations under
+the requesting task's id, sometimes long after the answer went out. The p100
+request in `boot-id-run` is 1014 ms of which 0.4 ms is cpu, and the log shows
+why: four `reader_concurrency_semaphore.cc:1029` records, a second after the
+rest.
+
+**A snapshot record inside a request.** The statement-cache and connection
+dumps are written when the trace is taken, and `pass_attribute` gives a record
+that carries no task the one the shard was last running. On an idle shard that
+is whichever request was last -- so those lines are highlighted in its log.
+They are deliberately not allowed to extend a request's range, which is what
+`pass_cost` means by "only records that carry a task extend a query": without
+that rule every request that happened to be last on a shard would stretch to
+the end of the trace.
+
+### Debugging it without the GUI
+
+```sh
+TRACE_HEADLESS=1 ...       the startup counts, then exit
+TRACE_DUMP_QUERY=0.5 ...   the request at that quantile: its parts, its rows,
+                           and its own records on each reactor
+```
+
+`TRACE_DUMP_QUERY=1` is the slowest request, `0.5` the median. The counts each
+pass prints on the way in are the first thing to read when something looks
+wrong -- `0 connections known` means the snapshot was taken after the
+tracepoints were switched off, and every location unresolved means a missing or
+mismatched `dsos/`.
+
+## Viewing it, with the old viewer
 
 ```sh
 buck2 run //modules/trace-viewer:trace_viewer -- \
