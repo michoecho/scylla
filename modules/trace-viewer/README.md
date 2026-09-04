@@ -366,6 +366,9 @@ TRACE_DSO_DIR=<run>/dsos buck2 run //modules/trace-viewer:viewer -- \
 The old viewer is `:trace_viewer` and still builds. It keeps the stack sample
 window, which the new one does not have yet.
 
+**Its design principles are written down in `DESIGN.md` beside it**, which is
+the thing to read before changing it -- what follows here is the summary.
+
 ### What it is made of
 
 The whole design is that there is a catalogue of arrays and a sequence of

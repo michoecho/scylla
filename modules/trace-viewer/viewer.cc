@@ -73,10 +73,13 @@
 //                                                 and the rectangles, for the
 //                                                 whole trace, once
 //
-// Everything above happens once, at startup. The UI then only ever reads.
-// What the UI does build is `view`: the rows of the plot and the lines of the
-// log for one selected query. That is rebuilt when the selection changes and
-// not before -- see "the view" near the bottom.
+// Everything above happens once, at startup, for the whole trace -- including
+// pass_render, which turns every record into the line of text and the
+// rectangles that will be drawn for it. The UI then only ever reads. There is
+// no cache to invalidate: selecting a request moves the windows and recolours
+// what is in them, and what exists on screen does not depend on it. See "the
+// view" near the bottom, which is a selection and two scroll positions and
+// nothing else.
 
 #include <implot.h>
 #include <imgui/imgui.h>
