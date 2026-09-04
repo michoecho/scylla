@@ -1035,6 +1035,50 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // tracepoint that is never gated. Only the entry itself goes in `tracepoints`,
 // so that the section stays an array the code generator can index; the strings
 // live in sections of their own.
+// The entry is hidden, and that is a hot-path property rather than hygiene.
+//
+// TRACER_RECORD writes &tracer_tp_ into every record, so materialising that
+// address is per-event work. In an ordinary function it is a `lea` off %rip --
+// the entry is a local static and its address a link-time constant. Inside an
+// inline or template function it is not: the entry acquires vague linkage, a
+// vague-linkage symbol in a shared library is preemptible, and the compiler
+// must load the address out of the GOT instead. The relocation is
+// R_X86_64_REX_GOTPCRELX, whose whole point is that the linker may relax it
+// back to a `lea` -- but it may not while the symbol can be preempted. So a
+// tracepoint in a header costs a load per record, and every DSO's records name
+// whichever copy of the entry the loader happened to pick.
+//
+// Hidden visibility is what lets that relaxation happen, which is the same
+// answer static_keys.h reaches for its keys. Saying it is the awkward part:
+//
+//   - `__attribute__((visibility))` is *ignored* on a block-scope static, with
+//     a warning, and STATIC_KEY_DESC_SECTION_ATTRS in static_keys.h exists
+//     because of the same rule.
+//   - `_Pragma("GCC visibility push(hidden)")` is ignored here too -- silently,
+//     by both compilers. A block-scope static takes its visibility from the
+//     function around it, which a macro at the call site cannot reach.
+//   - The assembler directive is not ignored by either. It needs a name for the
+//     symbol, which is why the entry is given one.
+//
+// The name has to be *stable* across translation units, or the copies stop
+// folding and every object that includes the header contributes an entry; and
+// *distinct* between tracepoints, or two of them fold into one and records from
+// the loser decode against the winner's signature. File, name and line give
+// both. __FILE_NAME__ rather than __FILE__ for two reasons: a path has slashes
+// in it, which an assembler symbol may not have unquoted -- and quoting is not
+// portable, gcc strips the quotes where clang keeps them as part of the name --
+// and a basename does not change when the same header is reached by a different
+// include path, which __FILE__ does.
+//
+// What is left is two tracepoints sharing a basename, a name and a line. They
+// fold, silently. It is already an error for two tracepoints to share a name
+// and disagree about parameters -- codegen.h rejects that -- so what this can
+// do is hide that error rather than invent a new one.
+#define TRACER_STR_(x) #x
+#define TRACER_STR(x) TRACER_STR_(x)
+#define TRACER_TP_SYMBOL(name_) \
+    "tracer.tp." __FILE_NAME__ "." name_ "." TRACER_STR(__LINE__)
+
 #define TRACER_TRACEPOINT_ENTRY(name_, key_, ...)                                         \
     static constexpr auto tracer_sig_ __attribute__((                                     \
         section("tracepoint_signatures"), used)) =                                        \
@@ -1045,13 +1089,14 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
         section("tracepoint_names"), used)) = name_;                                      \
     static constexpr char tracer_file_[] __attribute__((                                  \
         section("tracepoint_files"), used)) = __FILE__;                                   \
-    static constexpr ::tracer::tracepoint_entry tracer_tp_ __attribute__((                \
-        section("tracepoints"), used)) = {tracer_name_,                                   \
-                                          tracer_file_,                                   \
-                                          __LINE__,                                       \
-                                          __PRETTY_FUNCTION__,                            \
-                                          tracer_sig_.data(),                             \
-                                          key_}
+    static constexpr ::tracer::tracepoint_entry tracer_tp_ asm(TRACER_TP_SYMBOL(name_))   \
+        __attribute__((section("tracepoints"), used)) = {tracer_name_,                    \
+                                                         tracer_file_,                    \
+                                                         __LINE__,                        \
+                                                         __PRETTY_FUNCTION__,             \
+                                                         tracer_sig_.data(),              \
+                                                         key_};                           \
+    asm(".hidden " TRACER_TP_SYMBOL(name_))
 
 // The record: the entry's address, the timestamp, and the arguments. Named
 // after the entry TRACER_TRACEPOINT_ENTRY() just defined, so the two only ever
