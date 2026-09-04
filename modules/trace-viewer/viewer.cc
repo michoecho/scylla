@@ -165,6 +165,7 @@ enum table_id : uint16_t {
     tab_prep_delta,
     tab_conn,
     tab_rpc,
+    tab_tq_run,
     n_tables,
 };
 
@@ -188,6 +189,10 @@ inline const char* switch_cause_name(uint8_t c) {
         default: return "?";
     }
 }
+
+// Which end of a task queue's stretch of the cpu a tq_run row is. Only the
+// begin carries a scheduling group: the end is the same queue by construction.
+enum tq_kind : uint8_t { tq_begin = 0, tq_end };
 
 enum prep_kind : uint8_t { prep_added = 0, prep_removed, prep_snapshot };
 enum conn_kind : uint8_t { conn_open = 0, conn_close, conn_snapshot };
@@ -226,6 +231,16 @@ struct switch_row {
     uint32_t loc = 0;     // trace::locations, where `task` was created
     uint8_t cause = 0;    // switch_cause
     int32_t rpc = none;   // for sw_rpc_handled: the rpc row that opened it
+    int32_t group = none; // scheduling group, filled by pass_sched_group
+};
+
+// The reactor gave the cpu to one task queue, or took it back. A run is a
+// begin and the end that follows it, and every switch between them ran under
+// the begin's scheduling group -- which is what pass_sched_group makes of it.
+struct tq_run_row {
+    ROW_COMMON;
+    int32_t group = none;  // the scheduling group id, on a tq_begin
+    uint8_t kind = 0;      // tq_kind
 };
 
 struct io_begin_row {
@@ -299,6 +314,7 @@ struct slice_row {
 
 struct cpu_tables {
     std::vector<switch_row> switches;
+    std::vector<tq_run_row> tq_runs;
     std::vector<io_begin_row> io_begins;
     std::vector<io_end_row> io_ends;
     std::vector<prep_run_row> prep_runs;
@@ -342,6 +358,7 @@ void for_each_table(cpu_tables& t, F&& f) {
     f(tab_prep_delta, t.prep_deltas);
     f(tab_conn, t.conns);
     f(tab_rpc, t.rpcs);
+    f(tab_tq_run, t.tq_runs);
 }
 
 // --- the static shape ---------------------------------------------------------
@@ -842,6 +859,22 @@ struct decode_sink {
         push(tab_switch, t.switches, s);
     }
 
+    void tq_run(uint8_t kind, int32_t group, uint64_t ts) const {
+        tq_run_row r;
+        r.ts = int64_t(ts);
+        r.kind = kind;
+        r.group = group;
+        push(tab_tq_run, t.tq_runs, r);
+    }
+    void operator()(const trace::task_queue_run_begin& e,
+                    const trace::tracepoint_metadata& m) const {
+        tq_run(tq_begin, int32_t(e.scheduling_group), m.timestamp);
+    }
+    void operator()(const trace::task_queue_run_end&,
+                    const trace::tracepoint_metadata& m) const {
+        tq_run(tq_end, none, m.timestamp);
+    }
+
     void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
         io_begin_row r;
         r.ts = int64_t(m.timestamp);
@@ -1196,7 +1229,47 @@ void pass_attribute(trace_data& d) {
 }
 
 // ============================================================================
-//  10. pass_io_spans -- io_begins + io_ends -> io_begin.end
+//  10. pass_sched_group -- tq_runs + switches -> switch.group
+// ============================================================================
+//
+// A run_task record does not say which scheduling group ran it, and making it
+// carry one would be a field on the hottest record in the trace for something
+// that changes a few times a millisecond. What says it instead is the bracket
+// around it: the reactor gives the cpu to one task queue, runs whatever that
+// queue holds, and takes it back, so every switch between a tq_begin and the
+// tq_end after it ran under that begin's group.
+//
+// The walk is over the *timeline* rather than over the two tables in parallel,
+// and that is the reason to prefer it: two records of one shard can share an
+// rdtsc tick -- a begin and the first run_task under it routinely do -- and the
+// timeline is the one place their order survives, because it is stable-sorted
+// and so still in the order the ring holds them.
+//
+// A switch outside any run keeps `none`. That is not a failure to explain: the
+// debug ring evicts, and the oldest surviving records of a shard are the tail
+// of a run whose begin is gone.
+
+void pass_sched_group(trace_data& d) {
+    size_t runs = 0, attributed = 0, orphaned = 0;
+    for (cpu_tables& t : d.tables) {
+        int32_t group = none;
+        for (const timeline_row& e : t.timeline) {
+            if (e.table == tab_tq_run) {
+                const tq_run_row& r = t.tq_runs[e.index];
+                group = r.kind == tq_begin ? r.group : none;
+                runs += r.kind == tq_begin ? 1 : 0;
+            } else if (e.table == tab_switch) {
+                t.switches[e.index].group = group;
+                ++(group >= 0 ? attributed : orphaned);
+            }
+        }
+    }
+    fmt::print("{} task queue runs: {} switches in one, {} before the first\n", runs,
+               attributed, orphaned);
+}
+
+// ============================================================================
+//  11. pass_io_spans -- io_begins + io_ends -> io_begin.end
 // ============================================================================
 //
 // An I/O is a pair of records sharing a descriptor id. The id is reused once
@@ -1236,7 +1309,7 @@ void pass_io_spans(trace_data& d) {
 }
 
 // ============================================================================
-//  11. pass_statements -- prep_deltas + prep_runs -> statements, .statement
+//  12. pass_statements -- prep_deltas + prep_runs -> statements, .statement
 // ============================================================================
 //
 // A prepared_query_run carries an id and nothing else. What that id meant is
@@ -1360,7 +1433,7 @@ void pass_statements(trace_data& d) {
 }
 
 // ============================================================================
-//  12. pass_connections -- conns -> trace::connections, joined end to end
+//  13. pass_connections -- conns -> trace::connections, joined end to end
 // ============================================================================
 //
 // A connection id is process-local, so one socket is two rows here and the
@@ -1451,7 +1524,7 @@ void pass_connections(trace_data& d) {
 }
 
 // ============================================================================
-//  13. pass_rpc_pair -- rpcs + connections -> rpc.peer_cpu, rpc.peer_row
+//  14. pass_rpc_pair -- rpcs + connections -> rpc.peer_cpu, rpc.peer_row
 // ============================================================================
 //
 // No tracing id goes on the wire, so a message is joined to its arrival by the
@@ -1550,7 +1623,7 @@ void pass_rpc_pair(trace_data& d) {
 }
 
 // ============================================================================
-//  14. pass_queries -- switches + rpcs -> trace::queries, trace::parts
+//  15. pass_queries -- switches + rpcs -> trace::queries, trace::parts
 // ============================================================================
 //
 // There is no global request id. A CQL frame mints a task id, that id is
@@ -1664,7 +1737,7 @@ void pass_queries(trace_data& d) {
 }
 
 // ============================================================================
-//  15. pass_query_rows -- parts -> row.query, everywhere
+//  16. pass_query_rows -- parts -> row.query, everywhere
 // ============================================================================
 //
 // The parts say which task on which cpu belongs to which query; this writes
@@ -1690,7 +1763,7 @@ void pass_query_rows(trace_data& d) {
 }
 
 // ============================================================================
-//  16. pass_cost -- switches + io spans + rows -> query.t1, query.cpu_ticks
+//  17. pass_cost -- switches + io spans + rows -> query.t1, query.cpu_ticks
 // ============================================================================
 //
 // Two numbers per query, and only two, because for a distributed request they
@@ -1792,7 +1865,7 @@ void pass_cost(trace_data& d) {
 }
 
 // ============================================================================
-//  17. pass_query_statement -- prep_runs + queries -> query.statement
+//  18. pass_query_statement -- prep_runs + queries -> query.statement
 // ============================================================================
 
 void pass_query_statement(trace_data& d) {
@@ -1806,7 +1879,7 @@ void pass_query_statement(trace_data& d) {
 }
 
 // ============================================================================
-//  18. rendering a record as text
+//  19. rendering a record as text
 // ============================================================================
 //
 // One line per record, for the log. Everything a record is joined to -- the
@@ -1840,10 +1913,20 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
             const switch_row& r = t.switches[index];
             std::string line = fmt::format("{:<7} task {:016x} from {:016x}",
                                            switch_cause_name(r.cause), r.task, r.prev);
+            if (r.group >= 0) {
+                fmt::format_to(std::back_inserter(line), "  sg {}", r.group);
+            }
             if (const std::string at = format_location(d, r.loc); !at.empty()) {
                 fmt::format_to(std::back_inserter(line), "  at {}", at);
             }
             return line;
+        }
+        case tab_tq_run: {
+            const tq_run_row& r = t.tq_runs[index];
+            if (r.kind == tq_begin) {
+                return fmt::format("{:<7} scheduling group {}", "TQ+", r.group);
+            }
+            return fmt::format("{:<7}", "TQ-");
         }
         case tab_io_begin: {
             const io_begin_row& r = t.io_begins[index];
@@ -1913,6 +1996,7 @@ uint64_t task_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
         case tab_prep_delta: return t.prep_deltas[index].task;
         case tab_conn: return t.conns[index].task;
         case tab_rpc: return t.rpcs[index].task;
+        case tab_tq_run: return t.tq_runs[index].task;
         default: return 0;
     }
 }
@@ -1927,12 +2011,13 @@ int32_t query_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
         case tab_prep_delta: return t.prep_deltas[index].query;
         case tab_conn: return t.conns[index].query;
         case tab_rpc: return t.rpcs[index].query;
+        case tab_tq_run: return t.tq_runs[index].query;
         default: return none;
     }
 }
 
 // ============================================================================
-//  19. pass_render -- the event tables -> the text and the rectangles
+//  20. pass_render -- the event tables -> the text and the rectangles
 // ============================================================================
 //
 // The last preprocessing pass, and the one the UI draws straight out of. Every
@@ -2106,7 +2191,7 @@ void pass_render(trace_data& d) {
 }
 
 // ============================================================================
-//  20. the view -- which part of all that is on screen
+//  21. the view -- which part of all that is on screen
 // ============================================================================
 //
 // What is left once everything is rendered in advance: a selection, and where
@@ -2326,7 +2411,7 @@ void follow_selection(const trace_data& d, view& v) {
 }
 
 // ============================================================================
-//  21. the latency histogram
+//  22. the latency histogram
 // ============================================================================
 //
 // The picture the whole tool hangs off. x is 1/(1-quantile) on a log axis, so
@@ -2409,7 +2494,7 @@ aggregate build_aggregate(const trace_data& d, size_t from, size_t to) {
 }
 
 // ============================================================================
-//  22. the windows
+//  23. the windows
 // ============================================================================
 
 constexpr ImU32 colour_hover = IM_COL32(255, 255, 255, 70);
@@ -2834,7 +2919,7 @@ void draw_nodes_window(const trace_data& d) {
 }  // namespace
 
 // ============================================================================
-//  23. main
+//  24. main
 // ============================================================================
 
 // The whole of the program, so that main is the one place that has to decide
@@ -2874,6 +2959,9 @@ static int run(int argc, char** argv) {
     // Before pass_index, because it is what fills in the task of a record that
     // did not carry one -- and the index is keyed on that task.
     pass_attribute(d);
+    // After the second pass_order, because the walk is over the timeline and
+    // relies on it being in the order the rings hold the records.
+    pass_sched_group(d);
     pass_index(d);
     pass_io_spans(d);
     pass_statements(d);

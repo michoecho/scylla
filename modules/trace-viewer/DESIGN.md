@@ -212,6 +212,7 @@ decode is reported and skipped rather than killing the run.
 | table | one row per |
 |---|---|
 | `.switches` | the reactor picked up a task (five tracepoints; `cause` says which) |
+| `.tq_runs` | the reactor gave the cpu to a task queue, or took it back |
 | `.io_begins` / `.io_ends` | an I/O was submitted, and completed |
 | `.prep_runs` | a prepared statement was executed |
 | `.prep_deltas` | the statement cache changed, or was dumped |
@@ -256,21 +257,23 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 4 | `pass_retime` | `syncs` → every `ts`, in node 0's clock |
 | 5 | `pass_order` | again: retiming is monotone only if the clocks are |
 | 6 | `pass_attribute` | `switches` → `row.task` where the record carried none |
-| 7 | `pass_index` | event tables → the `*_by_task` indices |
-| 8 | `pass_io_spans` | `io_begins` + `io_ends` → `io_begin.end` |
-| 9 | `pass_statements` | `prep_deltas` + `prep_runs` → `statements`, `prep_run.statement` |
-| 10 | `pass_connections` | `conns` → `connections`, paired end to end |
-| 11 | `pass_rpc_pair` | `rpcs` + `connections` → `rpc.peer_cpu`, `.peer_row` |
-| 12 | `pass_queries` | `switches` + `rpcs` → `queries`, `parts` |
-| 13 | `pass_query_rows` | `parts` → `row.query`, on every row |
-| 14 | `pass_cost` | `switches` + io spans → `query.t1`, `.cpu_ticks`, `by_latency` |
-| 15 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
-| 16 | `pass_render` | every event table → `log_lines`, `slices` |
+| 7 | `pass_sched_group` | `tq_runs` + `timeline` → `switch.group` |
+| 8 | `pass_index` | event tables → the `*_by_task` indices |
+| 9 | `pass_io_spans` | `io_begins` + `io_ends` → `io_begin.end` |
+| 10 | `pass_statements` | `prep_deltas` + `prep_runs` → `statements`, `prep_run.statement` |
+| 11 | `pass_connections` | `conns` → `connections`, paired end to end |
+| 12 | `pass_rpc_pair` | `rpcs` + `connections` → `rpc.peer_cpu`, `.peer_row` |
+| 13 | `pass_queries` | `switches` + `rpcs` → `queries`, `parts` |
+| 14 | `pass_query_rows` | `parts` → `row.query`, on every row |
+| 15 | `pass_cost` | `switches` + io spans → `query.t1`, `.cpu_ticks`, `by_latency` |
+| 16 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
+| 17 | `pass_render` | every event table → `log_lines`, `slices` |
 
-Two orderings in there are real constraints rather than convention, and both
-are commented at the call site: `pass_attribute` must precede `pass_index`,
-because the index is keyed on the task it fills in; and `pass_order` runs again
-after `pass_retime`.
+Three orderings in there are real constraints rather than convention, and each
+is commented at the call site: `pass_attribute` must precede `pass_index`,
+because the index is keyed on the task it fills in; `pass_order` runs again
+after `pass_retime`; and `pass_sched_group` must follow the last `pass_order`,
+because it walks the timeline and wants it in the order the rings hold it.
 
 ### The three joins worth understanding
 
@@ -420,7 +423,12 @@ rather than adding printf to the render loop.
   `samples` table, a pass placing them on the clock, and a window.
 - **Anything keyed on the selection being cached.** See rule 7.
 - **A test suite.** The checks today are the counts each pass prints and the
-  headless dump against `ignored/boot-id-run`, where a median request should
-  come out as a coordinator and two replicas, three parts, ~0.119 ms latency
-  and ~0.159 ms of cpu. That is thin; the table-per-pass shape makes a real
-  test of one pass easy to write, and it has not been written.
+  headless dump against `ignored/sched-group-run` -- the snapshot `decoder.h`
+  here was copied from, three nodes of two shards, made by
+  `third-party/scylladb/capture-trace.sh`. A median request there comes out as
+  a coordinator and two replicas, six parts, ~0.108 ms latency and ~0.412 ms of
+  cpu, and every switch is inside a task queue run. (`ignored/boot-id-run`
+  before it reads only with *its* `decoder.h`: a snapshot and the decoder
+  beside it are one pair, so an older run needs its own.) That is thin; the
+  table-per-pass shape makes a real test of one pass easy to write, and it has
+  not been written.

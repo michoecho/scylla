@@ -52,6 +52,7 @@ numeric event ids its analysis keys off.
 | tracepoint | meaning | viewer id |
 |---|---|---|
 | `run_task{prev, task, at}` | the reactor picked a task off a run queue, and where that task was created | `0` |
+| `task_queue_run_begin{scheduling_group}` / `task_queue_run_end{}` | the reactor gave the cpu to one task queue and took it back; every `run_task` between the two ran under that scheduling group | |
 | `cql_request{prev, task}` | a CQL frame arrived and opened a new chain | `1` |
 | `io_begin{task, io}` | a task submitted an I/O and is now waiting | `0x4` |
 | `io_end{task, io}` | that I/O completed | `0x5` |
@@ -116,6 +117,13 @@ Two things are worth knowing about the timestamps:
 `PERF_CONTEXT_*` markers dropped. Like a source location it is an address and
 nothing else, so reading it needs the objects -- the same `dsos/` directory, and
 the same reasoning about whose job that is.
+
+A `SWITCH` line also carries `sg N`, the scheduling group the reactor was
+running under when it picked the task up.  A `run_task` record does not say
+that -- it would be a field on the hottest record in the trace -- and the
+`task_queue_run_{begin,end}` bracket around it does instead; `pass_sched_group`
+in the viewer is what turns the bracket into a column.  A switch whose bracket
+the ring evicted has no `sg` at all rather than a guessed one.
 
 `at` is `seastar::task::location()` -- the `then()` call site, or the `co_await`
 a coroutine suspended at, which Seastar was already storing on every task as its
@@ -290,6 +298,29 @@ tools/gather-dsos third-party/scylladb/build/Dev/scylla \
 
 from the binary the trace came from, before rebuilding it.
 
+### Three nodes, in one command
+
+The single-node recipe above is the one to reach for when changing a
+tracepoint; a distributed trace -- which is what the RPC join and the
+cross-node request walk need -- is `capture-trace.sh` beside `run-node.sh`,
+and it is the whole of the recipe above for three nodes of two shards:
+
+```sh
+cd third-party/scylladb
+nix develop -c ./capture-trace.sh ignored/my-run
+```
+
+It starts nodes 1-3 in order (node 1 is the seed), waits for each to answer
+CQL, switches the tracepoints on, runs `load3.py` -- the CL=ALL variant of
+`load.py`, so every request touches all three -- snapshots each node, gathers
+the `dsos/`, and stops the nodes.  What comes out is the shape the viewer is
+handed: `node1/ node2/ node3/ dsos/`.  `ignored/sched-group-run` -- the one
+`decoder.h` here was copied from -- was made this way, as was
+`ignored/boot-id-run` before it.
+
+The workdirs are kept between runs, because bootstrapping three nodes from
+nothing is minutes; `--fresh` wipes them.
+
 `load.py` flushes the memtable through
 `POST /storage_service/keyspace_flush/tr` and reads back with `BYPASS CACHE`.
 Both matter: without them the selects are served from the memtable and the row
@@ -389,6 +420,7 @@ against.
 ```
 files nodes cpus                   what the snapshot directories describe
   tables[cpu].switches             the reactor picked up a task
+             .tq_runs              the reactor gave the cpu to a task queue
              .io_begins/.io_ends   an I/O was submitted, and completed
              .prep_runs            a prepared statement was executed
              .prep_deltas          the statement cache changed, or was dumped
@@ -572,9 +604,10 @@ final stretch.
 so a request reaches as far as the last record any of its parts wrote -- and
 the reader concurrency semaphore runs its own housekeeping continuations under
 the requesting task's id, sometimes long after the answer went out. The p100
-request in `boot-id-run` is 1014 ms of which 0.4 ms is cpu, and the log shows
+request in `boot-id-run` was 1014 ms of which 0.4 ms is cpu, and the log showed
 why: four `reader_concurrency_semaphore.cc:1029` records, a second after the
-rest.
+rest. (`boot-id-run` predates the task-queue tracepoints, so reading it back
+needs the `decoder.h` beside it rather than the one here.)
 
 **A snapshot record inside a request.** The statement-cache and connection
 dumps are written when the trace is taken, and `pass_attribute` gives a record
