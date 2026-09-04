@@ -447,7 +447,9 @@ A **query** is a CQL request, and the tool is four windows around it.
 
 - **Queries** is the latency histogram: x is `1/(1 - quantile)` on a log axis,
   so a click picks a *tier* rather than a request -- the median at 2, the 99th
-  at 100, the tail at 10000. That is the whole method: look at a median
+  at 100, the tail at 10000. Holding the left button scrubs through the tiers;
+  the button belongs to the picker here rather than to the plot, so panning is
+  on the middle button and the wheel still zooms. That is the whole method: look at a median
   request, look at one from the tail, and find the difference. The magenta
   DragRect selects a range of quantiles, and the numbers under the plot are the
   aggregate over exactly the requests between them.
@@ -477,6 +479,14 @@ A **query** is a CQL request, and the tool is four windows around it.
   because this is it.
 
 - **Nodes** is which process each node number is.
+
+There are two selections, and every window reads both. `clicked` is the one
+that survives; `hover` is what the pointer is over right now, cleared at the
+top of each frame and refilled by whichever window the pointer is in. Where
+there is a hover it wins -- so passing the pointer along the histogram previews
+each request in the timeline and the log, and passing it along a row of the
+timeline runs the log through the records under it, both without losing what
+you picked. Taking the pointer away puts the picked one back.
 
 ### What a query is, given that nothing carries a query id
 
