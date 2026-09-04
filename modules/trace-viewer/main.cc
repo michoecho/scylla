@@ -17,8 +17,6 @@
 #include <thread>
 #include <vector>
 #include <cerrno>
-#include <atomic>
-#include <stdexcept>
 #include <system_error>
 #include <fmt/core.h>
 #include <fmt/ranges.h>
@@ -900,7 +898,8 @@ struct sink {
         sample.shard = e.shard;
         sample.node = node;
         const auto* const words = reinterpret_cast<const uint64_t*>(e.frames.data());
-        sample.frames.assign(words, words + e.frames.size() / sizeof(uint64_t));
+        auto n_frames = e.frames.size() / sizeof(uint64_t);
+        sample.frames.assign(words, words + n_frames);
         samples.push_back(std::move(sample));
     }
     // Pass one of the wall clock conversion: a sync record is not an event of
@@ -1104,7 +1103,7 @@ static std::string lane_label(uint32_t node, uint32_t shard) {
             head = boot.substr(0, dash);
         }
     }
-    return fmt::format("{}/shard{}", head, shard);
+    return fmt::format("{}/{}", head, shard);
 }
 
 // The full boot id, for the tooltip, or a placeholder for a snapshot that
@@ -1994,7 +1993,7 @@ int main(int argc, char** argv) {
 
     // Create window with graphics context
     SDL_Window* window = SDL_CreateWindow(
-        "Latency analyzer", 1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        "Latency analyzer", 1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (window == nullptr) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit();
@@ -2045,7 +2044,7 @@ int main(int argc, char** argv) {
     //IM_ASSERT(font != nullptr);
 
     // Our state
-    bool show_demo_window = true;
+    bool show_demo_window = false;
     bool show_config_window = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     int log_task_threshold = 10000;
