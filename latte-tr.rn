@@ -1,0 +1,49 @@
+//! The load3.py workload, rewritten for latte so it can be driven at a rate
+//! that fills the tracer's rings rather than dribbling a few thousand queries
+//! into them.
+//!
+//! Same shape as load3.py, and for the same reasons: RF=3 so a request has to
+//! visit every node, and BYPASS CACHE on the read so it reaches the sstables
+//! and the trace has io_begin/io_end to account for.  Give latte
+//! `--consistency ALL` to get load3.py's CL as well.
+//!
+//! Its own keyspace, so a run of this and a run of load3.py do not fight over
+//! tr.t -- latte's integers are 64-bit and the key column here is bigint,
+//! which load3.py's `k int` is not.
+//!
+//!   latte schema latte-tr.rn <node>
+//!   latte load   latte-tr.rn <node>
+//!   latte run    latte-tr.rn <node> -d 2000000
+
+const ROW_COUNT = latte::param!("rows", 100000);
+
+const INSERT = "insert";
+const READ = "read";
+
+const KEYSPACE = "latte_tr";
+const TABLE = "t";
+
+pub async fn schema(ctx) {
+    ctx.execute(`CREATE KEYSPACE IF NOT EXISTS ${KEYSPACE} WITH REPLICATION = \
+                    { 'class': 'NetworkTopologyStrategy', 'replication_factor': 3 }`).await?;
+    ctx.execute(`DROP TABLE IF EXISTS ${KEYSPACE}.${TABLE}`).await?;
+    ctx.execute(`CREATE TABLE ${KEYSPACE}.${TABLE}(k bigint PRIMARY KEY, v text)`).await?;
+}
+
+pub async fn erase(ctx) {
+    ctx.execute(`TRUNCATE TABLE ${KEYSPACE}.${TABLE}`).await
+}
+
+pub async fn prepare(ctx) {
+    ctx.load_cycle_count = ROW_COUNT;
+    ctx.prepare(INSERT, `INSERT INTO ${KEYSPACE}.${TABLE}(k, v) VALUES (:k, :v)`).await?;
+    ctx.prepare(READ, `SELECT * FROM ${KEYSPACE}.${TABLE} WHERE k = :k BYPASS CACHE`).await?;
+}
+
+pub async fn load(ctx, i) {
+    ctx.execute_prepared(INSERT, [i, `value-${i}`]).await?
+}
+
+pub async fn run(ctx, i) {
+    ctx.execute_prepared(READ, [latte::hash(i) % ROW_COUNT]).await?
+}

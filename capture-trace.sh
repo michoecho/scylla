@@ -3,7 +3,11 @@
 # CL=ALL read/write load across them, and every node's rings written out
 # together with the objects their addresses point into.
 #
-#   nix develop -c ./capture-trace.sh [OUTDIR]
+#   nix develop -c ./capture-trace.sh [OUTDIR] [--load CMD]
+#
+# --load replaces ./load3.py with something else -- ./load-latte.sh, say, for a
+# run big enough to wrap the rings.  The command is run with the nodes up and
+# the tracepoints already on, and is trusted to leave them on.
 #
 # OUTDIR defaults to ignored/run-<stamp> and comes out in the shape the viewer
 # is handed -- the same as ignored/sched-group-run:
@@ -30,11 +34,16 @@ cd "$(dirname "$0")"
 NODES=(1 2 3)
 OUT="ignored/run-$(date +%Y%m%d-%H%M%S)"
 FRESH=0
-for arg in "$@"; do
-    case "$arg" in
+LOAD=(./load3.py)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --fresh) FRESH=1 ;;
-        *) OUT="$arg" ;;
+        # Everything after --load is the load command, so it can carry its own
+        # flags without them being mistaken for this script's.
+        --load) shift; LOAD=("$@"); break ;;
+        *) OUT="$1" ;;
     esac
+    shift
 done
 
 pids=()
@@ -81,7 +90,7 @@ for n in "${NODES[@]}"; do
     echo "== tracepoints on, node $n: $(api "$n" POST '/system/tracepoints_enabled?enabled=true')"
 done
 
-./load3.py
+"${LOAD[@]}"
 
 for n in "${NODES[@]}"; do
     # The snapshot is a copy of the rings as they are when the shard is asked,
