@@ -2110,6 +2110,12 @@ struct selection {
     int32_t query = none;
     int32_t log_cpu = none;
     int32_t focus = none;  // a timeline entry on log_cpu
+    // Set when this selection came from the timeline itself. A hover that did
+    // recolours the plot but must not re-row it: the rows are a function of
+    // the request, so hovering a bar into a new request would move the rows
+    // out from under the pointer, onto a different bar, of a different
+    // request. See layout_query() below.
+    bool from_timeline = false;
 };
 
 struct view {
@@ -2124,6 +2130,11 @@ struct view {
     }
     [[nodiscard]] int32_t focus() const {
         return hover.log_cpu >= 0 ? hover.focus : clicked.focus;
+    }
+    // Which request the plot's rows and time range are built for, which is the
+    // effective one *except* under a hover that came from the plot itself.
+    [[nodiscard]] int32_t layout_query() const {
+        return hover.query >= 0 && !hover.from_timeline ? hover.query : clicked.query;
     }
 
     double t0 = 0;  // the effective request, in the plot's milliseconds
@@ -2206,10 +2217,10 @@ selection selection_of_query(const trace_data& d, int32_t query) {
 // ones that draw it: the plot's rows and its axis range follow whichever
 // request is effective, hovered or clicked.
 void follow_selection(const trace_data& d, view& v) {
-    if (v.query() == v.rows_for) {
+    if (v.layout_query() == v.rows_for) {
         return;
     }
-    v.rows_for = v.query();
+    v.rows_for = v.layout_query();
     v.rows.clear();
     if (v.rows_for < 0) {
         return;
@@ -2384,26 +2395,44 @@ void draw_queries_window(const trace_data& d, view& v, const histogram& h, doubl
     ImGui::End();
 }
 
-void draw_selected_query(const trace_data& d, const view& v) {
-    ImGui::Begin("Selected query");
-    if (v.query() < 0) {
-        ImGui::TextUnformatted("click the histogram to pick a query");
-        ImGui::End();
+// What is picked and what the pointer is over, one under the other. Both,
+// because comparing two requests is the whole method -- and the second of them
+// is gone the moment the pointer moves, so it has to be readable while it is
+// there.
+void describe_query(const trace_data& d, int32_t query, const char* what) {
+    ImGui::SeparatorText(what);
+    if (query < 0) {
+        ImGui::TextUnformatted("(none)");
         return;
     }
-    const query_row& q = d.queries[v.query()];
-    ImGui::Text("query %d, task %016" PRIx64 " on %s", v.query(), q.root_task,
+    const query_row& q = d.queries[query];
+    ImGui::Text("query %d, task %016" PRIx64 " on %s", query, q.root_task,
                 d.cpus[q.root_cpu].label.c_str());
     ImGui::Text("latency %.3f ms, cpu time %.3f ms", d.seconds(q.t1 - q.t0) * 1e3,
                 d.seconds(q.cpu_ticks) * 1e3);
-    ImGui::Text("%u parts over %zu reactors", q.parts_end - q.parts_begin, v.rows.size());
+    std::set<uint32_t> cpus;
+    for (uint32_t p = q.parts_begin; p < q.parts_end; ++p) {
+        cpus.insert(d.parts[p].cpu);
+    }
+    ImGui::Text("%u parts over %zu reactors", q.parts_end - q.parts_begin, cpus.size());
     if (q.statement >= 0) {
-        const statement_row& s = d.statements[q.statement];
-        ImGui::TextWrapped("%s: %s", std::string(d.text(s.keyspace)).c_str(),
-                           std::string(d.text(s.text)).c_str());
+        const statement_row& st = d.statements[q.statement];
+        ImGui::TextWrapped("%s: %s", std::string(d.text(st.keyspace)).c_str(),
+                           std::string(d.text(st.text)).c_str());
     } else {
         ImGui::TextUnformatted("(no prepared statement recorded for this request)");
     }
+}
+
+void draw_selected_query(const trace_data& d, const view& v) {
+    ImGui::Begin("Selected query");
+    if (v.clicked.query < 0 && v.hover.query < 0) {
+        ImGui::TextUnformatted("click the histogram or a bar of the timeline to pick a query");
+        ImGui::End();
+        return;
+    }
+    describe_query(d, v.clicked.query, "picked");
+    describe_query(d, v.hover.query, "under the pointer");
     ImGui::End();
 }
 
@@ -2528,12 +2557,23 @@ void draw_plot_window(const trace_data& d, view& v) {
                 selection at;
                 at.log_cpu = int32_t(cpu);
                 at.focus = owning_line(d, cpu, ts);
+                at.from_timeline = true;
+                // A bar belongs to a request, so pointing at one selects that
+                // request as well as that record -- which is how a row of
+                // washed-out work is followed back to whatever it was for.
+                // Only where the bar has a request: a stretch the trace could
+                // not attribute leaves the selection where it was.
+                if (hit.slice != nullptr && hit.slice->query >= 0) {
+                    at.query = hit.slice->query;
+                }
                 if (ImGui::IsMouseClicked(0)) {
                     v.clicked.log_cpu = at.log_cpu;
                     v.clicked.focus = at.focus;
+                    if (at.query >= 0) {
+                        v.clicked.query = at.query;
+                    }
                 } else {
-                    v.hover.log_cpu = at.log_cpu;
-                    v.hover.focus = at.focus;
+                    v.hover = at;
                 }
             }
         }

@@ -476,8 +476,13 @@ A **query** is a CQL request, and the tool is four windows around it.
   one unbroken block with no boundary in it.
 
   Hovering says what the bars cannot: the task, the source location the
-  continuation was created at, how long the stretch is. Clicking a row points
-  the log at that shard and at the record under the pointer.
+  continuation was created at, how long the stretch is. A bar belongs to a
+  request, so pointing at one selects that request as well as that record --
+  which is how a stretch of washed-out work is followed back to whatever it
+  was for, with the histogram's grey marker showing where in the distribution
+  it lands. Clicking commits it, along with the shard and the record for the
+  log. A bar the trace could not attribute to any request leaves the selection
+  alone.
 
 - **Log** is one shard's *whole* trace, scrolled to the request: what else the
   reactor was doing is most of why a request was slow, and so is what it was
@@ -486,6 +491,10 @@ A **query** is a CQL request, and the tool is four windows around it.
   column is relative to the request wherever in the trace the line is. "Back to
   the request" returns after a scroll. There is no second "full log" window,
   because this is it.
+
+- **Selected query** is both selections at once, the picked one over the one
+  under the pointer -- because comparing two requests is the whole method, and
+  the second is gone the moment the pointer moves.
 
 - **Nodes** is which process each node number is.
 
@@ -496,6 +505,13 @@ there is a hover it wins -- so passing the pointer along the histogram previews
 each request in the timeline and the log, and passing it along a row of the
 timeline runs the log through the records under it, both without losing what
 you picked. Taking the pointer away puts the picked one back.
+
+The plot's *rows* are the one thing a hover from the plot itself does not
+move. They are a function of the request, so letting a hovered bar re-row the
+plot would move the rows out from under the pointer, onto a different bar, of
+a different request -- so `layout_query()` follows the hover from the
+histogram and the picked request otherwise. A hovered bar recolours the plot;
+clicking it re-rows it.
 
 ### What a query is, given that nothing carries a query id
 
