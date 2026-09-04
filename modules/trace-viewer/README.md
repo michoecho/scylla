@@ -404,6 +404,9 @@ window, which the new one does not have yet.
 
 **Its design principles are written down in `DESIGN.md` beside it**, which is
 the thing to read before changing it -- what follows here is the summary.
+`WORKING.md` is the third of the three: how the work is actually done --
+building Scylla, capturing a snapshot, profiling the viewer's startup, and the
+traps that have already cost somebody a day.
 
 ### What it is made of
 
