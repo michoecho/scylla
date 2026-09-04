@@ -2302,6 +2302,25 @@ struct view {
     // would take it away.
     bool refit = false;
 
+    // The plot's x axis and the log's scroll as the last frame actually drew
+    // them -- not what they were asked to be. Where the user has panned to is
+    // only knowable this way, and a preview has to know it to give it back.
+    double axis_lo = 0;
+    double axis_hi = 0;
+    float log_scroll = 0;
+
+    // Set while a preview is holding the view, with what it took. See the
+    // borrow/return in follow_selection.
+    bool borrowed = false;
+    double borrowed_lo = 0;
+    double borrowed_hi = 0;
+    float borrowed_log_scroll = 0;
+    int32_t borrowed_range_for = none - 1;
+    int32_t borrowed_clicked = none;
+    // One-shots, consumed by the plot and the log in the frame a preview ends.
+    bool restore_axis = false;
+    bool restore_log = false;
+
     // The plot's geometry, kept from the frame that drew it: the row
     // checkboxes are put beside the rows they belong to, and the widget is
     // sized so that a row is the same height whatever the row count.
@@ -2420,6 +2439,41 @@ void follow_selection(const trace_data& d, view& v) {
         v.rows_secondary = secondary;
         v.rows_pins = v.pins;
         build_rows(d, v);
+    }
+
+    // A preview borrows the view, and has to give it back.
+    //
+    // Moving the plot to the request under the pointer is the whole gesture,
+    // but the pan and the zoom it displaces are the *user's* and not the
+    // selection's. So they are kept on the way in and put back on the way out,
+    // rather than the view being recomputed from `clicked` as though the
+    // pointer leaving the histogram were a new selection. Recomputing is what
+    // threw away wherever you had scrolled to, every time the pointer crossed
+    // the histogram on its way somewhere else.
+    //
+    // The exception is a preview that ended because it was *picked*: then the
+    // new selection's fit is exactly what was asked for and there is nothing
+    // to give back. The histogram sets `clicked` and leaves `pending` empty
+    // while the button is down, so that arrives here as a preview ending with
+    // a different `clicked.query` than it began with.
+    if (preview && !v.borrowed) {
+        v.borrowed = true;
+        v.borrowed_lo = v.axis_lo;
+        v.borrowed_hi = v.axis_hi;
+        v.borrowed_log_scroll = v.log_scroll;
+        v.borrowed_range_for = v.range_for;
+        v.borrowed_clicked = v.clicked.query;
+    } else if (!preview && v.borrowed) {
+        v.borrowed = false;
+        if (v.clicked.query == v.borrowed_clicked && v.borrowed_hi > v.borrowed_lo) {
+            v.restore_axis = true;
+            v.restore_log = true;
+            // ... and put back what the axis was last *sent* to as well, so
+            // that the next frame does not read the restore as a change and
+            // refit over it.
+            v.range_for = v.borrowed_range_for;
+            return;
+        }
     }
 
     // What the times are measured from: the previewed request if there is one,
@@ -2709,12 +2763,22 @@ void draw_plot_window(const trace_data& d, view& v) {
         if (v.refit) {
             ImPlot::SetupAxisLimits(ImAxis_X1, v.t0 - pad, v.t1 + pad, ImPlotCond_Always);
             v.refit = false;
+        } else if (v.restore_axis) {
+            // Where the user was before a preview took the plot. Not v.t0/v.t1
+            // -- those are the selected request's stretch, and the whole point
+            // is that the axis need not be on it.
+            ImPlot::SetupAxisLimits(ImAxis_X1, v.borrowed_lo, v.borrowed_hi,
+                                    ImPlotCond_Always);
         }
+        v.restore_axis = false;
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, double(v.rows.size()), ImPlotCond_Always);
         ImPlot::PushPlotClipRect();
         ImDrawList* draw = ImPlot::GetPlotDrawList();
 
         const ImPlotRect limits = ImPlot::GetPlotLimits();
+        // What was actually drawn, for a preview to borrow next frame.
+        v.axis_lo = limits.X.Min;
+        v.axis_hi = limits.X.Max;
         // Two passes over each row rather than one, because what is drawn on
         // top has to be drawn last and the slices are in time order, not in
         // depth order. Two is enough: cpu, then the I/O that interrupts it.
@@ -2890,6 +2954,11 @@ void draw_log_window(const trace_data& d, view& v) {
     // under a hover is every time the pointer does -- and stay put otherwise,
     // so the window can be read and scrolled without being dragged back.
     bool scroll = cpu != v.scrolled_cpu || focus != v.scrolled_to;
+    if (v.restore_log) {
+        // A preview just ended: the selection going back to the picked request
+        // is not a move to follow, it is the undoing of one.
+        scroll = false;
+    }
     if (ImGui::SmallButton("back to the selection")) {
         scroll = true;
     }
@@ -2898,6 +2967,14 @@ void draw_log_window(const trace_data& d, view& v) {
     ImGui::Separator();
 
     ImGui::BeginChild("##lines", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    if (v.restore_log) {
+        ImGui::SetScrollY(v.borrowed_log_scroll);
+        v.restore_log = false;
+    } else {
+        // Where the reader is, for a preview to borrow. Read rather than
+        // remembered, because the scrollbar and the wheel move it too.
+        v.log_scroll = ImGui::GetScrollY();
+    }
     ImGuiListClipper clipper;
     clipper.Begin(int(t.timeline.size()));
     if (scroll && focus >= 0) {

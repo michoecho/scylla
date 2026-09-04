@@ -374,6 +374,18 @@ is a *highlight* on the plot already there: rows and axis stay, only colours
 change, because moving the plot would take the bar out from under the pointer.
 `selection::from_timeline` is what tells them apart.
 
+**A preview borrows the view and gives it back.** The pan and the zoom a
+preview displaces are the *user's*, not the selection's, so `follow_selection`
+keeps the axis and the log's scroll as the last frame actually drew them
+(`view::axis_lo/axis_hi/log_scroll`) and puts them back when the pointer
+leaves. What it must not do is recompute the view from `clicked`, as though the
+pointer leaving the histogram were a new selection -- that is what threw away
+wherever you had scrolled to, every time the pointer crossed the histogram on
+its way somewhere else. The one exception is a preview that ended because it
+was *picked*: then the new selection's fit is what was asked for and there is
+nothing to give back, which arrives as a preview ending with a different
+`clicked.query` than it began with.
+
 **Row order encodes that.** Pinned reactors, then the picked request's, then
 whatever the hovered request needs that is not there yet. Rows the hover adds
 go at the **bottom**, where rows appearing and disappearing cannot move
