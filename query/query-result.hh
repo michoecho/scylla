@@ -421,6 +421,10 @@ public:
         return _short_read;
     }
 
+    void mark_as_short_read() {
+        _short_read = short_read::yes;
+    }
+
     const std::optional<uint32_t>& partition_count() const {
         return _partition_count;
     }

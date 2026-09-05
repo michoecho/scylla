@@ -5053,14 +5053,19 @@ public:
                                        return digest.digest == first_digest;
                                    });
     }
-    const std::optional<full_position>& min_position() const {
-        return std::min_element(_digest_results.begin(), _digest_results.end(), [this] (const digest_and_last_pos& a, const digest_and_last_pos& b) {
-            // last_pos can be disengaged when there are not results whatsoever
-            if (!a.last_pos || !b.last_pos) {
-                return bool(a.last_pos) < bool(b.last_pos);
+    // A disengaged position means that the replica exhausted its range, so it does not
+    // constrain where the next page must start. An engaged position does not prove that the
+    // replica stopped early: a single-partition read reports the last fragment it consumed
+    // even when it finished the partition. This interpretation requires empty_replica_pages;
+    // the caller checks that the cluster feature is enabled.
+    std::optional<full_position> earliest_reported_position() const {
+        const std::optional<full_position>* earliest = nullptr;
+        for (const auto& r : _digest_results) {
+            if (r.last_pos && (!earliest || full_position::cmp(*_schema, *r.last_pos, **earliest) < 0)) {
+                earliest = &r.last_pos;
             }
-            return full_position::cmp(*_schema, *a.last_pos, *b.last_pos) < 0;
-        })->last_pos;
+        }
+        return earliest ? *earliest : std::nullopt;
     }
 private:
     bool waiting_for(locator::host_id ep) {
@@ -6007,11 +6012,26 @@ public:
                 auto&& [result, digests_match] = res.value();
 
                 if (digests_match) {
-                    if (exec->_proxy->features().empty_replica_pages && digest_resolver->response_count() > 1) {
-                        auto& mp = digest_resolver->min_position();
-                        auto& lp = result->last_position();
-                        if (!mp || bool(lp) < bool(mp) || full_position::cmp(*exec->_schema, *mp, *lp) < 0) {
-                            result->set_last_position(mp);
+                    // Only a paged read can stop early on its page size or tombstone limit. An
+                    // unpaged read either exhausts its range or stops at a row or partition limit,
+                    // and nothing pages from its cursor. Never mark it short: the merger of a
+                    // multi-partition read drops the partitions after a short result, and an
+                    // unpaged client cannot resume from it.
+                    if (exec->_proxy->features().empty_replica_pages && digest_resolver->response_count() > 1
+                            && exec->_cmd->slice.options.contains<query::partition_slice::option::allow_short_read>()) {
+                        auto earliest_stop = digest_resolver->earliest_reported_position();
+                        const auto& data_stop = result->last_position();
+                        // A short page can be empty because the replica spent its budget on
+                        // tombstones. Its explicit stop position is then the only cursor the
+                        // pager has, so never replace it with the absent position of a replica
+                        // which exhausted its range. Among actual stops, use the earliest one:
+                        // every replica must resume from a range it has already examined.
+                        if (earliest_stop && (!data_stop || full_position::cmp(*exec->_schema, *earliest_stop, *data_stop) < 0)) {
+                            result->set_last_position(std::move(earliest_stop));
+                            // The data replica may have exhausted its range while a digest replica
+                            // stopped early. Digest replies do not say which, so ensure that the
+                            // pager consumes the lowered cursor.
+                            result->mark_as_short_read();
                         }
                     }
                     exec->_result_promise.set_value(std::move(result));
