@@ -120,4 +120,5 @@ public:
 
     std::optional<clustering_key> first_row_key() const;
     std::optional<clustering_key> last_row_key() const;
+    std::optional<position_in_partition> last_range_tombstone_end() const;
 };

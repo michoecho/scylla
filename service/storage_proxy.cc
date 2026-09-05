@@ -5194,45 +5194,40 @@ class data_read_resolver : public abstract_read_resolver {
         uint64_t live_row_count;
     };
 
-    struct primary_key {
+    struct reconciliation_position {
         dht::decorated_key partition;
-        std::optional<clustering_key> clustering;
+        position_in_partition position;
 
-        class less_compare_clustering {
-            bool _is_reversed;
-            clustering_key::less_compare _ck_cmp;
+        // Sentinels surrounding all clustering rows in query order.
+        static position_in_partition before_first_clustering_row() {
+            return position_in_partition::before_all_clustered_rows();
+        }
+        static position_in_partition after_last_clustering_row() {
+            return position_in_partition::after_all_clustered_rows();
+        }
+
+        class less_compare_in_partition {
+            position_in_partition::tri_compare _cmp;
         public:
-            less_compare_clustering(const schema& s, bool is_reversed)
-                : _is_reversed(is_reversed), _ck_cmp(s) { }
+            explicit less_compare_in_partition(const schema& s) : _cmp(s) { }
 
-            bool operator()(const primary_key& a, const primary_key& b) const {
-                if (!b.clustering) {
-                    return false;
-                }
-                if (!a.clustering) {
-                    return true;
-                }
-                if (_is_reversed) {
-                    return _ck_cmp(*b.clustering, *a.clustering);
-                } else {
-                    return _ck_cmp(*a.clustering, *b.clustering);
-                }
+            bool operator()(const reconciliation_position& a, const reconciliation_position& b) const {
+                return _cmp(a.position, b.position) < 0;
             }
         };
 
         class less_compare {
             const schema& _schema;
-            less_compare_clustering _ck_cmp;
+            less_compare_in_partition _position_cmp;
         public:
-            less_compare(const schema& s, bool is_reversed)
-                : _schema(s), _ck_cmp(s, is_reversed) { }
+            explicit less_compare(const schema& s) : _schema(s), _position_cmp(s) { }
 
-            bool operator()(const primary_key& a, const primary_key& b) const {
+            bool operator()(const reconciliation_position& a, const reconciliation_position& b) const {
                 auto pk_result = a.partition.tri_compare(_schema, b.partition);
                 if (pk_result != 0) {
                     return pk_result < 0;
                 }
-                return _ck_cmp(a, b);
+                return _position_cmp(a, b);
             }
         };
     };
@@ -5291,15 +5286,37 @@ private:
         }
     }
 
-    static primary_key get_last_row(const schema& s, const partition& p, bool is_reversed) {
-        return {p.mut().decorated_key(s), is_reversed ? p.mut().partition().first_row_key() : p.mut().partition().last_row_key()  };
+    // This resolver handles mutation pages fetched after a digest mismatch, not the data pages
+    // handled by digest_read_resolver. A data page has a separate full_position cursor and can
+    // stop at a range-tombstone boundary. A mutation page has no separate cursor, so its progress
+    // must be inferred from the frozen mutation it returned.
+    //
+    // A mutation page can currently stop inside a partition only after a clustering row, which the
+    // freezer retains. Use the last range-tombstone boundary as a conservative progress position
+    // nevertheless, so that the inference remains safe if mutation pages learn to stop there. Static
+    // rows and partition tombstones have no clustering position. A replica which returned only those
+    // for a partition examined that whole partition under the current stopping rules.
+    static reconciliation_position get_replica_last_position(const schema& s, const partition& p) {
+        auto mp = p.mut().partition();
+        auto ck = mp.last_row_key();
+        auto last_position = [&] {
+            if (ck) {
+                return position_in_partition::for_key(std::move(*ck));
+            }
+            auto range_tombstone_position = mp.last_range_tombstone_end();
+            return range_tombstone_position ? std::move(*range_tombstone_position)
+                                            : reconciliation_position::after_last_clustering_row();
+        }();
+        return reconciliation_position{
+                p.mut().decorated_key(s),
+                std::move(last_position)};
     }
 
-    // Returns the highest row sent by the specified replica, according to the schema and the direction of
-    // the query.
+    // Returns the last position sent by the specified replica in query order.
     // versions is a table where rows are partitions in descending order and the columns identify the partition
     // sent by a particular replica.
-    static primary_key get_last_row(const schema& s, bool is_reversed, const utils::chunked_vector<std::vector<version>>& versions, uint32_t replica) {
+    static reconciliation_position get_replica_last_position(const schema& s,
+            const utils::chunked_vector<std::vector<version>>& versions, uint32_t replica) {
         const partition* last_partition = nullptr;
         // Versions are in the reversed order.
         for (auto&& pv : versions) {
@@ -5310,66 +5327,68 @@ private:
             }
         }
         SCYLLA_ASSERT(last_partition);
-        return get_last_row(s, *last_partition, is_reversed);
+        return get_replica_last_position(s, *last_partition);
     }
 
-    static primary_key get_last_reconciled_row(const schema& s, const mutation_and_live_row_count& m_a_rc, const query::read_command& cmd, uint64_t limit, bool is_reversed) {
+    static reconciliation_position get_reconciled_last_position(const schema& s, const mutation_and_live_row_count& m_a_rc,
+            const query::read_command& cmd, uint64_t limit) {
         const auto& m = m_a_rc.mut;
         auto mp = mutation_partition(s, m.partition());
         auto&& ranges = cmd.slice.row_ranges(s, m.key());
         bool always_return_static_content = cmd.slice.options.contains<query::partition_slice::option::always_return_static_content>();
         mp.compact_for_query(s, m.decorated_key(), cmd.timestamp, ranges, always_return_static_content, limit);
-        return primary_key{m.decorated_key(), get_last_reconciled_row(s, mp, is_reversed)};
+        return reconciliation_position{m.decorated_key(), get_reconciled_last_position(mp)};
     }
 
-    static primary_key get_last_reconciled_row(const schema& s, const mutation_and_live_row_count& m_a_rc, bool is_reversed) {
+    static reconciliation_position get_reconciled_last_position(const mutation_and_live_row_count& m_a_rc) {
         const auto& m = m_a_rc.mut;
-        return primary_key{m.decorated_key(), get_last_reconciled_row(s, m.partition(), is_reversed)};
+        return reconciliation_position{m.decorated_key(), get_reconciled_last_position(m.partition())};
     }
 
-    static std::optional<clustering_key> get_last_reconciled_row(const schema& s, const mutation_partition& mp, bool is_reversed) {
-        std::optional<clustering_key> ck;
-        if (!mp.clustered_rows().empty()) {
-            if (is_reversed) {
-                ck = mp.clustered_rows().begin()->key();
-            } else {
-                ck = mp.clustered_rows().rbegin()->key();
-            }
+    static position_in_partition get_reconciled_last_position(const mutation_partition& mp) {
+        if (mp.clustered_rows().empty()) {
+            // This describes the last clustering row in the result, not replica progress. A
+            // result with no clustering rows therefore ends before its first possible row.
+            return reconciliation_position::before_first_clustering_row();
         }
-        return ck;
+        return position_in_partition::for_key(mp.clustered_rows().rbegin()->key());
     }
 
-    static bool got_incomplete_information_in_partition(const schema& s, const primary_key& last_reconciled_row, const std::vector<version>& versions, bool is_reversed) {
-        primary_key::less_compare_clustering ck_cmp(s, is_reversed);
+    static bool got_incomplete_information_in_partition(const schema& s, const reconciliation_position& last_reconciled_position,
+            const std::vector<version>& versions) {
+        reconciliation_position::less_compare_in_partition position_cmp(s);
         for (auto&& v : versions) {
             if (!v.par || v.reached_partition_end) {
                 continue;
             }
-            auto replica_last_row = get_last_row(s, *v.par, is_reversed);
-            if (ck_cmp(replica_last_row, last_reconciled_row)) {
+            auto replica_stop = get_replica_last_position(s, *v.par);
+            if (position_cmp(replica_stop, last_reconciled_position)) {
                 return true;
             }
         }
         return false;
     }
 
-    bool got_incomplete_information_across_partitions(const schema& s, const query::read_command& cmd,
-                                                      const primary_key& last_reconciled_row, std::vector<mutation_and_live_row_count>& rp,
-                                                      const utils::chunked_vector<std::vector<version>>& versions, bool is_reversed) {
+    bool got_incomplete_information_across_partitions(
+            const schema& s,
+            const query::read_command& cmd,
+            const reconciliation_position& last_reconciled_position,
+            std::vector<mutation_and_live_row_count>& rp,
+            const utils::chunked_vector<std::vector<version>>& versions) {
         bool short_reads_allowed = cmd.slice.options.contains<query::partition_slice::option::allow_short_read>();
         bool always_return_static_content = cmd.slice.options.contains<query::partition_slice::option::always_return_static_content>();
-        primary_key::less_compare cmp(s, is_reversed);
-        std::optional<primary_key> shortest_read;
+        reconciliation_position::less_compare cmp(s);
+        std::optional<reconciliation_position> earliest_replica_stop;
         auto num_replicas = versions[0].size();
         for (uint32_t i = 0; i < num_replicas; ++i) {
             if (versions.front()[i].reached_end) {
                 continue;
             }
-            auto replica_last_row = get_last_row(s, is_reversed, versions, i);
-            if (cmp(replica_last_row, last_reconciled_row)) {
+            auto replica_stop = get_replica_last_position(s, versions, i);
+            if (cmp(replica_stop, last_reconciled_position)) {
                 if (short_reads_allowed) {
-                    if (!shortest_read || cmp(replica_last_row, *shortest_read)) {
-                        shortest_read = std::move(replica_last_row);
+                    if (!earliest_replica_stop || cmp(replica_stop, *earliest_replica_stop)) {
+                        earliest_replica_stop = std::move(replica_stop);
                     }
                 } else {
                     return true;
@@ -5378,27 +5397,39 @@ private:
         }
 
         // Short reads are allowed, trim the reconciled result.
-        if (shortest_read) {
+        if (earliest_replica_stop) {
             _is_short_read = query::short_read::yes;
 
-            // Prepare to remove all partitions past shortest_read
+            // Drop partitions which the least-advanced replica did not examine.
             auto it = rp.begin();
-            for (; it != rp.end() && shortest_read->partition.less_compare(s, it->mut.decorated_key()); ++it) { }
+            for (; it != rp.end() && earliest_replica_stop->partition.less_compare(s, it->mut.decorated_key()); ++it) { }
 
-            // Remove all clustering rows past shortest_read
-            if (it != rp.end() && it->mut.decorated_key().equal(s, shortest_read->partition)) {
-                if (!shortest_read->clustering) {
-                    ++it;
-                } else {
-                    std::vector<query::clustering_range> ranges;
-                    ranges.emplace_back(is_reversed ? query::clustering_range::make_starting_with(std::move(*shortest_read->clustering))
-                                                    : query::clustering_range::make_ending_with(std::move(*shortest_read->clustering)));
-                    it->live_row_count = it->mut.partition().compact_for_query(s, it->mut.decorated_key(), cmd.timestamp, ranges, always_return_static_content,
-                            query::partition_max_rows);
-                }
+            // The stop comes from a returned replica partition, and every returned partition has
+            // a corresponding reconciled entry.
+            if (it == rp.end() || !it->mut.decorated_key().equal(s, earliest_replica_stop->partition)) {
+                on_internal_error(slogger, fmt::format("Reconciled result is missing the earliest replica stop's partition, key: {}, table: {}.",
+                        earliest_replica_stop->partition, s.ks_name()));
             }
 
-            // Actually remove all partitions past shortest_read
+            // The after-all sentinel means that the replica completed this partition, so only
+            // later partitions are dropped. Otherwise discard rows after the exact stop position;
+            // clustering-row stops are inclusive and range-tombstone stops retain their weight.
+            if (!earliest_replica_stop->position.is_after_all_clustered_rows(s)) {
+                std::vector<query::clustering_range> ranges;
+                if (earliest_replica_stop->position.is_clustering_row()) {
+                    auto ck = clustering_key(earliest_replica_stop->position.key());
+                    ranges.emplace_back(query::clustering_range::make_ending_with(std::move(ck)));
+                } else {
+                    auto position_range = ::position_range(position_in_partition::before_all_clustered_rows(), earliest_replica_stop->position);
+                    if (auto range = position_range_to_clustering_range(position_range, s)) {
+                        ranges.emplace_back(std::move(*range));
+                    }
+                }
+                it->live_row_count = it->mut.partition().compact_for_query(s, it->mut.decorated_key(), cmd.timestamp, ranges, always_return_static_content,
+                        query::partition_max_rows);
+            }
+
+            // Keep the stop partition and all partitions before it in query order.
             rp.erase(rp.begin(), it);
 
             // Update total live count and live partition count
@@ -5420,11 +5451,15 @@ private:
         // merge all results and return that to the client as the replicas that returned less row
         // may have newer data for the rows they did not send than any other node in the cluster.
         //
-        // This function is responsible for detecting whether such problem may happen. We get partition
-        // and clustering keys of the last row that is going to be returned to the client and check if
-        // it is in range of rows returned by each replicas that returned as many rows as they were
-        // asked for (if a replica returned less rows it means it returned everything it has).
-        auto is_reversed = cmd.slice.is_reversed();
+        // This function is responsible for detecting whether such problem may happen. We get the
+        // position of the last row that is going to be returned to the client and check if it
+        // is in range of rows returned by each replica which may not have returned everything it
+        // has. A replica returned everything only if it returned fewer rows than it was asked for
+        // without a short read. A mutation page is short when it stops on its memory limit. It
+        // can stop there with fewer rows, or none, because it may stop after a dead row (see
+        // allow_mutation_read_page_without_live_row).
+        // The resolver schema defines query order. For a reversed query it is the reversed schema,
+        // including while legacy wire-format requests are converted at the coordinator boundary.
 
         auto rows_left = original_row_limit;
         auto partitions_left = original_partition_limit;
@@ -5435,27 +5470,28 @@ private:
                 rows_left -= row_count;
                 partitions_left -= !!row_count;
                 if (original_per_partition_limit < query:: max_rows_if_set) {
-                    auto&& last_row = get_last_reconciled_row(s, m_a_rc, cmd, original_per_partition_limit, is_reversed);
-                    if (got_incomplete_information_in_partition(s, last_row, *pv, is_reversed)) {
+                    auto&& last_position = get_reconciled_last_position(s, m_a_rc, cmd, original_per_partition_limit);
+                    if (got_incomplete_information_in_partition(s, last_position, *pv)) {
                         _increase_per_partition_limit = true;
                         return true;
                     }
                 }
             } else {
-                auto&& last_row = get_last_reconciled_row(s, m_a_rc, cmd, rows_left, is_reversed);
-                return got_incomplete_information_across_partitions(s, cmd, last_row, rp, versions, is_reversed);
+                auto&& last_position = get_reconciled_last_position(s, m_a_rc, cmd, rows_left);
+                return got_incomplete_information_across_partitions(s, cmd, last_position, rp, versions);
             }
             ++pv;
         }
         if (rp.empty()) {
             return false;
         }
-        auto&& last_row = get_last_reconciled_row(s, *rp.begin(), is_reversed);
-        return got_incomplete_information_across_partitions(s, cmd, last_row, rp, versions, is_reversed);
+        auto&& last_position = get_reconciled_last_position(*rp.begin());
+        return got_incomplete_information_across_partitions(s, cmd, last_position, rp, versions);
     }
 public:
-    data_read_resolver(schema_ptr schema, db::consistency_level cl, size_t targets_count, storage_proxy::clock_type::time_point timeout) : abstract_read_resolver(std::move(schema), cl, targets_count, timeout),
-    _diffs(10, partition_key::hashing(*_schema), partition_key::equality(*_schema)) {
+    data_read_resolver(schema_ptr schema, db::consistency_level cl, size_t targets_count, storage_proxy::clock_type::time_point timeout)
+        : abstract_read_resolver(std::move(schema), cl, targets_count, timeout)
+        , _diffs(10, partition_key::hashing(*_schema), partition_key::equality(*_schema)) {
         _data_results.reserve(targets_count);
     }
     void add_mutate_data(locator::host_id from, foreign_ptr<lw_shared_ptr<reconcilable_result>> result) {

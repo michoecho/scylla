@@ -2093,6 +2093,8 @@ void reconcilable_result_builder::consume(tombstone t) {
 stop_iteration reconcilable_result_builder::consume(static_row&& sr, tombstone, bool is_alive) {
     _static_row_is_alive = is_alive;
     _memory_accounter.update(sr.memory_usage(*_query_schema));
+    // Do not stop here. The coordinator infers that a returned mutation with
+    // no clustering rows or range tombstones reached the partition end.
     return _mutation_consumer->consume(std::move(sr));
 }
 
@@ -2105,11 +2107,13 @@ stop_iteration reconcilable_result_builder::consume(clustering_row&& cr, row_tom
     _live_rows += is_alive;
     auto stop = _memory_accounter.update_and_check(cr.memory_usage(*_query_schema));
     if (is_alive || _slice.options.contains<query::partition_slice::option::allow_mutation_read_page_without_live_row>()) {
-        // We are considering finishing current read only after consuming a
-        // live clustering row. While sending a single live row is enough to
+        // Unless the slice allows a page without a live row, we are
+        // considering finishing current read only after consuming a live
+        // clustering row. While sending a single live row is enough to
         // guarantee progress, not ending the result on a live row would
         // mean that the next page fetch will read all tombstones after the
-        // last live row again.
+        // last live row again. With allow_mutation_read_page_without_live_row,
+        // the read can also finish after a dead clustering row.
         _stop = stop;
     }
     return _mutation_consumer->consume(std::move(cr)) || _stop;

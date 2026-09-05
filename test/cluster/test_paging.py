@@ -9,7 +9,14 @@ from cassandra import ConsistencyLevel  # type: ignore
 from cassandra.query import SimpleStatement  # type: ignore
 
 from test.cluster.util import new_test_keyspace
+from test.pylib.async_cql import _wrap_future
+from test.pylib.internal_types import ServerInfo
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
+
+
+async def read_retries(manager: ScyllaClusterManager, server: ServerInfo) -> int:
+    metrics = await manager.metrics.query(server.ip_addr)
+    return int(metrics.get("scylla_storage_proxy_coordinator_read_retries") or 0)
 
 
 @pytest.mark.asyncio
@@ -316,3 +323,142 @@ async def test_digest_match_does_not_truncate_unpaged_multi_partition_read(manag
                                  fetch_size=None)
         rows = await cql0.run_async(select)
         assert sorted((r.pk, r.ck) for r in rows) == [(pk, ck) for pk in partitions for ck in live_rows]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_treats_static_only_replica_as_complete_partition(manager: ScyllaClusterManager) -> None:
+    """
+    Do not trim a reconciled page behind a replica which returned only a static row.
+
+    Unlike the tests above, this test deliberately creates a digest mismatch and
+    enters mutation reconciliation. Both replicas have the static row, but only
+    node 0 has clustering rows.
+
+    Node 1's frozen mutation has no clustering-row key. That does not mean it
+    stopped before ck=0: mutation reads act on a static-row size limit only at
+    partition end, so node 1 examined the complete partition. Reconciliation can
+    safely combine its complete static/tombstone state with node 0's rows.
+
+    The old code represented the missing clustering-row key as the position
+    before every clustering row. It then trimmed away the only partition and
+    produced an empty short page without a paging cursor.
+    """
+    servers = await manager.servers_add(
+        2,
+        config={'hinted_handoff_enabled': False},
+        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+    cql0 = await manager.get_cql_exclusive(servers[0])
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, s int static, v int, "
+                            "PRIMARY KEY (pk, ck))")
+        await cql0.run_async(SimpleStatement(
+            f"INSERT INTO {table} (pk, s) VALUES (0, 1)",
+            consistency_level=ConsistencyLevel.ALL))
+
+        await manager.server_stop_gracefully(servers[1].server_id)
+        for ck in range(3):
+            await cql0.run_async(SimpleStatement(
+                f"INSERT INTO {table} (pk, ck, v) VALUES (0, {ck}, {ck})",
+                consistency_level=ConsistencyLevel.ONE))
+        await manager.server_start(servers[1].server_id, wait_others=1)
+
+        select = SimpleStatement(f"SELECT pk, ck, s, v FROM {table} WHERE pk = 0",
+                                 consistency_level=ConsistencyLevel.QUORUM,
+                                 fetch_size=1)
+        retries_before = await read_retries(manager, servers[0])
+        rows = await cql0.run_async(select, all_pages=True)
+        assert [(r.ck, r.s, r.v) for r in rows] == [(0, 1, 0), (1, 1, 1), (2, 1, 2)]
+
+        # Node 1 completed this partition. Treating it as an early stop would
+        # cause either destructive trimming or an unnecessary larger retry.
+        assert await read_retries(manager, servers[0]) == retries_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reverse_order", "legacy_reverse_format"),
+    [
+        pytest.param(False, False, id="forward"),
+        pytest.param(True, False, id="reverse-native"),
+        pytest.param(
+            True,
+            True,
+            id="reverse-legacy",
+            marks=pytest.mark.skip_mode(mode="release", reason="error injections are not supported in release mode"),
+        ),
+    ],
+)
+async def test_reconciliation_uses_range_tombstone_as_rowless_replica_position(
+        manager: ScyllaClusterManager, reverse_order: bool, legacy_reverse_format: bool) -> None:
+    """
+    Use the last range tombstone as progress for a rowless mutation page.
+
+    Mutation reads account range-tombstone memory continuously, but cannot stop
+    and expose a cursor at an individual range-tombstone boundary. They act on
+    the page-size stop at partition end. A tombstone-only partition can therefore
+    exceed the page-size target and be marked short, but the partition it returns
+    is complete. The mutation format does not record that fact, however, and a
+    future replica may be able to stop at a range-tombstone boundary.
+
+    Conservatively use the last tombstone boundary as this replica's progress.
+    The first page then ends there instead of including node 0's later live rows.
+    It is empty, but carries a cursor which lets paging reach those rows without
+    a larger reconciliation retry.
+    """
+    cfg = {
+        'query_page_size_in_bytes': 1024,
+        'hinted_handoff_enabled': False,
+    }
+    if legacy_reverse_format:
+        cfg['error_injections_at_startup'] = [
+            {'name': 'suppress_features', 'value': 'NATIVE_REVERSE_QUERIES'},
+        ]
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+    cql0 = await manager.get_cql_exclusive(servers[0])
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        tombstone_base = 100000 if reverse_order else 0
+        live_row_base = 0 if reverse_order else 100000
+
+        delete_range = cql0.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck >= ? AND ck <= ?")
+        delete_range.consistency_level = ConsistencyLevel.ALL
+        for i in range(200):
+            await cql0.run_async(delete_range, [tombstone_base + 10 * i, tombstone_base + 10 * i + 5])
+
+        await manager.server_stop_gracefully(servers[1].server_id)
+        live_rows = list(range(live_row_base, live_row_base + 3))
+        for ck in live_rows:
+            await cql0.run_async(SimpleStatement(
+                f"INSERT INTO {table} (pk, ck, v) VALUES (0, {ck}, {ck})",
+                consistency_level=ConsistencyLevel.ONE))
+        await manager.server_start(servers[1].server_id, wait_others=1)
+
+        order_by = " ORDER BY ck DESC" if reverse_order else ""
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} WHERE pk = 0{order_by}",
+                                 consistency_level=ConsistencyLevel.QUORUM,
+                                 fetch_size=1)
+        retries_before = await read_retries(manager, servers[0])
+
+        # Node 1 actually scanned the whole partition, but its last mutation is
+        # a range tombstone well before node 0's live rows. Use that conservative
+        # boundary for the first page rather than assuming partition completion.
+        response_future = cql0.execute_async(select)
+        first_page = await _wrap_future(response_future)
+        assert first_page == []
+        assert response_future.has_more_pages
+
+        response_future.start_fetching_next_page()
+        rows = await _wrap_future(response_future, all_pages=True)
+        assert [r.ck for r in rows] == (list(reversed(live_rows)) if reverse_order else live_rows)
+
+        assert await read_retries(manager, servers[0]) == retries_before

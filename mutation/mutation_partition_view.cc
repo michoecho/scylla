@@ -456,6 +456,26 @@ std::optional<clustering_key> mutation_partition_view::last_row_key() const
     return (*it).key();
 }
 
+std::optional<position_in_partition> mutation_partition_view::last_range_tombstone_end() const
+{
+    auto in = _in;
+    auto mpv = ser::deserialize(in, std::type_identity<ser::mutation_partition_view>());
+    auto tombstones = mpv.range_tombstones();
+    if (tombstones.empty()) {
+        return {};
+    }
+    // Serialized range tombstones provide no reverse iterator, so finding the
+    // last boundary requires scanning the serialized sequence. Only the last
+    // entry is deserialized.
+    auto it = tombstones.begin();
+    auto next = it;
+    while (++next != tombstones.end()) {
+        it = next;
+    }
+    range_tombstone last = *it;
+    return position_in_partition(last.end_position());
+}
+
 mutation_partition_view mutation_partition_view::from_view(ser::mutation_partition_view v)
 {
     return { v.v };
