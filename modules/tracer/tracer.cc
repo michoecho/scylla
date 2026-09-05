@@ -110,20 +110,6 @@ buffer_group::buffer_group(std::size_t capacity, std::size_t buffer_size)
     current_.activated_ns = TRACER_REALTIME_NS();
 }
 
-std::byte* trace_buffers::write_slow(event_level level, std::size_t n) {
-    buffer_group& group = groups_[static_cast<std::size_t>(level)];
-    assert(n <= group.buffer_size() && "record larger than one trace buffer");
-
-    // Rotating drops the live buffer and recycles the oldest one. The fresh
-    // buffer gets its clock-sync record before the record that forced the
-    // rotation, so the ring remains timestamp-ordered.
-    group.rotate();
-    if (level != event_level::metadata) {
-        write_clock_sync(level);
-    }
-    return group.write_unchecked(n);
-}
-
 void buffer_group::rotate() {
     // Trim to what was actually written before retiring, so that the slack at
     // the end of the buffer is not part of the record stream.
@@ -141,6 +127,7 @@ void buffer_group::rotate() {
     // and not retired at all.
     current_.activated_ns = TRACER_REALTIME_NS();
     current_.retired_ns = 0;
+    last_timestamp_ = 0;
     cur_pos_ = 0;
 }
 

@@ -57,6 +57,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <bit>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -80,6 +81,43 @@ inline std::uint64_t rdtsc() noexcept {
     std::uint64_t hi = 0;
     asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return (hi << 32) | lo;
+}
+
+// An unsigned vint: the first byte contains a run of one bits describing the
+// number of following bytes, followed by the value in big-endian order. The
+// size calculation and write loop are deliberately shaped like the optimized
+// implementation used in Scylla; the tracer does not share its wire format.
+inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
+    const auto magnitude = static_cast<std::int64_t>(std::countl_zero(value | 1));
+    return std::size_t{9} - static_cast<std::size_t>((magnitude - 1) / 7);
+}
+
+inline void write_vint(std::byte*& out, std::uint64_t value) noexcept {
+    const std::size_t size = vint_size(value);
+    const int extra = static_cast<int>(size - 1);
+    const std::uint8_t value_mask = static_cast<std::uint8_t>(0xffU >> extra);
+    const int shift = (extra * 8) % 64;
+    *out++ = static_cast<std::byte>(
+        static_cast<std::uint8_t>((value >> shift) & value_mask) |
+        static_cast<std::uint8_t>(~value_mask));
+
+    // Direct the writes past the vint into a thread-local byte once all real
+    // output bytes have been emitted. This keeps the loop branch-free while
+    // still advancing the caller's pointer by exactly the encoded length.
+    static thread_local std::byte garbage;
+    value = std::rotl(value, (8 - extra) * 8);
+    int remaining = extra;
+    std::byte* cursor = out;
+#pragma GCC unroll 8
+    for (int i = 0; i < 8; ++i) {
+        std::byte* const destination =
+            __builtin_unpredictable(remaining > 0) ? cursor : &garbage;
+        value = std::rotl(value, 8);
+        *destination = static_cast<std::byte>(value);
+        ++cursor;
+        --remaining;
+    }
+    out += extra;
 }
 
 // The timestamp source, as a macro so that overriding it costs nothing at
@@ -197,6 +235,26 @@ public:
         return result;
     }
 
+    [[nodiscard]] std::uint64_t last_timestamp() const noexcept {
+        return last_timestamp_;
+    }
+
+    // Reserve and write a complete record header. The timestamp is sampled by
+    // trace_buffers::write(), after any rotation and its clock-sync record.
+    [[gnu::always_inline]] std::byte* write_record(std::size_t args_size,
+                                                    std::uint64_t address,
+                                                    std::uint64_t timestamp) {
+        const std::uint64_t delta = timestamp - last_timestamp_;
+        const std::size_t header_size = sizeof(std::uint64_t) + vint_size(delta);
+        assert(fits(args_size + header_size));
+        std::byte* out = write_unchecked(args_size + header_size);
+        std::memcpy(out, &address, sizeof(address));
+        out += sizeof(address);
+        write_vint(out, delta);
+        last_timestamp_ = timestamp;
+        return out;
+    }
+
     // Every live byte, oldest record first.
     //
     // Retired buffers are trimmed to their used length on retirement, but the
@@ -247,6 +305,9 @@ private:
     };
 
     buffer current_;
+    // Kept immediately beside current_.bytes' pointer, so the hot write path
+    // finds the buffer pointer and its timestamp base in the same cacheline.
+    std::uint64_t last_timestamp_ = 0;
     std::size_t cur_pos_ = 0;
     std::size_t used_ = 0;
     std::size_t capacity_;
@@ -270,12 +331,18 @@ public:
                            std::size_t metadata_capacity = 1024 * 1024,
                            std::size_t buffer_size = buffer_group::default_buffer_size);
 
-    [[gnu::always_inline]] std::byte* write(event_level level, std::size_t n) {
+    [[gnu::always_inline]] std::byte* write(event_level level, std::uint64_t address,
+                                            std::size_t args_size) {
         buffer_group& group = groups_[static_cast<std::size_t>(level)];
-        if (group.fits(n)) [[likely]] {
-            return group.write_unchecked(n);
+        // Check against the largest vint before sampling. If rotation is
+        // needed, the first sample must belong to the emitted record rather
+        // than being discarded while the cold path writes its sync record.
+        constexpr std::size_t max_record_size = sizeof(address) + 9;
+        if (!group.fits(args_size + max_record_size)) [[unlikely]] {
+            return write_slow(level, address, args_size);
         }
-        return write_slow(level, n);
+        const std::uint64_t timestamp = TRACER_TIMESTAMP();
+        return group.write_record(args_size, address, timestamp);
     }
 
     [[nodiscard]] const buffer_group& group(event_level level) const {
@@ -308,7 +375,8 @@ public:
 
     // Cold path for a record that does not fit in the current buffer. Rotation
     // and clock-sync emission stay out of trace_buffers::write()'s hot path.
-    [[gnu::noinline]] std::byte* write_slow(event_level level, std::size_t n);
+    [[gnu::noinline]] std::byte* write_slow(event_level level, std::uint64_t address,
+                                           std::size_t args_size);
 
 private:
     // The objects this ring has already described, so that what has gone can be
@@ -918,8 +986,8 @@ void set_all_tracepoints_enabled(bool enabled);
 // a level -- one ring per thread, say -- and there is exactly one chunk of the
 // metadata level, which is the process's stream rather than any thread's.
 //
-// A record is: uint64 tracepoint entry address, uint64 timestamp, then packed
-// arguments. The address rather than an index -- which is what an earlier
+// A record is: uint64 tracepoint entry address, unsigned vint timestamp delta,
+// then packed arguments. The address rather than an index -- which is what an earlier
 // version of this stored -- because an index is only meaningful against a table,
 // and with shared libraries in the picture there is no single table to index:
 // every object has one of its own, and an index into "the" table is a number
@@ -930,7 +998,9 @@ void set_all_tracepoints_enabled(bool enabled);
 // unloaded and another mapped over the range it had, so one address is two
 // tracepoints at two different moments. What makes it decodable is the metadata
 // stream below, read alongside the timestamp.
-inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + sizeof(std::uint64_t);
+// The smallest possible record header. The actual header is this address plus
+// a vint whose size depends on the timestamp delta.
+inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + 1;
 
 // "TRC2", little-endian. A trace that does not start with it is not one, which
 // is worth establishing before a stream of bytes is read as addresses.
@@ -1053,17 +1123,14 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
                                           tracer_sig_.data(),                             \
                                           key_}
 
-// The record: the entry's address, the timestamp, and the arguments. Named
+// The record: the entry's address, the timestamp delta, and the arguments. Named
 // after the entry TRACER_TRACEPOINT_ENTRY() just defined, so the two only ever
 // appear together.
 #define TRACER_RECORD(level_, ...)                                                        \
     const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);                    \
     std::byte* tracer_out_ = ::tracer::local_tracer->write(                               \
-        (level_), tracer_size_ + ::tracer::record_header_size);                           \
-    ::tracer::write_raw(tracer_out_,                                                      \
-                        static_cast<std::uint64_t>(                                       \
-                            reinterpret_cast<std::uintptr_t>(&tracer_tp_)));              \
-    ::tracer::write_raw(tracer_out_, static_cast<std::uint64_t>(TRACER_TIMESTAMP()));     \
+        (level_), static_cast<std::uint64_t>(                                              \
+            reinterpret_cast<std::uintptr_t>(&tracer_tp_)), tracer_size_);                \
     ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__)
 
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
@@ -1146,6 +1213,22 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
             write_clock_sync(level);
         }
     }
+}
+
+inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t address,
+                                             std::size_t args_size) {
+    buffer_group& group = groups_[static_cast<std::size_t>(level)];
+    assert(args_size + sizeof(address) + vint_size(UINT64_MAX) <= group.buffer_size() &&
+           "record larger than one trace buffer");
+
+    // The timestamp source is a macro and may be overridden by the translation
+    // unit recording the event. Keep this cold path here, beside the hot path,
+    // so a rotation does not accidentally fall back to tracer.cc's clock.
+    group.rotate();
+    if (level != event_level::metadata) {
+        write_clock_sync(level);
+    }
+    return group.write_record(args_size, address, TRACER_TIMESTAMP());
 }
 
 inline void trace_buffers::write_clock_sync(event_level level) {

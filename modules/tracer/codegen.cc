@@ -313,6 +313,22 @@ To read_unaligned(const std::byte*& p, const std::byte* end) {
     return dst;
 }
 
+inline std::uint64_t read_vint(const std::byte*& p, const std::byte* end) {
+    require(p, end, 1);
+    const std::uint8_t first = std::to_integer<std::uint8_t>(*p++);
+    std::size_t extra = 0;
+    while (extra < 8 && (first & (std::uint8_t{0x80} >> extra)) != 0) {
+        ++extra;
+    }
+    const std::uint8_t value_mask = static_cast<std::uint8_t>(0xffU >> extra);
+    std::uint64_t value = first & value_mask;
+    require(p, end, extra);
+    for (std::size_t i = 0; i < extra; ++i) {
+        value = (value << 8) | std::to_integer<std::uint8_t>(*p++);
+    }
+    return value;
+}
+
 // Length-prefixed runs. Both views point into the trace buffer rather than
 // copying out of it, which is what keeps decoding allocation-free -- and what
 // makes them valid only as long as that buffer is.
@@ -800,22 +816,37 @@ std::string generate_metadata(std::size_t id, const tracepoint_entry& entry) {
 }
 
 std::string generate_objects(const plan& planned) {
+    std::vector<std::uint32_t> clock_sync_ids;
+    for (std::size_t id = 0; id < planned.by_id.size(); ++id) {
+        if (std::string_view(planned.by_id[id]->name) == "clock_sync") {
+            clock_sync_ids.push_back(static_cast<std::uint32_t>(id));
+        }
+    }
     std::string code = std::format(
         "// Where a record's address comes from. `first_id` is the id of the object's\n"
         "// entry 0, so an address that is `n * entry_stride` past the object's table\n"
         "// belongs to id `first_id + n`.\n"
         "inline constexpr std::size_t entry_stride = {};\n"
         "inline constexpr std::uint32_t trace_magic = {:#x};\n"
-        "inline constexpr std::size_t record_header_size = {};\n"
         "inline constexpr std::uint8_t metadata_level = {};\n\n"
-        "struct object_descriptor {{\n"
-        "    std::string_view build_id;\n"
-        "    std::uint32_t first_id;\n"
-        "    std::uint32_t count;\n"
-        "}};\n\n"
-        "inline constexpr object_descriptor objects[] = {{\n",
-        sizeof(tracepoint_entry), trace_magic, record_header_size,
-        static_cast<unsigned>(event_level::metadata));
+        "inline constexpr std::uint32_t clock_sync_ids[] = {{",
+        sizeof(tracepoint_entry), trace_magic, static_cast<unsigned>(event_level::metadata));
+    for (const std::uint32_t id : clock_sync_ids) {
+        code += std::format("{},", id);
+    }
+    code += "0xffffffffU};\n"
+            "inline constexpr bool is_clock_sync_id(std::uint32_t id) {\n"
+            "    for (const std::uint32_t candidate : clock_sync_ids) {\n"
+            "        if (candidate == id) return true;\n"
+            "    }\n"
+            "    return false;\n"
+            "}\n\n"
+            "struct object_descriptor {\n"
+            "    std::string_view build_id;\n"
+            "    std::uint32_t first_id;\n"
+            "    std::uint32_t count;\n"
+            "};\n\n"
+            "inline constexpr object_descriptor objects[] = {\n";
     for (const object_plan& object : planned.objects) {
         code += std::format("    {{\"{}\", {}, {}}},\n", escape(object.build_id), object.first_id,
                             object.entries.size());
@@ -998,6 +1029,7 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     struct stream {
         const std::byte* p;
         const std::byte* end;
+        std::uint64_t last_timestamp = 0;
     };
     std::vector<stream> streams;
     bool have_metadata = false;
@@ -1057,6 +1089,20 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             std::format("object {} was unloaded without having been loaded", event.build_id));
     };
 
+    const auto is_clock_sync = [&mappings](std::uint64_t address) {
+        const auto above = std::upper_bound(
+            mappings.begin(), mappings.end(), address,
+            [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
+        if (above == mappings.begin() || (above - 1)->object == nullptr) {
+            return false;
+        }
+        const detail::mapping& from = *(above - 1);
+        const std::uint64_t offset = address - from.table;
+        return offset % entry_stride == 0 &&
+               is_clock_sync_id(static_cast<std::uint32_t>(
+                   from.object->first_id + offset / entry_stride));
+    };
+
     // The prologue: a count, and that many load events. Read by that invariant
     // rather than by their addresses, because until they have been read there
     // is no object for an address to be in. See "the metadata stream" in
@@ -1064,28 +1110,30 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     {
         stream& meta = streams.front();
         detail::read_unaligned<std::uint64_t>(meta.p, meta.end);  // entry address, not yet placeable
-        detail::read_unaligned<std::uint64_t>(meta.p, meta.end);  // timestamp: zero, by construction
+        meta.last_timestamp += detail::read_vint(meta.p, meta.end);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_unaligned<std::uint64_t>(meta.p, meta.end);
-            detail::read_unaligned<std::uint64_t>(meta.p, meta.end);
+            meta.last_timestamp += detail::read_vint(meta.p, meta.end);
             load(detail::read_trace_object_loaded(meta.p, meta.end));
         }
     }
 
     while (true) {
-        // The earliest record still unread, over every stream. A record's
-        // address and timestamp are fixed-width and come first, so how long it
-        // is may be unknown but when it happened is not.
+        // The earliest record still unread, over every stream. Its timestamp
+        // is a delta, so peek and accumulate it without advancing the stream;
+        // only the selected stream is consumed below.
         stream* next = nullptr;
         std::uint64_t earliest = 0;
         for (stream& candidate : streams) {
             if (candidate.p == candidate.end) {
                 continue;
             }
-            detail::require(candidate.p, candidate.end, record_header_size);
-            std::uint64_t at = 0;
-            std::memcpy(&at, candidate.p + sizeof(std::uint64_t), sizeof(at));
+            const std::byte* peek = candidate.p;
+            const auto address = detail::read_unaligned<std::uint64_t>(peek, candidate.end);
+            const bool sync = is_clock_sync(address);
+            const std::uint64_t at =
+                (sync ? 0 : candidate.last_timestamp) + detail::read_vint(peek, candidate.end);
             if (next == nullptr || at < earliest) {
                 next = &candidate;
                 earliest = at;
@@ -1098,7 +1146,9 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         const std::byte*& q = next->p;
         const std::byte* const q_end = next->end;
         const auto address = detail::read_unaligned<std::uint64_t>(q, q_end);
-        const auto timestamp = detail::read_unaligned<std::uint64_t>(q, q_end);
+        const auto timestamp =
+            (is_clock_sync(address) ? 0 : next->last_timestamp) + detail::read_vint(q, q_end);
+        next->last_timestamp = timestamp;
 
         const auto above = std::upper_bound(
             mappings.begin(), mappings.end(), address,
@@ -1229,13 +1279,13 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
         const std::byte* q = p;
         const std::byte* const q_end = p + length;
         detail::read_unaligned<std::uint64_t>(q, q_end);  // entry address
-        detail::read_unaligned<std::uint64_t>(q, q_end);  // timestamp
+        detail::read_vint(q, q_end);  // timestamp delta from zero
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
         std::vector<object_mapping> out;
         out.reserve(counted.count);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_unaligned<std::uint64_t>(q, q_end);
-            detail::read_unaligned<std::uint64_t>(q, q_end);
+            detail::read_vint(q, q_end);
             const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
             out.push_back({std::string(loaded.build_id), loaded.base_address,
                            loaded.mapping_size});
