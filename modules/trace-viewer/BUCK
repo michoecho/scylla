@@ -1,10 +1,12 @@
 # Latency trace viewer.  The UI sources are source-backed external cells so
 # updating them does not require a nixpkgs package for either library.
 
-# The decoder is a *generated* header, copied in from a snapshot rather than
-# built here: it is generated from Scylla's own tracepoint table (by
-# POST /system/trace_snapshot, which writes it beside the traces), and this repo
-# has no way to build Scylla. Replace it when Scylla's tracepoints change.
+# The decoder the *old* viewer (main.cc) reads with: a generated header, copied
+# in from a snapshot rather than built here, and one global one for the whole
+# program. That is exactly the assumption the new viewer no longer makes -- a
+# cluster part way through an upgrade writes traces from several builds at once,
+# and no single decoder.h can read them -- so `viewer` does not depend on this.
+# See decoder_plugin.h.
 cxx_library(
     name = "decoder",
     exported_headers = {"decoder.h": "decoder.h"},
@@ -31,17 +33,74 @@ cxx_binary(
     ],
 )
 
+# events.h and plugin_abi.h as text, for the viewer to write back out when it
+# compiles a decoder plugin at startup.
+#
+# Compiled in rather than read from beside the binary: the plugin has to be
+# built against the very events.h this viewer was built from, and a path would
+# only be a promise that the source tree is still the one the binary came from.
+# The raw-string delimiter keeps the headers' own quotes and backslashes out of
+# it; it is short because clang refuses one longer than sixteen characters.
+genrule(
+    name = "embedded_sources",
+    srcs = [
+        "events.h",
+        "plugin_abi.h",
+    ],
+    out = "embedded_sources.inc",
+    cmd = """
+    {
+      echo '// Generated from events.h and plugin_abi.h. Do not edit.'
+      echo '#pragma once'
+      echo 'namespace embedded {'
+      echo 'inline constexpr char events_h[] = R"TRACEVIEWER('
+      cat $SRCDIR/events.h
+      echo ')TRACEVIEWER";'
+      echo 'inline constexpr char plugin_abi_h[] = R"TRACEVIEWER('
+      cat $SRCDIR/plugin_abi.h
+      echo ')TRACEVIEWER";'
+      echo '}  // namespace embedded'
+    } > $OUT
+    """,
+)
+
+cxx_library(
+    name = "embedded_sources_header",
+    exported_headers = {
+        "embedded_sources.inc": ":embedded_sources",
+    },
+    header_namespace = "",
+    preferred_linkage = "static",
+)
+
 # The rewrite: the same trace, read into a catalogue of tables and a sequence
 # of passes over them. See the header comment in viewer.cc.
+#
+# -rdynamic because a decoder plugin calls back into this binary by name: the
+# `on_decode_*` symbols beside decode_sink have to be in .dynsym for dlopen() to
+# bind them. -ldl for the dlopen itself.
 cxx_binary(
     name = "viewer",
-    srcs = ["viewer.cc"],
+    srcs = [
+        "decoder_plugin.cc",
+        "viewer.cc",
+    ],
+    headers = [
+        "decoder_plugin.h",
+        "events.h",
+        "plugin_abi.h",
+    ],
     header_namespace = "",
     link_style = "static",
+    linker_flags = [
+        "-rdynamic",
+        "-ldl",
+    ],
     deps = [
-        ":decoder",
+        ":embedded_sources_header",
         "//:doctest_impl",
         "//:fmt",
+        "//:libclang",
         "//:opengl",
         "//:sdl3",
         "imgui//:imgui",

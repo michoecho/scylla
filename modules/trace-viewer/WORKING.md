@@ -147,17 +147,29 @@ tracepoints on, and come out at 381 MB. Every ring is full: 32 MiB of debug and
 
 ### After a capture, before a rebuild
 
-Two things travel with a snapshot and are useless without it:
+`decoder.h` is **generated from the binary that wrote the trace**, and a
+snapshot writes it beside its `.trace` files. Nothing has to be copied anywhere:
+`viewer` finds each snapshot's own decoder, compiles a plugin for that build and
+reads that build's files through it, so old runs and new ones are readable in
+the same session -- and so is a cluster with two versions of Scylla in it. See
+"Decoders, one per build" in `README.md`.
+
+Two consequences worth having in mind:
+
+* **The viewer compiles C++ at startup**, so it needs a compiler on PATH. Run it
+  from inside `nix develop`. The first run for a build costs a couple of
+  seconds; after that the `.so` is cached under `~/.cache/trace-viewer` and it
+  costs a `dlopen`.
+* **`pass_plugins` prints what each build's decoder and `events.h` disagree
+  about**, one line each. Read it. An empty column is often that, and not a bug
+  in a pass.
+
+`main.cc`, the old viewer, still reads the one `decoder.h` checked in beside it,
+and that one does have to be replaced by hand:
 
 ```sh
 cp <run>/node1/decoder.h modules/trace-viewer/decoder.h
 ```
-
-`decoder.h` is **generated from the binary that wrote the trace**. A mismatched
-one refuses rather than misdecoding -- that is the `tracepoint address ...
-belongs to object ..., which this decoder was not generated from` message, and
-it means you are pointing today's viewer at yesterday's snapshot. Old runs stay
-readable only with the `decoder.h` that came with them.
 
 The `dsos/` are gathered by `capture-trace.sh`, but if you take a snapshot by
 hand, do it **from the binary the trace came from, before rebuilding it** -- a
@@ -434,8 +446,10 @@ a real test of one pass easy to write, and nobody has written one.
 
 ## Traps, in the order they cost time
 
-- **`decoder.h` and the traces are one pair.** Copy the decoder in with the
-  snapshot, or nothing decodes.
+- **A decoder and the traces are one pair**, and `viewer` finds each snapshot's
+  own. What it needs instead is a **C++ compiler at runtime** -- it builds a
+  decoder plugin per build at startup -- so run it from inside `nix develop`.
+  (`main.cc` is the one that still wants the decoder copied in.)
 - **The default build is `-O0`.** 9x. Profile `-m release`.
 - **`perf` on a hybrid CPU** splits `cycles` across two PMUs. Use `task-clock`.
 - **buck2 from the repo root**, never from `third-party/scylladb`.

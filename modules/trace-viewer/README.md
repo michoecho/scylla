@@ -324,9 +324,10 @@ It starts nodes 1-3 in order (node 1 is the seed), waits for each to answer
 CQL, switches the tracepoints on, runs `load3.py` -- the CL=ALL variant of
 `load.py`, so every request touches all three -- snapshots each node, gathers
 the `dsos/`, and stops the nodes.  What comes out is the shape the viewer is
-handed: `node1/ node2/ node3/ dsos/`.  `ignored/sched-group-run` -- the one
-`decoder.h` here was copied from -- was made this way, as was
-`ignored/boot-id-run` before it.
+handed: `node1/ node2/ node3/ dsos/`.  `ignored/sched-group-run` was made this
+way, as was `ignored/boot-id-run` before it; the two are from different builds,
+and handing both to the viewer at once is the shortest demonstration of what
+"one decoder per build" is for.
 
 The workdirs are kept between runs, because bootstrapping three nodes from
 nothing is minutes; `--fresh` wipes them.
@@ -641,8 +642,9 @@ the reader concurrency semaphore runs its own housekeeping continuations under
 the requesting task's id, sometimes long after the answer went out. The p100
 request in `boot-id-run` was 1014 ms of which 0.4 ms is cpu, and the log showed
 why: four `reader_concurrency_semaphore.cc:1029` records, a second after the
-rest. (`boot-id-run` predates the task-queue tracepoints, so reading it back
-needs the `decoder.h` beside it rather than the one here.)
+rest. (`boot-id-run` predates the task-queue tracepoints; the viewer picks the
+`decoder.h` beside it up by itself and says which tracepoints that build has
+not got.)
 
 **A snapshot record inside a request.** The statement-cache and connection
 dumps are written when the trace is taken, and `pass_attribute` gives a record
@@ -885,43 +887,108 @@ which file the record came out of. That is what `entry::shard` is.
 A sample taken while the shard was between tasks keeps task 0 and appears only
 in this window.
 
-## Regenerating `decoder.h`
+## Decoders, one per build
 
-`decoder.h` here is a **generated file, copied in**. It is emitted by
-`tracer::generate_decoder_source()` from the tracepoint table of the running
-Scylla binary, which is the only thing that can describe it -- and this repo
-cannot build Scylla, so it cannot be a build step.
+A trace can only be read through the decoder header generated from the binary
+that wrote it: `tracer::generate_decoder_source()` emits it from that binary's
+own tracepoint table, which is the only thing that can describe it, and a
+snapshot writes it beside the `.trace` files. This repo cannot build Scylla, so
+it cannot be a build step.
 
-Whenever you add, remove or change a tracepoint, take the fresh copy from a
-snapshot:
+There is therefore no such thing as *the* decoder. A cluster part way through an
+upgrade writes traces from several binaries at once, its versions disagree about
+what a tracepoint carries, and the viewer is handed all of them together. So the
+viewer holds one decoder per build ID, and it builds them at startup:
 
-```sh
-cp third-party/scylladb/ignored/workdir_01/traces/<stamp>/decoder.h \
-   modules/trace-viewer/decoder.h
+```
+                 events.h                    decoder_<build>.h
+        (what the viewer wants)        (what that build actually writes)
+                    \                          /
+                     \   libclang reads both  /
+                      \   and matches them   /
+                       v                    v
+                    plugin.cc  --- clang -->  plugin.so
+                                                 |
+                          trace_plugin_decode()  |  on_decode_<event>()
+                     <-------------------------->
+                             the viewer
 ```
 
-A trace is decoded against the object it came from by build ID, so a mismatched
-decoder does not silently misdecode -- it refuses.
+`pass_plugins` does it and prints one line per build:
 
-The copy here has one edit on top of what Scylla's snapshot wrote: a record's
-timestamp is now read as the front of its *body*, by the reader its id selects,
-rather than as a second field of every header -- which is what lets a tracepoint
-carry no timestamp at all. The wire format of a timed record is unchanged, so
-the same traces still decode; what changed is the shape of the generated code
-and the `has_timestamp` flag it now hands the callback. `modules/tracer`'s
-generator is the source of truth, and a fresh snapshot's `decoder.h` will have
-this without the edit. See "the metadata stream" in
-`modules/tracer/include/tracer/tracer.h`.
+```
+build 698a82cdda87ecaf5371ecc9ab907f3133cf4bcf: 21 tracepoints bridged from
+    .../sched-group-run/node1/decoder.h (cached)
+build f6837b4173bba7095abc7bce5a5a04589fe776df: 19 tracepoints bridged from
+    .../boot-id-run/node1/decoder.h (compiled)
+    task_queue_run_begin: this build's decoder has no such tracepoint
+    task_queue_run_end: this build's decoder has no such tracepoint
+```
+
+Everything after the first line is something the viewer will not know about that
+build's traces: a tracepoint it has not got, a field it spells differently, a
+field whose type will not convert. None of it is guessed at -- the field stays
+at its default, and the note is printed every run.
+
+`modules/trace-viewer/events.h` is the viewer's half of that contract, and it is
+the file to edit when the viewer wants a new field. `decoder_plugin.h` says how
+the two halves are matched.
+
+### Where a decoder header is looked for
+
+Per build, in this order:
+
+```
+$TRACE_DECODER_DIR/decoder_<build-id>.h    a directory of them, one per build
+<snapshot-dir>/decoder_<build-id>.h        the same, beside the traces
+<snapshot-dir>/decoder.h                   what a snapshot writes today
+```
+
+A snapshot directory holds one node's files and the `decoder.h` for the build
+that wrote them, so the last line is what actually happens; the build-id-named
+forms are for a directory of decoders kept for a cluster. A build with no header
+anywhere is reported by name and its files are skipped -- the other nodes still
+read.
+
+### What it costs, and where it is kept
+
+Reading two headers with libclang and compiling the plugin is a couple of
+seconds per build, so the `.so` is cached under `$TRACE_PLUGIN_CACHE`, or
+`~/.cache/trace-viewer` if that is unset. The key covers the decoder header's
+whole contents, `events.h`, the ABI header and the compiler's version, so a
+cache hit is the same plugin and nothing is stale; a hit costs a `dlopen` and
+about 40 ms of asking the compiler where its headers are.
+
+Each cache directory is self-contained -- the decoder header it was built from,
+this viewer's `events.h`, the generated `plugin.cc`, the `notes.txt` and the
+`plugin.so` -- so a compile that failed can be repeated by hand from what is in
+it, and the generated bridge can simply be read.
+
+The compiler is `$TRACE_CXX`, or the first of `clang++`, `c++`, `g++` on PATH.
+**The viewer therefore needs a compiler at runtime**: run it from inside
+`nix develop`, where the include paths its wrapper injects are in the
+environment. Without one, `pass_plugins` says so and nothing decodes.
+
+### An old trace, and the old viewer
 
 The `decoder.h` and the `.trace` files it reads are **one pair**. The metadata
 stream is itself made of tracepoints, so its shape is part of what a decoder is
-generated from: a load event now carries the object's base address and extent
-beside its tracepoint table's, which is what lets a source location be read back.
-An old decoder reads old traces and a new one reads new traces; neither reads the
-other's, and the copy checked in here is the one that matches the current Scylla
-build. Regenerate it after rebuilding Scylla against a newer `modules/tracer`.
-(`smoke.trace` predates all of this and no longer decodes against it; nothing
-reads it.)
+generated from: a load event carries the object's base address and extent beside
+its tracepoint table's, which is what lets a source location be read back. An old
+decoder reads old traces and a new one reads new traces, and neither reads the
+other's -- which is the whole reason for the scheme above. (`smoke.trace`
+predates all of this and no longer decodes against anything; nothing reads it.)
+
+`modules/trace-viewer/decoder.h` is still checked in, and is still one global
+decoder for the whole program. It is there for `main.cc`, the old viewer, which
+has not been ported; when a tracepoint changes, that copy has to be replaced by
+hand from a fresh snapshot:
+
+```sh
+cp third-party/scylladb/ignored/<run>/node1/decoder.h modules/trace-viewer/decoder.h
+```
+
+`viewer` does not read it and does not care.
 
 ### Source locations
 

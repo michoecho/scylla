@@ -197,6 +197,38 @@ than from file names (with a documented fallback), nodes are identified by boot
 id rather than by which directory they arrived in, and a file that fails to
 decode is reported and skipped rather than killing the run.
 
+### 10. The events are written down twice, on purpose
+
+`events.h` says what the viewer wants an event to be. A `decoder_<build>.h`,
+generated from the binary that wrote a trace, says what that build actually
+writes. **These are two different documents and neither is derived from the
+other**, because a cluster part way through an upgrade has several of the second
+and one of the first.
+
+So the tables are never a picture of a producer's memory layout. `pass_plugins`
+reads both headers with libclang, matches them struct by struct and field by
+field, and compiles a small shared object per build that converts one to the
+other and calls the viewer's exported `on_decode_<event>`. `decoder_plugin.h`
+has the mechanics.
+
+The three properties worth keeping:
+
+- **A build the viewer cannot read does not stop the others.** No decoder
+  header, a header that will not parse, a compiler that will not run -- each is
+  a line naming the build, and the other nodes still decode.
+- **A disagreement is a note, not a guess and not a crash.** A tracepoint one
+  side has not got, a field spelled differently, a field whose type will not
+  convert without losing something -- the field stays at its default and
+  `pass_plugins` prints why, every run. This is rule 8 applied to the wire
+  format.
+- **The conversion is narrow.** The same type, a wider integer of the same
+  signedness, a view over a string, or one of the small structs matched the same
+  way. Nothing else. Widening the rule is how a task id silently loses its top
+  half; see `how_to_convert` in `decoder_plugin.cc` before you touch it.
+
+Nothing else in this file knows any of it happened. `decode_sink` takes
+`viewer::events::run_task`, which is the same shape it always took.
+
 ---
 
 ## The tables
@@ -257,7 +289,8 @@ In the order `run()` calls them. The middle column is the whole contract.
 | # | pass | reads → writes |
 |---|---|---|
 | 1 | `pass_gather` | argv → `files`, `nodes`, `cpus` |
-| 2 | `pass_decode` | `files` → every event table, `syncs`, `locations` |
+| 1b | `pass_plugins` | `files` → a compiled decoder per build (no table) |
+| 2 | `pass_decode` | `files` + the plugins → every event table, `syncs`, `locations` |
 | 3 | `pass_order` | event tables → the same, in timestamp order |
 | 4 | `pass_retime` | `syncs` → every `ts`, in node 0's clock |
 | 5 | `pass_order` | again: retiming is monotone only if the clocks are |
@@ -479,21 +512,41 @@ time is what a request is.
 - **Compute the axis range before the frame's windows read it.**
   `follow_selection()` runs after the histogram (which can pick) and before
   everything that draws.
-- **`decoder.h` and the `.trace` files are one pair.** A mismatched decoder
-  refuses rather than misdecoding; that is the `tracepoint address ... belongs
-  to object ..., which this decoder was not generated from` message, and the
-  fix is to copy the `decoder.h` from beside the traces.
+- **A decoder and the `.trace` files are one pair, and there is one decoder per
+  build.** The viewer finds each build's header beside its traces and compiles a
+  plugin for it (`decoder_plugin.h`); a mismatched one refuses rather than
+  misdecoding, which is the `tracepoint address ... belongs to object ..., which
+  this decoder was not generated from` message. **The plugin is compiled at
+  runtime**, so the viewer needs a C++ compiler on PATH -- run it from inside
+  `nix develop`.
+- **A field `events.h` wants and a build's decoder has not got is not an error.**
+  It is a line `pass_plugins` prints and a field left at its default. Read those
+  lines before believing a column is empty for an interesting reason.
 - **Views into an arena die when the arena grows.** See rule 3.
 
 ---
 
 ## How to do the usual things
 
-**Add a tracepoint.** Give it a row struct with `ROW_COMMON`; add the table to
-`table_id`, `cpu_tables` and `for_each_table`; add an `operator()` to
+**Add a tracepoint.** Five edits, and the first two are the new ones: add the
+struct to `viewer::events` in `events.h`, spelled exactly as the decoder spells
+it, and add an `ON_DECODE(...)` line for it beside `decode_sink` -- that list is
+`events.h`'s list, and a struct in one and not the other is a plugin that will
+not load. Then, as before: give it a row struct with `ROW_COMMON`; add the table
+to `table_id`, `cpu_tables` and `for_each_table`; add an `operator()` to
 `decode_sink` that `push()`es it (which also puts it in the timeline); add a
 case to `format_event`, `task_of` and `query_of`. If it needs joining to
 something, that is a new pass, not a branch in an existing one.
+
+Nothing has to be rebuilt on the producer side to *read* a build that has not
+got it yet: `pass_plugins` reports it missing per build and the table stays
+empty for that build's files.
+
+**Add a field to an event.** Add it to the struct in `events.h`. A build whose
+decoder has it fills it in; one that has not is a line of `pass_plugins`'
+output. A type that will not convert -- a narrowing integer, anything that is
+not an integer, a view or one of the small structs -- is refused and reported
+rather than truncated; see `how_to_convert` in `decoder_plugin.cc`.
 
 **Add a derived fact.** A new column on an existing row, filled by a new pass,
 with a comment saying what it reads. Default it to `none`/0 so the program
@@ -516,19 +569,20 @@ rather than adding printf to the render loop.
 ## What is deliberately not here
 
 - **Stack samples.** The old viewer's sample window and its symbolizer pool
-  (`modules/address-decoder`) have not been ported. The events are decoded and
-  dropped by the catch-all in `decode_sink`. Reimplementing means a
+  (`modules/address-decoder`) have not been ported. `stacktrace_sample` is not in
+  `events.h`, so each build's plugin drops it without it ever crossing into the
+  viewer. Reimplementing means a struct in `events.h`, an `ON_DECODE` line, a
   `samples` table, a pass placing them on the clock, and a window.
 - **Anything keyed on the selection being cached.** See rule 7.
 - **A test suite.** The checks today are the counts each pass prints and the
-  headless dump against `ignored/sched-group-run` -- the snapshot `decoder.h`
-  here was copied from, three nodes of two shards, made by
+  headless dump against `ignored/sched-group-run` -- three nodes of two shards,
+  made by
   `third-party/scylladb/capture-trace.sh`. A median request there comes out as
   a coordinator and two replicas, six parts, ~0.108 ms latency and ~0.088 ms of
   cpu, and every switch is inside a task queue run (99280 of the 99286 runs are
   closed in the snapshot -- the six open ones are the run each of the six
-  reactors was in when it was asked). (`ignored/boot-id-run`
-  before it reads only with *its* `decoder.h`: a snapshot and the decoder
-  beside it are one pair, so an older run needs its own.) That is thin; the
+  reactors was in when it was asked). (`ignored/boot-id-run` is from an older build, and reads
+  through the decoder beside it -- handing both runs to one viewer is the
+  shortest check that rule 10 works.) That is thin; the
   table-per-pass shape makes a real test of one pass easy to write, and it has
   not been written.

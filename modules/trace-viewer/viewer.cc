@@ -97,6 +97,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cinttypes>
 #include <cstdint>
@@ -120,7 +121,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "decoder.h"
+#include "decoder_plugin.h"
+#include "events.h"
 
 namespace {
 
@@ -803,8 +805,12 @@ void pass_gather(trace_data& d, int argc, char** argv) {
 }
 
 // ============================================================================
-//  5. pass_decode -- files -> the event tables, syncs, locations
+//  5. decoding -- files -> the event tables, syncs, locations
 // ============================================================================
+//
+// Four things, in this order: the sink a record lands in, the symbols a decoder
+// plugin calls to reach it, the pass that builds those plugins, and the pass
+// that reads the files through them.
 //
 // One file is one (node, shard, level), and it carries its own metadata stream
 // saying where that process's objects were mapped, so it decodes on its own.
@@ -812,8 +818,11 @@ void pass_gather(trace_data& d, int argc, char** argv) {
 // an entry naming that row is appended to the cpu's timeline. Nothing is
 // sorted here -- see pass_order.
 //
-// Records the viewer has no table for are dropped by the catch-all at the
-// bottom. Stack samples are among them, deliberately.
+// What a record *is* comes from the build that wrote it, and there is one
+// decoder per build; see decoder_plugin.h. A tracepoint that build has and
+// events.h has not is dropped by the plugin and never arrives here. A field
+// events.h wants and that build has not got arrives at its default, and
+// pass_plugins has said so by name.
 
 struct decode_sink {
     trace_data& d;
@@ -832,7 +841,7 @@ struct decode_sink {
     // see interpolate_untimed.
     template <typename Row>
     void push(table_id which, std::vector<Row>& into, Row row,
-              const trace::tracepoint_metadata& m) const {
+              const viewer::event_meta& m) const {
         row.ts = int64_t(m.timestamp);
         t.timeline.push_back(
             {row.ts, uint16_t(which), uint32_t(into.size()), m.has_timestamp});
@@ -842,7 +851,7 @@ struct decode_sink {
     // A source location is one address, and the same call site turns up
     // thousands of times -- every continuation off one `then()` -- so the rows
     // hold an index and the strings are stored once.
-    uint32_t intern(const trace::source_location& loc) const {
+    uint32_t intern(const viewer::source_location& loc) const {
         if (loc.address == 0 && !loc.resolved) {
             return 0;
         }
@@ -859,7 +868,7 @@ struct decode_sink {
     }
 
     void switch_to(uint8_t cause, uint64_t prev, uint64_t task,
-                   const trace::tracepoint_metadata& m, uint32_t loc) const {
+                   const viewer::event_meta& m, uint32_t loc) const {
         switch_row r;
         r.task = task;
         r.prev = prev;
@@ -868,16 +877,16 @@ struct decode_sink {
         push(tab_switch, t.switches, r, m);
     }
 
-    void operator()(const trace::run_task& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::run_task& e, const viewer::event_meta& m) const {
         switch_to(sw_run_task, e.prev, e.task, m, intern(e.at));
     }
-    void operator()(const trace::cql_request& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::cql_request& e, const viewer::event_meta& m) const {
         switch_to(sw_cql_request, e.prev, e.task, m, 0);
     }
-    void operator()(const trace::semaphore_execute& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::semaphore_execute& e, const viewer::event_meta& m) const {
         switch_to(sw_semaphore, e.prev, e.task, m, 0);
     }
-    void operator()(const trace::execution_stage& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::execution_stage& e, const viewer::event_meta& m) const {
         switch_to(sw_execution_stage, e.prev, e.task, m, 0);
     }
     // An inbound request opens a task chain on this shard, which is a switch in
@@ -887,8 +896,8 @@ struct decode_sink {
     // (connection, sequence) that pass_rpc_pair joins on. The rpc row is the
     // one exception to "every row has a timeline entry": the switch is what
     // the log shows, and two lines for one record would be a lie.
-    void operator()(const trace::rpc_request_handled& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_request_handled& e,
+                    const viewer::event_meta& m) const {
         rpc_row r;
         r.ts = int64_t(m.timestamp);
         r.task = e.task;
@@ -906,42 +915,42 @@ struct decode_sink {
         push(tab_switch, t.switches, s, m);
     }
 
-    void tq_run(uint8_t kind, int32_t group, const trace::tracepoint_metadata& m) const {
+    void tq_run(uint8_t kind, int32_t group, const viewer::event_meta& m) const {
         tq_run_row r;
         r.kind = kind;
         r.group = group;
         push(tab_tq_run, t.tq_runs, r, m);
     }
-    void operator()(const trace::task_queue_run_begin& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::task_queue_run_begin& e,
+                    const viewer::event_meta& m) const {
         tq_run(tq_begin, int32_t(e.scheduling_group), m);
     }
-    void operator()(const trace::task_queue_run_end&,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::task_queue_run_end&,
+                    const viewer::event_meta& m) const {
         tq_run(tq_end, none, m);
     }
 
-    void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::io_begin& e, const viewer::event_meta& m) const {
         io_begin_row r;
         r.task = e.task;
         r.io = e.io;
         push(tab_io_begin, t.io_begins, r, m);
     }
-    void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::io_end& e, const viewer::event_meta& m) const {
         io_end_row r;
         r.task = e.task;
         r.io = e.io;
         push(tab_io_end, t.io_ends, r, m);
     }
 
-    void operator()(const trace::prepared_query_run& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::prepared_query_run& e,
+                    const viewer::event_meta& m) const {
         prep_run_row r;
         r.id = d.strings.put(e.id);
         push(tab_prep_run, t.prep_runs, r, m);
     }
     void delta(uint8_t kind, std::string_view keyspace, std::string_view statement,
-               std::span<const std::byte> id, const trace::tracepoint_metadata& m) const {
+               std::span<const std::byte> id, const viewer::event_meta& m) const {
         prep_delta_row r;
         r.kind = kind;
         r.id = d.strings.put(id);
@@ -949,22 +958,22 @@ struct decode_sink {
         r.statement = d.strings.put(statement);
         push(tab_prep_delta, t.prep_deltas, r, m);
     }
-    void operator()(const trace::prepared_statement_added& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::prepared_statement_added& e,
+                    const viewer::event_meta& m) const {
         delta(prep_added, e.keyspace, e.statement, e.id, m);
     }
-    void operator()(const trace::prepared_statement_removed& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::prepared_statement_removed& e,
+                    const viewer::event_meta& m) const {
         delta(prep_removed, e.keyspace, e.statement, e.id, m);
     }
-    void operator()(const trace::prepared_statement_snapshot_entry& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::prepared_statement_snapshot_entry& e,
+                    const viewer::event_meta& m) const {
         delta(prep_snapshot, e.keyspace, e.statement, e.id, m);
     }
 
     void connection(uint8_t kind, uint64_t id, std::string_view local, std::string_view remote,
                     uint64_t msb, uint64_t lsb, uint32_t peer_shard,
-                    const trace::tracepoint_metadata& m) const {
+                    const viewer::event_meta& m) const {
         conn_row r;
         r.kind = kind;
         r.connection = id;
@@ -975,24 +984,24 @@ struct decode_sink {
         r.peer_shard = peer_shard;
         push(tab_conn, t.conns, r, m);
     }
-    void operator()(const trace::rpc_connection_open& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_connection_open& e,
+                    const viewer::event_meta& m) const {
         connection(conn_open, e.connection, e.local, e.remote, e.peer_boot_msb, e.peer_boot_lsb,
                    e.peer_shard, m);
     }
-    void operator()(const trace::rpc_connection_close& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_connection_close& e,
+                    const viewer::event_meta& m) const {
         connection(conn_close, e.connection, {}, {}, e.peer_boot_msb, e.peer_boot_lsb,
                    e.peer_shard, m);
     }
-    void operator()(const trace::rpc_connection_snapshot_entry& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_connection_snapshot_entry& e,
+                    const viewer::event_meta& m) const {
         connection(conn_snapshot, e.connection, e.local, e.remote, e.peer_boot_msb,
                    e.peer_boot_lsb, e.peer_shard, m);
     }
 
     void message(uint8_t kind, uint64_t conn, uint64_t seq, int64_t msg_id, uint64_t task,
-                 const trace::tracepoint_metadata& m) const {
+                 const viewer::event_meta& m) const {
         rpc_row r;
         r.task = task;
         r.connection = conn;
@@ -1005,29 +1014,73 @@ struct decode_sink {
     // record: the connection's send loop is what actually writes it, and
     // asking what was running on the shard would answer "the connection" and
     // pull every unrelated request into the walk.
-    void operator()(const trace::rpc_message_sent& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_message_sent& e, const viewer::event_meta& m) const {
         message(rpc_sent, e.connection, e.sequence, 0, e.task, m);
     }
-    void operator()(const trace::rpc_message_received& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_message_received& e,
+                    const viewer::event_meta& m) const {
         message(rpc_received, e.connection, e.sequence, 0, 0, m);
     }
-    void operator()(const trace::rpc_reply_sent& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_reply_sent& e, const viewer::event_meta& m) const {
         message(rpc_reply_sent, e.connection, e.sequence, e.msg_id, e.task, m);
     }
-    void operator()(const trace::rpc_reply_received& e,
-                    const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::rpc_reply_received& e,
+                    const viewer::event_meta& m) const {
         message(rpc_reply_received, e.connection, e.sequence, e.msg_id, 0, m);
     }
 
     // Not an event of the program's own: it is how pass_retime dates the rest.
-    void operator()(const trace::clock_sync& e, const trace::tracepoint_metadata& m) const {
+    void operator()(const viewer::events::clock_sync& e, const viewer::event_meta& m) const {
         d.syncs[node].push_back({int64_t(m.timestamp), e.realtime_ns, e.ticks_per_second});
     }
 
-    template <typename Event>
-    void operator()(const Event&, const trace::tracepoint_metadata&) const {}
 };
+
+}  // namespace
+
+// --- the viewer's side of the plugin boundary --------------------------------
+//
+// One exported symbol per event in events.h. A decoder plugin is compiled at
+// startup and leaves these undefined; dlopen() binds them to these, which is
+// why the viewer is linked -rdynamic. `sink` is the decode_sink the plugin was
+// handed, passed back untouched.
+//
+// **This list is events.h's list.** A struct added to `viewer::events` and not
+// added here is a plugin that will not load, naming the missing symbol; the
+// other way round is a symbol nothing calls. There is no way to derive one from
+// the other in C++, which is why they are both written down and why the failure
+// is at load time rather than at the first record.
+#define ON_DECODE(name)                                                             \
+    extern "C" void on_decode_##name(void* sink, const viewer::events::name& event, \
+                                     const viewer::event_meta& meta) {              \
+        (*static_cast<const decode_sink*>(sink))(event, meta);                      \
+    }
+
+ON_DECODE(run_task)
+ON_DECODE(cql_request)
+ON_DECODE(semaphore_execute)
+ON_DECODE(execution_stage)
+ON_DECODE(rpc_request_handled)
+ON_DECODE(task_queue_run_begin)
+ON_DECODE(task_queue_run_end)
+ON_DECODE(io_begin)
+ON_DECODE(io_end)
+ON_DECODE(prepared_query_run)
+ON_DECODE(prepared_statement_added)
+ON_DECODE(prepared_statement_removed)
+ON_DECODE(prepared_statement_snapshot_entry)
+ON_DECODE(rpc_connection_open)
+ON_DECODE(rpc_connection_close)
+ON_DECODE(rpc_connection_snapshot_entry)
+ON_DECODE(rpc_message_sent)
+ON_DECODE(rpc_message_received)
+ON_DECODE(rpc_reply_sent)
+ON_DECODE(rpc_reply_received)
+ON_DECODE(clock_sync)
+
+#undef ON_DECODE
+
+namespace {
 
 // The `ts` of one row, whichever table it is in. A visit of the eight rather
 // than a switch, for the same reason the generic passes are: a table is added
@@ -1089,9 +1142,53 @@ void interpolate_untimed(cpu_tables& t, size_t from) {
     }
 }
 
-void pass_decode(trace_data& d, trace::dso_directory& dsos) {
+// --- pass_plugins -- files -> a decoder per build ----------------------------
+//
+// A decoder plugin per build the files came from, and one line each about what
+// that build's decoder and this viewer's events.h disagree about.
+//
+// Its own pass because it is the expensive part of reading a trace the first
+// time -- a plugin is a C++ file libclang reads and clang compiles -- and
+// because it is the pass that fails when a snapshot arrives without the header
+// it needs. Nothing here reads a record; see decoder_plugin.h.
+void pass_plugins(trace_data& d, plugin::registry& decoders) {
+    std::set<std::string> announced;
+    size_t usable = 0;
+    for (const file_row& f : d.files) {
+        const plugin::decoder& dec = decoders.for_build(f.build_id, f.path.parent_path());
+        const std::string key =
+            f.build_id.empty() ? f.path.parent_path().string() : f.build_id;
+        if (!announced.insert(key).second) {
+            continue;
+        }
+        if (dec.decode == nullptr) {
+            fmt::print("build {}: no decoder -- {}\n", key, dec.error);
+            continue;
+        }
+        ++usable;
+        fmt::print("build {}: {} tracepoints bridged from {} ({})\n", key, dec.events_bridged,
+                   dec.header.string(), dec.from_cache ? "cached" : "compiled");
+        // What the viewer will not know about this build's traces, in full.
+        // Every line of it is a field of an event that will stay at its default
+        // for every record of that kind from this build.
+        for (const std::string& note : dec.notes) {
+            fmt::print("    {}\n", note);
+        }
+    }
+    fmt::print("{} builds in these snapshots, {} of them readable\n", announced.size(), usable);
+}
+
+// --- pass_decode -- files + the plugins -> the event tables ------------------
+
+void pass_decode(trace_data& d, plugin::registry& decoders) {
     std::unordered_map<uint64_t, uint32_t> interned;
     for (const file_row& f : d.files) {
+        // Its own build's decoder, which in a cluster part way through an
+        // upgrade is not the one the file before it was read with.
+        const plugin::decoder& dec = decoders.for_build(f.build_id, f.path.parent_path());
+        if (dec.decode == nullptr) {
+            continue;  // pass_plugins said so already
+        }
         // Sized, rather than the std::istreambuf_iterator pair this used to be.
         // The iterator pair reads a byte at a time through the streambuf and
         // grows the vector as it goes, and a shard's debug file is tens of
@@ -1112,11 +1209,13 @@ void pass_decode(trace_data& d, trace::dso_directory& dsos) {
         // failure worth expecting is a decoder.h that does not match these
         // traces: see "regenerating decoder.h" in the README.
         const size_t first = t.timeline.size();
-        try {
-            trace::decode(bytes,
-                          decode_sink{d, t, uint32_t(f.cpu), uint32_t(f.node), interned}, dsos);
-        } catch (const std::exception& e) {
-            fmt::print("{}: {}\n", f.path.filename().string(), e.what());
+        decode_sink sink{d, t, uint32_t(f.cpu), uint32_t(f.node), interned};
+        // No exception crosses the plugin boundary -- see plugin_abi.h -- so a
+        // failure comes back as a message rather than as a throw.
+        std::array<char, 1024> failure{};
+        if (dec.decode(bytes.data(), bytes.size(), const_cast<decode_sink*>(&sink),
+                       decoders.dso_root().c_str(), failure.data(), failure.size()) != 0) {
+            fmt::print("{}: {}\n", f.path.filename().string(), failure.data());
         }
         // Over what this file appended, decode order and all, before the next
         // file's records are put after it. A decode that threw part way through
@@ -3557,14 +3656,18 @@ static int run(int argc, char** argv) {
 
     // The objects a source location points into, found by build id. Nothing in
     // the traced process writes them -- an address is read back against the
-    // object it is in, and finding that object is the reader's job.
+    // object it is in, and finding that object is the reader's job. The root is
+    // resolved here and handed to the plugins, each of which keeps a directory
+    // of its own over it: the type that reads an object is defined by a
+    // decoder header, so there is one per build and none of them here.
+    const char* const dso_env = std::getenv("TRACE_DSO_DIR");
     const std::filesystem::path dso_dir = std::filesystem::path(argv[1]) / "dsos";
-    trace::dso_directory dsos =
-        std::getenv("TRACE_DSO_DIR") != nullptr || !std::filesystem::exists(dso_dir)
-            ? trace::dso_directory()
-            : trace::dso_directory(dso_dir.string());
+    plugin::registry decoders(dso_env != nullptr ? std::string(dso_env)
+                              : std::filesystem::exists(dso_dir) ? dso_dir.string()
+                                                                 : std::string("."));
 
-    timing.run("pass_decode", [&] { pass_decode(d, dsos); });
+    timing.run("pass_plugins", [&] { pass_plugins(d, decoders); });
+    timing.run("pass_decode", [&] { pass_decode(d, decoders); });
     timing.run("pass_order", [&] { pass_order(d); });
     timing.run("pass_retime", [&] { pass_retime(d); });
     timing.run("pass_order (again)", [&] { pass_order(d); });
