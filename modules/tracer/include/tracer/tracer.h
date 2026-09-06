@@ -134,8 +134,12 @@ inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
 // and the result is not just a call but two clz-and-divide sequences per
 // record, since buffer_group::write_record() has already computed
 // vint_size(value) to reserve its space. Inlined, the two fold into one.
-[[gnu::always_inline]] inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
-    const std::size_t size = vint_size(value);
+// The same, for a caller that has already asked how long the value is --
+// buffer_group::write_record() has, to know how much of its buffer the record
+// takes. `size` must be vint_size(value); passing it rather than recomputing it
+// is what keeps a record to one clz and one divide.
+[[gnu::always_inline]] inline void write_int_sized(std::byte*& out, std::uint64_t value,
+                                                   std::size_t size) noexcept {
     if (size == 9) [[unlikely]] {
         write_int_wide(out, value);
         return;
@@ -143,6 +147,10 @@ inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
     const std::uint64_t encoded = (value << size) | ((std::uint64_t{1} << (size - 1)) - 1);
     std::memcpy(out, &encoded, sizeof(encoded));
     out += size;
+}
+
+[[gnu::always_inline]] inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
+    write_int_sized(out, value, vint_size(value));
 }
 
 // The most a record's header can take: the entry address and the longest vint.
@@ -284,15 +292,20 @@ public:
                                                     std::size_t id_size,
                                                     std::uint64_t timestamp) {
         const std::uint64_t delta = timestamp - last_timestamp_;
-        const std::size_t header_size = id_size + vint_size(delta);
-        // The record occupies header_size + args_size bytes, but both stores
-        // below put down eight bytes whatever they advance by, so what has to
-        // fit is the largest header rather than this one.
+        // Asked once, and used for both cursors: how far cur_pos_ moves, and
+        // how far `out` does. A vint's length is a clz and a divide, and a
+        // record should pay for it once.
+        const std::size_t delta_size = vint_size(delta);
+
+        // What has to fit is the largest header, not this record's: both stores
+        // below put down eight bytes whatever they advance by, and the bytes
+        // past the header are the arguments' -- written over a moment later, or
+        // left outside cur_pos_ and so outside the record.
         assert(fits(args_size + max_record_header_size));
-        std::byte* out = write_unchecked(args_size + header_size);
+        std::byte* out = write_unchecked(args_size + id_size + delta_size);
         std::memcpy(out, &id_word, sizeof(id_word));
         out += id_size;
-        write_int(out, delta);
+        write_int_sized(out, delta, delta_size);
         last_timestamp_ = timestamp;
         return out;
     }
