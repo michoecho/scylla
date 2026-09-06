@@ -85,6 +85,11 @@ inline std::uint64_t rdtsc() noexcept {
     return (hi << 32) | lo;
 }
 
+// The largest value a vint holds: 56 bits, the most that fits above an
+// eight-bit tag in the word write_int() stores. Its callers keep to it -- see
+// buffer_group::write_record() -- and everything below takes that as given.
+inline constexpr std::uint64_t max_vint_value = (std::uint64_t{1} << 56) - 1;
+
 // An unsigned vint. The value is stored little-endian above a length tag: the
 // low `size` bits of the first byte are a run of `size - 1` one bits, so a
 // reader counts the trailing ones of the byte it is looking at and knows how
@@ -102,20 +107,25 @@ inline std::uint64_t rdtsc() noexcept {
 // a ninth byte behind it, and nothing writes one: what goes through here is a
 // timestamp measured from the head of its buffer, and buffers do not last 56
 // bits of ticks. See write_record() and "reading a sync record back" below.
+//
+// The divide by seven is unsigned, and done with a multiply. Both follow from
+// the contract above: a value that keeps to it has a magnitude of at least
+// eight, so `magnitude - 1` cannot go negative, and nothing is owed the
+// round-toward-zero correction a signed divide carries -- which clang emitted
+// as eight instructions over byte registers, sitting on the dependency chain a
+// record's timestamp is already waiting on. (x * 37) >> 8 is exactly x / 7 for
+// every x a 64-bit magnitude can reach, which is well inside where the two
+// part company.
 inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
-    const auto magnitude = static_cast<std::int64_t>(std::countl_zero(value | 1));
-    return std::size_t{9} - static_cast<std::size_t>((magnitude - 1) / 7);
+    assert(value <= max_vint_value && "a vint of more than 56 bits");
+    const auto magnitude = static_cast<std::size_t>(std::countl_zero(value | 1));
+    return std::size_t{9} - (((magnitude - 1) * 37) >> 8);
 }
-
-// The largest value a vint holds: 56 bits, the most that fits above an
-// eight-bit tag in the word write_int() stores. Its callers keep to it -- see
-// buffer_group::write_record().
-inline constexpr std::uint64_t max_vint_value = (std::uint64_t{1} << 56) - 1;
 
 // Write one, advancing `out` by `size`, which must be vint_size(value).
 //
 // Taking the length rather than asking for it again is what keeps a record to
-// one clz and one divide: buffer_group::write_record() has already asked, to
+// one clz and one multiply: buffer_group::write_record() has already asked, to
 // know how much of its buffer the record takes.
 //
 // The caller must leave *eight* bytes writable at `out` however few the value
@@ -129,10 +139,20 @@ inline constexpr std::uint64_t max_vint_value = (std::uint64_t{1} << 56) - 1;
 // against the inliner's cold threshold, and two stores and an assertion lose
 // against it. A call would cost more than the encoding does -- `out` spilled to
 // a stack slot, and the caller's vint_size() unable to fold with anything.
+//
+// The tag and the value go down under one shift rather than two. Written out,
+// the encoding is `(value << size) | ((1 << (size - 1)) - 1)`: a value shifted
+// by a variable, over a mask built from the same variable. Shifting a
+// *constant* eight instead and taking the whole word down by `8 - size` puts
+// the value at the same bit and leaves `0x7f >> (8 - size)`, which is that same
+// run of `size - 1` ones. The word cannot overflow on the way -- 56 bits shifted
+// by eight is exactly 64 -- and `8 - size` is the quotient vint_size() has
+// already divided out, so inlined beside it the two cancel and only one shift
+// count ever reaches `cl`.
 [[gnu::always_inline]] inline void write_int_sized(std::byte*& out, std::uint64_t value,
                                                    std::size_t size) noexcept {
     assert(value <= max_vint_value && "a vint of more than 56 bits");
-    const std::uint64_t encoded = (value << size) | ((std::uint64_t{1} << (size - 1)) - 1);
+    const std::uint64_t encoded = ((value << 8) | 0x7f) >> (8 - size);
     std::memcpy(out, &encoded, sizeof(encoded));
     out += size;
 }
