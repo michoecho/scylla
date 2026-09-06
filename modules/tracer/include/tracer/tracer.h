@@ -105,6 +105,19 @@ inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
     return std::size_t{9} - static_cast<std::size_t>((magnitude - 1) / 7);
 }
 
+// The nine-byte case: a value of more than 56 bits, whose tag byte is full, so
+// the value goes behind it rather than above it. A timestamp delta is never
+// that; the absolute tick count at the head of a buffer becomes it on a machine
+// whose counter has been running for months.
+//
+// Out of line and cold, which is worth a function for. See write_int() below.
+[[gnu::noinline, gnu::cold]] inline void write_int_wide(std::byte*& out,
+                                                        std::uint64_t value) noexcept {
+    *out = std::byte{0xff};
+    std::memcpy(out + 1, &value, sizeof(value));
+    out += 9;
+}
+
 // Write one, advancing `out` by vint_size(value).
 //
 // The caller must leave *nine* bytes writable at `out` however few the value
@@ -113,16 +126,18 @@ inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
 // bytes that the arguments are about to be written into is the point -- it is
 // what makes a one-byte timestamp cost one store rather than one store per
 // byte.
-inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
+//
+// Inlined by force, and with the rare half moved out of the way, because the
+// call site fights both. A tracepoint records inside the *unlikely* arm of its
+// static key, so everything there is costed against the inliner's cold
+// threshold, which this loses against by a wide margin however it is written --
+// and the result is not just a call but two clz-and-divide sequences per
+// record, since buffer_group::write_record() has already computed
+// vint_size(value) to reserve its space. Inlined, the two fold into one.
+[[gnu::always_inline]] inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
     const std::size_t size = vint_size(value);
     if (size == 9) [[unlikely]] {
-        // More than 56 bits: the tag byte is full, so the value goes behind it
-        // rather than above it. Reached by the first record of a buffer, whose
-        // timestamp is an absolute tick count rather than a delta, on a machine
-        // whose counter has run long enough to need 57 bits.
-        *out = std::byte{0xff};
-        std::memcpy(out + 1, &value, sizeof(value));
-        out += size;
+        write_int_wide(out, value);
         return;
     }
     const std::uint64_t encoded = (value << size) | ((std::uint64_t{1} << (size - 1)) - 1);

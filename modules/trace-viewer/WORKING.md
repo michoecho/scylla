@@ -68,7 +68,7 @@ Two things about the cost:
 
 ### Adding a tracepoint
 
-Four edits, in this order:
+For an ordinary hooked event, four edits, in this order:
 
 1. **`seastar/include/seastar/core/scylla_tracer.hh`** -- declare the hook.
 2. **`seastar/src/core/scylla_tracer.cc`** -- define it, one `TRACEPOINT()`
@@ -81,6 +81,13 @@ Four edits, in this order:
    comment while you are there.
 3. **the call site**, which just calls the hook.
 4. the viewer -- see `DESIGN.md`, "How to do the usual things".
+
+For a tracepoint in a sufficiently hot loop, put `TRACEPOINT_STATIC_ID()` at
+the call site instead. Give it a unique small id, include
+`scylla_tracer_control.hh` and `tracer/tracer.h`, and call
+`ensure_thread_tracer()` immediately before it. Do not also leave a hooked
+tracepoint with the same name and payload: the direct call site is the one
+definition the generated decoder should see.
 
 Pick the level deliberately. `debug` is the per-task firehose; `info` is
 requests, the connection map, the statement cache. They are separate rings with

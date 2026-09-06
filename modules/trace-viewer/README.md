@@ -45,13 +45,15 @@ ids, look for a third such place.
 
 ## The events
 
-Declared in `seastar/include/seastar/core/scylla_tracer.hh`, defined in
-`seastar/src/core/scylla_tracer.cc`. The viewer flattens them back into the
-numeric event ids its analysis keys off.
+The ordinary hooks are declared in `seastar/include/seastar/core/scylla_tracer.hh`
+and defined in `seastar/src/core/scylla_tracer.cc`. `run_task` is the hot-loop
+exception: it is emitted directly in `seastar/src/core/reactor.cc` with static
+wire id `1`. The viewer flattens them back into the numeric event ids its
+analysis keys off.
 
 | tracepoint | meaning | viewer id |
 |---|---|---|
-| `run_task{prev, task, at}` | the reactor picked a task off a run queue, and where that task was created | `0` |
+| `run_task{prev, task, at}` | the reactor picked a task off a run queue, and where that task was created; static wire id `1` | `0` |
 | `task_queue_run_begin{scheduling_group}` / `task_queue_run_end{}` | the reactor gave the cpu to one task queue and took it back; every `run_task` between the two ran under that scheduling group | |
 | `cql_request{prev, task}` | a CQL frame arrived and opened a new chain | `1` |
 | `io_begin{task, io}` | a task submitted an I/O and is now waiting | `0x4` |
@@ -165,10 +167,10 @@ Deliberately crudely. Scylla's CMake pulls the tracer in by **absolute path**:
 detection and no fallback.
 
 Everything lives in `libseastar.so` and nowhere else: one tracepoint table, one
-static-key jump table, one registry. That is why every `TRACEPOINT()` call site
-is in `scylla_tracer.cc` behind an out-of-line hook rather than inlined where it
-is wanted -- that, and that `scylla_tracer.hh` is included by `task.hh` and so
-costs a full rebuild to touch. It is a placement convention, not a language
+static-key jump table, one registry. Nearly every `TRACEPOINT()` call site is in
+`scylla_tracer.cc` behind an out-of-line hook rather than inlined where it is
+wanted. The hot `run_task` event is the direct-call exception; its static id also
+keeps its record header short. This is a placement convention, not a language
 constraint: a gated tracepoint inside an inline or template function in a shared
 library compiles and works, which `modules/tracer/plugin/common_tracepoints.h`
 exercises on purpose. The header comment on `scylla_tracer.hh` has the full
