@@ -196,21 +196,17 @@ void set_system(http_context& ctx, routes& r, sharded<cql3::query_processor>& qp
     // ordinary blocking I/O in a seastar thread, which is fine for something
     // done once by hand.
     //
-    // The decoder source goes in beside the traces: it is generated from the
-    // tracepoint tables of *this* binary, which is the only thing that can
-    // read them back. See modules/tracer/include/tracer/codegen.h.
+    // Nothing is written beside the traces to say what they mean. What reads
+    // them back is the `tracepoints` section of this very binary, gathered by
+    // tools/gather-dsos into the dsos/ directory a reader is handed; a snapshot
+    // used to carry a generated decoder.h as well, and nothing read it.
     hs::trace_snapshot.set(r, [&ctx, &qp](std::unique_ptr<request> req) -> future<json::json_return_type> {
         const auto now = std::chrono::system_clock::now().time_since_epoch();
         const auto dir = fmt::format("{}/traces/{}", ctx.db.local().get_config().work_directory(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
         apilog.info("Snapshotting trace buffers into {}", dir);
 
-        const auto decoder = seastar::trace_decoder_source();
-        co_await seastar::async([&] {
-            std::filesystem::create_directories(dir);
-            std::ofstream out(dir + "/decoder.h");
-            out << decoder;
-        });
+        co_await seastar::async([&] { std::filesystem::create_directories(dir); });
 
         const auto build_id = seastar::trace_build_id();
         const auto boot_id = seastar::boot_id_to_string(seastar::this_boot_id());
