@@ -164,10 +164,19 @@ constexpr std::string_view objects_loaded_kind = "trace_objects_loaded";
 constexpr std::string_view object_loaded_kind = "trace_object_loaded";
 constexpr std::string_view object_unloaded_kind = "trace_object_unloaded";
 
+// A static id, and the entry that first claimed it. Every record carrying the
+// id decodes as that entry, which is why two entries may share one only if they
+// are the same tracepoint; see make_plan().
+struct static_id_plan {
+    std::size_t id;  // the decoder id the entry was given
+    const tracepoint_entry* entry;
+};
+
 struct plan {
     std::vector<tracepoint_kind> kinds;
     std::vector<object_plan> objects;
     std::vector<const tracepoint_entry*> by_id;  // every entry, in id order
+    std::map<std::uint64_t, static_id_plan> static_ids;
     std::size_t fileline_width = 0;
 
     // Whether the tables carried the tracer's own tracepoints. A table that
@@ -229,6 +238,27 @@ plan make_plan(std::span<const codegen_object> objects) {
                 out.kinds.push_back(
                     {std::string(entry.name), std::string(entry.signature), std::move(fields), &entry});
                 kind_of_name.emplace(entry.name, kind);
+            }
+
+            // The one thing a static id has to be is unambiguous: it is on the
+            // wire *instead* of the entry's address, so two tracepoints sharing
+            // one are two events nothing can tell apart. Two entries of the
+            // same tracepoint are not two tracepoints -- one written in a
+            // header is compiled into every object that includes it -- so what
+            // is refused is a shared id whose entries carry different names,
+            // the name being what decides which struct an entry decodes into.
+            //
+            // Deliberately the only uniqueness check here. A tracepoint's name
+            // is free to repeat, and its address is unique whatever anyone does.
+            if (entry.static_id != tracepoint_id::none) {
+                const auto value = static_cast<std::uint64_t>(entry.static_id);
+                const auto [it, fresh] =
+                    out.static_ids.try_emplace(value, static_id_plan{out.by_id.size(), &entry});
+                if (!fresh && it->second.entry->name != std::string_view(entry.name)) {
+                    fail(entry, std::format("static id {} is also the id of \"{}\", at {}:{}",
+                                            value, it->second.entry->name,
+                                            it->second.entry->file, it->second.entry->line));
+                }
             }
 
             planned.entries.push_back({&entry, kind});
@@ -314,6 +344,15 @@ To read_unaligned(const std::byte*& p, const std::byte* end) {
     return dst;
 }
 
+// A record's first field: which tracepoint it is. Either the address of an
+// entry, which is eight-byte aligned and so ends in three zero bits, or a vint
+// of a static id doubled and made odd, which cannot. See "static ids" in
+// tracer.h.
+struct record_id {
+    bool is_static;
+    std::uint64_t value;  // the entry address, or the static id itself
+};
+
 inline std::uint64_t read_int(const std::byte*& p, const std::byte* end) {
     // The length is a run of one bits at the bottom of the first byte, and the
     // value sits above it, little-endian. See write_int() in tracer.h.
@@ -331,6 +370,17 @@ inline std::uint64_t read_int(const std::byte*& p, const std::byte* end) {
     std::memcpy(&word, p, size);
     p += size;
     return word >> size;
+}
+
+inline record_id read_record_id(const std::byte*& p, const std::byte* end) {
+    require(p, end, 1);
+    if ((std::to_integer<std::uint8_t>(*p) & 0b111) == 0) {
+        return {false, read_unaligned<std::uint64_t>(p, end)};
+    }
+    // Undo the doubling the writer did to keep those bits out of the way. A
+    // short id is a short read: an address is eight bytes here and a static id
+    // is as few as one, which is the whole point of it.
+    return {true, (read_int(p, end) - 1) / 2};
 }
 
 // Length-prefixed runs. Both views point into the trace buffer rather than
@@ -845,6 +895,24 @@ std::string generate_objects(const plan& planned) {
             "    }\n"
             "    return false;\n"
             "}\n\n"
+            "// A record that named its tracepoint by a static id rather than by the\n"
+            "// address of its entry. The id it was given here has nothing to do with\n"
+            "// where anything was mapped, so this is the whole of the lookup -- a switch\n"
+            "// the compiler turns into a jump table or a comparison chain, whichever it\n"
+            "// thinks of the ids it was handed.\n"
+            "//\n"
+            "// `no_decoder_id` for an id this decoder was not generated from, which is a\n"
+            "// trace from a build that has tracepoints this one has not.\n"
+            "inline constexpr std::uint32_t no_decoder_id = 0xffffffffU;\n\n"
+            "inline constexpr std::uint32_t decoder_id_for_static_id(std::uint64_t static_id) {\n"
+            "    switch (static_id) {\n";
+    for (const auto& [static_id, claimed] : planned.static_ids) {
+        code += std::format("        case {}: return {};\n", static_id, claimed.id);
+    }
+    code += "        default: return no_decoder_id;\n"
+            "    }\n"
+            "}\n\n"
+            "// Where a record's *address* comes from, for the tracepoints that carry one.\n"
             "struct object_descriptor {\n"
             "    std::string_view build_id;\n"
             "    std::uint32_t first_id;\n"
@@ -1093,7 +1161,16 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             std::format("object {} was unloaded without having been loaded", event.build_id));
     };
 
-    const auto is_clock_sync = [&mappings](std::uint64_t address) {
+    // Whether a record is a clock sync, which is asked of every stream head
+    // before its timestamp is read: a sync record's timestamp is absolute
+    // rather than a delta. False for an id nothing can place, so that saying
+    // what is wrong with it is left to the read below.
+    const auto is_clock_sync = [&mappings](const detail::record_id& which) {
+        if (which.is_static) {
+            const std::uint32_t id = decoder_id_for_static_id(which.value);
+            return id != no_decoder_id && is_clock_sync_id(id);
+        }
+        const std::uint64_t address = which.value;
         const auto above = std::upper_bound(
             mappings.begin(), mappings.end(), address,
             [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
@@ -1113,11 +1190,11 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     // tracer.h.
     {
         stream& meta = streams.front();
-        detail::read_unaligned<std::uint64_t>(meta.p, meta.end);  // entry address, not yet placeable
+        detail::read_record_id(meta.p, meta.end);  // which tracepoint, not yet placeable
         meta.last_timestamp += detail::read_int(meta.p, meta.end);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
         for (std::uint32_t i = 0; i < counted.count; i++) {
-            detail::read_unaligned<std::uint64_t>(meta.p, meta.end);
+            detail::read_record_id(meta.p, meta.end);
             meta.last_timestamp += detail::read_int(meta.p, meta.end);
             load(detail::read_trace_object_loaded(meta.p, meta.end));
         }
@@ -1134,8 +1211,8 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
                 continue;
             }
             const std::byte* peek = candidate.p;
-            const auto address = detail::read_unaligned<std::uint64_t>(peek, candidate.end);
-            const bool sync = is_clock_sync(address);
+            const detail::record_id which = detail::read_record_id(peek, candidate.end);
+            const bool sync = is_clock_sync(which);
             const std::uint64_t at =
                 (sync ? 0 : candidate.last_timestamp) + detail::read_int(peek, candidate.end);
             if (next == nullptr || at < earliest) {
@@ -1149,34 +1226,47 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
 
         const std::byte*& q = next->p;
         const std::byte* const q_end = next->end;
-        const auto address = detail::read_unaligned<std::uint64_t>(q, q_end);
+        const detail::record_id which = detail::read_record_id(q, q_end);
         const auto timestamp =
-            (is_clock_sync(address) ? 0 : next->last_timestamp) + detail::read_int(q, q_end);
+            (is_clock_sync(which) ? 0 : next->last_timestamp) + detail::read_int(q, q_end);
         next->last_timestamp = timestamp;
 
-        const auto above = std::upper_bound(
-            mappings.begin(), mappings.end(), address,
-            [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
-        if (above == mappings.begin()) {
-            throw std::runtime_error(std::format(
-                "tracepoint address {:#x} is below every object loaded at {}", address, timestamp));
+        // A static id says which tracepoint it is on its own; an address says
+        // it only against the objects mapped at this record's own timestamp.
+        std::uint32_t id = no_decoder_id;
+        if (which.is_static) {
+            id = decoder_id_for_static_id(which.value);
+            if (id == no_decoder_id) {
+                throw std::runtime_error(std::format(
+                    "static tracepoint id {} at {} is not one this decoder was generated from",
+                    which.value, timestamp));
+            }
+        } else {
+            const std::uint64_t address = which.value;
+            const auto above = std::upper_bound(
+                mappings.begin(), mappings.end(), address,
+                [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
+            if (above == mappings.begin()) {
+                throw std::runtime_error(
+                    std::format("tracepoint address {:#x} is below every object loaded at {}",
+                                address, timestamp));
+            }
+            const detail::mapping& from = *(above - 1);
+            if (from.object == nullptr) {
+                throw std::runtime_error(std::format(
+                    "tracepoint address {:#x} belongs to object {}, which this decoder was not "
+                    "generated from",
+                    address, from.build_id));
+            }
+            const std::uint64_t offset = address - from.table;
+            if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
+                throw std::runtime_error(std::format(
+                    "tracepoint address {:#x} is not an entry of object {}, which is what was at "
+                    "{:#x} at {}",
+                    address, from.build_id, from.table, timestamp));
+            }
+            id = from.object->first_id + static_cast<std::uint32_t>(offset / entry_stride);
         }
-        const detail::mapping& from = *(above - 1);
-        if (from.object == nullptr) {
-            throw std::runtime_error(std::format(
-                "tracepoint address {:#x} belongs to object {}, which this decoder was not "
-                "generated from",
-                address, from.build_id));
-        }
-        const std::uint64_t offset = address - from.table;
-        if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
-            throw std::runtime_error(std::format(
-                "tracepoint address {:#x} is not an entry of object {}, which is what was at "
-                "{:#x} at {}",
-                address, from.build_id, from.table, timestamp));
-        }
-        const std::uint32_t id =
-            from.object->first_id + static_cast<std::uint32_t>(offset / entry_stride);
 
         switch (id) {
 )cpp";
@@ -1282,13 +1372,13 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
         }
         const std::byte* q = p;
         const std::byte* const q_end = p + length;
-        detail::read_unaligned<std::uint64_t>(q, q_end);  // entry address
+        detail::read_record_id(q, q_end);  // which tracepoint
         detail::read_int(q, q_end);  // timestamp delta from zero
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
         std::vector<object_mapping> out;
         out.reserve(counted.count);
         for (std::uint32_t i = 0; i < counted.count; i++) {
-            detail::read_unaligned<std::uint64_t>(q, q_end);
+            detail::read_record_id(q, q_end);
             detail::read_int(q, q_end);
             const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
             out.push_back({std::string(loaded.build_id), loaded.base_address,

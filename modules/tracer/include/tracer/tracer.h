@@ -31,7 +31,9 @@
 // registers itself as it loads, so the process has a list of tables rather than
 // a single one. See "the tracepoint registry" below.
 //
-// A record identifies its tracepoint by the *address* of its entry, and a trace
+// A record identifies its tracepoint by the *address* of its entry -- or, for a
+// tracepoint that fires often enough to want a shorter name for itself, by a
+// static id given at the call site; see "static ids" below. A trace also
 // carries a second stream of records -- the metadata level -- saying which
 // object was mapped where, and when. That pair is what makes a trace decodable
 // by something other than the process that wrote it: a record is read against
@@ -256,18 +258,25 @@ public:
 
     // Reserve and write a complete record header. The timestamp is sampled by
     // trace_buffers::write(), after any rotation and its clock-sync record.
+    //
+    // `id_word` is the record's first field as it goes on the wire and
+    // `id_size` is how much of it is meant: eight bytes of entry address, or
+    // the one to eight bytes of an encoded static id. The store is eight bytes
+    // either way -- the bytes past `id_size` are the timestamp's, and are
+    // written over a moment later.
     [[gnu::always_inline]] std::byte* write_record(std::size_t args_size,
-                                                    std::uint64_t address,
+                                                    std::uint64_t id_word,
+                                                    std::size_t id_size,
                                                     std::uint64_t timestamp) {
         const std::uint64_t delta = timestamp - last_timestamp_;
-        const std::size_t header_size = sizeof(std::uint64_t) + vint_size(delta);
-        // The record occupies header_size + args_size bytes, but write_int()
-        // stores eight whatever it advances by, so what has to fit is the
-        // largest header rather than this one.
+        const std::size_t header_size = id_size + vint_size(delta);
+        // The record occupies header_size + args_size bytes, but both stores
+        // below put down eight bytes whatever they advance by, so what has to
+        // fit is the largest header rather than this one.
         assert(fits(args_size + max_record_header_size));
         std::byte* out = write_unchecked(args_size + header_size);
-        std::memcpy(out, &address, sizeof(address));
-        out += sizeof(address);
+        std::memcpy(out, &id_word, sizeof(id_word));
+        out += id_size;
         write_int(out, delta);
         last_timestamp_ = timestamp;
         return out;
@@ -349,17 +358,20 @@ public:
                            std::size_t metadata_capacity = 1024 * 1024,
                            std::size_t buffer_size = buffer_group::default_buffer_size);
 
-    [[gnu::always_inline]] std::byte* write(event_level level, std::uint64_t address,
-                                            std::size_t args_size) {
+    [[gnu::always_inline]] std::byte* write(event_level level, std::uint64_t id_word,
+                                            std::size_t id_size, std::size_t args_size) {
         buffer_group& group = groups_[static_cast<std::size_t>(level)];
         // Check against the largest header before sampling. If rotation is
         // needed, the first sample must belong to the emitted record rather
-        // than being discarded while the cold path writes its sync record.
+        // than being discarded while the cold path writes its sync record. The
+        // id counts as a full eight bytes here however short it encodes to: a
+        // rotation one record early costs nothing, and a bounds check that
+        // depends on the id's length is one the compiler has to keep.
         if (!group.fits(args_size + max_record_header_size)) [[unlikely]] {
-            return write_slow(level, address, args_size);
+            return write_slow(level, id_word, id_size, args_size);
         }
         const std::uint64_t timestamp = TRACER_TIMESTAMP();
-        return group.write_record(args_size, address, timestamp);
+        return group.write_record(args_size, id_word, id_size, timestamp);
     }
 
     [[nodiscard]] const buffer_group& group(event_level level) const {
@@ -392,8 +404,8 @@ public:
 
     // Cold path for a record that does not fit in the current buffer. Rotation
     // and clock-sync emission stay out of trace_buffers::write()'s hot path.
-    [[gnu::noinline]] std::byte* write_slow(event_level level, std::uint64_t address,
-                                           std::size_t args_size);
+    [[gnu::noinline]] std::byte* write_slow(event_level level, std::uint64_t id_word,
+                                           std::size_t id_size, std::size_t args_size);
 
 private:
     // The objects this ring has already described, so that what has gone can be
@@ -758,6 +770,64 @@ inline void serialize_args(std::byte*& out, const char (&)[N], const T& value,
     serialize_args(out, rest...);
 }
 
+// --- static ids ---------------------------------------------------------------
+//
+// A record names its tracepoint by the address of its entry, which costs eight
+// bytes and buys a name nobody has to allocate: the linker gives every
+// tracepoint in the program a distinct address, so a tracepoint can be added
+// anywhere without anyone deciding what to call it.
+//
+// Eight bytes is a lot for a record whose arguments are four. A tracepoint that
+// fires often enough for that to matter can be given a *static id* instead --
+// a small number, chosen by hand, written on the wire in one to eight bytes --
+// at the cost of being the one thing about a tracepoint that has to be kept
+// unique by hand. See TRACEPOINT_STATIC_ID() at the bottom of this header.
+//
+// The two kinds of id share the field, so a decoder has to tell them apart from
+// the bytes alone. An entry address has three zero bits at the bottom, being the
+// address of an aligned struct; a static id is doubled and made odd before it is
+// encoded, which leaves at least one of those three bits set whichever length
+// the vint comes out as -- bit 1 when the doubled id fits in a byte and the
+// length tag is empty, bit 0 when it does not and the tag is a run of ones. So:
+// three zero bits at the bottom of the first byte means an address, anything
+// else means a static id.
+enum class tracepoint_id : std::uint64_t {
+    // Not an id. What an entry carries when its tracepoint has none, and the
+    // one value TRACEPOINT_STATIC_ID() refuses -- a zero id would encode to a
+    // single byte with the value 1, which is a fine encoding of a tracepoint
+    // that does not exist.
+    none = 0,
+};
+
+// The largest id there is. Doubled it has to fit above its own length tag
+// within one eight-byte word, because that word is what the write path stores;
+// a program with more tracepoints than this has outgrown static ids rather
+// than found a bug.
+inline constexpr std::uint64_t max_tracepoint_id = (std::uint64_t{1} << 55) - 1;
+
+[[nodiscard]] inline constexpr bool valid_tracepoint_id(tracepoint_id id) noexcept {
+    return id != tracepoint_id::none &&
+           static_cast<std::uint64_t>(id) <= max_tracepoint_id;
+}
+
+// The doubled, oddened value that goes on the wire.
+[[nodiscard]] inline constexpr std::uint64_t static_id_value(tracepoint_id id) noexcept {
+    return 2 * static_cast<std::uint64_t>(id) + 1;
+}
+
+// The word a record's id field is stored from, and how many of its bytes are
+// meant. Both are constant expressions at every call site: what a static-id
+// tracepoint emits is one immediate store and a pointer bumped by a constant.
+[[nodiscard]] inline constexpr std::uint64_t static_id_word(tracepoint_id id) noexcept {
+    const std::uint64_t value = static_id_value(id);
+    const std::size_t size = vint_size(value);
+    return (value << size) | ((std::uint64_t{1} << (size - 1)) - 1);
+}
+
+[[nodiscard]] inline constexpr std::size_t static_id_size(tracepoint_id id) noexcept {
+    return vint_size(static_id_value(id));
+}
+
 // --- the tracepoint table ----------------------------------------------------
 
 struct tracepoint_entry {
@@ -777,7 +847,21 @@ struct tracepoint_entry {
     //
     // A *false* key: tracepoints start disabled. See TRACEPOINT() at the bottom.
     ::static_keys::static_key_false* key;
+
+    // The id this tracepoint's records carry instead of this entry's address,
+    // or tracepoint_id::none for the usual case of a tracepoint identified by
+    // where it landed. Nothing in this process reads it -- it is written at the
+    // call site, where it is a constant -- but the code generator does: it is
+    // how a decoder knows which struct a static id means, and the one thing it
+    // checks for collisions. See "static ids" above.
+    tracepoint_id static_id;
 };
+
+// The bottom three bits of an entry's address are what tells a decoder it is
+// looking at one rather than at a static id.
+static_assert(alignof(tracepoint_entry) >= 8,
+              "a tracepoint entry must be eight-byte aligned for its address to be "
+              "distinguishable from a static id on the wire");
 
 // Synthesised by the linker around *this object's* `tracepoints` section.
 //
@@ -1003,8 +1087,15 @@ void set_all_tracepoints_enabled(bool enabled);
 // a level -- one ring per thread, say -- and there is exactly one chunk of the
 // metadata level, which is the process's stream rather than any thread's.
 //
-// A record is: uint64 tracepoint entry address, an unsigned vint timestamp
-// delta, then packed arguments. The address rather than an index -- which is what an earlier
+// A record is: an id, an unsigned vint timestamp delta, then packed arguments.
+//
+// The id is one of two things, told apart by the bottom three bits of its first
+// byte. All zero: eight bytes of tracepoint entry address, which is what a
+// tracepoint carries unless it was given something shorter. Anything else: a
+// vint of the tracepoint's static id, doubled and made odd -- one byte for the
+// first sixty-three of them. See "static ids" above.
+//
+// The address rather than an index -- which is what an earlier
 // version of this stored -- because an index is only meaningful against a table,
 // and with shared libraries in the picture there is no single table to index:
 // every object has one of its own, and an index into "the" table is a number
@@ -1015,8 +1106,9 @@ void set_all_tracepoints_enabled(bool enabled);
 // unloaded and another mapped over the range it had, so one address is two
 // tracepoints at two different moments. What makes it decodable is the metadata
 // stream below, read alongside the timestamp.
-// The smallest possible record header. The actual header is this address plus
-// a vint whose size depends on the timestamp delta.
+// The smallest header a record identified by its entry can have: the address,
+// and the shortest timestamp vint. A record with a static id has a shorter one
+// still -- two bytes, for a small id and a small delta.
 inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + 1;
 
 // "TRC2", little-endian. A trace that does not start with it is not one, which
@@ -1119,10 +1211,11 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // compile time, in the sections the linker collects.
 //
 // `key_` is the address of the static key gating it, or nullptr for a
-// tracepoint that is never gated. Only the entry itself goes in `tracepoints`,
-// so that the section stays an array the code generator can index; the strings
-// live in sections of their own.
-#define TRACER_TRACEPOINT_ENTRY(name_, key_, ...)                                         \
+// tracepoint that is never gated, and `id_` is its static id or
+// tracepoint_id::none. Only the entry itself goes in `tracepoints`, so that the
+// section stays an array the code generator can index; the strings live in
+// sections of their own.
+#define TRACER_TRACEPOINT_ENTRY(name_, key_, id_, ...)                                    \
     static constexpr auto tracer_sig_ __attribute__((                                     \
         section("tracepoint_signatures"), used)) =                                        \
         ::tracer::signature_builder<                                                      \
@@ -1138,17 +1231,22 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
                                           __LINE__,                                       \
                                           __PRETTY_FUNCTION__,                            \
                                           tracer_sig_.data(),                             \
-                                          key_}
+                                          key_,                                           \
+                                          id_}
 
-// The record: the entry's address, the timestamp delta, and the arguments. Named
-// after the entry TRACER_TRACEPOINT_ENTRY() just defined, so the two only ever
-// appear together.
-#define TRACER_RECORD(level_, ...)                                                        \
+// The record: its id, the timestamp delta, and the arguments. `id_word_` and
+// `id_size_` are the id field as it goes on the wire; see write_record().
+#define TRACER_RECORD(level_, id_word_, id_size_, ...)                                    \
     const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);                    \
-    std::byte* tracer_out_ = ::tracer::local_tracer->write(                               \
-        (level_), static_cast<std::uint64_t>(                                              \
-            reinterpret_cast<std::uintptr_t>(&tracer_tp_)), tracer_size_);                \
+    std::byte* tracer_out_ =                                                              \
+        ::tracer::local_tracer->write((level_), (id_word_), (id_size_), tracer_size_);    \
     ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__)
+
+// The id of a record identified by its entry: the entry's address, all eight
+// bytes of it. Named after the entry TRACER_TRACEPOINT_ENTRY() just defined, so
+// the two only ever appear together.
+#define TRACER_ENTRY_ID_WORD                                                              \
+    static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&tracer_tp_))
 
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
 //
@@ -1183,9 +1281,44 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 #define TRACEPOINT(level_, name_, ...)                                                    \
     do {                                                                                  \
         DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
-        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_ __VA_OPT__(, ) __VA_ARGS__);          \
+        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_,                                      \
+                                ::tracer::tracepoint_id::none __VA_OPT__(, ) __VA_ARGS__); \
         if (static_branch_unlikely(&tracer_key_)) {                                         \
-            TRACER_RECORD(level_ __VA_OPT__(, ) __VA_ARGS__);                              \
+            TRACER_RECORD(level_, TRACER_ENTRY_ID_WORD,                                   \
+                          sizeof(std::uint64_t) __VA_OPT__(, ) __VA_ARGS__);              \
+        }                                                                                 \
+    } while (0)
+
+// TRACEPOINT_STATIC_ID(id, level, name, "param", value, ...)
+//
+// The same, with the record naming its tracepoint by a number given here rather
+// than by where this entry landed. `id` is any constant expression of type
+// tracepoint_id other than tracepoint_id::none; a small one costs a single byte
+// on the wire, against the eight an address costs, which is worth having for a
+// tracepoint that fires in a loop and carries a word.
+//
+// What it costs is the uniqueness the linker was providing for free. Two
+// tracepoints sharing an id are two events a decoder cannot tell apart, so the
+// code generator refuses a table in which one id names two of them -- which
+// catches it at build time, and which is the *only* thing about a tracepoint
+// anyone has to keep unique by hand. Names are still free to repeat, and so are
+// the copies of one tracepoint that a header compiled into two objects makes:
+// they are one tracepoint, and they carry one id.
+//
+// The id is folded at compile time into the one word the write path stores and
+// the constant it advances the cursor by, so a shorter id is genuinely shorter
+// work and not a branch on a length.
+#define TRACEPOINT_STATIC_ID(id_, level_, name_, ...)                                     \
+    do {                                                                                  \
+        constexpr ::tracer::tracepoint_id tracer_id_ = (id_);                             \
+        static_assert(::tracer::valid_tracepoint_id(tracer_id_),                          \
+                      "a static tracepoint id must be neither tracepoint_id::none nor "   \
+                      "above tracer::max_tracepoint_id");                                 \
+        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
+        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_, tracer_id_ __VA_OPT__(, ) __VA_ARGS__); \
+        if (static_branch_unlikely(&tracer_key_)) {                                        \
+            TRACER_RECORD(level_, ::tracer::static_id_word(tracer_id_),                   \
+                          ::tracer::static_id_size(tracer_id_) __VA_OPT__(, ) __VA_ARGS__); \
         }                                                                                 \
     } while (0)
 
@@ -1200,8 +1333,10 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // flip keys by name know to pass it over.
 #define TRACEPOINT_UNGATED(level_, name_, ...)                                            \
     do {                                                                                  \
-        TRACER_TRACEPOINT_ENTRY(name_, nullptr __VA_OPT__(, ) __VA_ARGS__);               \
-        TRACER_RECORD(level_ __VA_OPT__(, ) __VA_ARGS__);                                 \
+        TRACER_TRACEPOINT_ENTRY(name_, nullptr,                                           \
+                                ::tracer::tracepoint_id::none __VA_OPT__(, ) __VA_ARGS__); \
+        TRACER_RECORD(level_, TRACER_ENTRY_ID_WORD,                                       \
+                      sizeof(std::uint64_t) __VA_OPT__(, ) __VA_ARGS__);                  \
     } while (0)
 
 // --- a tracer's own records ---------------------------------------------------
@@ -1232,8 +1367,8 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
     }
 }
 
-inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t address,
-                                             std::size_t args_size) {
+inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t id_word,
+                                             std::size_t id_size, std::size_t args_size) {
     buffer_group& group = groups_[static_cast<std::size_t>(level)];
     assert(args_size + max_record_header_size <= group.buffer_size() &&
            "record larger than one trace buffer");
@@ -1245,7 +1380,7 @@ inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t add
     if (level != event_level::metadata) {
         write_clock_sync(level);
     }
-    return group.write_record(args_size, address, TRACER_TIMESTAMP());
+    return group.write_record(args_size, id_word, id_size, TRACER_TIMESTAMP());
 }
 
 inline void trace_buffers::write_clock_sync(event_level level) {

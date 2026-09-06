@@ -110,8 +110,9 @@ RegexText serialize_trace_columns(std::string_view text) {
 //
 // The key is left null. Generating a decoder reads names, types and locations
 // and never touches a key.
-tracer::tracepoint_entry fake(const char* name, const char* signature, int line = 1) {
-    return {name, "fake.cc", line, "void fake()", signature, nullptr};
+tracer::tracepoint_entry fake(const char* name, const char* signature, int line = 1,
+                              tracer::tracepoint_id static_id = tracer::tracepoint_id::none) {
+    return {name, "fake.cc", line, "void fake()", signature, nullptr, static_id};
 }
 
 // That table as the one object of a program, under a made-up build ID. The
@@ -368,6 +369,43 @@ TEST_CASE("tracer records land in the buffer with their header") {
     // name is not on the wire, and collect() must not return the unwritten tail
     // of the live buffer.
     CHECK(bytes.size() >= tracer::record_header_size + sizeof(std::uint32_t));
+}
+
+// What a static id buys, on the wire: a record that names its tracepoint in one
+// byte rather than eight. See "static ids" in tracer.h.
+TEST_CASE("a static id costs a byte where an entry address costs eight") {
+    // The two lengths are constants at the call site, which is what lets the
+    // write path store the id and bump its cursor by an immediate.
+    static_assert(tracer::static_id_size(tracer::tracepoint_id{1}) == 1);
+    static_assert(tracer::static_id_size(tracer::tracepoint_id{63}) == 1);
+    static_assert(tracer::static_id_size(tracer::tracepoint_id{64}) == 2);
+
+    const without_clock_sync quiet;
+    tracer::trace_buffers buffers(4096, 4096, 4096, 512);
+    tracer::local_tracer = &buffers;
+    REQUIRE(tracer::set_tracepoint_enabled("cheap_event", true) == 1);
+    TRACEPOINT_STATIC_ID(tracer::tracepoint_id{7}, tracer::event_level::info, "cheap_event",
+                         "value", std::uint32_t{9});
+    REQUIRE(tracer::set_tracepoint_enabled("cheap_event", false) == 1);
+    tracer::local_tracer = nullptr;
+
+    const std::vector<std::byte> bytes = buffers.group(tracer::event_level::info).collect();
+    REQUIRE(!bytes.empty());
+    // Three zero bits at the bottom would have made it an entry address; the
+    // doubling the writer does is what keeps them from all being zero.
+    CHECK((std::to_integer<unsigned>(bytes[0]) & 0b111) != 0);
+
+    const std::byte* p = bytes.data();
+    const std::byte* const end = p + bytes.size();
+    const trace::detail::record_id which = trace::detail::read_record_id(p, end);
+    CHECK(which.is_static);
+    CHECK(which.value == 7);
+    CHECK(p - bytes.data() == 1);
+
+    // The rest of the record is the timestamp and the one parameter, and
+    // nothing else: a short id shortens the record rather than padding it.
+    trace::detail::read_int(p, end);
+    CHECK(static_cast<std::size_t>(end - p) == sizeof(std::uint32_t));
 }
 
 TEST_CASE("a string parameter is recorded as its bytes, however it arrives") {
@@ -715,6 +753,32 @@ TEST_CASE("the code generator refuses a table it cannot turn into structs") {
     CHECK(source.find("std::uint16_t age;") != std::string::npos);
 }
 
+// The price of naming a tracepoint by hand. An address is unique because the
+// linker made it so; an id is unique because the person who wrote it down
+// checked, and this is what does the checking for them.
+TEST_CASE("a static id names one tracepoint") {
+    constexpr auto id = tracer::tracepoint_id{4};
+
+    const std::vector<tracer::tracepoint_entry> clashing{
+        fake("first_event", "value:u32", 1, id), fake("second_event", "value:u32", 2, id)};
+    CHECK_THROWS_AS((void)generate_from(clashing), std::runtime_error);
+
+    // Two entries of *one* tracepoint are not a clash: a tracepoint in a header
+    // is compiled into every object that includes it, and both copies carry the
+    // id the header gave it.
+    const std::vector<tracer::tracepoint_entry> shared{fake("shared_event", "value:u32", 1, id)};
+    std::string source;
+    CHECK_NOTHROW(source = generate_from(shared, shared));
+
+    // And the decoder maps the id to that tracepoint without consulting any
+    // object: an id says which tracepoint it is on its own, which is the other
+    // half of what it is for.
+    CHECK(source.find("case 4: return 0;") != std::string::npos);
+
+    // An id nothing was generated from is refused rather than guessed at.
+    CHECK(source.find("default: return no_decoder_id;") != std::string::npos);
+}
+
 // One name is one struct, and several tracepoints may wear it.
 //
 // This is what a tracepoint written in a shared header looks like from the
@@ -794,9 +858,10 @@ TEST_CASE("a dlopen()ed library brings its tracepoints with it and takes them aw
         tracer::local_tracer = nullptr;
 
         // plugin_loaded and shared_event carry a u32 each; the two plugin_work
-        // records are on the debug ring.
+        // records are on the debug ring. shared_event has a static id, so its
+        // record is the shorter kind -- two bytes of header rather than nine.
         CHECK(buffers.group(tracer::event_level::info).collect().size() >=
-              2 * (tracer::record_header_size + sizeof(std::uint32_t)));
+              tracer::record_header_size + 2 + 2 * sizeof(std::uint32_t));
         CHECK(buffers.group(tracer::event_level::debug).collect().size() >=
               2 * (tracer::record_header_size + sizeof(std::uint32_t) + sizeof(std::uint16_t) +
                    std::string_view("handshake").size()));
@@ -933,7 +998,7 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
     CHECK(decoded(first) ==
           "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n"
           "modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}\n"
-          "modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=1}\n");
+          "modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=1}\n");
     CHECK(decoded(second) == decoded(first));
 }
 
@@ -1033,27 +1098,27 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 TEST_CASE("decoded trace") {
     const RegexText decoded = serialize_trace_columns(read_env_file("TRACER_DECODED"));
     check_snapshot(decoded, R"snap(
-        |               800 | modules/tracer/include/tracer/tracer.h:1127   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |               900 | modules/tracer/include/tracer/tracer.h:1127   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |               800 | modules/tracer/include/tracer/tracer.h:1398   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |               900 | modules/tracer/include/tracer/tracer.h:1398   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |              1000 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
         |              1100 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
-        |              1200 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
+        |              1200 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
         |              1300 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
-        |              1400 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/index.html}
+        |              1400 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/index.html}
         |              1500 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
-        |              1600 | modules/tracer/trace_producer.cc:63           | request_header{method=GET, path=/}
-        |              1700 | modules/tracer/trace_producer.cc:70           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |              1800 | modules/tracer/trace_producer.cc:73           | clock_skew{nanoseconds=-4200, retries=3}
+        |              1600 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
+        |              1700 | modules/tracer/trace_producer.cc:73           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              1800 | modules/tracer/trace_producer.cc:76           | clock_skew{nanoseconds=-4200, retries=3}
         |              1900 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
         |              2000 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
         |              2100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
-        |              2200 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=2}
-        |              2300 | modules/tracer/plugin/common_tracepoints.h:25 | shared_event{sequence=99}
-        |              2400 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
-        |              2500 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
-        |              2600 | modules/tracer/include/tracer/tracer.h:1127   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |              2700 | modules/tracer/trace_producer.cc:86           | table_opened{name=anonymous, opened_at=<none>}
-        |              2800 | modules/tracer/trace_producer.cc:88           | shutting_down{}
+        |              2200 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=2}
+        |              2300 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=99}
+        |              2400 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
+        |              2500 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
+        |              2600 | modules/tracer/include/tracer/tracer.h:1398   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              2700 | modules/tracer/trace_producer.cc:89           | table_opened{name=anonymous, opened_at=<none>}
+        |              2800 | modules/tracer/trace_producer.cc:91           | shutting_down{}
         )snap"_snap);
 }
 
@@ -1070,8 +1135,8 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::decode(bytes, out, dsos);
 
     check_snapshot(serialize_trace_columns(out.text), R"snap(
-        |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1398 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1398 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:58 listening{port=8080}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
@@ -1079,18 +1144,18 @@ TEST_CASE("a decoded trace is structs, not text") {
         |request_header: GET /index.html
         |accepted_connection: connection 2, keepalive true
         |request_header: GET /
-        |modules/tracer/trace_producer.cc:70 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |modules/tracer/trace_producer.cc:73 clock_skew{nanoseconds=-4200, retries=3}
+        |modules/tracer/trace_producer.cc:73 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |modules/tracer/trace_producer.cc:76 clock_skew{nanoseconds=-4200, retries=3}
         |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=1, label=handshake}
-        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=2}
-        |modules/tracer/plugin/common_tracepoints.h:25 shared_event{sequence=99}
-        |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:83:5}
-        |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:84:5}
-        |modules/tracer/include/tracer/tracer.h:1125 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/trace_producer.cc:86 table_opened{name=anonymous, opened_at=<none>}
-        |modules/tracer/trace_producer.cc:88 shutting_down{}
+        |modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=2}
+        |modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=99}
+        |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
+        |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
+        |modules/tracer/include/tracer/tracer.h:1398 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/trace_producer.cc:89 table_opened{name=anonymous, opened_at=<none>}
+        |modules/tracer/trace_producer.cc:91 shutting_down{}
         )snap"_snap);
 }
 
@@ -1118,6 +1183,15 @@ TEST_CASE("a trace that cannot be decoded stops the decode") {
     // be taken from.
     const std::array<std::byte, tracer::record_header_size> below{};
     CHECK_THROWS_AS(trace::decode(fake_trace(stranger, below), ignore), std::runtime_error);
+
+    // A record naming a static id this decoder has never heard of, which is a
+    // trace from a build with tracepoints this one has not. Nothing places it:
+    // an id says which tracepoint it is on its own or not at all.
+    std::array<std::byte, tracer::record_header_size> unknown_id{};
+    // Id 63 doubled and made odd is 127, which fits in a byte with an empty
+    // length tag -- so one byte of id, and the rest is timestamp.
+    unknown_id[0] = std::byte{127 << 1};
+    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, unknown_id), ignore), std::runtime_error);
 
     // Half a record: its address and timestamp vint are there and its arguments are
     // not, which cannot be told from a record that has not been reached yet

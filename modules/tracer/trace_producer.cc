@@ -59,8 +59,11 @@ void run_demo() {
 
     for (std::uint32_t i = 0; i < 3; ++i) {
         TRACEPOINT(event_level::debug, "accepted_connection", "conn", i, "keepalive", i % 2 == 0);
-        TRACEPOINT(event_level::debug, "request_header", "method", "GET", "path",
-                   i == 1 ? "/index.html" : "/");
+        // The one in the loop, and so the one worth shortening: a static id
+        // puts it on the wire in one byte rather than eight. See "static ids"
+        // in tracer.h.
+        TRACEPOINT_STATIC_ID(demo::request_header_id, event_level::debug, "request_header",
+                             "method", "GET", "path", i == 1 ? "/index.html" : "/");
     }
 
     TRACEPOINT(event_level::info, "cache_miss", "key", as_bytes("session"), "slot",
