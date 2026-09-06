@@ -304,8 +304,9 @@ TEST_CASE("a signature names and types every parameter") {
     CHECK(SIGNATURE_OF("attempts", value + 1) == "attempts:u32");
 }
 
-// Clock sync records are ordinary records in every ring but the metadata one:
-// a tracer writes one when it is built and one whenever a ring rotates. The
+// Clock sync records are ordinary records: a tracer writes one into every ring
+// when it is built, and one into every ring but the metadata one whenever it
+// rotates. The
 // cases that count a ring's bytes, or decode this binary's records with a
 // decoder generated from another object's table, switch them off for their
 // duration and say so by using this.
@@ -345,11 +346,11 @@ TEST_CASE("an integer carries its own length in the low bits of its first byte")
     CHECK(medium_size == 2);
     CHECK((medium & 0xffff) == ((0x1234 << 2) | 0b01));
 
-    // The largest value that still fits above its tag, and the first one that
-    // does not: 56 bits, then 57.
-    CHECK(encode((std::uint64_t{1} << 56) - 1).first == 8);
-    CHECK(encode(std::uint64_t{1} << 56).first == 9);
-    CHECK(encode(UINT64_MAX).first == 9);
+    // The largest value there is, which is where the encoding stops: 56 bits
+    // above an eight-bit tag. Anything above it is out of write_int()'s
+    // contract, and a record's timestamp is kept inside it by the rebasing
+    // described at buffer_group::rebase().
+    CHECK(encode(tracer::max_vint_value).first == 8);
     CHECK(encode(0).first == 1);
 }
 
@@ -1098,27 +1099,27 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 TEST_CASE("decoded trace") {
     const RegexText decoded = serialize_trace_columns(read_env_file("TRACER_DECODED"));
     check_snapshot(decoded, R"snap(
-        |               800 | modules/tracer/include/tracer/tracer.h:1398   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |               900 | modules/tracer/include/tracer/tracer.h:1398   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |              1000 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
-        |              1100 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
-        |              1200 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
-        |              1300 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
-        |              1400 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/index.html}
-        |              1500 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
-        |              1600 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
-        |              1700 | modules/tracer/trace_producer.cc:73           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |              1800 | modules/tracer/trace_producer.cc:76           | clock_skew{nanoseconds=-4200, retries=3}
-        |              1900 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
-        |              2000 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
-        |              2100 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
-        |              2200 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=2}
-        |              2300 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=99}
-        |              2400 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
-        |              2500 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
-        |              2600 | modules/tracer/include/tracer/tracer.h:1398   | clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |              2700 | modules/tracer/trace_producer.cc:89           | table_opened{name=anonymous, opened_at=<none>}
-        |              2800 | modules/tracer/trace_producer.cc:91           | shutting_down{}
+        |               500 | modules/tracer/include/tracer/tracer.h:1478   | clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |               700 | modules/tracer/include/tracer/tracer.h:1478   | clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              1800 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
+        |              1900 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
+        |              2000 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
+        |              2100 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=1, keepalive=false}
+        |              2200 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/index.html}
+        |              2300 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=2, keepalive=true}
+        |              2400 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
+        |              2500 | modules/tracer/trace_producer.cc:73           | cache_miss{key=73657373696f6e, slot=0xdeadbeef}
+        |              2600 | modules/tracer/trace_producer.cc:76           | clock_skew{nanoseconds=-4200, retries=3}
+        |              2700 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
+        |              2800 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
+        |              2900 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
+        |              3000 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=2}
+        |              3100 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=99}
+        |              3200 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
+        |              3300 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
+        |              3600 | modules/tracer/include/tracer/tracer.h:1478   | clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              3700 | modules/tracer/trace_producer.cc:89           | table_opened{name=anonymous, opened_at=<none>}
+        |              3800 | modules/tracer/trace_producer.cc:91           | shutting_down{}
         )snap"_snap);
 }
 
@@ -1135,8 +1136,8 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::decode(bytes, out, dsos);
 
     check_snapshot(serialize_trace_columns(out.text), R"snap(
-        |modules/tracer/include/tracer/tracer.h:1398 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/include/tracer/tracer.h:1398 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1478 clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1478 clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:58 listening{port=8080}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
@@ -1153,7 +1154,7 @@ TEST_CASE("a decoded trace is structs, not text") {
         |modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=99}
         |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
         |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
-        |modules/tracer/include/tracer/tracer.h:1398 clock_sync{realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1478 clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:89 table_opened{name=anonymous, opened_at=<none>}
         |modules/tracer/trace_producer.cc:91 shutting_down{}
         )snap"_snap);

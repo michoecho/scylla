@@ -80,13 +80,13 @@ inline std::uint64_t read_int(const std::byte*& p, const std::byte* end) {
     require(p, end, 1);
     const auto first = std::to_integer<std::uint8_t>(*p);
     const std::size_t size = static_cast<std::size_t>(std::countr_one(first)) + 1;
-    require(p, end, size);
-    if (size == 9) {
-        // A value of more than 56 bits: a tag byte of nothing but ones, and the
-        // whole value behind it.
-        ++p;
-        return read_unaligned<std::uint64_t>(p, end);
+    if (size > 8) {
+        // Nothing writes one: a value of more than 56 bits would need a tag
+        // byte of its own, and what goes through here is a record's age within
+        // its buffer. See write_int_sized() in tracer.h.
+        throw std::runtime_error("a vint of more than eight bytes");
     }
+    require(p, end, size);
     std::uint64_t word = 0;
     std::memcpy(&word, p, size);
     p += size;
@@ -555,11 +555,13 @@ struct run_task {
 
 // /home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h:1400
 struct clock_sync {
+    std::uint64_t tsc;
     std::uint64_t realtime_ns;
     std::uint64_t ticks_per_second;
 
     [[nodiscard]] std::string to_string() const {
-        return std::format("clock_sync{{realtime_ns={}, ticks_per_second={}}}",
+        return std::format("clock_sync{{tsc={}, realtime_ns={}, ticks_per_second={}}}",
+                           detail::field_to_string(tsc),
                            detail::field_to_string(realtime_ns),
                            detail::field_to_string(ticks_per_second));
     }
@@ -914,6 +916,7 @@ inline run_task read_run_task(const std::byte*& p, const std::byte* end) {
 
 inline clock_sync read_clock_sync(const std::byte*& p, const std::byte* end) {
     clock_sync out{};
+    out.tsc = detail::read_unaligned<std::uint64_t>(p, end);
     out.realtime_ns = detail::read_unaligned<std::uint64_t>(p, end);
     out.ticks_per_second = detail::read_unaligned<std::uint64_t>(p, end);
     return out;
@@ -1395,9 +1398,10 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     };
 
     // Whether a record is a clock sync, which is asked of every stream head
-    // before its timestamp is read: a sync record's timestamp is absolute
-    // rather than a delta. False for an id nothing can place, so that saying
-    // what is wrong with it is left to the read below.
+    // before its timestamp is read: a sync record's header is a delta from the
+    // tick count in its own first parameter, where every other record's is a
+    // delta from the record before it. False for an id nothing can place, so
+    // that saying what is wrong with it is left to the read below.
     const auto is_clock_sync = [&mappings](const detail::record_id& which) {
         if (which.is_static) {
             const std::uint32_t id = decoder_id_for_static_id(which.value);
@@ -1423,7 +1427,15 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     // tracer.h.
     {
         stream& meta = streams.front();
+        // The ring opens with a clock sync saying where its chain of deltas
+        // starts, and the metadata ring's is the first record in the trace. It
+        // is the frame rather than an event, like the load events after it, so
+        // it is read here and not delivered.
         detail::read_record_id(meta.p, meta.end);  // which tracepoint, not yet placeable
+        const std::uint64_t opened = detail::read_int(meta.p, meta.end);
+        meta.last_timestamp = detail::read_clock_sync(meta.p, meta.end).tsc + opened;
+
+        detail::read_record_id(meta.p, meta.end);
         meta.last_timestamp += detail::read_int(meta.p, meta.end);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
         for (std::uint32_t i = 0; i < counted.count; i++) {
@@ -1445,9 +1457,11 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             }
             const std::byte* peek = candidate.p;
             const detail::record_id which = detail::read_record_id(peek, candidate.end);
-            const bool sync = is_clock_sync(which);
+            const std::uint64_t delta = detail::read_int(peek, candidate.end);
             const std::uint64_t at =
-                (sync ? 0 : candidate.last_timestamp) + detail::read_int(peek, candidate.end);
+                is_clock_sync(which)
+                    ? detail::read_unaligned<std::uint64_t>(peek, candidate.end) + delta
+                    : candidate.last_timestamp + delta;
             if (next == nullptr || at < earliest) {
                 next = &candidate;
                 earliest = at;
@@ -1460,8 +1474,15 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         const std::byte*& q = next->p;
         const std::byte* const q_end = next->end;
         const detail::record_id which = detail::read_record_id(q, q_end);
-        const auto timestamp =
-            (is_clock_sync(which) ? 0 : next->last_timestamp) + detail::read_int(q, q_end);
+        const std::uint64_t delta = detail::read_int(q, q_end);
+        std::uint64_t timestamp = next->last_timestamp + delta;
+        if (is_clock_sync(which)) {
+            // Where this buffer's deltas start, from the sync's own first
+            // parameter -- peeked, because the record is read below like any
+            // other and delivered with the rest of it.
+            const std::byte* base = q;
+            timestamp = detail::read_unaligned<std::uint64_t>(base, q_end) + delta;
+        }
         next->last_timestamp = timestamp;
 
         // A static id says which tracepoint it is on its own; an address says
@@ -1742,8 +1763,11 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
         }
         const std::byte* q = p;
         const std::byte* const q_end = p + length;
+        detail::read_record_id(q, q_end);  // the ring's opening clock sync
+        detail::read_int(q, q_end);
+        detail::read_clock_sync(q, q_end);
         detail::read_record_id(q, q_end);  // which tracepoint
-        detail::read_int(q, q_end);  // timestamp delta from zero
+        detail::read_int(q, q_end);        // timestamp delta
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
         std::vector<object_mapping> out;
         out.reserve(counted.count);

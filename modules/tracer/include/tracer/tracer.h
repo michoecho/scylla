@@ -97,68 +97,57 @@ inline std::uint64_t rdtsc() noexcept {
 // shift and an or, and stores it with a single eight-byte store.
 //
 // How many bytes that is: each byte gives one bit to the tag, so a value takes
-// as many bytes as it has groups of seven bits. A value of more than 56 bits
-// does not fit that scheme -- its tag would fill a byte on its own -- and takes
-// nine, an all-ones tag byte and the value behind it.
+// as many bytes as it has groups of seven bits -- eight bytes at 56 bits, which
+// is where this stops. A value above that would need a tag byte of its own and
+// a ninth byte behind it, and nothing writes one: what goes through here is a
+// timestamp measured from the head of its buffer, and buffers do not last 56
+// bits of ticks. See write_record() and "reading a sync record back" below.
 inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
     const auto magnitude = static_cast<std::int64_t>(std::countl_zero(value | 1));
     return std::size_t{9} - static_cast<std::size_t>((magnitude - 1) / 7);
 }
 
-// The nine-byte case: a value of more than 56 bits, whose tag byte is full, so
-// the value goes behind it rather than above it. A timestamp delta is never
-// that; the absolute tick count at the head of a buffer becomes it on a machine
-// whose counter has been running for months.
-//
-// Out of line and cold, which is worth a function for. See write_int() below.
-[[gnu::noinline, gnu::cold]] inline void write_int_wide(std::byte*& out,
-                                                        std::uint64_t value) noexcept {
-    *out = std::byte{0xff};
-    std::memcpy(out + 1, &value, sizeof(value));
-    out += 9;
-}
+// The largest value a vint holds: 56 bits, the most that fits above an
+// eight-bit tag in the word write_int() stores. Its callers keep to it -- see
+// buffer_group::write_record().
+inline constexpr std::uint64_t max_vint_value = (std::uint64_t{1} << 56) - 1;
 
-// Write one, advancing `out` by vint_size(value).
+// Write one, advancing `out` by `size`, which must be vint_size(value).
 //
-// The caller must leave *nine* bytes writable at `out` however few the value
-// needs: the common path stores eight bytes whatever the encoded length is, and
-// only the pointer knows the difference. Writing the tail of a record over
-// bytes that the arguments are about to be written into is the point -- it is
-// what makes a one-byte timestamp cost one store rather than one store per
-// byte.
+// Taking the length rather than asking for it again is what keeps a record to
+// one clz and one divide: buffer_group::write_record() has already asked, to
+// know how much of its buffer the record takes.
 //
-// Inlined by force, and with the rare half moved out of the way, because the
-// call site fights both. A tracepoint records inside the *unlikely* arm of its
-// static key, so everything there is costed against the inliner's cold
-// threshold, which this loses against by a wide margin however it is written --
-// and the result is not just a call but two clz-and-divide sequences per
-// record, since buffer_group::write_record() has already computed
-// vint_size(value) to reserve its space. Inlined, the two fold into one.
-// The same, for a caller that has already asked how long the value is --
-// buffer_group::write_record() has, to know how much of its buffer the record
-// takes. `size` must be vint_size(value); passing it rather than recomputing it
-// is what keeps a record to one clz and one divide.
+// The caller must leave *eight* bytes writable at `out` however few the value
+// needs, because the store is eight bytes whatever the length is and only the
+// pointer knows the difference. Writing over bytes the arguments are about to
+// be written into is the point -- it is what makes a one-byte timestamp cost
+// one store rather than one store per byte.
+//
+// Always inlined, because of where it is called from: a tracepoint records
+// inside the *unlikely* arm of its static key, so everything there is costed
+// against the inliner's cold threshold, and two stores and an assertion lose
+// against it. A call would cost more than the encoding does -- `out` spilled to
+// a stack slot, and the caller's vint_size() unable to fold with anything.
 [[gnu::always_inline]] inline void write_int_sized(std::byte*& out, std::uint64_t value,
                                                    std::size_t size) noexcept {
-    if (size == 9) [[unlikely]] {
-        write_int_wide(out, value);
-        return;
-    }
+    assert(value <= max_vint_value && "a vint of more than 56 bits");
     const std::uint64_t encoded = (value << size) | ((std::uint64_t{1} << (size - 1)) - 1);
     std::memcpy(out, &encoded, sizeof(encoded));
     out += size;
 }
 
-[[gnu::always_inline]] inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
+// The same, for a caller with no use for the length.
+inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
     write_int_sized(out, value, vint_size(value));
 }
 
 // The most a record's header can take: the entry address and the longest vint.
 // What a ring checks before it writes, since the length of the timestamp is not
-// known until it has been sampled -- and what write_int() needs writable at the
-// timestamp whatever it ends up storing there. See record_header_size below for
-// the other end of the range.
-inline constexpr std::size_t max_record_header_size = sizeof(std::uint64_t) + 9;
+// known until it has been sampled -- and what write_int_sized() needs writable
+// at the timestamp whatever it ends up storing there. See record_header_size
+// below for the other end of the range.
+inline constexpr std::size_t max_record_header_size = 2 * sizeof(std::uint64_t);
 
 // The timestamp source, as a macro so that overriding it costs nothing at
 // runtime. Define it before including this header to substitute another clock;
@@ -279,6 +268,16 @@ public:
         return last_timestamp_;
     }
 
+    // Start this buffer's deltas from `timestamp` rather than from zero.
+    //
+    // Called on a buffer nothing has been written to yet -- at rotation, and
+    // when a tracer is built -- because a delta from zero is an absolute tick
+    // count, and an absolute tick count on a machine that has been up for
+    // months does not fit a vint. What tells a decoder where the chain starts
+    // is the clock_sync record written straight after this; see
+    // trace_buffers::write_clock_sync().
+    void rebase(std::uint64_t timestamp) noexcept { last_timestamp_ = timestamp; }
+
     // Reserve and write a complete record header. The timestamp is sampled by
     // trace_buffers::write(), after any rotation and its clock-sync record.
     //
@@ -291,7 +290,19 @@ public:
                                                     std::uint64_t id_word,
                                                     std::size_t id_size,
                                                     std::uint64_t timestamp) {
-        const std::uint64_t delta = timestamp - last_timestamp_;
+        // Measured from the last record, and so from the head of this buffer,
+        // which rebase() put a moment before the first record of it. That is
+        // what keeps a delta inside a vint: it is the age of a record within
+        // its buffer, not the age of the machine.
+        //
+        // Clamped for the one case that is neither: a ring so quiet that two of
+        // its records are 56 bits of ticks -- most of a year -- apart. Stamping
+        // the second one a year after the first is wrong by however long the
+        // silence ran over that, and is the wrongness that costs nothing to
+        // carry; a branch here would be paid for by every record that is not
+        // the one in a decade.
+        const std::uint64_t delta =
+            std::min(timestamp - last_timestamp_, max_vint_value);
         // Asked once, and used for both cursors: how far cur_pos_ moves, and
         // how far `out` does. A vint's length is a clz and a divide, and a
         // record should pay for it once.
@@ -425,10 +436,17 @@ public:
     // every unload, before the threads that trace are let back in.
     void note_objects_changed();
 
-    // A clock_sync record on one level: the wall clock now, and the rate that
-    // turns this trace's ticks into seconds. Defined at the bottom of this
-    // header, with the other members that record.
-    [[gnu::noinline]] void write_clock_sync(event_level level);
+    // A clock_sync record on one level: where this buffer's timestamps start,
+    // the wall clock now, and the rate that turns this trace's ticks into
+    // seconds. Defined at the bottom of this header, with the other members
+    // that record.
+    //
+    // `always` writes one even where clock_sync_enabled() says not to, which
+    // the metadata ring's opening record needs: a decoder reads the head of
+    // that stream by position, so the record has to be there whatever anyone
+    // asked for. Nothing has to *recognise* it, which is what turning syncs off
+    // is about.
+    [[gnu::noinline]] void write_clock_sync(event_level level, bool always = false);
 
     // Cold path for a record that does not fit in the current buffer. Rotation
     // and clock-sync emission stay out of trace_buffers::write()'s hot path.
@@ -1116,6 +1134,9 @@ void set_all_tracepoints_enabled(bool enabled);
 // metadata level, which is the process's stream rather than any thread's.
 //
 // A record is: an id, an unsigned vint timestamp delta, then packed arguments.
+// The delta is from the record before it in the same ring, or from the tick
+// count in the clock_sync record that opens the buffer; see "reading a sync
+// record back" below.
 //
 // The id is one of two things, told apart by the bottom three bits of its first
 // byte. All zero: eight bytes of tracepoint entry address, which is what a
@@ -1149,6 +1170,7 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 // in it, so it is recorded the way everything else here is: as tracepoints, at
 // a level of their own.
 //
+//     clock_sync{tsc, realtime_ns, ticks_per_second}
 //     trace_objects_loaded{count}
 //     trace_object_loaded{build_id, table_address, base_address, mapping_size}
 //     trace_object_unloaded{build_id, base_address}
@@ -1181,11 +1203,17 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 // object mapped over that range afterwards decodes as the new object's.
 //
 // What makes the ring decodable from its own first byte is where it starts. A
-// tracer writes trace_objects_loaded{count = N} and then N load events as the
-// last thing its constructor does, so those N+1 records are always the first in
-// the ring -- and a decoder reads them by that invariant rather than by their
-// addresses, which is the only way round the circle: an address means nothing
-// until some load event has said where an object is.
+// tracer writes a clock_sync, then trace_objects_loaded{count = N}, then N load
+// events, as the first thing its constructor does, so those N+2 records are
+// always the first in the ring -- and a decoder reads them by that invariant
+// rather than by their addresses, which is the only way round the circle: an
+// address means nothing until some load event has said where an object is.
+//
+// The sync is there for the same reason it is in every other ring -- to say
+// where this one's deltas start -- and it is written whatever
+// clock_sync_enabled() says, because a stream read by position has no room for
+// a record that is sometimes there. It is also the *only* one this ring gets:
+// see write_slow() for why a rotation cannot add another.
 //
 // A ring per tracer, and so per thread, rather than one for the process: it is
 // the same ring, written by the same macro, as everything else. The cost is
@@ -1196,9 +1224,19 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 
 // --- reading a sync record back -----------------------------------------------
 //
-// A clock_sync record is a tick count (its own header timestamp) beside a wall
-// clock reading, plus the rate the process believed in when it was written. Two
-// of them bracket most of a trace, and that is the case worth writing code for:
+// A clock_sync record is a tick count -- `tsc`, its first parameter -- beside a
+// wall clock reading, plus the rate the process believed in when it was written.
+//
+// `tsc` is a parameter and not the record's own header because a header is a
+// *delta*: every record on the wire says how long after the record before it,
+// and the first record of a buffer has nothing before it to count from. So a
+// sync record carries the count its buffer's deltas are measured from, and a
+// decoder reads a sync as `tsc` plus its own header rather than as the header
+// alone. That is what keeps every header inside a vint, whatever the machine's
+// counter has climbed to; see write_int() above.
+//
+// Two of them bracket most of a trace, and that is the case worth writing code
+// for:
 // between two syncs the conversion is an *interpolation* -- the two (tick,
 // time) pairs give a rate measured over exactly this trace, on exactly this
 // machine, with no reliance on the rate field at all -- while outside them it
@@ -1378,21 +1416,34 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
     : groups_{buffer_group(info_capacity, buffer_size),
               buffer_group(debug_capacity, buffer_size),
               buffer_group(metadata_capacity, buffer_size)} {
-    // The prologue is the first difference this ring sees: everything loaded,
-    // against the nothing it knows. One path rather than two, so that a tracer
-    // built while a library is open describes it exactly as it would describe
-    // one opened a moment later.
-    note_objects_changed();
+    // Every ring's chain of deltas starts here, whether or not a sync record
+    // goes down to say so: a delta from zero is an absolute tick count, which
+    // is the one value that does not fit a vint.
+    const std::uint64_t now = TRACER_TIMESTAMP();
+    for (buffer_group& group : groups_) {
+        group.rebase(now);
+    }
 
-    // And a sync record at the head of every ring that is not the metadata one,
-    // so that a trace collected from a tracer that never filled a buffer still
-    // says what its ticks mean.
+    // A sync record at the head of every ring, so that a trace collected from a
+    // tracer that never filled a buffer still says what its ticks mean -- and so
+    // that every ring has a record saying where its chain of deltas starts.
+    //
+    // The metadata ring's goes down first, and goes down whatever
+    // clock_sync_enabled() says: a decoder reads that stream from its first
+    // byte, so the head of it is a shape rather than a choice.
+    write_clock_sync(event_level::metadata, /*always=*/true);
     for (std::size_t i = 0; i < level_count; ++i) {
         const auto level = static_cast<event_level>(i);
         if (level != event_level::metadata) {
             write_clock_sync(level);
         }
     }
+
+    // The prologue is the first difference this ring sees: everything loaded,
+    // against the nothing it knows. One path rather than two, so that a tracer
+    // built while a library is open describes it exactly as it would describe
+    // one opened a moment later.
+    note_objects_changed();
 }
 
 inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t id_word,
@@ -1405,25 +1456,51 @@ inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t id_
     // unit recording the event. Keep this cold path here, beside the hot path,
     // so a rotation does not accidentally fall back to tracer.cc's clock.
     group.rotate();
+    // Rebased whether or not a sync record follows, because the delta of the
+    // record below has to fit a vint either way. What a missing sync costs is a
+    // reader's ability to say where the new buffer's chain starts, not the
+    // ring's ability to write one.
+    group.rebase(TRACER_TIMESTAMP());
+
+    // And that is what the metadata ring pays. Its stream opens with a fixed
+    // run of records -- a count and that many load events -- which a decoder
+    // reads by position, because until it has read them it has no mappings and
+    // so no way to tell one record from another. A sync record written into the
+    // middle of that run, which is where a rotation puts it when the prologue
+    // is longer than a buffer, is a record the decoder cannot recognise and
+    // cannot skip. So the metadata ring gets its opening sync from the
+    // constructor and none afterwards, and a metadata event past the first
+    // rotation is placed relative to a base nothing wrote down. Making it
+    // recognisable is what a static id on clock_sync would buy; see "static
+    // ids" above.
     if (level != event_level::metadata) {
         write_clock_sync(level);
     }
     return group.write_record(args_size, id_word, id_size, TRACER_TIMESTAMP());
 }
 
-inline void trace_buffers::write_clock_sync(event_level level) {
+inline void trace_buffers::write_clock_sync(event_level level, bool always) {
     // syncing_ because the record below goes through this tracer's own write(),
     // which is the function that calls this one. It cannot rotate a buffer it
     // has just been given -- a sync record is a few dozen bytes -- but a ring
     // whose buffers were sized smaller than one record would recurse forever,
     // and that is not a stack to overflow to find out about.
-    if (syncing_ || !clock_sync_enabled()) {
+    if (syncing_ || (!always && !clock_sync_enabled())) {
         return;
     }
     syncing_ = true;
     trace_buffers* const previous = local_tracer;
     local_tracer = this;
-    TRACEPOINT_UNGATED(level, "clock_sync", "realtime_ns",
+
+    // The absolute tick count, as a parameter rather than as this record's own
+    // header. Every header on the wire is a delta from the record before it,
+    // and the first record of a buffer has nothing before it -- so the ring is
+    // rebased here, and the value it was rebased to is written down where a
+    // decoder can read it. `tsc` first, because that is where a decoder looks
+    // for it before it has read the rest.
+    const std::uint64_t tsc = TRACER_TIMESTAMP();
+    groups_[static_cast<std::size_t>(level)].rebase(tsc);
+    TRACEPOINT_UNGATED(level, "clock_sync", "tsc", tsc, "realtime_ns",
                        static_cast<std::uint64_t>(TRACER_REALTIME_NS()), "ticks_per_second",
                        tsc_ticks_per_second());
     local_tracer = previous;
