@@ -39,6 +39,16 @@ struct tracepoint_metadata {
     std::string_view file;
     int line;
     std::string_view function;
+
+    // Whether `timestamp` is this record's own. False for a tracepoint declared
+    // with TRACEPOINT_UNTIMED(), whose records carry no time of their own: the
+    // one below is the one of the record before it in the same buffer, which is
+    // as close as the trace comes to saying when this happened. A consumer that
+    // needs a distinct time for every event -- to draw them, or to sort them --
+    // is the one that has to do something about it; spreading a run of them out
+    // between the timed records either side is the usual something.
+    bool has_timestamp;
+
     std::uint64_t timestamp;
 };
 
@@ -102,6 +112,42 @@ inline record_id read_record_id(const std::byte*& p, const std::byte* end) {
     // short id is a short read: an address is eight bytes here and a static id
     // is as few as one, which is the whole point of it.
     return {true, (read_int(p, end) - 1) / 2};
+}
+
+// --- the timestamp at the head of a body --------------------------------------
+//
+// A record is an id and then a body, and the body opens with the timestamp --
+// in whichever of these forms the tracepoint's own declaration chose. Which one
+// that is comes from the id, so these are reached through read_timestamp()
+// below rather than called from the record loop directly.
+//
+// `last` is the timestamp of the record before this one in the same buffer,
+// which is what a delta is measured from. Each returns the timestamp of the
+// record and leaves `p` on its first argument.
+
+inline std::uint64_t read_timestamp_delta(const std::byte*& p, const std::byte* end,
+                                          std::uint64_t last) {
+    return last + read_int(p, end);
+}
+
+// A clock sync, which opens a buffer and so has no record before it to count
+// from: its delta is measured from the tick count in its own first parameter.
+// That parameter is left on the wire -- it is an argument like any other, and
+// the reader below reads it again -- so only the delta is consumed here.
+inline std::uint64_t read_timestamp_sync(const std::byte*& p, const std::byte* end,
+                                         [[maybe_unused]] std::uint64_t last) {
+    const std::uint64_t delta = read_int(p, end);
+    const std::byte* base = p;
+    return read_unaligned<std::uint64_t>(base, end) + delta;
+}
+
+// A tracepoint that writes no timestamp at all. The record happened when the
+// one before it did, as far as anything reading this can tell, and nothing is
+// consumed: the body is its arguments and nothing else.
+inline std::uint64_t read_timestamp_none([[maybe_unused]] const std::byte*& p,
+                                         [[maybe_unused]] const std::byte* end,
+                                         std::uint64_t last) {
+    return last;
 }
 
 // Length-prefixed runs. Both views point into the trace buffer rather than
@@ -1120,35 +1166,43 @@ inline stacktrace_sample read_stacktrace_sample(const std::byte*& p, const std::
     return out;
 }
 
-inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/reactor.cc", 2818, "virtual bool seastar::reactor::task_queue::run_tasks()", 0};
-inline constexpr tracepoint_metadata metadata_1{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1400, "void tracer::trace_buffers::write_clock_sync(event_level)", 0};
-inline constexpr tracepoint_metadata metadata_2{"task_queue_run_begin", "seastar/src/core/scylla_tracer.cc", 212, "void seastar::trace_task_queue_run_begin(uint32_t)", 0};
-inline constexpr tracepoint_metadata metadata_3{"task_queue_run_end", "seastar/src/core/scylla_tracer.cc", 217, "void seastar::trace_task_queue_run_end()", 0};
-inline constexpr tracepoint_metadata metadata_4{"execution_stage", "seastar/src/core/scylla_tracer.cc", 222, "void seastar::trace_execution_stage(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_5{"cql_request", "seastar/src/core/scylla_tracer.cc", 227, "void seastar::trace_cql_request(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_6{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 232, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_7{"io_begin", "seastar/src/core/scylla_tracer.cc", 237, "void seastar::trace_io_begin(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_8{"io_end", "seastar/src/core/scylla_tracer.cc", 242, "void seastar::trace_io_end(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_9{"prepared_statement_added", "seastar/src/core/scylla_tracer.cc", 249, "void seastar::trace_prepared_statement_added(std::string_view, std::string_view, std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_10{"prepared_statement_removed", "seastar/src/core/scylla_tracer.cc", 256, "void seastar::trace_prepared_statement_removed(std::string_view, std::string_view, std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_11{"prepared_query_run", "seastar/src/core/scylla_tracer.cc", 261, "void seastar::trace_prepared_query_run(std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_12{"prepared_statements_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 266, "void seastar::trace_prepared_statements_snapshot_begin()", 0};
-inline constexpr tracepoint_metadata metadata_13{"prepared_statement_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 273, "void seastar::trace_prepared_statement_snapshot_entry(std::string_view, std::string_view, std::span<const std::byte>)", 0};
-inline constexpr tracepoint_metadata metadata_14{"prepared_statements_snapshot_end", "seastar/src/core/scylla_tracer.cc", 278, "void seastar::trace_prepared_statements_snapshot_end()", 0};
-inline constexpr tracepoint_metadata metadata_15{"rpc_connection_open", "seastar/src/core/scylla_tracer.cc", 294, "void seastar::trace_rpc_connection_open(uint64_t, std::string_view, std::string_view, boot_id, uint32_t)", 0};
-inline constexpr tracepoint_metadata metadata_16{"rpc_connection_close", "seastar/src/core/scylla_tracer.cc", 308, "void seastar::trace_rpc_connection_close(uint64_t, boot_id, uint32_t)", 0};
-inline constexpr tracepoint_metadata metadata_17{"rpc_message_sent", "seastar/src/core/scylla_tracer.cc", 316, "void seastar::trace_rpc_message_sent(uint64_t, uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_18{"rpc_message_received", "seastar/src/core/scylla_tracer.cc", 322, "void seastar::trace_rpc_message_received(uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_19{"rpc_reply_sent", "seastar/src/core/scylla_tracer.cc", 329, "void seastar::trace_rpc_reply_sent(uint64_t, uint64_t, int64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_20{"rpc_reply_received", "seastar/src/core/scylla_tracer.cc", 335, "void seastar::trace_rpc_reply_received(uint64_t, uint64_t, int64_t)", 0};
-inline constexpr tracepoint_metadata metadata_21{"rpc_connections_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 341, "void seastar::trace_rpc_connections_snapshot()", 0};
-inline constexpr tracepoint_metadata metadata_22{"rpc_connection_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 348, "void seastar::trace_rpc_connections_snapshot()", 0};
-inline constexpr tracepoint_metadata metadata_23{"rpc_connections_snapshot_end", "seastar/src/core/scylla_tracer.cc", 350, "void seastar::trace_rpc_connections_snapshot()", 0};
-inline constexpr tracepoint_metadata metadata_24{"rpc_request_handled", "seastar/src/core/scylla_tracer.cc", 359, "void seastar::trace_rpc_request_handled(uint64_t, uint64_t, uint64_t, uint64_t)", 0};
-inline constexpr tracepoint_metadata metadata_25{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1426, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_26{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1441, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_27{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1454, "void tracer::trace_buffers::note_objects_changed()", 0};
-inline constexpr tracepoint_metadata metadata_28{"stacktrace_sample", "seastar/src/core/scylla_stacktrace_sampler.cc", 82, "void seastar::(anonymous namespace)::trace_stacktrace_sample(std::uint32_t, std::uint64_t, std::span<const std::byte>)", 0};
+inline constexpr tracepoint_metadata metadata_0{"run_task", "seastar/src/core/reactor.cc", 2818, "virtual bool seastar::reactor::task_queue::run_tasks()", true, 0};
+inline constexpr tracepoint_metadata metadata_1{"clock_sync", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1400, "void tracer::trace_buffers::write_clock_sync(event_level)", true, 0};
+inline constexpr tracepoint_metadata metadata_2{"task_queue_run_begin", "seastar/src/core/scylla_tracer.cc", 212, "void seastar::trace_task_queue_run_begin(uint32_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_3{"task_queue_run_end", "seastar/src/core/scylla_tracer.cc", 217, "void seastar::trace_task_queue_run_end()", true, 0};
+inline constexpr tracepoint_metadata metadata_4{"execution_stage", "seastar/src/core/scylla_tracer.cc", 222, "void seastar::trace_execution_stage(uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_5{"cql_request", "seastar/src/core/scylla_tracer.cc", 227, "void seastar::trace_cql_request(uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_6{"semaphore_execute", "seastar/src/core/scylla_tracer.cc", 232, "void seastar::trace_semaphore_execute(uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_7{"io_begin", "seastar/src/core/scylla_tracer.cc", 237, "void seastar::trace_io_begin(uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_8{"io_end", "seastar/src/core/scylla_tracer.cc", 242, "void seastar::trace_io_end(uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_9{"prepared_statement_added", "seastar/src/core/scylla_tracer.cc", 249, "void seastar::trace_prepared_statement_added(std::string_view, std::string_view, std::span<const std::byte>)", true, 0};
+inline constexpr tracepoint_metadata metadata_10{"prepared_statement_removed", "seastar/src/core/scylla_tracer.cc", 256, "void seastar::trace_prepared_statement_removed(std::string_view, std::string_view, std::span<const std::byte>)", true, 0};
+inline constexpr tracepoint_metadata metadata_11{"prepared_query_run", "seastar/src/core/scylla_tracer.cc", 261, "void seastar::trace_prepared_query_run(std::span<const std::byte>)", true, 0};
+inline constexpr tracepoint_metadata metadata_12{"prepared_statements_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 266, "void seastar::trace_prepared_statements_snapshot_begin()", true, 0};
+inline constexpr tracepoint_metadata metadata_13{"prepared_statement_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 273, "void seastar::trace_prepared_statement_snapshot_entry(std::string_view, std::string_view, std::span<const std::byte>)", true, 0};
+inline constexpr tracepoint_metadata metadata_14{"prepared_statements_snapshot_end", "seastar/src/core/scylla_tracer.cc", 278, "void seastar::trace_prepared_statements_snapshot_end()", true, 0};
+inline constexpr tracepoint_metadata metadata_15{"rpc_connection_open", "seastar/src/core/scylla_tracer.cc", 294, "void seastar::trace_rpc_connection_open(uint64_t, std::string_view, std::string_view, boot_id, uint32_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_16{"rpc_connection_close", "seastar/src/core/scylla_tracer.cc", 308, "void seastar::trace_rpc_connection_close(uint64_t, boot_id, uint32_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_17{"rpc_message_sent", "seastar/src/core/scylla_tracer.cc", 316, "void seastar::trace_rpc_message_sent(uint64_t, uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_18{"rpc_message_received", "seastar/src/core/scylla_tracer.cc", 322, "void seastar::trace_rpc_message_received(uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_19{"rpc_reply_sent", "seastar/src/core/scylla_tracer.cc", 329, "void seastar::trace_rpc_reply_sent(uint64_t, uint64_t, int64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_20{"rpc_reply_received", "seastar/src/core/scylla_tracer.cc", 335, "void seastar::trace_rpc_reply_received(uint64_t, uint64_t, int64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_21{"rpc_connections_snapshot_begin", "seastar/src/core/scylla_tracer.cc", 341, "void seastar::trace_rpc_connections_snapshot()", true, 0};
+inline constexpr tracepoint_metadata metadata_22{"rpc_connection_snapshot_entry", "seastar/src/core/scylla_tracer.cc", 348, "void seastar::trace_rpc_connections_snapshot()", true, 0};
+inline constexpr tracepoint_metadata metadata_23{"rpc_connections_snapshot_end", "seastar/src/core/scylla_tracer.cc", 350, "void seastar::trace_rpc_connections_snapshot()", true, 0};
+inline constexpr tracepoint_metadata metadata_24{"rpc_request_handled", "seastar/src/core/scylla_tracer.cc", 359, "void seastar::trace_rpc_request_handled(uint64_t, uint64_t, uint64_t, uint64_t)", true, 0};
+inline constexpr tracepoint_metadata metadata_25{"trace_objects_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1426, "void tracer::trace_buffers::note_objects_changed()", true, 0};
+inline constexpr tracepoint_metadata metadata_26{"trace_object_unloaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1441, "void tracer::trace_buffers::note_objects_changed()", true, 0};
+inline constexpr tracepoint_metadata metadata_27{"trace_object_loaded", "/home/michal/projects/cpp_template/modules/tracer/include/tracer/tracer.h", 1454, "void tracer::trace_buffers::note_objects_changed()", true, 0};
+inline constexpr tracepoint_metadata metadata_28{"stacktrace_sample", "seastar/src/core/scylla_stacktrace_sampler.cc", 82, "void seastar::(anonymous namespace)::trace_stacktrace_sample(std::uint32_t, std::uint64_t, std::span<const std::byte>)", true, 0};
+
+inline std::uint64_t read_timestamp(std::uint32_t id, const std::byte*& p,
+                                    const std::byte* end, std::uint64_t last) {
+    switch (id) {
+        case 1: return read_timestamp_sync(p, end, last);
+        default: return read_timestamp_delta(p, end, last);
+    }
+}
 
 }  // namespace detail
 
@@ -1158,14 +1212,6 @@ inline constexpr tracepoint_metadata metadata_28{"stacktrace_sample", "seastar/s
 inline constexpr std::size_t entry_stride = 56;
 inline constexpr std::uint32_t trace_magic = 0x32435254;
 inline constexpr std::uint8_t metadata_level = 2;
-
-inline constexpr std::uint32_t clock_sync_ids[] = {1,0xffffffffU};
-inline constexpr bool is_clock_sync_id(std::uint32_t id) {
-    for (const std::uint32_t candidate : clock_sync_ids) {
-        if (candidate == id) return true;
-    }
-    return false;
-}
 
 // A record that named its tracepoint by a static id rather than by the
 // address of its entry. The id it was given here has nothing to do with
@@ -1397,34 +1443,77 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             std::format("object {} was unloaded without having been loaded", event.build_id));
     };
 
-    // Whether a record is a clock sync, which is asked of every stream head
-    // before its timestamp is read: a sync record's header is a delta from the
-    // tick count in its own first parameter, where every other record's is a
-    // delta from the record before it. False for an id nothing can place, so
-    // that saying what is wrong with it is left to the read below.
-    const auto is_clock_sync = [&mappings](const detail::record_id& which) {
+    // Which tracepoint a record names: a static id says it on its own, an
+    // address says it only against the objects mapped as of this point in the
+    // trace. `no_decoder_id` for one that cannot be placed, without a word
+    // about why.
+    //
+    // Silent because it is asked twice. Once on the peek that orders the
+    // streams, where an address whose object has not been loaded *yet* is not
+    // an error -- the load event that explains it may be further down the
+    // metadata stream, and the record will not be chosen before it. And once on
+    // the record actually being read, where refuse() below says what is wrong.
+    const auto placed_id = [&mappings](const detail::record_id& which) -> std::uint32_t {
         if (which.is_static) {
-            const std::uint32_t id = decoder_id_for_static_id(which.value);
-            return id != no_decoder_id && is_clock_sync_id(id);
+            return decoder_id_for_static_id(which.value);
         }
         const std::uint64_t address = which.value;
         const auto above = std::upper_bound(
             mappings.begin(), mappings.end(), address,
             [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
         if (above == mappings.begin() || (above - 1)->object == nullptr) {
-            return false;
+            return no_decoder_id;
         }
         const detail::mapping& from = *(above - 1);
         const std::uint64_t offset = address - from.table;
-        return offset % entry_stride == 0 &&
-               is_clock_sync_id(static_cast<std::uint32_t>(
-                   from.object->first_id + offset / entry_stride));
+        if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
+            return no_decoder_id;
+        }
+        return static_cast<std::uint32_t>(from.object->first_id + offset / entry_stride);
+    };
+
+    // Why the record at the head of a stream cannot be placed. `after` is the
+    // timestamp of the record before it, which is as much as is known about
+    // when this one is: how a record says *when* it happened is a fact about
+    // which tracepoint it is, and that is the question this one failed.
+    const auto refuse = [&mappings](const detail::record_id& which, std::uint64_t after) {
+        if (which.is_static) {
+            throw std::runtime_error(std::format(
+                "static tracepoint id {}, in a record after {}, is not one this decoder was "
+                "generated from",
+                which.value, after));
+        }
+        const std::uint64_t address = which.value;
+        const auto above = std::upper_bound(
+            mappings.begin(), mappings.end(), address,
+            [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
+        if (above == mappings.begin()) {
+            throw std::runtime_error(
+                std::format("tracepoint address {:#x} is below every object loaded after {}",
+                            address, after));
+        }
+        const detail::mapping& from = *(above - 1);
+        if (from.object == nullptr) {
+            throw std::runtime_error(std::format(
+                "tracepoint address {:#x} belongs to object {}, which this decoder was not "
+                "generated from",
+                address, from.build_id));
+        }
+        throw std::runtime_error(std::format(
+            "tracepoint address {:#x} is not an entry of object {}, which is what was at "
+            "{:#x} after {}",
+            address, from.build_id, from.table, after));
     };
 
     // The prologue: a count, and that many load events. Read by that invariant
     // rather than by their addresses, because until they have been read there
     // is no object for an address to be in. See "the metadata stream" in
     // tracer.h.
+    //
+    // How each of them is timed comes from the same invariant. A record's
+    // timestamp is read by the code its id selects, and these have no id yet --
+    // so the reader each one wants is chosen here, at generation time, from the
+    // tracepoint the position is known to hold.
     {
         stream& meta = streams.front();
         // The ring opens with a clock sync saying where its chain of deltas
@@ -1432,23 +1521,24 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         // is the frame rather than an event, like the load events after it, so
         // it is read here and not delivered.
         detail::read_record_id(meta.p, meta.end);  // which tracepoint, not yet placeable
-        const std::uint64_t opened = detail::read_int(meta.p, meta.end);
-        meta.last_timestamp = detail::read_clock_sync(meta.p, meta.end).tsc + opened;
+        meta.last_timestamp = detail::read_timestamp_sync(meta.p, meta.end, 0);
+        detail::read_clock_sync(meta.p, meta.end);
 
         detail::read_record_id(meta.p, meta.end);
-        meta.last_timestamp += detail::read_int(meta.p, meta.end);
+        meta.last_timestamp = detail::read_timestamp_delta(meta.p, meta.end, meta.last_timestamp);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_record_id(meta.p, meta.end);
-            meta.last_timestamp += detail::read_int(meta.p, meta.end);
+            meta.last_timestamp = detail::read_timestamp_delta(meta.p, meta.end, meta.last_timestamp);
             load(detail::read_trace_object_loaded(meta.p, meta.end));
         }
     }
 
     while (true) {
-        // The earliest record still unread, over every stream. Its timestamp
-        // is a delta, so peek and accumulate it without advancing the stream;
-        // only the selected stream is consumed below.
+        // The earliest record still unread, over every stream. Reading its
+        // timestamp means placing it first -- how the front of a body is timed
+        // is a fact about the tracepoint -- and both are peeked without
+        // advancing the stream; only the selected one is consumed below.
         stream* next = nullptr;
         std::uint64_t earliest = 0;
         for (stream& candidate : streams) {
@@ -1457,11 +1547,8 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             }
             const std::byte* peek = candidate.p;
             const detail::record_id which = detail::read_record_id(peek, candidate.end);
-            const std::uint64_t delta = detail::read_int(peek, candidate.end);
-            const std::uint64_t at =
-                is_clock_sync(which)
-                    ? detail::read_unaligned<std::uint64_t>(peek, candidate.end) + delta
-                    : candidate.last_timestamp + delta;
+            const std::uint64_t at = detail::read_timestamp(
+                placed_id(which), peek, candidate.end, candidate.last_timestamp);
             if (next == nullptr || at < earliest) {
                 next = &candidate;
                 earliest = at;
@@ -1474,53 +1561,20 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         const std::byte*& q = next->p;
         const std::byte* const q_end = next->end;
         const detail::record_id which = detail::read_record_id(q, q_end);
-        const std::uint64_t delta = detail::read_int(q, q_end);
-        std::uint64_t timestamp = next->last_timestamp + delta;
-        if (is_clock_sync(which)) {
-            // Where this buffer's deltas start, from the sync's own first
-            // parameter -- peeked, because the record is read below like any
-            // other and delivered with the rest of it.
-            const std::byte* base = q;
-            timestamp = detail::read_unaligned<std::uint64_t>(base, q_end) + delta;
-        }
-        next->last_timestamp = timestamp;
 
-        // A static id says which tracepoint it is on its own; an address says
-        // it only against the objects mapped at this record's own timestamp.
-        std::uint32_t id = no_decoder_id;
-        if (which.is_static) {
-            id = decoder_id_for_static_id(which.value);
-            if (id == no_decoder_id) {
-                throw std::runtime_error(std::format(
-                    "static tracepoint id {} at {} is not one this decoder was generated from",
-                    which.value, timestamp));
-            }
-        } else {
-            const std::uint64_t address = which.value;
-            const auto above = std::upper_bound(
-                mappings.begin(), mappings.end(), address,
-                [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
-            if (above == mappings.begin()) {
-                throw std::runtime_error(
-                    std::format("tracepoint address {:#x} is below every object loaded at {}",
-                                address, timestamp));
-            }
-            const detail::mapping& from = *(above - 1);
-            if (from.object == nullptr) {
-                throw std::runtime_error(std::format(
-                    "tracepoint address {:#x} belongs to object {}, which this decoder was not "
-                    "generated from",
-                    address, from.build_id));
-            }
-            const std::uint64_t offset = address - from.table;
-            if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
-                throw std::runtime_error(std::format(
-                    "tracepoint address {:#x} is not an entry of object {}, which is what was at "
-                    "{:#x} at {}",
-                    address, from.build_id, from.table, timestamp));
-            }
-            id = from.object->first_id + static_cast<std::uint32_t>(offset / entry_stride);
+        // Placed before the timestamp is read rather than after, because how
+        // many bytes of the body are the timestamp -- and what they mean, and
+        // whether there are any -- is what the id says.
+        const std::uint32_t id = placed_id(which);
+        if (id == no_decoder_id) {
+            refuse(which, next->last_timestamp);
         }
+        const std::uint64_t timestamp =
+            detail::read_timestamp(id, q, q_end, next->last_timestamp);
+        // Left where it was by a record that carries no timestamp of its own,
+        // which is what makes the next record in this buffer a delta from the
+        // same place.
+        next->last_timestamp = timestamp;
 
         switch (id) {
             case 0: {
@@ -1764,16 +1818,16 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
         const std::byte* q = p;
         const std::byte* const q_end = p + length;
         detail::read_record_id(q, q_end);  // the ring's opening clock sync
-        detail::read_int(q, q_end);
+        detail::read_timestamp_sync(q, q_end, 0);
         detail::read_clock_sync(q, q_end);
         detail::read_record_id(q, q_end);  // which tracepoint
-        detail::read_int(q, q_end);        // timestamp delta
+        detail::read_timestamp_delta(q, q_end, 0);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
         std::vector<object_mapping> out;
         out.reserve(counted.count);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_record_id(q, q_end);
-            detail::read_int(q, q_end);
+            detail::read_timestamp_delta(q, q_end, 0);
             const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
             out.push_back({std::string(loaded.build_id), loaded.base_address,
                            loaded.mapping_size});

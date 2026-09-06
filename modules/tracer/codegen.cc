@@ -140,8 +140,34 @@ struct tracepoint_kind {
     std::string name;
     std::string signature;
     std::vector<field> fields;
+    // How a record of this kind carries its timestamp, which is what decides
+    // the shape of the front of its body. Part of the kind rather than of the
+    // entry for the same reason the fields are: two entries of one name are one
+    // struct, read by one reader, and so are one answer to this.
+    timestamp_encoding timestamps;
     const tracepoint_entry* first;  // for a diagnostic about a later disagreement
 };
+
+// How an encoding is named in a diagnostic.
+std::string_view encoding_name(timestamp_encoding encoding) {
+    switch (encoding) {
+        case timestamp_encoding::delta: return "a delta from the record before it";
+        case timestamp_encoding::sync: return "a delta from its own first parameter";
+        case timestamp_encoding::none: return "no timestamp";
+    }
+    return "an unknown encoding";
+}
+
+// The reader that takes a record of this kind from the head of its body to the
+// timestamp it means. Three of them, emitted as fixed text in the prologue.
+std::string_view timestamp_reader(timestamp_encoding encoding) {
+    switch (encoding) {
+        case timestamp_encoding::delta: return "read_timestamp_delta";
+        case timestamp_encoding::sync: return "read_timestamp_sync";
+        case timestamp_encoding::none: return "read_timestamp_none";
+    }
+    return "read_timestamp_delta";
+}
 
 // One entry of one object: which struct it decodes into, and where it was
 // written. Metadata is per entry rather than per kind, so a shared tracepoint
@@ -226,6 +252,17 @@ plan make_plan(std::span<const codegen_object> objects) {
                                      existing.first->file, existing.first->line,
                                      existing.signature, entry.signature));
                 }
+                // And one answer to how its records are timed, for the same
+                // reason: one struct is read by one reader, and the timestamp
+                // is the front of what that reader reads.
+                if (existing.timestamps != entry.timestamps) {
+                    fail(entry,
+                         std::format("a tracepoint of this name is defined at {}:{} with a "
+                                     "different timestamp encoding ({} there, {} here)",
+                                     existing.first->file, existing.first->line,
+                                     encoding_name(existing.timestamps),
+                                     encoding_name(entry.timestamps)));
+                }
                 kind = found->second;
             } else {
                 std::vector<field> fields = parse_signature(entry);
@@ -235,9 +272,19 @@ plan make_plan(std::span<const codegen_object> objects) {
                                                 f.type));
                     }
                 }
+                // A sync record's timestamp is its own first parameter plus its
+                // delta, so a decoder reads eight bytes past the delta to find
+                // it. A tracepoint that asks for that encoding without putting
+                // a u64 there is one whose records cannot be placed in time.
+                if (entry.timestamps == timestamp_encoding::sync &&
+                    (fields.empty() || fields.front().type != "u64")) {
+                    fail(entry,
+                         "a tracepoint whose records are timed from their own first parameter "
+                         "must have a u64 as that parameter");
+                }
                 kind = out.kinds.size();
-                out.kinds.push_back(
-                    {std::string(entry.name), std::string(entry.signature), std::move(fields), &entry});
+                out.kinds.push_back({std::string(entry.name), std::string(entry.signature),
+                                     std::move(fields), entry.timestamps, &entry});
                 kind_of_name.emplace(entry.name, kind);
             }
 
@@ -319,6 +366,16 @@ struct tracepoint_metadata {
     std::string_view file;
     int line;
     std::string_view function;
+
+    // Whether `timestamp` is this record's own. False for a tracepoint declared
+    // with TRACEPOINT_UNTIMED(), whose records carry no time of their own: the
+    // one below is the one of the record before it in the same buffer, which is
+    // as close as the trace comes to saying when this happened. A consumer that
+    // needs a distinct time for every event -- to draw them, or to sort them --
+    // is the one that has to do something about it; spreading a run of them out
+    // between the timed records either side is the usual something.
+    bool has_timestamp;
+
     std::uint64_t timestamp;
 };
 
@@ -382,6 +439,42 @@ inline record_id read_record_id(const std::byte*& p, const std::byte* end) {
     // short id is a short read: an address is eight bytes here and a static id
     // is as few as one, which is the whole point of it.
     return {true, (read_int(p, end) - 1) / 2};
+}
+
+// --- the timestamp at the head of a body --------------------------------------
+//
+// A record is an id and then a body, and the body opens with the timestamp --
+// in whichever of these forms the tracepoint's own declaration chose. Which one
+// that is comes from the id, so these are reached through read_timestamp()
+// below rather than called from the record loop directly.
+//
+// `last` is the timestamp of the record before this one in the same buffer,
+// which is what a delta is measured from. Each returns the timestamp of the
+// record and leaves `p` on its first argument.
+
+inline std::uint64_t read_timestamp_delta(const std::byte*& p, const std::byte* end,
+                                          std::uint64_t last) {
+    return last + read_int(p, end);
+}
+
+// A clock sync, which opens a buffer and so has no record before it to count
+// from: its delta is measured from the tick count in its own first parameter.
+// That parameter is left on the wire -- it is an argument like any other, and
+// the reader below reads it again -- so only the delta is consumed here.
+inline std::uint64_t read_timestamp_sync(const std::byte*& p, const std::byte* end,
+                                         [[maybe_unused]] std::uint64_t last) {
+    const std::uint64_t delta = read_int(p, end);
+    const std::byte* base = p;
+    return read_unaligned<std::uint64_t>(base, end) + delta;
+}
+
+// A tracepoint that writes no timestamp at all. The record happened when the
+// one before it did, as far as anything reading this can tell, and nothing is
+// consumed: the body is its arguments and nothing else.
+inline std::uint64_t read_timestamp_none([[maybe_unused]] const std::byte*& p,
+                                         [[maybe_unused]] const std::byte* end,
+                                         std::uint64_t last) {
+    return last;
 }
 
 // Length-prefixed runs. Both views point into the trace buffer rather than
@@ -866,37 +959,49 @@ std::string generate_reader(const tracepoint_kind& kind) {
 
 std::string generate_metadata(std::size_t id, const tracepoint_entry& entry) {
     return std::format(
-        "inline constexpr tracepoint_metadata metadata_{}{{\"{}\", \"{}\", {}, \"{}\", 0}};\n", id,
-        escape(entry.name), escape(entry.file), entry.line, escape(entry.function));
+        "inline constexpr tracepoint_metadata metadata_{}{{\"{}\", \"{}\", {}, \"{}\", {}, 0}};\n",
+        id, escape(entry.name), escape(entry.file), entry.line, escape(entry.function),
+        entry.timestamps == timestamp_encoding::none ? "false" : "true");
+}
+
+// Which of the three readers above a record's body opens with, by id.
+//
+// Only the tracepoints that are not timed the usual way get a case; the rest
+// are the default, which is also where an id nothing could place ends up. Such
+// an id is not an error here -- this runs on the peek that orders the streams,
+// where a record may simply be waiting for the load event that explains it --
+// so it is read as an ordinary delta and left to the record loop to refuse.
+std::string generate_timestamp_dispatch(const plan& planned) {
+    std::string cases;
+    for (std::size_t id = 0; id < planned.by_id.size(); ++id) {
+        const timestamp_encoding encoding = planned.by_id[id]->timestamps;
+        if (encoding == timestamp_encoding::delta) {
+            continue;
+        }
+        cases += std::format("        case {}: return {}(p, end, last);\n", id,
+                             timestamp_reader(encoding));
+    }
+    return std::format(
+        "inline std::uint64_t read_timestamp(std::uint32_t id, const std::byte*& p,\n"
+        "                                    const std::byte* end, std::uint64_t last) {{\n"
+        "    switch (id) {{\n"
+        "{}"
+        "        default: return read_timestamp_delta(p, end, last);\n"
+        "    }}\n"
+        "}}\n",
+        cases);
 }
 
 std::string generate_objects(const plan& planned) {
-    std::vector<std::uint32_t> clock_sync_ids;
-    for (std::size_t id = 0; id < planned.by_id.size(); ++id) {
-        if (std::string_view(planned.by_id[id]->name) == "clock_sync") {
-            clock_sync_ids.push_back(static_cast<std::uint32_t>(id));
-        }
-    }
     std::string code = std::format(
         "// Where a record's address comes from. `first_id` is the id of the object's\n"
         "// entry 0, so an address that is `n * entry_stride` past the object's table\n"
         "// belongs to id `first_id + n`.\n"
         "inline constexpr std::size_t entry_stride = {};\n"
         "inline constexpr std::uint32_t trace_magic = {:#x};\n"
-        "inline constexpr std::uint8_t metadata_level = {};\n\n"
-        "inline constexpr std::uint32_t clock_sync_ids[] = {{",
+        "inline constexpr std::uint8_t metadata_level = {};\n\n",
         sizeof(tracepoint_entry), trace_magic, static_cast<unsigned>(event_level::metadata));
-    for (const std::uint32_t id : clock_sync_ids) {
-        code += std::format("{},", id);
-    }
-    code += "0xffffffffU};\n"
-            "inline constexpr bool is_clock_sync_id(std::uint32_t id) {\n"
-            "    for (const std::uint32_t candidate : clock_sync_ids) {\n"
-            "        if (candidate == id) return true;\n"
-            "    }\n"
-            "    return false;\n"
-            "}\n\n"
-            "// A record that named its tracepoint by a static id rather than by the\n"
+    code += "// A record that named its tracepoint by a static id rather than by the\n"
             "// address of its entry. The id it was given here has nothing to do with\n"
             "// where anything was mapped, so this is the whole of the lookup -- a switch\n"
             "// the compiler turns into a jump table or a comparison chain, whichever it\n"
@@ -1031,6 +1136,18 @@ private:
     return code;
 }
 
+// The reader the prologue uses for a record it knows by position rather than by
+// id. The kind is there -- has_metadata_kinds() has said so -- so this is only
+// asking which of the three encodings its author gave it.
+std::string_view prologue_reader(const plan& planned, std::string_view name) {
+    for (const tracepoint_kind& kind : planned.kinds) {
+        if (kind.name == name) {
+            return timestamp_reader(kind.timestamps);
+        }
+    }
+    return timestamp_reader(timestamp_encoding::delta);
+}
+
 std::string generate_decode(const plan& planned) {
     std::string code = std::format(
         "// The widest \"file:line\" in the trace, for a caller lining up a column of\n"
@@ -1063,6 +1180,10 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
 )cpp",
             object_loaded_kind);
     }
+
+    const std::string_view sync_reader = prologue_reader(planned, clock_sync_kind);
+    const std::string_view counted_reader = prologue_reader(planned, objects_loaded_kind);
+    const std::string_view loaded_reader = prologue_reader(planned, object_loaded_kind);
 
     code += R"cpp(// Decode every record in `trace`, in timestamp order, calling cb(event, metadata)
 // for each.
@@ -1162,34 +1283,77 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             std::format("object {} was unloaded without having been loaded", event.build_id));
     };
 
-    // Whether a record is a clock sync, which is asked of every stream head
-    // before its timestamp is read: a sync record's header is a delta from the
-    // tick count in its own first parameter, where every other record's is a
-    // delta from the record before it. False for an id nothing can place, so
-    // that saying what is wrong with it is left to the read below.
-    const auto is_clock_sync = [&mappings](const detail::record_id& which) {
+    // Which tracepoint a record names: a static id says it on its own, an
+    // address says it only against the objects mapped as of this point in the
+    // trace. `no_decoder_id` for one that cannot be placed, without a word
+    // about why.
+    //
+    // Silent because it is asked twice. Once on the peek that orders the
+    // streams, where an address whose object has not been loaded *yet* is not
+    // an error -- the load event that explains it may be further down the
+    // metadata stream, and the record will not be chosen before it. And once on
+    // the record actually being read, where refuse() below says what is wrong.
+    const auto placed_id = [&mappings](const detail::record_id& which) -> std::uint32_t {
         if (which.is_static) {
-            const std::uint32_t id = decoder_id_for_static_id(which.value);
-            return id != no_decoder_id && is_clock_sync_id(id);
+            return decoder_id_for_static_id(which.value);
         }
         const std::uint64_t address = which.value;
         const auto above = std::upper_bound(
             mappings.begin(), mappings.end(), address,
             [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
         if (above == mappings.begin() || (above - 1)->object == nullptr) {
-            return false;
+            return no_decoder_id;
         }
         const detail::mapping& from = *(above - 1);
         const std::uint64_t offset = address - from.table;
-        return offset % entry_stride == 0 &&
-               is_clock_sync_id(static_cast<std::uint32_t>(
-                   from.object->first_id + offset / entry_stride));
+        if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
+            return no_decoder_id;
+        }
+        return static_cast<std::uint32_t>(from.object->first_id + offset / entry_stride);
+    };
+
+    // Why the record at the head of a stream cannot be placed. `after` is the
+    // timestamp of the record before it, which is as much as is known about
+    // when this one is: how a record says *when* it happened is a fact about
+    // which tracepoint it is, and that is the question this one failed.
+    const auto refuse = [&mappings](const detail::record_id& which, std::uint64_t after) {
+        if (which.is_static) {
+            throw std::runtime_error(std::format(
+                "static tracepoint id {}, in a record after {}, is not one this decoder was "
+                "generated from",
+                which.value, after));
+        }
+        const std::uint64_t address = which.value;
+        const auto above = std::upper_bound(
+            mappings.begin(), mappings.end(), address,
+            [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
+        if (above == mappings.begin()) {
+            throw std::runtime_error(
+                std::format("tracepoint address {:#x} is below every object loaded after {}",
+                            address, after));
+        }
+        const detail::mapping& from = *(above - 1);
+        if (from.object == nullptr) {
+            throw std::runtime_error(std::format(
+                "tracepoint address {:#x} belongs to object {}, which this decoder was not "
+                "generated from",
+                address, from.build_id));
+        }
+        throw std::runtime_error(std::format(
+            "tracepoint address {:#x} is not an entry of object {}, which is what was at "
+            "{:#x} after {}",
+            address, from.build_id, from.table, after));
     };
 
     // The prologue: a count, and that many load events. Read by that invariant
     // rather than by their addresses, because until they have been read there
     // is no object for an address to be in. See "the metadata stream" in
     // tracer.h.
+    //
+    // How each of them is timed comes from the same invariant. A record's
+    // timestamp is read by the code its id selects, and these have no id yet --
+    // so the reader each one wants is chosen here, at generation time, from the
+    // tracepoint the position is known to hold.
     {
         stream& meta = streams.front();
         // The ring opens with a clock sync saying where its chain of deltas
@@ -1197,23 +1361,30 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         // is the frame rather than an event, like the load events after it, so
         // it is read here and not delivered.
         detail::read_record_id(meta.p, meta.end);  // which tracepoint, not yet placeable
-        const std::uint64_t opened = detail::read_int(meta.p, meta.end);
-        meta.last_timestamp = detail::read_clock_sync(meta.p, meta.end).tsc + opened;
+        meta.last_timestamp = detail::)cpp";
+    code += sync_reader;
+    code += R"cpp((meta.p, meta.end, 0);
+        detail::read_clock_sync(meta.p, meta.end);
 
         detail::read_record_id(meta.p, meta.end);
-        meta.last_timestamp += detail::read_int(meta.p, meta.end);
+        meta.last_timestamp = detail::)cpp";
+    code += counted_reader;
+    code += R"cpp((meta.p, meta.end, meta.last_timestamp);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_record_id(meta.p, meta.end);
-            meta.last_timestamp += detail::read_int(meta.p, meta.end);
+            meta.last_timestamp = detail::)cpp";
+    code += loaded_reader;
+    code += R"cpp((meta.p, meta.end, meta.last_timestamp);
             load(detail::read_trace_object_loaded(meta.p, meta.end));
         }
     }
 
     while (true) {
-        // The earliest record still unread, over every stream. Its timestamp
-        // is a delta, so peek and accumulate it without advancing the stream;
-        // only the selected stream is consumed below.
+        // The earliest record still unread, over every stream. Reading its
+        // timestamp means placing it first -- how the front of a body is timed
+        // is a fact about the tracepoint -- and both are peeked without
+        // advancing the stream; only the selected one is consumed below.
         stream* next = nullptr;
         std::uint64_t earliest = 0;
         for (stream& candidate : streams) {
@@ -1222,11 +1393,8 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             }
             const std::byte* peek = candidate.p;
             const detail::record_id which = detail::read_record_id(peek, candidate.end);
-            const std::uint64_t delta = detail::read_int(peek, candidate.end);
-            const std::uint64_t at =
-                is_clock_sync(which)
-                    ? detail::read_unaligned<std::uint64_t>(peek, candidate.end) + delta
-                    : candidate.last_timestamp + delta;
+            const std::uint64_t at = detail::read_timestamp(
+                placed_id(which), peek, candidate.end, candidate.last_timestamp);
             if (next == nullptr || at < earliest) {
                 next = &candidate;
                 earliest = at;
@@ -1239,53 +1407,20 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         const std::byte*& q = next->p;
         const std::byte* const q_end = next->end;
         const detail::record_id which = detail::read_record_id(q, q_end);
-        const std::uint64_t delta = detail::read_int(q, q_end);
-        std::uint64_t timestamp = next->last_timestamp + delta;
-        if (is_clock_sync(which)) {
-            // Where this buffer's deltas start, from the sync's own first
-            // parameter -- peeked, because the record is read below like any
-            // other and delivered with the rest of it.
-            const std::byte* base = q;
-            timestamp = detail::read_unaligned<std::uint64_t>(base, q_end) + delta;
-        }
-        next->last_timestamp = timestamp;
 
-        // A static id says which tracepoint it is on its own; an address says
-        // it only against the objects mapped at this record's own timestamp.
-        std::uint32_t id = no_decoder_id;
-        if (which.is_static) {
-            id = decoder_id_for_static_id(which.value);
-            if (id == no_decoder_id) {
-                throw std::runtime_error(std::format(
-                    "static tracepoint id {} at {} is not one this decoder was generated from",
-                    which.value, timestamp));
-            }
-        } else {
-            const std::uint64_t address = which.value;
-            const auto above = std::upper_bound(
-                mappings.begin(), mappings.end(), address,
-                [](std::uint64_t value, const detail::mapping& m) { return value < m.table; });
-            if (above == mappings.begin()) {
-                throw std::runtime_error(
-                    std::format("tracepoint address {:#x} is below every object loaded at {}",
-                                address, timestamp));
-            }
-            const detail::mapping& from = *(above - 1);
-            if (from.object == nullptr) {
-                throw std::runtime_error(std::format(
-                    "tracepoint address {:#x} belongs to object {}, which this decoder was not "
-                    "generated from",
-                    address, from.build_id));
-            }
-            const std::uint64_t offset = address - from.table;
-            if (offset % entry_stride != 0 || offset / entry_stride >= from.object->count) {
-                throw std::runtime_error(std::format(
-                    "tracepoint address {:#x} is not an entry of object {}, which is what was at "
-                    "{:#x} at {}",
-                    address, from.build_id, from.table, timestamp));
-            }
-            id = from.object->first_id + static_cast<std::uint32_t>(offset / entry_stride);
+        // Placed before the timestamp is read rather than after, because how
+        // many bytes of the body are the timestamp -- and what they mean, and
+        // whether there are any -- is what the id says.
+        const std::uint32_t id = placed_id(which);
+        if (id == no_decoder_id) {
+            refuse(which, next->last_timestamp);
         }
+        const std::uint64_t timestamp =
+            detail::read_timestamp(id, q, q_end, next->last_timestamp);
+        // Left where it was by a record that carries no timestamp of its own,
+        // which is what makes the next record in this buffer a delta from the
+        // same place.
+        next->last_timestamp = timestamp;
 
         switch (id) {
 )cpp";
@@ -1349,8 +1484,12 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
 // Reading raw addresses -- stack frames -- back against the objects they are
 // in. Fixed text: it only ever touches the tracer's own metadata tracepoints,
 // whose shape is the same in every generated decoder.
-std::string generate_mappings() {
-    return R"cpp(
+std::string generate_mappings(const plan& planned) {
+    const std::string_view sync_reader = prologue_reader(planned, clock_sync_kind);
+    const std::string_view counted_reader = prologue_reader(planned, objects_loaded_kind);
+    const std::string_view loaded_reader = prologue_reader(planned, object_loaded_kind);
+
+    std::string code = R"cpp(
 // Reopened: decode() above closed it, and this is a second, independent way in
 // -- nothing here is needed to read a record.
 namespace trace {
@@ -1391,17 +1530,26 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
         }
         const std::byte* q = p;
         const std::byte* const q_end = p + length;
+        // The same run of records decode() reads by position, and read the same
+        // way: each one's timestamp is whatever the tracepoint at that position
+        // carries. Nothing here wants the values, only the bytes they take.
         detail::read_record_id(q, q_end);  // the ring's opening clock sync
-        detail::read_int(q, q_end);
+        detail::)cpp";
+    code += sync_reader;
+    code += R"cpp((q, q_end, 0);
         detail::read_clock_sync(q, q_end);
         detail::read_record_id(q, q_end);  // which tracepoint
-        detail::read_int(q, q_end);        // timestamp delta
+        detail::)cpp";
+    code += counted_reader;
+    code += R"cpp((q, q_end, 0);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
         std::vector<object_mapping> out;
         out.reserve(counted.count);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_record_id(q, q_end);
-            detail::read_int(q, q_end);
+            detail::)cpp";
+    code += loaded_reader;
+    code += R"cpp((q, q_end, 0);
             const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
             out.push_back({std::string(loaded.build_id), loaded.base_address,
                            loaded.mapping_size});
@@ -1426,6 +1574,7 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
 
 }  // namespace trace
 )cpp";
+    return code;
 }
 
 }  // namespace
@@ -1444,11 +1593,13 @@ std::string generate_decoder_source(std::span<const codegen_object> objects) {
     for (std::size_t id = 0; id < planned.by_id.size(); ++id) {
         out += generate_metadata(id, *planned.by_id[id]);
     }
+    out += "\n";
+    out += generate_timestamp_dispatch(planned);
     out += "\n}  // namespace detail\n\n";
     out += generate_objects(planned);
     out += generate_locator(planned);
     out += generate_decode(planned);
-    out += generate_mappings();
+    out += generate_mappings(planned);
     return out;
 }
 

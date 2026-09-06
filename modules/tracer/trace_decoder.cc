@@ -25,7 +25,13 @@ namespace {
 struct printer {
     template <typename Event>
     void operator()(const Event& event, const trace::tracepoint_metadata& meta) const {
-        std::cout << std::format("{:>18} | {:<{}} | {}\n", meta.timestamp,
+        // A record of a tracepoint that carries no timestamp is handed the one
+        // of the record before it, which is a real answer to "when" but not one
+        // this column should claim. A dash says which it is; a consumer that
+        // needs a number for such a record has to make one up, and making one
+        // up is not this program's job. See tracepoint_metadata.
+        std::cout << std::format("{:>18} | {:<{}} | {}\n",
+                                 meta.has_timestamp ? std::format("{}", meta.timestamp) : "-",
                                  std::format("{}:{}", meta.file, meta.line),
                                  trace::fileline_width, event.to_string());
     }

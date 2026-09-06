@@ -46,6 +46,11 @@ std::string read_env_file(const char* variable) {
 // tracer change, but the events and values around them are part of the output
 // contract. Keep the real output as the recorded sample while making those
 // columns variable.
+//
+// A line whose timestamp column is not a number is a record of a tracepoint
+// that carries no timestamp -- the decoder program prints a dash for those --
+// and it is kept literal, column and all: what such a record is worth asserting
+// is exactly that it has no time of its own.
 RegexText serialize_trace_columns(std::string_view text) {
     RegexText out;
     std::size_t from = 0;
@@ -110,9 +115,11 @@ RegexText serialize_trace_columns(std::string_view text) {
 //
 // The key is left null. Generating a decoder reads names, types and locations
 // and never touches a key.
-tracer::tracepoint_entry fake(const char* name, const char* signature, int line = 1,
-                              tracer::tracepoint_id static_id = tracer::tracepoint_id::none) {
-    return {name, "fake.cc", line, "void fake()", signature, nullptr, static_id};
+tracer::tracepoint_entry fake(
+    const char* name, const char* signature, int line = 1,
+    tracer::tracepoint_id static_id = tracer::tracepoint_id::none,
+    tracer::timestamp_encoding timestamps = tracer::timestamp_encoding::delta) {
+    return {name, "fake.cc", line, "void fake()", signature, nullptr, static_id, timestamps};
 }
 
 // That table as the one object of a program, under a made-up build ID. The
@@ -407,6 +414,45 @@ TEST_CASE("a static id costs a byte where an entry address costs eight") {
     // nothing else: a short id shortens the record rather than padding it.
     trace::detail::read_int(p, end);
     CHECK(static_cast<std::size_t>(end - p) == sizeof(std::uint32_t));
+}
+
+// What TRACEPOINT_UNTIMED() buys, on the wire: the bytes between the id and the
+// arguments, which for a record that follows another one closely is a number
+// the record before it already carried. See timestamp_encoding in tracer.h.
+TEST_CASE("a tracepoint declared untimed writes no timestamp") {
+    const without_clock_sync quiet;
+    tracer::trace_buffers buffers(4096, 4096, 4096, 512);
+    tracer::local_tracer = &buffers;
+    REQUIRE(tracer::set_tracepoint_enabled("untimed_event", true) == 1);
+    TRACEPOINT_STATIC_ID_UNTIMED(tracer::tracepoint_id{8}, tracer::event_level::info,
+                                 "untimed_event", "value", std::uint32_t{9});
+    REQUIRE(tracer::set_tracepoint_enabled("untimed_event", false) == 1);
+    tracer::local_tracer = nullptr;
+
+    // One byte of id and four of argument, which is the smallest a record
+    // carrying a parameter gets: both of the things a record costs beyond its
+    // arguments are gone.
+    const std::vector<std::byte> bytes = buffers.group(tracer::event_level::info).collect();
+    REQUIRE(bytes.size() == 1 + sizeof(std::uint32_t));
+
+    const std::byte* p = bytes.data();
+    const std::byte* const end = p + bytes.size();
+    const trace::detail::record_id which = trace::detail::read_record_id(p, end);
+    CHECK(which.is_static);
+    CHECK(which.value == 8);
+    CHECK(static_cast<std::size_t>(end - p) == sizeof(std::uint32_t));
+
+    // And the table says so, which is the only place a decoder can learn it:
+    // nothing in the record itself distinguishes the argument that follows the
+    // id from a timestamp that would have preceded it.
+    const tracer::tracepoint_entry* entry = nullptr;
+    for (const tracer::tracepoint_entry* candidate : tracer::tracepoints()) {
+        if (std::string_view(candidate->name) == "untimed_event") {
+            entry = candidate;
+        }
+    }
+    REQUIRE(entry != nullptr);
+    CHECK(entry->timestamps == tracer::timestamp_encoding::none);
 }
 
 TEST_CASE("a string parameter is recorded as its bytes, however it arrives") {
@@ -820,6 +866,57 @@ TEST_CASE("the code generator merges tracepoints that share a name") {
               "fake.cc:4 (tracepoint \"dup\"): a tracepoint of this name is defined at "
               "fake.cc:3 with a different parameter list (\"a:u32\" there, \"b:u32\" here)");
     }
+
+    // And so is disagreeing about the timestamp, for the same reason: one
+    // struct is read by one reader, and the timestamp is the front of what that
+    // reader reads.
+    const std::vector<tracer::tracepoint_entry> half_timed{
+        fake("half", "a:u32", 5),
+        fake("half", "a:u32", 6, tracer::tracepoint_id::none,
+             tracer::timestamp_encoding::none)};
+    try {
+        (void)generate_from(half_timed);
+        FAIL("one tracepoint name timed two ways was accepted");
+    } catch (const std::runtime_error& e) {
+        CHECK(std::string_view(e.what()) ==
+              "fake.cc:6 (tracepoint \"half\"): a tracepoint of this name is defined at "
+              "fake.cc:5 with a different timestamp encoding (a delta from the record "
+              "before it there, no timestamp here)");
+    }
+}
+
+// The generator's half of a timestamp-less tracepoint: which reader a record's
+// body opens with is a fact about its tracepoint, so it is decided here, per
+// id, rather than by the loop that walks the records.
+TEST_CASE("the code generator reads the timestamp as the front of a body") {
+    const std::vector<tracer::tracepoint_entry> table{
+        fake("timed", "a:u32", 1),
+        fake("untimed", "a:u32", 2, tracer::tracepoint_id::none,
+             tracer::timestamp_encoding::none),
+    };
+    const std::string source = generate_from(table);
+
+    // The untimed one gets a case of its own; the timed one is the default,
+    // which is also where a record this decoder cannot place ends up.
+    CHECK(source.find("case 1: return read_timestamp_none(p, end, last);") != std::string::npos);
+    CHECK(source.find("case 0: return") == std::string::npos);
+    CHECK(source.find("default: return read_timestamp_delta(p, end, last);") !=
+          std::string::npos);
+
+    // And a consumer is told which it was handed, because a record that carries
+    // no time of its own is still given one.
+    CHECK(source.find("\"untimed\", \"fake.cc\", 2, \"void fake()\", false, 0}") !=
+          std::string::npos);
+    CHECK(source.find("\"timed\", \"fake.cc\", 1, \"void fake()\", true, 0}") !=
+          std::string::npos);
+
+    // A tracepoint timed from its own first parameter needs one to be timed
+    // from: this is the tracer's own clock_sync, and the shape of it is what
+    // the whole metadata stream is read against.
+    const std::vector<tracer::tracepoint_entry> mistimed{
+        fake("sync", "when:u32", 1, tracer::tracepoint_id::none,
+             tracer::timestamp_encoding::sync)};
+    CHECK_THROWS_AS((void)generate_from(mistimed), std::runtime_error);
 }
 
 // A shared library's tracepoints are its own: its own section, its own
@@ -1011,7 +1108,7 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
     CHECK(decoded(first) ==
           "modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=1}\n"
           "modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}\n"
-          "modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=1}\n");
+          "modules/tracer/plugin/common_tracepoints.h:42 shared_event{sequence=1}\n");
     CHECK(decoded(second) == decoded(first));
 }
 
@@ -1111,8 +1208,8 @@ TEST_CASE("a location whose object the decoder has not got stays unresolved") {
 TEST_CASE("decoded trace") {
     const RegexText decoded = serialize_trace_columns(read_env_file("TRACER_DECODED"));
     check_snapshot(decoded, R"snap(
-        |               500 | modules/tracer/include/tracer/tracer.h:1478   | clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |               700 | modules/tracer/include/tracer/tracer.h:1478   | clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |               500 | modules/tracer/include/tracer/tracer.h:1682   | clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |               700 | modules/tracer/include/tracer/tracer.h:1682   | clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |              1800 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
         |              1900 | modules/tracer/trace_producer.cc:61           | accepted_connection{conn=0, keepalive=true}
         |              2000 | modules/tracer/trace_producer.cc:66           | request_header{method=GET, path=/}
@@ -1125,13 +1222,18 @@ TEST_CASE("decoded trace") {
         |              2700 | modules/tracer/plugin/trace_plugin.cc:19      | plugin_loaded{connections=2}
         |              2800 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=0, label=handshake}
         |              2900 | modules/tracer/plugin/trace_plugin.cc:22      | plugin_work{step=1, label=handshake}
-        |              3000 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=2}
-        |              3100 | modules/tracer/plugin/common_tracepoints.h:41 | shared_event{sequence=99}
+        |              3000 | modules/tracer/plugin/common_tracepoints.h:42 | shared_event{sequence=2}
+        |              3100 | modules/tracer/plugin/common_tracepoints.h:42 | shared_event{sequence=99}
         |              3200 | modules/tracer/trace_producer.cc:51           | table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
         |              3300 | modules/tracer/trace_producer.cc:51           | table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
-        |              3600 | modules/tracer/include/tracer/tracer.h:1478   | clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |              3600 | modules/tracer/include/tracer/tracer.h:1682   | clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |              3700 | modules/tracer/trace_producer.cc:89           | table_opened{name=anonymous, opened_at=<none>}
-        |              3800 | modules/tracer/trace_producer.cc:91           | shutting_down{}
+        |              3800 | modules/tracer/trace_producer.cc:102          | table_snapshot_begin{tables=3}
+        |                 - | modules/tracer/trace_producer.cc:107          | table_snapshot_row{table=users, rows=10}
+        |                 - | modules/tracer/trace_producer.cc:107          | table_snapshot_row{table=sessions, rows=20}
+        |                 - | modules/tracer/trace_producer.cc:107          | table_snapshot_row{table=anonymous, rows=30}
+        |                 - | modules/tracer/trace_producer.cc:113          | table_snapshot_end{}
+        |              3900 | modules/tracer/trace_producer.cc:115          | shutting_down{}
         )snap"_snap);
 }
 
@@ -1148,8 +1250,8 @@ TEST_CASE("a decoded trace is structs, not text") {
     trace::decode(bytes, out, dsos);
 
     check_snapshot(serialize_trace_columns(out.text), R"snap(
-        |modules/tracer/include/tracer/tracer.h:1478 clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/include/tracer/tracer.h:1478 clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1682 clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1682 clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:58 listening{port=8080}
         |accepted_connection: connection 0, keepalive true
         |request_header: GET /
@@ -1162,14 +1264,80 @@ TEST_CASE("a decoded trace is structs, not text") {
         |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}
         |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=1, label=handshake}
-        |modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=2}
-        |modules/tracer/plugin/common_tracepoints.h:41 shared_event{sequence=99}
+        |modules/tracer/plugin/common_tracepoints.h:42 shared_event{sequence=2}
+        |modules/tracer/plugin/common_tracepoints.h:42 shared_event{sequence=99}
         |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
         |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
-        |modules/tracer/include/tracer/tracer.h:1478 clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
+        |modules/tracer/include/tracer/tracer.h:1682 clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |modules/tracer/trace_producer.cc:89 table_opened{name=anonymous, opened_at=<none>}
-        |modules/tracer/trace_producer.cc:91 shutting_down{}
+        |modules/tracer/trace_producer.cc:102 table_snapshot_begin{tables=3}
+        |modules/tracer/trace_producer.cc:107 table_snapshot_row{table=users, rows=10}
+        |modules/tracer/trace_producer.cc:107 table_snapshot_row{table=sessions, rows=20}
+        |modules/tracer/trace_producer.cc:107 table_snapshot_row{table=anonymous, rows=30}
+        |modules/tracer/trace_producer.cc:113 table_snapshot_end{}
+        |modules/tracer/trace_producer.cc:115 shutting_down{}
         )snap"_snap);
+}
+
+// The other end of TRACEPOINT_UNTIMED(): what a consumer is handed for a record
+// that carries no time of its own.
+//
+// The producer writes a snapshot -- one timed record, three rows, and a record
+// closing it -- of which only the first is timed. See run_demo() in
+// trace_producer.cc.
+TEST_CASE("a record with no timestamp is dated from the record before it") {
+    const std::string raw = read_env_file("TRACER_TRACE");
+    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
+                                           raw.size()};
+
+    struct event {
+        std::string name;
+        bool has_timestamp;
+        std::uint64_t timestamp;
+    };
+    std::vector<event> events;
+    trace::dso_directory dsos(dso_dir());
+    trace::decode(
+        bytes,
+        [&events](const auto&, const trace::tracepoint_metadata& meta) {
+            events.push_back({std::string(meta.name), meta.has_timestamp, meta.timestamp});
+        },
+        dsos);
+
+    const auto at = std::ranges::find(events, "table_snapshot_begin", &event::name);
+    REQUIRE(at != events.end());
+    // In the order they were written, which is the order a stream of records
+    // with no timestamps between them can be read in and no other.
+    REQUIRE(events.end() - at >= 5);
+    CHECK(at[0].has_timestamp);
+    CHECK(at[1].name == "table_snapshot_row");
+    CHECK(at[2].name == "table_snapshot_row");
+    CHECK(at[3].name == "table_snapshot_row");
+    CHECK(at[4].name == "table_snapshot_end");
+
+    // Each of them carries the moment of the record before it -- which, for a
+    // run of them, is the moment the run opened -- and says that the moment is
+    // not its own.
+    for (const event& row : std::span{at + 1, 4}) {
+        CHECK_FALSE(row.has_timestamp);
+        CHECK(row.timestamp == at[0].timestamp);
+    }
+
+    // And the chain of deltas carries on from there rather than from them: the
+    // record after the run is measured from the last record that was timed.
+    const auto after = at + 5;
+    REQUIRE(after != events.end());
+    CHECK(after->has_timestamp);
+    CHECK(after->timestamp > at[0].timestamp);
+
+    // Everything else in this trace is timed, which is what the flag is for:
+    // it is a fact about the tracepoint, and a consumer reads it per record
+    // rather than keeping a list of which tracepoints are which.
+    for (const event& other : events) {
+        if (!other.name.starts_with("table_snapshot_")) {
+            CHECK(other.has_timestamp);
+        }
+    }
 }
 
 TEST_CASE("a trace that cannot be decoded stops the decode") {

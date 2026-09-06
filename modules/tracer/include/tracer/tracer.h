@@ -341,6 +341,25 @@ public:
         return out;
     }
 
+    // The same, for a tracepoint whose records carry no timestamp: the id, and
+    // then straight into the arguments.
+    //
+    // last_timestamp_ is left alone, which is the whole of what such a record
+    // means -- it happened when the record before it did, and the record after
+    // it counts from that same place. Nothing here samples the clock, which is
+    // the instruction this saves beside the byte it saves in the buffer.
+    [[gnu::always_inline]] std::byte* write_record_untimed(std::size_t args_size,
+                                                           std::uint64_t id_word,
+                                                           std::size_t id_size) {
+        // Still the largest header, for the same reason as above: the store
+        // below puts down eight bytes whatever `id_size` is, and the bytes past
+        // the id are the arguments'.
+        assert(fits(args_size + max_record_header_size));
+        std::byte* out = write_unchecked(args_size + id_size);
+        std::memcpy(out, &id_word, sizeof(id_word));
+        return out + id_size;
+    }
+
     // Every live byte, oldest record first.
     //
     // Retired buffers are trimmed to their used length on retirement, but the
@@ -433,6 +452,18 @@ public:
         return group.write_record(args_size, id_word, id_size, timestamp);
     }
 
+    // The same, for a record with no timestamp in it. Still checked against the
+    // largest header rather than against what this record takes: a rotation one
+    // record early costs nothing, and this way the two paths rotate alike.
+    [[gnu::always_inline]] std::byte* write_untimed(event_level level, std::uint64_t id_word,
+                                                    std::size_t id_size, std::size_t args_size) {
+        buffer_group& group = groups_[static_cast<std::size_t>(level)];
+        if (!group.fits(args_size + max_record_header_size)) [[unlikely]] {
+            return write_slow_untimed(level, id_word, id_size, args_size);
+        }
+        return group.write_record_untimed(args_size, id_word, id_size);
+    }
+
     [[nodiscard]] const buffer_group& group(event_level level) const {
         return groups_[static_cast<std::size_t>(level)];
     }
@@ -473,7 +504,19 @@ public:
     [[gnu::noinline]] std::byte* write_slow(event_level level, std::uint64_t id_word,
                                            std::size_t id_size, std::size_t args_size);
 
+    // And for an untimed record. A rotation is where a buffer's chain of
+    // timestamps starts over, so the sync record written here is also what the
+    // untimed record about to be written inherits its moment from.
+    [[gnu::noinline]] std::byte* write_slow_untimed(event_level level, std::uint64_t id_word,
+                                                   std::size_t id_size, std::size_t args_size);
+
 private:
+    // What both cold paths do before they write: retire the full buffer, rebase
+    // the fresh one, and open it with a sync record. Defined at the bottom of
+    // this header, beside them, because it expands TRACEPOINT_UNGATED().
+    [[gnu::noinline]] buffer_group& rotate_for(event_level level,
+                                               [[maybe_unused]] std::size_t args_size);
+
     // The objects this ring has already described, so that what has gone can be
     // named after it is gone.
     struct known_object {
@@ -894,6 +937,33 @@ inline constexpr std::uint64_t max_tracepoint_id = (std::uint64_t{1} << 55) - 1;
     return vint_size(static_id_value(id));
 }
 
+// --- when a record says it happened ------------------------------------------
+//
+// How a record carries its timestamp is a fact about its *tracepoint*, not
+// about records in general: a decoder learns which of these it is looking at
+// from the id, and reads the timestamp as the first part of the body, ahead of
+// the arguments. See "the wire format" below.
+//
+// The point of having more than one is that a timestamp is not free. It is a
+// counter read on the hot path and one to eight bytes in the ring, and for a
+// record that always follows another one closely -- the second half of a pair,
+// an entry in a snapshot that is being dumped in a loop -- it is a cost paid
+// for a number the record before it already gave.
+enum class timestamp_encoding : std::uint8_t {
+    // A vint delta from the record before it in the same buffer, which is the
+    // usual thing and what an unqualified TRACEPOINT() writes.
+    delta,
+
+    // A vint delta from the tick count in the record's *own first parameter*,
+    // which must be a u64. What opens a buffer, whose first record has nothing
+    // before it to count from; see "reading a sync record back" below.
+    sync,
+
+    // Nothing on the wire at all. The record happened when the record before it
+    // in the same buffer did, as far as anything reading the trace can tell.
+    none,
+};
+
 // --- the tracepoint table ----------------------------------------------------
 
 struct tracepoint_entry {
@@ -921,6 +991,13 @@ struct tracepoint_entry {
     // how a decoder knows which struct a static id means, and the one thing it
     // checks for collisions. See "static ids" above.
     tracepoint_id static_id;
+
+    // How this tracepoint's records carry the moment they were taken. Nothing
+    // in this process reads it either -- the write path is chosen at the call
+    // site, where this is a constant -- but the code generator does: it is what
+    // decides how many bytes of a record's body are the timestamp, and what
+    // they mean. See timestamp_encoding above.
+    timestamp_encoding timestamps;
 };
 
 // The bottom three bits of an entry's address are what tells a decoder it is
@@ -1153,10 +1230,22 @@ void set_all_tracepoints_enabled(bool enabled);
 // a level -- one ring per thread, say -- and there is exactly one chunk of the
 // metadata level, which is the process's stream rather than any thread's.
 //
-// A record is: an id, an unsigned vint timestamp delta, then packed arguments.
-// The delta is from the record before it in the same ring, or from the tick
-// count in the clock_sync record that opens the buffer; see "reading a sync
+// A record is: an id, then its body. The body is the timestamp -- if the
+// tracepoint carries one -- followed by the packed arguments.
+//
+// Which of the three timestamp encodings the body opens with is a fact about
+// the tracepoint, not about the record, so it is only known once the id has
+// been read: an unsigned vint delta for the usual tracepoint, that same delta
+// measured from the tick count in the record's own first parameter for a
+// clock_sync, and nothing at all for a tracepoint declared with
+// TRACEPOINT_UNTIMED(). See timestamp_encoding above, and "reading a sync
 // record back" below.
+//
+// That is why the timestamp is described here as part of the body rather than
+// as a second header field. A decoder reads it in the code the id selects,
+// beside the arguments, which is what lets a tracepoint leave it out or write
+// it in a form of its own without every other record paying for the
+// possibility.
 //
 // The id is one of two things, told apart by the bottom three bits of its first
 // byte. All zero: eight bytes of tracepoint entry address, which is what a
@@ -1175,9 +1264,10 @@ void set_all_tracepoints_enabled(bool enabled);
 // unloaded and another mapped over the range it had, so one address is two
 // tracepoints at two different moments. What makes it decodable is the metadata
 // stream below, read alongside the timestamp.
-// The smallest header a record identified by its entry can have: the address,
-// and the shortest timestamp vint. A record with a static id has a shorter one
-// still -- two bytes, for a small id and a small delta.
+// The smallest a record identified by its entry can be, arguments aside: the
+// address, and the shortest timestamp vint. A record with a static id is
+// shorter -- two bytes, for a small id and a small delta -- and an untimed one
+// with a static id is a single byte.
 inline constexpr std::size_t record_header_size = sizeof(std::uint64_t) + 1;
 
 // "TRC2", little-endian. A trace that does not start with it is not one, which
@@ -1247,13 +1337,18 @@ inline constexpr std::uint32_t trace_magic = 0x32435254;
 // A clock_sync record is a tick count -- `tsc`, its first parameter -- beside a
 // wall clock reading, plus the rate the process believed in when it was written.
 //
-// `tsc` is a parameter and not the record's own header because a header is a
-// *delta*: every record on the wire says how long after the record before it,
-// and the first record of a buffer has nothing before it to count from. So a
-// sync record carries the count its buffer's deltas are measured from, and a
-// decoder reads a sync as `tsc` plus its own header rather than as the header
-// alone. That is what keeps every header inside a vint, whatever the machine's
-// counter has climbed to; see write_int() above.
+// `tsc` is a parameter and not the record's own timestamp because a timestamp
+// is a *delta*: every record on the wire says how long after the record before
+// it, and the first record of a buffer has nothing before it to count from. So
+// a sync record carries the count its buffer's deltas are measured from, and a
+// decoder reads a sync as `tsc` plus its own delta rather than as the delta
+// alone. That is what keeps every one of them inside a vint, whatever the
+// machine's counter has climbed to; see write_int() above.
+//
+// That is the whole of what timestamp_encoding::sync means, and the reason a
+// decoder reads a record's timestamp only after its id has said which
+// tracepoint it is: two records can carry the same bytes and mean different
+// moments.
 //
 // Two of them bracket most of a trace, and that is the case worth writing code
 // for:
@@ -1301,7 +1396,7 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // tracepoint_id::none. Only the entry itself goes in `tracepoints`, so that the
 // section stays an array the code generator can index; the strings live in
 // sections of their own.
-#define TRACER_TRACEPOINT_ENTRY(name_, key_, id_, ...)                                    \
+#define TRACER_TRACEPOINT_ENTRY(name_, key_, id_, stamps_, ...)                           \
     static constexpr auto tracer_sig_ __attribute__((                                     \
         section("tracepoint_signatures"), used)) =                                        \
         ::tracer::signature_builder<                                                      \
@@ -1318,14 +1413,25 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
                                           __PRETTY_FUNCTION__,                            \
                                           tracer_sig_.data(),                             \
                                           key_,                                           \
-                                          id_}
+                                          id_,                                            \
+                                          stamps_}
 
-// The record: its id, the timestamp delta, and the arguments. `id_word_` and
-// `id_size_` are the id field as it goes on the wire; see write_record().
-#define TRACER_RECORD(level_, id_word_, id_size_, ...)                                    \
+// The record: its id, its timestamp if it has one, and the arguments.
+// `id_word_` and `id_size_` are the id field as it goes on the wire; see
+// write_record().
+//
+// `stamps_` is a constant expression, so the branch below is folded and a call
+// site compiles to exactly one of the two write paths. A ternary rather than an
+// `if constexpr` because what it chooses between is how one variable is
+// initialised, and the two calls differ only in the timestamp.
+#define TRACER_RECORD(level_, stamps_, id_word_, id_size_, ...)                           \
     const std::size_t tracer_size_ = ::tracer::args_size(__VA_ARGS__);                    \
     std::byte* tracer_out_ =                                                              \
-        ::tracer::local_tracer->write((level_), (id_word_), (id_size_), tracer_size_);    \
+        (stamps_) == ::tracer::timestamp_encoding::none                                   \
+            ? ::tracer::local_tracer->write_untimed((level_), (id_word_), (id_size_),     \
+                                                    tracer_size_)                         \
+            : ::tracer::local_tracer->write((level_), (id_word_), (id_size_),             \
+                                            tracer_size_);                                \
     ::tracer::serialize_args(tracer_out_ __VA_OPT__(, ) __VA_ARGS__)
 
 // The id of a record identified by its entry: the entry's address, all eight
@@ -1333,6 +1439,20 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // the two only ever appear together.
 #define TRACER_ENTRY_ID_WORD                                                              \
     static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&tracer_tp_))
+
+// The gated form, which TRACEPOINT() and TRACEPOINT_UNTIMED() are the two
+// spellings of: `stamps_` is the one thing they differ in, so it is the one
+// parameter this takes over theirs.
+#define TRACER_KEYED_TRACEPOINT(level_, name_, stamps_, ...)                              \
+    do {                                                                                  \
+        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
+        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_, ::tracer::tracepoint_id::none,       \
+                                (stamps_) __VA_OPT__(, ) __VA_ARGS__);                    \
+        if (static_branch_unlikely(&tracer_key_)) {                                         \
+            TRACER_RECORD(level_, (stamps_), TRACER_ENTRY_ID_WORD,                        \
+                          sizeof(std::uint64_t) __VA_OPT__(, ) __VA_ARGS__);              \
+        }                                                                                 \
+    } while (0)
 
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
 //
@@ -1365,13 +1485,38 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // parameter *names* -- as opposed to their types -- reach the signature; see
 // signature_builder above.
 #define TRACEPOINT(level_, name_, ...)                                                    \
+    TRACER_KEYED_TRACEPOINT(level_, name_,                                                \
+                            ::tracer::timestamp_encoding::delta __VA_OPT__(, ) __VA_ARGS__)
+
+// TRACEPOINT_UNTIMED(level, name, "param", value, ...)
+//
+// The same, for a record that carries no timestamp: it happened when the record
+// before it in the same buffer did, and a decoder hands it that one's.
+//
+// What it saves is the clock read and the one to eight bytes the delta would
+// have taken. What it costs is that the record is only located as precisely as
+// its neighbours are -- so this is for an event that follows another one
+// closely and always: the second half of a pair, or one row of a snapshot being
+// dumped in a loop. A consumer is told which it is looking at: the metadata a
+// generated decoder hands the callback says whether the timestamp was the
+// record's own. See timestamp_encoding above.
+#define TRACEPOINT_UNTIMED(level_, name_, ...)                                            \
+    TRACER_KEYED_TRACEPOINT(level_, name_,                                                \
+                            ::tracer::timestamp_encoding::none __VA_OPT__(, ) __VA_ARGS__)
+
+// The same for a tracepoint named by a static id, in the two spellings below.
+#define TRACER_STATIC_ID_TRACEPOINT(id_, level_, name_, stamps_, ...)                     \
     do {                                                                                  \
+        constexpr ::tracer::tracepoint_id tracer_id_ = (id_);                             \
+        static_assert(::tracer::valid_tracepoint_id(tracer_id_),                          \
+                      "a static tracepoint id must be neither tracepoint_id::none nor "   \
+                      "above tracer::max_tracepoint_id");                                 \
         DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
-        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_,                                      \
-                                ::tracer::tracepoint_id::none __VA_OPT__(, ) __VA_ARGS__); \
-        if (static_branch_unlikely(&tracer_key_)) {                                         \
-            TRACER_RECORD(level_, TRACER_ENTRY_ID_WORD,                                   \
-                          sizeof(std::uint64_t) __VA_OPT__(, ) __VA_ARGS__);              \
+        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_, tracer_id_,                          \
+                                (stamps_) __VA_OPT__(, ) __VA_ARGS__);                    \
+        if (static_branch_unlikely(&tracer_key_)) {                                        \
+            TRACER_RECORD(level_, (stamps_), ::tracer::static_id_word(tracer_id_),        \
+                          ::tracer::static_id_size(tracer_id_) __VA_OPT__(, ) __VA_ARGS__); \
         }                                                                                 \
     } while (0)
 
@@ -1395,17 +1540,28 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // the constant it advances the cursor by, so a shorter id is genuinely shorter
 // work and not a branch on a length.
 #define TRACEPOINT_STATIC_ID(id_, level_, name_, ...)                                     \
+    TRACER_STATIC_ID_TRACEPOINT(id_, level_, name_,                                       \
+                                ::tracer::timestamp_encoding::delta __VA_OPT__(, ) __VA_ARGS__)
+
+// TRACEPOINT_STATIC_ID_UNTIMED(id, level, name, "param", value, ...)
+//
+// Both shortenings at once, which is the smallest a record gets: one byte of
+// id, no timestamp, and the arguments. For the tracepoint in the innermost
+// loop, where the two things a record costs beyond its arguments are both
+// things the record before it already paid for.
+#define TRACEPOINT_STATIC_ID_UNTIMED(id_, level_, name_, ...)                             \
+    TRACER_STATIC_ID_TRACEPOINT(id_, level_, name_,                                       \
+                                ::tracer::timestamp_encoding::none __VA_OPT__(, ) __VA_ARGS__)
+
+// The ungated form. Also what writes the clock sync, which is the one
+// tracepoint timed from a parameter of its own -- and the one caller that
+// passes anything but `delta` here.
+#define TRACER_UNGATED_TRACEPOINT(level_, name_, stamps_, ...)                            \
     do {                                                                                  \
-        constexpr ::tracer::tracepoint_id tracer_id_ = (id_);                             \
-        static_assert(::tracer::valid_tracepoint_id(tracer_id_),                          \
-                      "a static tracepoint id must be neither tracepoint_id::none nor "   \
-                      "above tracer::max_tracepoint_id");                                 \
-        DEFINE_STATIC_KEY_FALSE_LOCAL(tracer_key_, name_);                                \
-        TRACER_TRACEPOINT_ENTRY(name_, &tracer_key_, tracer_id_ __VA_OPT__(, ) __VA_ARGS__); \
-        if (static_branch_unlikely(&tracer_key_)) {                                        \
-            TRACER_RECORD(level_, ::tracer::static_id_word(tracer_id_),                   \
-                          ::tracer::static_id_size(tracer_id_) __VA_OPT__(, ) __VA_ARGS__); \
-        }                                                                                 \
+        TRACER_TRACEPOINT_ENTRY(name_, nullptr, ::tracer::tracepoint_id::none,            \
+                                (stamps_) __VA_OPT__(, ) __VA_ARGS__);                    \
+        TRACER_RECORD(level_, (stamps_), TRACER_ENTRY_ID_WORD,                            \
+                      sizeof(std::uint64_t) __VA_OPT__(, ) __VA_ARGS__);                  \
     } while (0)
 
 // The same, without a key: a tracepoint that is always recorded.
@@ -1418,12 +1574,8 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // The entry's key is null, which is how is_enabled() and the two functions that
 // flip keys by name know to pass it over.
 #define TRACEPOINT_UNGATED(level_, name_, ...)                                            \
-    do {                                                                                  \
-        TRACER_TRACEPOINT_ENTRY(name_, nullptr,                                           \
-                                ::tracer::tracepoint_id::none __VA_OPT__(, ) __VA_ARGS__); \
-        TRACER_RECORD(level_, TRACER_ENTRY_ID_WORD,                                       \
-                      sizeof(std::uint64_t) __VA_OPT__(, ) __VA_ARGS__);                  \
-    } while (0)
+    TRACER_UNGATED_TRACEPOINT(level_, name_,                                              \
+                              ::tracer::timestamp_encoding::delta __VA_OPT__(, ) __VA_ARGS__)
 
 // --- a tracer's own records ---------------------------------------------------
 //
@@ -1466,8 +1618,8 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
     note_objects_changed();
 }
 
-inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t id_word,
-                                             std::size_t id_size, std::size_t args_size) {
+inline buffer_group& trace_buffers::rotate_for(event_level level,
+                                              [[maybe_unused]] std::size_t args_size) {
     buffer_group& group = groups_[static_cast<std::size_t>(level)];
     assert(args_size + max_record_header_size <= group.buffer_size() &&
            "record larger than one trace buffer");
@@ -1496,7 +1648,22 @@ inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t id_
     if (level != event_level::metadata) {
         write_clock_sync(level);
     }
-    return group.write_record(args_size, id_word, id_size, TRACER_TIMESTAMP());
+    return group;
+}
+
+inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t id_word,
+                                            std::size_t id_size, std::size_t args_size) {
+    return rotate_for(level, args_size)
+        .write_record(args_size, id_word, id_size, TRACER_TIMESTAMP());
+}
+
+// The untimed record inherits the moment of the record before it, and after a
+// rotation that record is the sync above -- so it is stamped with the tick
+// count the fresh buffer was rebased to, which is the closest thing to the
+// truth a record carrying no time of its own can be given.
+inline std::byte* trace_buffers::write_slow_untimed(event_level level, std::uint64_t id_word,
+                                                    std::size_t id_size, std::size_t args_size) {
+    return rotate_for(level, args_size).write_record_untimed(args_size, id_word, id_size);
 }
 
 inline void trace_buffers::write_clock_sync(event_level level, bool always) {
@@ -1520,9 +1687,10 @@ inline void trace_buffers::write_clock_sync(event_level level, bool always) {
     // for it before it has read the rest.
     const std::uint64_t tsc = TRACER_TIMESTAMP();
     groups_[static_cast<std::size_t>(level)].rebase(tsc);
-    TRACEPOINT_UNGATED(level, "clock_sync", "tsc", tsc, "realtime_ns",
-                       static_cast<std::uint64_t>(TRACER_REALTIME_NS()), "ticks_per_second",
-                       tsc_ticks_per_second());
+    TRACER_UNGATED_TRACEPOINT(level, "clock_sync", ::tracer::timestamp_encoding::sync, "tsc",
+                              tsc, "realtime_ns",
+                              static_cast<std::uint64_t>(TRACER_REALTIME_NS()),
+                              "ticks_per_second", tsc_ticks_per_second());
     local_tracer = previous;
     syncing_ = false;
 }

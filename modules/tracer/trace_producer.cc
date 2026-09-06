@@ -88,6 +88,30 @@ void run_demo() {
     TRACEPOINT(event_level::info, "table_opened", "name", "anonymous", "opened_at",
                srcloc::location::none());
 
+    // A snapshot: one record to open it, a row per table, and one to close it.
+    // The rows go down back to back in a loop, between the same two moments,
+    // and a timestamp on each would be a clock read and a vint spent saying
+    // what the record before it already said -- so they are written with
+    // TRACEPOINT_STATIC_ID_UNTIMED(), which is the smallest a record gets: one
+    // byte of id and the arguments.
+    //
+    // What a consumer gets back is each row carrying the moment of the record
+    // before it, and metadata saying that the moment is not the row's own. See
+    // timestamp_encoding in tracer.h.
+    TRACEPOINT(event_level::info, "table_snapshot_begin", "tables",
+               static_cast<std::uint32_t>(3));
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        TRACEPOINT_STATIC_ID_UNTIMED(demo::table_snapshot_row_id, event_level::info,
+                                     "table_snapshot_row", "table",
+                                     i == 0 ? "users" : (i == 1 ? "sessions" : "anonymous"),
+                                     "rows", static_cast<std::uint32_t>(10 * (i + 1)));
+    }
+    // Untimed and identified by its entry, so the trace holds one of each shape.
+    // It is also the last record of its ring, which is the case a consumer
+    // interpolating times for a run of these has to have an answer for: there
+    // is no timed record after it to interpolate towards.
+    TRACEPOINT_UNTIMED(event_level::info, "table_snapshot_end");
+
     TRACEPOINT(event_level::info, "shutting_down");
 }
 

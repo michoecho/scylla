@@ -31,6 +31,7 @@ namespace demo {
 // a misread trace.
 inline constexpr ::tracer::tracepoint_id shared_event_id{1};
 inline constexpr ::tracer::tracepoint_id request_header_id{2};
+inline constexpr ::tracer::tracepoint_id table_snapshot_row_id{3};
 
 // The id is on the *tracepoint*, not on the copy, so both objects that compile
 // this header write the same one -- which is the same thing they already do

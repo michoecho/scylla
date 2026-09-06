@@ -27,6 +27,23 @@
 // to_string() for when text is what is wanted, and that is the whole of the
 // formatting.
 //
+// --- when a record happened ---------------------------------------------------
+//
+// A record's timestamp is generated code too, and for the same reason its
+// arguments are: how a record carries the moment it was taken is a fact about
+// its tracepoint. So the timestamp is read as the front of a record's *body*,
+// by the reader the id selects, rather than as a second field of every header
+// -- which is what lets a tracepoint declared with TRACEPOINT_UNTIMED() leave
+// it out entirely, and the tracer's own clock_sync write it in a form of its
+// own. See timestamp_encoding in tracer.h.
+//
+// What a consumer sees of that is one flag. A record with no timestamp is
+// handed the moment of the record before it in its buffer, and the metadata
+// passed to the callback says that the moment is not the record's own; nothing
+// is interpolated here. A consumer that needs a distinct time for every event
+// -- to draw them on a timeline, say -- is the one with an opinion about what
+// such a record's time should be, and it has the flag to act on.
+//
 // --- resolving a location -----------------------------------------------------
 //
 // One wire type is not decodable from the tables alone. A `srcloc::location`

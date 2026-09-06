@@ -901,7 +901,16 @@ cp third-party/scylladb/ignored/workdir_01/traces/<stamp>/decoder.h \
 ```
 
 A trace is decoded against the object it came from by build ID, so a mismatched
-decoder does not silently misdecode -- it refuses. See "the metadata stream" in
+decoder does not silently misdecode -- it refuses.
+
+The copy here has one edit on top of what Scylla's snapshot wrote: a record's
+timestamp is now read as the front of its *body*, by the reader its id selects,
+rather than as a second field of every header -- which is what lets a tracepoint
+carry no timestamp at all. The wire format of a timed record is unchanged, so
+the same traces still decode; what changed is the shape of the generated code
+and the `has_timestamp` flag it now hands the callback. `modules/tracer`'s
+generator is the source of truth, and a fresh snapshot's `decoder.h` will have
+this without the edit. See "the metadata stream" in
 `modules/tracer/include/tracer/tracer.h`.
 
 The `decoder.h` and the `.trace` files it reads are **one pair**. The metadata

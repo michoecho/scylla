@@ -54,7 +54,9 @@
 //
 //   pass_gather       argv                     -> files, nodes, cpus
 //   pass_decode       files                    -> every event table, syncs,
-//                                                 locations
+//                                                 locations. Records that carry
+//                                                 no timestamp are given one
+//                                                 here; see interpolate_untimed
 //   pass_order        event tables             -> the same, in timestamp order
 //   pass_retime       syncs + event tables     -> every ts in node 0's clock
 //   pass_attribute    switches + the rest      -> row.task where the record
@@ -303,10 +305,17 @@ struct rpc_row {
 
 // The one entry every record above also gets, and the only table that is a
 // merge of the others. `index` is a row of the table `table` names.
+//
+// `timed` is false for a record of a tracepoint that carries no timestamp: the
+// decoder hands such a record the moment of the record before it in its buffer,
+// and says that it did. pass_decode spreads a run of them out between the timed
+// records either side -- see interpolate_untimed -- so by the time anything
+// draws them their `ts` is made up, and this is what says so.
 struct timeline_row {
     int64_t ts = 0;
     uint16_t table = 0;
     uint32_t index = 0;
+    bool timed = true;
 };
 
 // A rectangle. Which kind it is comes from the table it was drawn from, and
@@ -816,10 +825,17 @@ struct decode_sink {
     // Append a row, and the timeline entry that points at it. Every event in
     // the trace goes through here, which is what makes the timeline complete
     // by construction rather than by a pass that has to be remembered.
+    //
+    // The row is stamped here rather than by its caller, because what a record
+    // says about when it happened is the metadata's answer and not the event's
+    // -- and for a record that carries no timestamp it is only half an answer;
+    // see interpolate_untimed.
     template <typename Row>
-    void push(table_id which, std::vector<Row>& into, Row row) const {
-        row.ts = int64_t(row.ts);
-        t.timeline.push_back({row.ts, uint16_t(which), uint32_t(into.size())});
+    void push(table_id which, std::vector<Row>& into, Row row,
+              const trace::tracepoint_metadata& m) const {
+        row.ts = int64_t(m.timestamp);
+        t.timeline.push_back(
+            {row.ts, uint16_t(which), uint32_t(into.size()), m.has_timestamp});
         into.push_back(row);
     }
 
@@ -842,27 +858,27 @@ struct decode_sink {
         return it->second;
     }
 
-    void switch_to(uint8_t cause, uint64_t prev, uint64_t task, uint64_t ts, uint32_t loc) const {
+    void switch_to(uint8_t cause, uint64_t prev, uint64_t task,
+                   const trace::tracepoint_metadata& m, uint32_t loc) const {
         switch_row r;
-        r.ts = int64_t(ts);
         r.task = task;
         r.prev = prev;
         r.cause = cause;
         r.loc = loc;
-        push(tab_switch, t.switches, r);
+        push(tab_switch, t.switches, r, m);
     }
 
     void operator()(const trace::run_task& e, const trace::tracepoint_metadata& m) const {
-        switch_to(sw_run_task, e.prev, e.task, m.timestamp, intern(e.at));
+        switch_to(sw_run_task, e.prev, e.task, m, intern(e.at));
     }
     void operator()(const trace::cql_request& e, const trace::tracepoint_metadata& m) const {
-        switch_to(sw_cql_request, e.prev, e.task, m.timestamp, 0);
+        switch_to(sw_cql_request, e.prev, e.task, m, 0);
     }
     void operator()(const trace::semaphore_execute& e, const trace::tracepoint_metadata& m) const {
-        switch_to(sw_semaphore, e.prev, e.task, m.timestamp, 0);
+        switch_to(sw_semaphore, e.prev, e.task, m, 0);
     }
     void operator()(const trace::execution_stage& e, const trace::tracepoint_metadata& m) const {
-        switch_to(sw_execution_stage, e.prev, e.task, m.timestamp, 0);
+        switch_to(sw_execution_stage, e.prev, e.task, m, 0);
     }
     // An inbound request opens a task chain on this shard, which is a switch in
     // exactly the sense the four above are -- and it is also the far end of a
@@ -883,79 +899,73 @@ struct decode_sink {
         t.rpcs.push_back(r);
 
         switch_row s;
-        s.ts = int64_t(m.timestamp);
         s.task = e.task;
         s.prev = e.prev;
         s.cause = sw_rpc_handled;
         s.rpc = rpc_index;
-        push(tab_switch, t.switches, s);
+        push(tab_switch, t.switches, s, m);
     }
 
-    void tq_run(uint8_t kind, int32_t group, uint64_t ts) const {
+    void tq_run(uint8_t kind, int32_t group, const trace::tracepoint_metadata& m) const {
         tq_run_row r;
-        r.ts = int64_t(ts);
         r.kind = kind;
         r.group = group;
-        push(tab_tq_run, t.tq_runs, r);
+        push(tab_tq_run, t.tq_runs, r, m);
     }
     void operator()(const trace::task_queue_run_begin& e,
                     const trace::tracepoint_metadata& m) const {
-        tq_run(tq_begin, int32_t(e.scheduling_group), m.timestamp);
+        tq_run(tq_begin, int32_t(e.scheduling_group), m);
     }
     void operator()(const trace::task_queue_run_end&,
                     const trace::tracepoint_metadata& m) const {
-        tq_run(tq_end, none, m.timestamp);
+        tq_run(tq_end, none, m);
     }
 
     void operator()(const trace::io_begin& e, const trace::tracepoint_metadata& m) const {
         io_begin_row r;
-        r.ts = int64_t(m.timestamp);
         r.task = e.task;
         r.io = e.io;
-        push(tab_io_begin, t.io_begins, r);
+        push(tab_io_begin, t.io_begins, r, m);
     }
     void operator()(const trace::io_end& e, const trace::tracepoint_metadata& m) const {
         io_end_row r;
-        r.ts = int64_t(m.timestamp);
         r.task = e.task;
         r.io = e.io;
-        push(tab_io_end, t.io_ends, r);
+        push(tab_io_end, t.io_ends, r, m);
     }
 
     void operator()(const trace::prepared_query_run& e,
                     const trace::tracepoint_metadata& m) const {
         prep_run_row r;
-        r.ts = int64_t(m.timestamp);
         r.id = d.strings.put(e.id);
-        push(tab_prep_run, t.prep_runs, r);
+        push(tab_prep_run, t.prep_runs, r, m);
     }
     void delta(uint8_t kind, std::string_view keyspace, std::string_view statement,
-               std::span<const std::byte> id, uint64_t ts) const {
+               std::span<const std::byte> id, const trace::tracepoint_metadata& m) const {
         prep_delta_row r;
-        r.ts = int64_t(ts);
         r.kind = kind;
         r.id = d.strings.put(id);
         r.keyspace = d.strings.put(keyspace);
         r.statement = d.strings.put(statement);
-        push(tab_prep_delta, t.prep_deltas, r);
+        push(tab_prep_delta, t.prep_deltas, r, m);
     }
     void operator()(const trace::prepared_statement_added& e,
                     const trace::tracepoint_metadata& m) const {
-        delta(prep_added, e.keyspace, e.statement, e.id, m.timestamp);
+        delta(prep_added, e.keyspace, e.statement, e.id, m);
     }
     void operator()(const trace::prepared_statement_removed& e,
                     const trace::tracepoint_metadata& m) const {
-        delta(prep_removed, e.keyspace, e.statement, e.id, m.timestamp);
+        delta(prep_removed, e.keyspace, e.statement, e.id, m);
     }
     void operator()(const trace::prepared_statement_snapshot_entry& e,
                     const trace::tracepoint_metadata& m) const {
-        delta(prep_snapshot, e.keyspace, e.statement, e.id, m.timestamp);
+        delta(prep_snapshot, e.keyspace, e.statement, e.id, m);
     }
 
     void connection(uint8_t kind, uint64_t id, std::string_view local, std::string_view remote,
-                    uint64_t msb, uint64_t lsb, uint32_t peer_shard, uint64_t ts) const {
+                    uint64_t msb, uint64_t lsb, uint32_t peer_shard,
+                    const trace::tracepoint_metadata& m) const {
         conn_row r;
-        r.ts = int64_t(ts);
         r.kind = kind;
         r.connection = id;
         r.local = d.strings.put(local);
@@ -963,52 +973,51 @@ struct decode_sink {
         r.peer_boot_msb = msb;
         r.peer_boot_lsb = lsb;
         r.peer_shard = peer_shard;
-        push(tab_conn, t.conns, r);
+        push(tab_conn, t.conns, r, m);
     }
     void operator()(const trace::rpc_connection_open& e,
                     const trace::tracepoint_metadata& m) const {
         connection(conn_open, e.connection, e.local, e.remote, e.peer_boot_msb, e.peer_boot_lsb,
-                   e.peer_shard, m.timestamp);
+                   e.peer_shard, m);
     }
     void operator()(const trace::rpc_connection_close& e,
                     const trace::tracepoint_metadata& m) const {
         connection(conn_close, e.connection, {}, {}, e.peer_boot_msb, e.peer_boot_lsb,
-                   e.peer_shard, m.timestamp);
+                   e.peer_shard, m);
     }
     void operator()(const trace::rpc_connection_snapshot_entry& e,
                     const trace::tracepoint_metadata& m) const {
         connection(conn_snapshot, e.connection, e.local, e.remote, e.peer_boot_msb,
-                   e.peer_boot_lsb, e.peer_shard, m.timestamp);
+                   e.peer_boot_lsb, e.peer_shard, m);
     }
 
     void message(uint8_t kind, uint64_t conn, uint64_t seq, int64_t msg_id, uint64_t task,
-                 uint64_t ts) const {
+                 const trace::tracepoint_metadata& m) const {
         rpc_row r;
-        r.ts = int64_t(ts);
         r.task = task;
         r.connection = conn;
         r.sequence = seq;
         r.msg_id = msg_id;
         r.kind = kind;
-        push(tab_rpc, t.rpcs, r);
+        push(tab_rpc, t.rpcs, r, m);
     }
     // The task on a send is the one that *queued* the buffer, carried by the
     // record: the connection's send loop is what actually writes it, and
     // asking what was running on the shard would answer "the connection" and
     // pull every unrelated request into the walk.
     void operator()(const trace::rpc_message_sent& e, const trace::tracepoint_metadata& m) const {
-        message(rpc_sent, e.connection, e.sequence, 0, e.task, m.timestamp);
+        message(rpc_sent, e.connection, e.sequence, 0, e.task, m);
     }
     void operator()(const trace::rpc_message_received& e,
                     const trace::tracepoint_metadata& m) const {
-        message(rpc_received, e.connection, e.sequence, 0, 0, m.timestamp);
+        message(rpc_received, e.connection, e.sequence, 0, 0, m);
     }
     void operator()(const trace::rpc_reply_sent& e, const trace::tracepoint_metadata& m) const {
-        message(rpc_reply_sent, e.connection, e.sequence, e.msg_id, e.task, m.timestamp);
+        message(rpc_reply_sent, e.connection, e.sequence, e.msg_id, e.task, m);
     }
     void operator()(const trace::rpc_reply_received& e,
                     const trace::tracepoint_metadata& m) const {
-        message(rpc_reply_received, e.connection, e.sequence, e.msg_id, 0, m.timestamp);
+        message(rpc_reply_received, e.connection, e.sequence, e.msg_id, 0, m);
     }
 
     // Not an event of the program's own: it is how pass_retime dates the rest.
@@ -1019,6 +1028,66 @@ struct decode_sink {
     template <typename Event>
     void operator()(const Event&, const trace::tracepoint_metadata&) const {}
 };
+
+// The `ts` of one row, whichever table it is in. A visit of the eight rather
+// than a switch, for the same reason the generic passes are: a table is added
+// in one place.
+void set_row_ts(cpu_tables& t, uint16_t table, uint32_t index, int64_t ts) {
+    for_each_table(t, [&](table_id which, auto& rows) {
+        if (uint16_t(which) == table) {
+            rows[index].ts = ts;
+        }
+    });
+}
+
+// Give the records that carried no timestamp times of their own.
+//
+// A tracepoint declared TRACEPOINT_UNTIMED() writes none, and the decoder hands
+// such a record the moment of the record before it in its buffer -- so a run of
+// them arrives as several events stamped identically, at the moment the run
+// opened. That is the truth about them and it is not something this viewer can
+// draw: a slice needs a width, the log needs an order, and a dozen events at
+// one instant are a dozen rectangles on top of each other.
+//
+// So a run of n of them between two timed records is spread evenly across the
+// gap: the i'th is placed at t1 + (t2 - t1) * i / (n + 1). The times are made
+// up, and the only thing they claim is what the trace does claim -- that these
+// happened after t1, in this order, and before t2. A run with nothing timed
+// after it keeps what it was given, there being nothing to interpolate towards.
+//
+// Over the entries one file's decode appended, because that is the span in
+// which "the record before it" means anything: a shard's levels are separate
+// files, read one after the other and put in order later by pass_order.
+//
+// The rows the timeline does not name keep the decoder's timestamp: today that
+// is the rpc row of an rpc_request_handled, whose tracepoint is timed anyway.
+void interpolate_untimed(cpu_tables& t, size_t from) {
+    for (size_t at = from; at < t.timeline.size();) {
+        if (t.timeline[at].timed) {
+            ++at;
+            continue;
+        }
+        size_t end = at;
+        while (end < t.timeline.size() && !t.timeline[end].timed) {
+            ++end;
+        }
+        if (end == t.timeline.size()) {
+            break;
+        }
+        // t1 is what the decoder gave the run, which is the moment of the last
+        // timed record before it -- and is not necessarily the entry before it
+        // here, because not every record becomes a timeline entry.
+        const int64_t t1 = t.timeline[at].ts;
+        const int64_t t2 = t.timeline[end].ts;
+        const auto n = int64_t(end - at);
+        for (size_t i = at; i < end; ++i) {
+            const int64_t ts = t1 + (t2 - t1) * int64_t(i - at + 1) / (n + 1);
+            t.timeline[i].ts = ts;
+            set_row_ts(t, t.timeline[i].table, t.timeline[i].index, ts);
+        }
+        at = end;
+    }
+}
 
 void pass_decode(trace_data& d, trace::dso_directory& dsos) {
     std::unordered_map<uint64_t, uint32_t> interned;
@@ -1042,12 +1111,18 @@ void pass_decode(trace_data& d, trace::dso_directory& dsos) {
         // tables and consistent, and the other files are unaffected. The
         // failure worth expecting is a decoder.h that does not match these
         // traces: see "regenerating decoder.h" in the README.
+        const size_t first = t.timeline.size();
         try {
             trace::decode(bytes,
                           decode_sink{d, t, uint32_t(f.cpu), uint32_t(f.node), interned}, dsos);
         } catch (const std::exception& e) {
             fmt::print("{}: {}\n", f.path.filename().string(), e.what());
         }
+        // Over what this file appended, decode order and all, before the next
+        // file's records are put after it. A decode that threw part way through
+        // still leaves the records it did read, and they are interpolated like
+        // any others.
+        interpolate_untimed(t, first);
         fmt::print("{} (node {} shard {} {}): {} events on this cpu so far\n",
                    f.path.filename().string(), f.node, f.shard,
                    f.level.empty() ? "all levels" : f.level, t.timeline.size());
