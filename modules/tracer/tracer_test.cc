@@ -924,10 +924,22 @@ TEST_CASE("a tracer records the objects it was built with, and the changes it is
     CHECK(std::equal(loaded.begin(), loaded.end(), unloaded.begin()));
 
     // A tracer built now describes what is loaded now, which is one object
-    // again -- the prologue is the same shape whenever it is written, down to
-    // the timestamps that are the only thing separating these two.
+    // again -- the prologue is the same shape whenever it is written.
+    //
+    // The same *length* is more than can be asked of it. Every record opens
+    // with a timestamp delta, and a vint is as long as the gap it measures: the
+    // prologue at the top of this test was written into a cold process, this
+    // one into a process that has since opened and closed a library, so a gap
+    // that took two bytes to describe there may take one here. Three records --
+    // the opening clock sync, the count, and the one load event -- and seven
+    // bytes of slack apiece. A second object costs the better part of eighty --
+    // a build ID and three addresses -- which is what this is really asking
+    // about, and is well clear of the slack.
     const tracer::trace_buffers fresh(4096, 4096, 4096, 512);
-    CHECK(metadata(fresh).size() == alone.size());
+    const std::size_t slack = 3 * (sizeof(std::uint64_t) - 1);
+    const std::size_t refreshed = metadata(fresh).size();
+    CHECK(refreshed + slack >= alone.size());
+    CHECK(refreshed <= alone.size() + slack);
 }
 
 // Unloading a plugin and loading another over it.
