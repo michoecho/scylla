@@ -1,31 +1,34 @@
 // The events this viewer consumes, as the viewer wants them.
 //
 // This file is the *consumer* half of the trace contract, and it is the half
-// that belongs to this program. The producer half is a `decoder_<build>.h`
-// generated from the binary that wrote a trace, and there is one of those per
-// build of the traced program -- a cluster mid-upgrade has several at once, and
-// two of them may lay the same tracepoint out differently, or spell a field
-// with a different width, or not have it at all.
+// that belongs to this program. The producer half is not a file at all: it is
+// the tracepoint table in each object a snapshot came from, read out of the ELF
+// by tracepoint_table.h. There is one such table per object of per build of the
+// traced program -- a cluster mid-upgrade has several at once, and two of them
+// may lay the same tracepoint out differently, or spell a field with a
+// different width, or not have it at all.
 //
-// So nothing here is read off the wire. `decoder_plugin.cc` compares this file
-// with each build's decoder header, field by field and name by name, and
-// generates the conversion between them; a field this file wants and that
-// build's decoder has not got is reported and left at its default, rather than
-// quietly becoming whatever byte followed it. That is the whole point of
-// writing the events down twice.
+// So nothing here is read off the wire. `decoder_plugin.cc` matches this file
+// against those tables, by name and by field name, and generates the conversion
+// between them; a field this file wants and a build has not got is reported and
+// left at its default, rather than quietly becoming whatever byte followed it.
+// That is the whole point of writing the events down twice.
 //
-// Rules for what may appear here, because a generated converter has to be able
-// to make it from what a decoder holds:
+// Rules for what may appear here, because a generated reader has to be able to
+// fill it in from what a record holds:
 //
 //   * an event is a struct nested in `events`, named exactly as the tracepoint
-//     is named in the decoder;
-//   * a field is an integer, a `std::string_view`, a `std::span<const
-//     std::byte>`, or one of the small structs above `events` -- which are
-//     matched to a decoder's struct of the same name, field by field, the same
-//     way;
-//   * a `std::string_view` may be filled from a decoder's `std::string`, and an
-//     integer from a narrower one of the same signedness. Nothing else
-//     converts.
+//     is named in the table -- and named again in VIEWER_EVENT_LIST at the
+//     bottom, which is the list the generator and the viewer's exported
+//     callbacks are both built from. A struct that is not in that list is one
+//     no trace will ever fill in;
+//   * a field is named exactly as the tracepoint's parameter is, and is an
+//     integer, a `std::string_view`, a `std::span<const std::byte>`, or a
+//     struct whose members are filled in the same way by name (`source_location`
+//     below is the one of those);
+//   * a field is filled from a parameter of the same type, or from a narrower
+//     integer of the same signedness. Nothing else converts, and anything that
+//     does not is reported by name at startup.
 //
 // Everything a view or a span points at lives in the trace buffer, or in the
 // decoder's own event, and is valid only for the duration of the `on_decode_*`
@@ -52,9 +55,10 @@ struct source_location {
     bool resolved = false;
 };
 
-// Which tracepoint a record came from and when it was taken: the decoder's
-// `tracepoint_metadata`, under the name this side uses for it. Everything but
-// `timestamp` is a fact about the call site.
+// Which tracepoint a record came from and when it was taken: what its entry in
+// the object's table said, under the names this side uses for them. Everything
+// but `timestamp` is a fact about the call site, fixed when the object was
+// compiled.
 //
 // `has_timestamp` is false for a record written by a tracepoint that carries no
 // time of its own; `timestamp` is then the moment of the record before it in
@@ -64,15 +68,12 @@ struct event_meta {
     std::string_view file;
     std::int32_t line = 0;
     std::string_view function;
-    // True unless the decoder says otherwise -- which is also what an older
-    // decoder, from before untimed tracepoints existed, means by not having the
-    // field at all: every tracepoint it knows about writes a time of its own.
     bool has_timestamp = true;
     std::uint64_t timestamp = 0;
 };
 
-// The tracepoints, one struct each. A build whose decoder has none of these is
-// not one this viewer can read; a build whose decoder has more of them is
+// The tracepoints, one struct each. A build whose tables have none of these is
+// not one this viewer can read; a build whose tables have more of them is
 // perfectly readable, and the ones not named here are dropped.
 struct events {
     // --- the five ways a reactor picks up a task ---------------------------
@@ -196,3 +197,33 @@ struct events {
 };
 
 }  // namespace viewer
+
+// Every event above, once, as a list something else can be written from.
+//
+// Two things are: the `on_decode_*` symbols the viewer exports, in viewer.cc,
+// and the set of tracepoint names decoder_plugin.cc will bridge. Neither can be
+// derived from the structs above -- C++ has no way to ask a namespace what it
+// contains -- so this is the one place the list is written down, and both read
+// it from here.
+#define VIEWER_EVENT_LIST(X)             \
+    X(run_task)                          \
+    X(cql_request)                       \
+    X(semaphore_execute)                 \
+    X(execution_stage)                   \
+    X(rpc_request_handled)               \
+    X(task_queue_run_begin)              \
+    X(task_queue_run_end)                \
+    X(io_begin)                          \
+    X(io_end)                            \
+    X(prepared_query_run)                \
+    X(prepared_statement_added)          \
+    X(prepared_statement_removed)        \
+    X(prepared_statement_snapshot_entry) \
+    X(rpc_connection_open)               \
+    X(rpc_connection_close)              \
+    X(rpc_connection_snapshot_entry)     \
+    X(rpc_message_sent)                  \
+    X(rpc_message_received)              \
+    X(rpc_reply_sent)                    \
+    X(rpc_reply_received)                \
+    X(clock_sync)

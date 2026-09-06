@@ -218,7 +218,7 @@ records.
 The endpoint returns the directory it wrote, under `<workdir>/traces/<stamp>/`:
 
 ```
-decoder.h                       generated from this binary's tracepoint table
+decoder.h                       generated from this binary's tracepoint table (only main.cc reads it)
 <uuid>.trace                    one file per shard *and level*
 <uuid>.metadata.json            what that file is: build, process, shard, level, times
 ...
@@ -327,7 +327,7 @@ the `dsos/`, and stops the nodes.  What comes out is the shape the viewer is
 handed: `node1/ node2/ node3/ dsos/`.  `ignored/sched-group-run` was made this
 way, as was `ignored/boot-id-run` before it; the two are from different builds,
 and handing both to the viewer at once is the shortest demonstration of what
-"one decoder per build" is for.
+reading several builds' tables into one decoder is for.
 
 The workdirs are kept between runs, because bootstrapping three nodes from
 nothing is minutes; `--fresh` wipes them.
@@ -397,8 +397,9 @@ and the process-side log line at a few tens of microseconds.
 ## The new viewer
 
 `viewer.cc` is a second viewer beside `main.cc`, and where the two disagree it
-is the one to believe. Same traces, same `decoder.h`, same questions -- written
-around its tables instead of around its control flow.
+is the one to believe. Same traces, same questions -- written around its tables
+instead of around its control flow, and reading its decoder out of the objects
+rather than out of a generated header.
 
 ```sh
 TRACE_DSO_DIR=<run>/dsos buck2 run //modules/trace-viewer:viewer -- \
@@ -642,9 +643,8 @@ the reader concurrency semaphore runs its own housekeeping continuations under
 the requesting task's id, sometimes long after the answer went out. The p100
 request in `boot-id-run` was 1014 ms of which 0.4 ms is cpu, and the log showed
 why: four `reader_concurrency_semaphore.cc:1029` records, a second after the
-rest. (`boot-id-run` predates the task-queue tracepoints; the viewer picks the
-`decoder.h` beside it up by itself and says which tracepoints that build has
-not got.)
+rest. (`boot-id-run` predates the task-queue tracepoints, so its objects' tables have
+not got them and `pass_decoder` says so by name.)
 
 **A snapshot record inside a request.** The statement-cache and connection
 dumps are written when the trace is taken, and `pass_attribute` gives a record
@@ -887,108 +887,118 @@ which file the record came out of. That is what `entry::shard` is.
 A sample taken while the shard was between tasks keeps task 0 and appears only
 in this window.
 
-## Decoders, one per build
+## Decoders, read out of the objects
 
-A trace can only be read through the decoder header generated from the binary
-that wrote it: `tracer::generate_decoder_source()` emits it from that binary's
-own tracepoint table, which is the only thing that can describe it, and a
-snapshot writes it beside the `.trace` files. This repo cannot build Scylla, so
-it cannot be a build step.
+Nothing in a trace says what its records mean. A record is an id, a timestamp
+and the packed bytes of its arguments; the names, the parameter names and the
+wire types are in the `tracepoints` section of the **object that wrote it**,
+which the linker filled with one `tracer::tracepoint_entry` per `TRACEPOINT()`.
 
-There is therefore no such thing as *the* decoder. A cluster part way through an
-upgrade writes traces from several binaries at once, its versions disagree about
-what a tracepoint carries, and the viewer is handed all of them together. So the
-viewer holds one decoder per build ID, and it builds them at startup:
-
-```
-                 events.h                    decoder_<build>.h
-        (what the viewer wants)        (what that build actually writes)
-                    \                          /
-                     \   libclang reads both  /
-                      \   and matches them   /
-                       v                    v
-                    plugin.cc  --- clang -->  plugin.so
-                                                 |
-                          trace_plugin_decode()  |  on_decode_<event>()
-                     <-------------------------->
-                             the viewer
-```
-
-`pass_plugins` does it and prints one line per build:
+So that is where the viewer reads them from. `dsos/` already has to be there --
+a source location is an address inside one of those objects and cannot be read
+back without them -- and every object in it is scanned for that section at
+startup:
 
 ```
-build 698a82cdda87ecaf5371ecc9ab907f3133cf4bcf: 21 tracepoints bridged from
-    .../sched-group-run/node1/decoder.h (cached)
-build f6837b4173bba7095abc7bce5a5a04589fe776df: 19 tracepoints bridged from
-    .../boot-id-run/node1/decoder.h (compiled)
-    task_queue_run_begin: this build's decoder has no such tracepoint
-    task_queue_run_end: this build's decoder has no such tracepoint
+   dsos/.build-id/**            events.h
+ (what each build writes)   (what the viewer wants)
+           \                      /
+            \   the generator    /
+             \  matches by name /
+              v                v
+           plugin.cc --- clang --> plugin.so
+                                      |
+               trace_plugin_decode()  |  on_decode_<event>()
+          <---------------------------->
+                    the viewer
 ```
 
-Everything after the first line is something the viewer will not know about that
-build's traces: a tracepoint it has not got, a field it spells differently, a
-field whose type will not convert. None of it is guessed at -- the field stays
-at its default, and the note is printed every run.
+One plugin, not one per build. A build's tracepoints are a *slice* of the ids,
+keyed by the build ID a trace names its objects with, so a cluster part way
+through an upgrade is several slices in one switch. Two builds that lay the same
+tracepoint out differently are two entries with two readers, both delivering into
+the same `events.h` struct -- which the older scheme, where a tracepoint name was
+a C++ struct name, could not do at all.
+
+`pass_decoder` does it and prints what it found:
+
+```
+decoder: 50 tracepoints in 2 objects, 40 of them bridged into events.h (cached)
+    tracepoint "reactor_stall" is in these objects and not in events.h; its
+        records are read past and dropped
+    events.h wants "task_queue_run_begin" and no object here has a tracepoint of
+        that name
+    run_task.at (srcloc): events.h has no field of that name
+```
+
+Everything after the first line is something the viewer will not know about
+these traces: a tracepoint it has not got, a field it spells differently, a field
+whose type will not convert. None of it is guessed at -- the field stays at its
+default, and the note is printed every run.
 
 `modules/trace-viewer/events.h` is the viewer's half of that contract, and it is
 the file to edit when the viewer wants a new field. `decoder_plugin.h` says how
-the two halves are matched.
+the two halves are matched, and `trace_wire.h` is the part that is not generated
+at all: the record format itself.
 
-### Where a decoder header is looked for
+### What the viewer now has to know
 
-Per build, in this order:
+Two things that used to be somebody else's problem, and both are the price of
+not going through a generated header:
 
-```
-$TRACE_DECODER_DIR/decoder_<build-id>.h    a directory of them, one per build
-<snapshot-dir>/decoder_<build-id>.h        the same, beside the traces
-<snapshot-dir>/decoder.h                   what a snapshot writes today
-```
+* **the wire format**, which is `trace_wire.h` -- vints, record ids, the three
+  timestamp encodings, the metadata stream. A trace written by a tracer whose
+  format has moved on is not readable by an older viewer, and says so rather
+  than guessing.
+* **the layout of a `tracepoint_entry`**, which is asserted at both ends:
+  `tracer.h` static_asserts the offsets, and `tracepoint_table.cc` reads them.
+  An object whose table is not that layout is reported by name and skipped --
+  the check is that every entry's name comes out an identifier, which a wrong
+  stride fails within an entry or two.
 
-A snapshot directory holds one node's files and the `decoder.h` for the build
-that wrote them, so the last line is what actually happens; the build-id-named
-forms are for a directory of decoders kept for a cluster. A build with no header
-anywhere is reported by name and its files are skipped -- the other nodes still
-read.
+The upshot: **old snapshots are not readable**, and there is nothing to be done
+about it short of keeping an old viewer. That is deliberate; see "prototyping"
+at the bottom.
 
 ### What it costs, and where it is kept
 
-Reading two headers with libclang and compiling the plugin is a couple of
-seconds per build, so the `.so` is cached under `$TRACE_PLUGIN_CACHE`, or
-`~/.cache/trace-viewer` if that is unset. The key covers the decoder header's
-whole contents, `events.h`, the ABI header and the compiler's version, so a
-cache hit is the same plugin and nothing is stale; a hit costs a `dlopen` and
-about 40 ms of asking the compiler where its headers are.
+Generating the plugin and compiling it is about 2.4 s, so the `.so` is cached
+under `$TRACE_PLUGIN_CACHE`, or `~/.cache/trace-viewer` if that is unset. The
+key covers the generated source -- which stands for the tables it came from,
+whole -- plus `events.h`, `trace_wire.h`, the ABI header, the compiler's version
+and a version number standing for the generator itself, so a cache hit is the
+same plugin and nothing is stale. A hit costs reading the tables again and a
+`dlopen`: 27 ms of a 1.7 s startup on `entry-layout-run`.
 
-Each cache directory is self-contained -- the decoder header it was built from,
-this viewer's `events.h`, the generated `plugin.cc`, the `notes.txt` and the
-`plugin.so` -- so a compile that failed can be repeated by hand from what is in
-it, and the generated bridge can simply be read.
+The plugin is compiled `-Wl,-Bsymbolic`, and that flag is load-bearing. The
+viewer includes `trace_wire.h` too, so its own copies of those inline functions
+are in its `.dynsym` -- put there by the `-rdynamic` the `on_decode_*` symbols
+need -- and without `-Bsymbolic` the plugin's calls to *its* copies bind to the
+viewer's instead. Nothing fails; `pass_decode` is just 210 ms instead of 137.
+
+Each cache directory is self-contained -- the generated `plugin.cc` and the three
+headers it is compiled against -- so a compile that failed can be repeated by
+hand from what is in it, and the generated reader can simply be read. It is worth
+reading: it is a few hundred lines, and it is the whole of what the viewer thinks
+a trace is.
 
 The compiler is `$TRACE_CXX`, or the first of `clang++`, `c++`, `g++` on PATH.
 **The viewer therefore needs a compiler at runtime**: run it from inside
-`nix develop`, where the include paths its wrapper injects are in the
-environment. Without one, `pass_plugins` says so and nothing decodes.
+`nix develop`. Without one, `pass_decoder` says so and nothing decodes.
 
-### An old trace, and the old viewer
-
-The `decoder.h` and the `.trace` files it reads are **one pair**. The metadata
-stream is itself made of tracepoints, so its shape is part of what a decoder is
-generated from: a load event carries the object's base address and extent beside
-its tracepoint table's, which is what lets a source location be read back. An old
-decoder reads old traces and a new one reads new traces, and neither reads the
-other's -- which is the whole reason for the scheme above. (`smoke.trace`
-predates all of this and no longer decodes against anything; nothing reads it.)
+### The old viewer
 
 `modules/trace-viewer/decoder.h` is still checked in, and is still one global
-decoder for the whole program. It is there for `main.cc`, the old viewer, which
-has not been ported; when a tracepoint changes, that copy has to be replaced by
-hand from a fresh snapshot:
+generated decoder for the whole program. It is there for `main.cc`, the old
+viewer, which has not been ported; when a tracepoint changes, that copy has to be
+replaced by hand from a snapshot that carries one:
 
 ```sh
 cp third-party/scylladb/ignored/<run>/node1/decoder.h modules/trace-viewer/decoder.h
 ```
 
-`viewer` does not read it and does not care.
+`viewer` does not read it and does not care. (`smoke.trace` predates all of this
+and no longer decodes against anything; nothing reads it.)
 
 ### Source locations
 
@@ -1063,10 +1073,11 @@ Same 404 locations, all 404 resolved, either way. The viewer prints that count o
 the way in, which is the quick check that a `dsos/` directory is the right one:
 every location unresolved means a missing, stripped or mismatched directory.
 
-`mmap` lives in `dso_directory::object()`, which is in the **generated**
-`decoder.h`. The source of truth is `tracer::generate_decoder_source()` in
-`modules/tracer/codegen.cc`; the copy checked in here was edited to match, so
-regenerating it does not undo this.
+`mmap` lives in `dso_directory::object()`, in `trace_wire.h`, which both the
+viewer and every plugin it compiles include. (The same class appears in the
+generated `decoder.h` the old viewer reads, from
+`tracer::generate_decoder_source()`; the two are the same code and neither is
+derived from the other.)
 
 Stack samples are the exception. `llvm-symbolizer` *does* read debug info, so
 against stripped objects a backtrace comes out as function names from the
@@ -1120,8 +1131,10 @@ switches are at `debug`, so a long run's *samples* survive in the ring while its
 switches have been evicted: an early sample can be a sample with no task, which
 is why the "fell inside a task" count is below the total.
 
-When something else looks wrong, decode headlessly and count. A ~40 line program
-including `decoder.h`, with one `operator()` per tracepoint, will tell you how
+When something else looks wrong, decode headlessly and count. Reading the
+generated `plugin.cc` in the cache directory says exactly what the viewer thinks
+each record is; a ~40 line program over `modules/tracer`'s generated decoder,
+with one `operator()` per tracepoint, will tell you how
 many distinct tasks own an `io_begin` -- if that number is small, the chain is
 broken somewhere. Also worth counting: how many `cql_request` records there are,
 and whether the ids in one shard's file were minted by the other shard's

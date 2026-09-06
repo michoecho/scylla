@@ -808,9 +808,9 @@ void pass_gather(trace_data& d, int argc, char** argv) {
 //  5. decoding -- files -> the event tables, syncs, locations
 // ============================================================================
 //
-// Four things, in this order: the sink a record lands in, the symbols a decoder
-// plugin calls to reach it, the pass that builds those plugins, and the pass
-// that reads the files through them.
+// Four things, in this order: the sink a record lands in, the symbols the
+// decoder plugin calls to reach it, the pass that builds that plugin, and the
+// pass that reads the files through it.
 //
 // One file is one (node, shard, level), and it carries its own metadata stream
 // saying where that process's objects were mapped, so it decodes on its own.
@@ -818,11 +818,12 @@ void pass_gather(trace_data& d, int argc, char** argv) {
 // an entry naming that row is appended to the cpu's timeline. Nothing is
 // sorted here -- see pass_order.
 //
-// What a record *is* comes from the build that wrote it, and there is one
-// decoder per build; see decoder_plugin.h. A tracepoint that build has and
-// events.h has not is dropped by the plugin and never arrives here. A field
-// events.h wants and that build has not got arrives at its default, and
-// pass_plugins has said so by name.
+// What a record *is* comes from the tracepoint tables of the objects it was
+// written by, which are read out of `dsos/` and compiled into one plugin; see
+// decoder_plugin.h. A tracepoint those tables have and events.h has not is
+// dropped by the plugin and never arrives here. A field events.h wants and a
+// build has not got arrives at its default, and pass_decoder has said so by
+// name.
 
 struct decode_sink {
     trace_data& d;
@@ -1045,38 +1046,16 @@ struct decode_sink {
 // why the viewer is linked -rdynamic. `sink` is the decode_sink the plugin was
 // handed, passed back untouched.
 //
-// **This list is events.h's list.** A struct added to `viewer::events` and not
-// added here is a plugin that will not load, naming the missing symbol; the
-// other way round is a symbol nothing calls. There is no way to derive one from
-// the other in C++, which is why they are both written down and why the failure
-// is at load time rather than at the first record.
+// **This list is events.h's list**, and it is read from there: a struct added
+// to `viewer::events` and to VIEWER_EVENT_LIST gets its symbol here, and gets
+// bridged by decoder_plugin.cc, with nothing to keep in step by hand.
 #define ON_DECODE(name)                                                             \
     extern "C" void on_decode_##name(void* sink, const viewer::events::name& event, \
                                      const viewer::event_meta& meta) {              \
         (*static_cast<const decode_sink*>(sink))(event, meta);                      \
     }
 
-ON_DECODE(run_task)
-ON_DECODE(cql_request)
-ON_DECODE(semaphore_execute)
-ON_DECODE(execution_stage)
-ON_DECODE(rpc_request_handled)
-ON_DECODE(task_queue_run_begin)
-ON_DECODE(task_queue_run_end)
-ON_DECODE(io_begin)
-ON_DECODE(io_end)
-ON_DECODE(prepared_query_run)
-ON_DECODE(prepared_statement_added)
-ON_DECODE(prepared_statement_removed)
-ON_DECODE(prepared_statement_snapshot_entry)
-ON_DECODE(rpc_connection_open)
-ON_DECODE(rpc_connection_close)
-ON_DECODE(rpc_connection_snapshot_entry)
-ON_DECODE(rpc_message_sent)
-ON_DECODE(rpc_message_received)
-ON_DECODE(rpc_reply_sent)
-ON_DECODE(rpc_reply_received)
-ON_DECODE(clock_sync)
+VIEWER_EVENT_LIST(ON_DECODE)
 
 #undef ON_DECODE
 
@@ -1142,53 +1121,41 @@ void interpolate_untimed(cpu_tables& t, size_t from) {
     }
 }
 
-// --- pass_plugins -- files -> a decoder per build ----------------------------
-//
-// A decoder plugin per build the files came from, and one line each about what
-// that build's decoder and this viewer's events.h disagree about.
+// --- pass_decoder -- the objects -> one decoder ------------------------------
+
+// The decoder for these snapshots, and a line each about what the objects'
+// tracepoint tables and this viewer's events.h disagree about.
 //
 // Its own pass because it is the expensive part of reading a trace the first
-// time -- a plugin is a C++ file libclang reads and clang compiles -- and
-// because it is the pass that fails when a snapshot arrives without the header
-// it needs. Nothing here reads a record; see decoder_plugin.h.
-void pass_plugins(trace_data& d, plugin::registry& decoders) {
-    std::set<std::string> announced;
-    size_t usable = 0;
-    for (const file_row& f : d.files) {
-        const plugin::decoder& dec = decoders.for_build(f.build_id, f.path.parent_path());
-        const std::string key =
-            f.build_id.empty() ? f.path.parent_path().string() : f.build_id;
-        if (!announced.insert(key).second) {
-            continue;
-        }
-        if (dec.decode == nullptr) {
-            fmt::print("build {}: no decoder -- {}\n", key, dec.error);
-            continue;
-        }
-        ++usable;
-        fmt::print("build {}: {} tracepoints bridged from {} ({})\n", key, dec.events_bridged,
-                   dec.header.string(), dec.from_cache ? "cached" : "compiled");
-        // What the viewer will not know about this build's traces, in full.
-        // Every line of it is a field of an event that will stay at its default
-        // for every record of that kind from this build.
-        for (const std::string& note : dec.notes) {
-            fmt::print("    {}\n", note);
-        }
+// time -- a plugin is a C++ file clang compiles -- and because it is the pass
+// that fails when a snapshot arrives without the objects it was written by.
+// Nothing here reads a record; see decoder_plugin.h.
+void pass_decoder(const plugin::decoder& dec) {
+    if (dec.decode == nullptr) {
+        fmt::print("no decoder: {}\n", dec.error);
+    } else {
+        fmt::print("decoder: {} tracepoints in {} object{}, {} of them bridged into events.h "
+                   "({})\n",
+                   dec.tracepoints, dec.objects, dec.objects == 1 ? "" : "s", dec.bridged,
+                   dec.from_cache ? "cached" : "compiled");
     }
-    fmt::print("{} builds in these snapshots, {} of them readable\n", announced.size(), usable);
+    // What the viewer will not know about these traces, in full: an object it
+    // could not read, a tracepoint whose records are dropped, a field that will
+    // stay at its default for every record of its kind. Printed either way,
+    // because when there is no decoder at all these are why.
+    for (const std::string& note : dec.notes) {
+        fmt::print("    {}\n", note);
+    }
 }
 
-// --- pass_decode -- files + the plugins -> the event tables ------------------
+// --- pass_decode -- files + the plugin -> the event tables -------------------
 
-void pass_decode(trace_data& d, plugin::registry& decoders) {
+void pass_decode(trace_data& d, const plugin::decoder& dec, const std::string& dso_root) {
+    if (dec.decode == nullptr) {
+        return;  // pass_decoder said so already
+    }
     std::unordered_map<uint64_t, uint32_t> interned;
     for (const file_row& f : d.files) {
-        // Its own build's decoder, which in a cluster part way through an
-        // upgrade is not the one the file before it was read with.
-        const plugin::decoder& dec = decoders.for_build(f.build_id, f.path.parent_path());
-        if (dec.decode == nullptr) {
-            continue;  // pass_plugins said so already
-        }
         // Sized, rather than the std::istreambuf_iterator pair this used to be.
         // The iterator pair reads a byte at a time through the streambuf and
         // grows the vector as it goes, and a shard's debug file is tens of
@@ -1206,15 +1173,15 @@ void pass_decode(trace_data& d, plugin::registry& decoders) {
         // A record is not self-delimiting, so a decode that fails cannot be
         // resynchronised past -- but what it read before that point is in the
         // tables and consistent, and the other files are unaffected. The
-        // failure worth expecting is a decoder.h that does not match these
-        // traces: see "regenerating decoder.h" in the README.
+        // failure worth expecting is a `dsos/` that does not go with these
+        // traces: see "Decoders" in the README.
         const size_t first = t.timeline.size();
         decode_sink sink{d, t, uint32_t(f.cpu), uint32_t(f.node), interned};
         // No exception crosses the plugin boundary -- see plugin_abi.h -- so a
         // failure comes back as a message rather than as a throw.
         std::array<char, 1024> failure{};
         if (dec.decode(bytes.data(), bytes.size(), const_cast<decode_sink*>(&sink),
-                       decoders.dso_root().c_str(), failure.data(), failure.size()) != 0) {
+                       dso_root.c_str(), failure.data(), failure.size()) != 0) {
             fmt::print("{}: {}\n", f.path.filename().string(), failure.data());
         }
         // Over what this file appended, decode order and all, before the next
@@ -3654,20 +3621,24 @@ static int run(int argc, char** argv) {
         return 1;
     }
 
-    // The objects a source location points into, found by build id. Nothing in
-    // the traced process writes them -- an address is read back against the
-    // object it is in, and finding that object is the reader's job. The root is
-    // resolved here and handed to the plugins, each of which keeps a directory
-    // of its own over it: the type that reads an object is defined by a
-    // decoder header, so there is one per build and none of them here.
+    // The objects these traces were written by, found by build id. They are
+    // both halves of reading a trace: what its tracepoints *are*, which is the
+    // table in each object's `tracepoints` section, and what its source
+    // locations point at, which is the object's .rodata. Nothing in the traced
+    // process writes them -- see tools/gather-dsos.
     const char* const dso_env = std::getenv("TRACE_DSO_DIR");
     const std::filesystem::path dso_dir = std::filesystem::path(argv[1]) / "dsos";
-    plugin::registry decoders(dso_env != nullptr ? std::string(dso_env)
-                              : std::filesystem::exists(dso_dir) ? dso_dir.string()
-                                                                 : std::string("."));
+    const std::string dso_root = dso_env != nullptr ? std::string(dso_env)
+                                 : std::filesystem::exists(dso_dir)
+                                     ? dso_dir.string()
+                                     : std::string(".");
 
-    timing.run("pass_plugins", [&] { pass_plugins(d, decoders); });
-    timing.run("pass_decode", [&] { pass_decode(d, decoders); });
+    plugin::decoder decoder;
+    timing.run("pass_decoder", [&] {
+        decoder = plugin::build(dso_root);
+        pass_decoder(decoder);
+    });
+    timing.run("pass_decode", [&] { pass_decode(d, decoder, dso_root); });
     timing.run("pass_order", [&] { pass_order(d); });
     timing.run("pass_retime", [&] { pass_retime(d); });
     timing.run("pass_order (again)", [&] { pass_order(d); });

@@ -199,32 +199,40 @@ decode is reported and skipped rather than killing the run.
 
 ### 10. The events are written down twice, on purpose
 
-`events.h` says what the viewer wants an event to be. A `decoder_<build>.h`,
-generated from the binary that wrote a trace, says what that build actually
-writes. **These are two different documents and neither is derived from the
-other**, because a cluster part way through an upgrade has several of the second
-and one of the first.
+`events.h` says what the viewer wants an event to be. The `tracepoints` section
+of each object a snapshot came from says what that build actually writes.
+**These are two different documents and neither is derived from the other**,
+because a cluster part way through an upgrade has several of the second and one
+of the first.
 
-So the tables are never a picture of a producer's memory layout. `pass_plugins`
-reads both headers with libclang, matches them struct by struct and field by
-field, and compiles a small shared object per build that converts one to the
-other and calls the viewer's exported `on_decode_<event>`. `decoder_plugin.h`
-has the mechanics.
+So the tables are never a picture of a producer's memory layout. `pass_decoder`
+reads every object's table out of the ELF (`tracepoint_table.h`), matches it to
+`events.h` by name and by field name, and compiles one shared object holding a
+reader per tracepoint that fills in the viewer's struct and calls its exported
+`on_decode_<event>`. `decoder_plugin.h` has the mechanics.
 
 The three properties worth keeping:
 
-- **A build the viewer cannot read does not stop the others.** No decoder
-  header, a header that will not parse, a compiler that will not run -- each is
-  a line naming the build, and the other nodes still decode.
+- **A tracepoint the viewer cannot read does not stop the rest.** An object
+  whose table is a layout this viewer does not know is a line naming the object
+  and no ids; a tracepoint with a parameter type there is no reader for is a
+  line and a reader that throws if a record of it ever turns up.
 - **A disagreement is a note, not a guess and not a crash.** A tracepoint one
   side has not got, a field spelled differently, a field whose type will not
   convert without losing something -- the field stays at its default and
-  `pass_plugins` prints why, every run. This is rule 8 applied to the wire
+  `pass_decoder` prints why, every run. This is rule 8 applied to the wire
   format.
-- **The conversion is narrow.** The same type, a wider integer of the same
-  signedness, a view over a string, or one of the small structs matched the same
-  way. Nothing else. Widening the rule is how a task id silently loses its top
-  half; see `how_to_convert` in `decoder_plugin.cc` before you touch it.
+- **The conversion is narrow.** The same type, or a wider integer of the same
+  signedness. Nothing else. Widening the rule is how a task id silently loses
+  its top half; see `convertible` in the generated source before you touch it.
+
+What the generator does *not* do is read `events.h`. Every assignment it emits
+is wrapped in `if constexpr (requires { event.field; })`, so which fields exist
+and which types convert are questions the compiler answers against the real
+header when it builds the plugin -- and asks a second time in
+`trace_plugin_notes`, which is where the notes above come from. The one thing it
+has to be told is the list of event *structs*, which is `VIEWER_EVENT_LIST` in
+`events.h`.
 
 Nothing else in this file knows any of it happened. `decode_sink` takes
 `viewer::events::run_task`, which is the same shape it always took.
@@ -289,8 +297,8 @@ In the order `run()` calls them. The middle column is the whole contract.
 | # | pass | reads → writes |
 |---|---|---|
 | 1 | `pass_gather` | argv → `files`, `nodes`, `cpus` |
-| 1b | `pass_plugins` | `files` → a compiled decoder per build (no table) |
-| 2 | `pass_decode` | `files` + the plugins → every event table, `syncs`, `locations` |
+| 1b | `pass_decoder` | `dsos/` → one compiled decoder (no table) |
+| 2 | `pass_decode` | `files` + the decoder → every event table, `syncs`, `locations` |
 | 3 | `pass_order` | event tables → the same, in timestamp order |
 | 4 | `pass_retime` | `syncs` → every `ts`, in node 0's clock |
 | 5 | `pass_order` | again: retiming is monotone only if the clocks are |
@@ -512,16 +520,21 @@ time is what a request is.
 - **Compute the axis range before the frame's windows read it.**
   `follow_selection()` runs after the histogram (which can pick) and before
   everything that draws.
-- **A decoder and the `.trace` files are one pair, and there is one decoder per
-  build.** The viewer finds each build's header beside its traces and compiles a
-  plugin for it (`decoder_plugin.h`); a mismatched one refuses rather than
-  misdecoding, which is the `tracepoint address ... belongs to object ..., which
-  this decoder was not generated from` message. **The plugin is compiled at
-  runtime**, so the viewer needs a C++ compiler on PATH -- run it from inside
-  `nix develop`.
-- **A field `events.h` wants and a build's decoder has not got is not an error.**
-  It is a line `pass_plugins` prints and a field left at its default. Read those
-  lines before believing a column is empty for an interesting reason.
+- **`dsos/` and the `.trace` files are one pair.** The tracepoint tables the
+  decoder is built from are in those objects, so a `dsos/` that is not the one
+  these traces came from decodes nothing rather than misdecoding: that is the
+  `tracepoint address ... belongs to object ..., whose tracepoint table this
+  decoder has not got` message. **The plugin is compiled at runtime**, so the
+  viewer needs a C++ compiler on PATH -- run it from inside `nix develop`. It is
+  compiled `-Wl,-Bsymbolic`, without which its calls to its own copies of
+  `trace_wire.h`'s inline functions bind to the viewer's exported ones and
+  `pass_decode` silently takes half again as long.
+- **A trace from a tracer older than this viewer does not read at all.** The
+  wire format is `trace_wire.h` and the entry layout is asserted in `tracer.h`;
+  both have moved, and neither is versioned. Recapture rather than debug.
+- **A field `events.h` wants and a build has not got is not an error.** It is a
+  line `pass_decoder` prints and a field left at its default. Read those lines
+  before believing a column is empty for an interesting reason.
 - **Views into an arena die when the arena grows.** See rule 3.
 
 ---
@@ -529,24 +542,24 @@ time is what a request is.
 ## How to do the usual things
 
 **Add a tracepoint.** Five edits, and the first two are the new ones: add the
-struct to `viewer::events` in `events.h`, spelled exactly as the decoder spells
-it, and add an `ON_DECODE(...)` line for it beside `decode_sink` -- that list is
-`events.h`'s list, and a struct in one and not the other is a plugin that will
-not load. Then, as before: give it a row struct with `ROW_COMMON`; add the table
+struct to `viewer::events` in `events.h`, spelled exactly as the tracepoint is,
+with a member per parameter spelled exactly as the parameter is, and add its
+name to `VIEWER_EVENT_LIST` at the bottom of that file -- which is what both the
+generator and the `ON_DECODE` block beside `decode_sink` are written from. Then,
+as before: give it a row struct with `ROW_COMMON`; add the table
 to `table_id`, `cpu_tables` and `for_each_table`; add an `operator()` to
 `decode_sink` that `push()`es it (which also puts it in the timeline); add a
 case to `format_event`, `task_of` and `query_of`. If it needs joining to
 something, that is a new pass, not a branch in an existing one.
 
 Nothing has to be rebuilt on the producer side to *read* a build that has not
-got it yet: `pass_plugins` reports it missing per build and the table stays
-empty for that build's files.
+got it yet: `pass_decoder` reports it missing by name and the table stays empty.
 
-**Add a field to an event.** Add it to the struct in `events.h`. A build whose
-decoder has it fills it in; one that has not is a line of `pass_plugins`'
-output. A type that will not convert -- a narrowing integer, anything that is
-not an integer, a view or one of the small structs -- is refused and reported
-rather than truncated; see `how_to_convert` in `decoder_plugin.cc`.
+**Add a field to an event.** Add it to the struct in `events.h`, under the
+parameter's name. A build whose tracepoint has it fills it in; one that has not
+is a line of `pass_decoder`'s output. A type that will not convert -- a
+narrowing integer, or an integer of the other signedness -- is refused and
+reported rather than truncated; see `convertible` in the generated source.
 
 **Add a derived fact.** A new column on an existing row, filled by a new pass,
 with a comment saying what it reads. Default it to `none`/0 so the program
@@ -570,19 +583,17 @@ rather than adding printf to the render loop.
 
 - **Stack samples.** The old viewer's sample window and its symbolizer pool
   (`modules/address-decoder`) have not been ported. `stacktrace_sample` is not in
-  `events.h`, so each build's plugin drops it without it ever crossing into the
-  viewer. Reimplementing means a struct in `events.h`, an `ON_DECODE` line, a
+  `events.h`, so the plugin reads its records past without them ever crossing into
+  the viewer. Reimplementing means a struct in `events.h`, a `VIEWER_EVENT_LIST`
+  line, a
   `samples` table, a pass placing them on the clock, and a window.
 - **Anything keyed on the selection being cached.** See rule 7.
 - **A test suite.** The checks today are the counts each pass prints and the
-  headless dump against `ignored/sched-group-run` -- three nodes of two shards,
-  made by
-  `third-party/scylladb/capture-trace.sh`. A median request there comes out as
-  a coordinator and two replicas, six parts, ~0.108 ms latency and ~0.088 ms of
-  cpu, and every switch is inside a task queue run (99280 of the 99286 runs are
-  closed in the snapshot -- the six open ones are the run each of the six
-  reactors was in when it was asked). (`ignored/boot-id-run` is from an older build, and reads
-  through the decoder beside it -- handing both runs to one viewer is the
-  shortest check that rule 10 works.) That is thin; the
-  table-per-pass shape makes a real test of one pass easy to write, and it has
-  not been written.
+  headless dump against `ignored/entry-layout-run` -- three nodes of two shards,
+  made by `third-party/scylladb/capture-trace.sh`. 2239 requests, all 503 source
+  locations resolved, and every switch inside a task queue run (97117 of the
+  97123 runs are closed in the snapshot -- the six open ones are the run each of
+  the six reactors was in when it was asked). The older fixtures beside it were
+  written by a tracer whose wire format has moved on and no longer decode at
+  all. That is thin; the table-per-pass shape makes a real test of one pass easy
+  to write, and it has not been written.

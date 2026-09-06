@@ -33,8 +33,8 @@ cxx_binary(
     ],
 )
 
-# events.h and plugin_abi.h as text, for the viewer to write back out when it
-# compiles a decoder plugin at startup.
+# The three headers a decoder plugin is compiled against, as text, for the
+# viewer to write back out when it compiles one at startup.
 #
 # Compiled in rather than read from beside the binary: the plugin has to be
 # built against the very events.h this viewer was built from, and a path would
@@ -46,11 +46,12 @@ genrule(
     srcs = [
         "events.h",
         "plugin_abi.h",
+        "trace_wire.h",
     ],
     out = "embedded_sources.inc",
     cmd = """
     {
-      echo '// Generated from events.h and plugin_abi.h. Do not edit.'
+      echo '// Generated from events.h, plugin_abi.h and trace_wire.h. Do not edit.'
       echo '#pragma once'
       echo 'namespace embedded {'
       echo 'inline constexpr char events_h[] = R"TRACEVIEWER('
@@ -58,6 +59,9 @@ genrule(
       echo ')TRACEVIEWER";'
       echo 'inline constexpr char plugin_abi_h[] = R"TRACEVIEWER('
       cat $SRCDIR/plugin_abi.h
+      echo ')TRACEVIEWER";'
+      echo 'inline constexpr char trace_wire_h[] = R"TRACEVIEWER('
+      cat $SRCDIR/trace_wire.h
       echo ')TRACEVIEWER";'
       echo '}  // namespace embedded'
     } > $OUT
@@ -83,12 +87,15 @@ cxx_binary(
     name = "viewer",
     srcs = [
         "decoder_plugin.cc",
+        "tracepoint_table.cc",
         "viewer.cc",
     ],
     headers = [
         "decoder_plugin.h",
         "events.h",
         "plugin_abi.h",
+        "tracepoint_table.h",
+        "trace_wire.h",
     ],
     header_namespace = "",
     link_style = "static",
@@ -100,7 +107,6 @@ cxx_binary(
         ":embedded_sources_header",
         "//:doctest_impl",
         "//:fmt",
-        "//:libclang",
         "//:opengl",
         "//:sdl3",
         "imgui//:imgui",

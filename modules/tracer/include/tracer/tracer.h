@@ -1006,6 +1006,23 @@ static_assert(alignof(tracepoint_entry) >= 8,
               "a tracepoint entry must be eight-byte aligned for its address to be "
               "distinguishable from a static id on the wire");
 
+// An entry's layout is read back out of the object by whoever decodes a trace
+// it wrote -- see modules/trace-viewer/tracepoint_table.h -- so these offsets
+// are as much a wire format as the records are, and a change to them makes
+// every object built before it unreadable by a reader built after it.
+//
+// Asserted rather than commented, so that the change is a compile error here
+// and a paired edit there, rather than a decoder quietly reading names out of
+// the middle of somebody's pointers.
+static_assert(sizeof(tracepoint_entry) == 64);
+static_assert(offsetof(tracepoint_entry, name) == 0);
+static_assert(offsetof(tracepoint_entry, file) == 8);
+static_assert(offsetof(tracepoint_entry, line) == 16);
+static_assert(offsetof(tracepoint_entry, function) == 24);
+static_assert(offsetof(tracepoint_entry, signature) == 32);
+static_assert(offsetof(tracepoint_entry, static_id) == 48);
+static_assert(offsetof(tracepoint_entry, timestamps) == 56);
+
 // Synthesised by the linker around *this object's* `tracepoints` section.
 //
 // Weak, because a translation unit -- or a whole shared library -- may include

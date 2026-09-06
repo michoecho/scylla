@@ -9,7 +9,9 @@ cost somebody a day.
 
 Everything below was done at least once in the session that wrote it. Where a
 number appears it was measured -- on `ignored/sched-group-run` unless it names
-another fixture -- not estimated.
+another fixture -- not estimated. Numbers taken on `sched-group-run` are kept as
+the record of what was measured when, but **that fixture no longer decodes**:
+see "after a capture" below, and use `entry-layout-run`.
 
 ---
 
@@ -147,25 +149,30 @@ tracepoints on, and come out at 381 MB. Every ring is full: 32 MiB of debug and
 
 ### After a capture, before a rebuild
 
-`decoder.h` is **generated from the binary that wrote the trace**, and a
-snapshot writes it beside its `.trace` files. Nothing has to be copied anywhere:
-`viewer` finds each snapshot's own decoder, compiles a plugin for that build and
-reads that build's files through it, so old runs and new ones are readable in
-the same session -- and so is a cluster with two versions of Scylla in it. See
-"Decoders, one per build" in `README.md`.
+What a trace's records mean is in the `tracepoints` section of the objects that
+wrote it, so **`dsos/` is now both halves of reading a trace**: the tracepoint
+tables and the source locations. `viewer` reads every object under it, generates
+one decoder covering all of them and compiles it. Nothing has to be copied
+anywhere, and a cluster with two versions of Scylla in it is one decoder with
+both builds' tables in it. See "Decoders, read out of the objects" in
+`README.md`.
 
-Two consequences worth having in mind:
+Three consequences worth having in mind:
 
 * **The viewer compiles C++ at startup**, so it needs a compiler on PATH. Run it
-  from inside `nix develop`. The first run for a build costs a couple of
-  seconds; after that the `.so` is cached under `~/.cache/trace-viewer` and it
-  costs a `dlopen`.
-* **`pass_plugins` prints what each build's decoder and `events.h` disagree
-  about**, one line each. Read it. An empty column is often that, and not a bug
-  in a pass.
+  from inside `nix develop`. The first run for a set of objects costs 2.4 s;
+  after that the `.so` is cached under `~/.cache/trace-viewer` and it costs
+  reading the tables again and a `dlopen`, 27 ms.
+* **`pass_decoder` prints what the tables and `events.h` disagree about**, one
+  line each. Read it. An empty column is often that, and not a bug in a pass.
+* **A snapshot from a tracer older than the viewer does not read at all.** The
+  wire format and the layout of a tracepoint entry are both compiled into the
+  viewer now, and neither is versioned: a capture from before a change to either
+  is dead weight. Recapture instead of trying to read it.
 
-`main.cc`, the old viewer, still reads the one `decoder.h` checked in beside it,
-and that one does have to be replaced by hand:
+`main.cc`, the old viewer, still reads the one `decoder.h` checked in beside it
+-- and a snapshot still writes one, which nothing else reads now. That copy does
+have to be replaced by hand:
 
 ```sh
 cp <run>/node1/decoder.h modules/trace-viewer/decoder.h
@@ -371,14 +378,16 @@ through every level of every reactor, and that the window comes up and runs.
 ## Fixtures
 
 Both under `third-party/scylladb/ignored/`, both untracked, ~190 MB each, both
-made with the binary whose `decoder.h` is checked in here.
+made with a binary older than the current tracer, so **none of them decodes with
+the viewer as it stands**: see "after a capture" above.
 
 | | what it is for |
 |---|---|
 | `sched-group-run` | the reference. 3 nodes x 2 shards, ~822k events, nothing evicted. Median request: 6 parts, 0.108 ms latency, 0.088 ms cpu. 99286 task queue runs, 99280 closed (the 6 open ones are the run each reactor was in when asked) |
 | `wrapped-run` | 12x the load, so the debug ring **wrapped** and every shard's trace starts mid-stream. The fixture for anything about missing data |
 | `latte-run` | 2M CL=ALL reads from latte at 47k op/s, both rings full on all six shards. The fixture for eviction at its worst: the debug window is 0.74-1.03 s against 8.4-8.8 s of info, and the quantile table degenerates -- see "the two windows" below. 6.75M events, ~3.0 s release startup |
-| `boot-id-run` | older, predates the task queue tracepoints. Readable only with its own `decoder.h` |
+| `boot-id-run` | older still, predates the task queue tracepoints |
+| `entry-layout-run` | the first capture with the current entry layout and wire format, and therefore **the only one the viewer reads today**. Same load as `sched-group-run` -- 2239 requests -- from a newer Scylla: 29 tracepoints, 21 bridged, 503 locations all resolved, 97117 of 97123 task queue runs closed, 58 of 58 connections, 575093 rectangles. Median request 3 parts, 0.104 ms, 0.068 ms of cpu |
 
 ---
 
@@ -439,17 +448,18 @@ to be faster, make the rendering cheaper, do not add a cache keyed on the
 selection.
 
 **There is still no test suite.** The checks are the counts each pass prints
-and the headless dump against `sched-group-run`. The table-per-pass shape makes
+and the headless dump against `entry-layout-run`. The table-per-pass shape makes
 a real test of one pass easy to write, and nobody has written one.
 
 ---
 
 ## Traps, in the order they cost time
 
-- **A decoder and the traces are one pair**, and `viewer` finds each snapshot's
-  own. What it needs instead is a **C++ compiler at runtime** -- it builds a
-  decoder plugin per build at startup -- so run it from inside `nix develop`.
-  (`main.cc` is the one that still wants the decoder copied in.)
+- **`dsos/` and the traces are one pair.** The decoder is generated from the
+  tracepoint tables in those objects, so the wrong `dsos/` decodes nothing. The
+  other thing it needs is a **C++ compiler at runtime** -- it compiles the
+  decoder at startup -- so run it from inside `nix develop`. (`main.cc` is the
+  one that still wants a `decoder.h` copied in.)
 - **The default build is `-O0`.** 9x. Profile `-m release`.
 - **`perf` on a hybrid CPU** splits `cycles` across two PMUs. Use `task-clock`.
 - **buck2 from the repo root**, never from `third-party/scylladb`.

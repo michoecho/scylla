@@ -224,32 +224,6 @@ prebuilt_cxx_library(
     visibility = ["PUBLIC"],
 )
 
-# libclang, linked rather than dlopen()ed. The trace viewer reads a decoder
-# header with it at startup, to work out how that build's tracepoints differ
-# from the events it wants; see modules/trace-viewer/decoder_plugin.cc.
-#
-# The rpath is resolved to the store path for the same reason boost's and
-# libbacktrace's are, above: a relative RUNPATH is resolved against the working
-# directory, and a statically-linked binary has nothing ahead of it to save it.
-genrule(
-    name = "libclang_rpath",
-    out = "libclang_rpath.args",
-    cmd = "store=`readlink -f $(location toolchains//:libclang[libclang])`; " +
-          "printf -- '-Wl,-rpath,%s' \"`dirname \"$store\"`\" > $OUT",
-)
-
-prebuilt_cxx_library(
-    name = "libclang",
-    header_dirs = ["toolchains//:libclang_headers[include]"],
-    shared_lib = "toolchains//:libclang[libclang]",
-    extract_soname = True,
-    exported_linker_flags = [
-        "@$(location :libclang_rpath)",
-    ],
-    preferred_linkage = "shared",
-    visibility = ["PUBLIC"],
-)
-
 flake.prebuilt_pkgconfig_library(
   name = 'hegel',
   package = 'hegel-cpp',

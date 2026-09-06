@@ -171,27 +171,9 @@ nix_rust_toolchain(
 # explicit -isystem. See third-party/rust/fixups/perf2perfetto/fixups.toml.
 flake.package(
     name = "libclang",
-    files = {
-        "lib": "lib",
-        # The library itself, for something that links it rather than dlopen()ing
-        # it: the trace viewer reads a decoder header with libclang at startup.
-        # See root//:libclang.
-        "libclang": "lib/libclang.so",
-    },
+    files = {"lib": "lib"},
     # Multi-output derivation; libclang.so lives in `lib`, not the default `out`.
     output = "lib",
-    path = "root//:flake",
-    visibility = ["PUBLIC"],
-)
-
-# clang-c/Index.h and friends, which are in the `dev` output rather than beside
-# the library. Only something that *links* libclang wants these; bindgen loads it
-# by path and needs none of them.
-flake.package(
-    name = "libclang_headers",
-    files = {"include": "include"},
-    output = "dev",
-    package = "libclang",
     path = "root//:flake",
     visibility = ["PUBLIC"],
 )
