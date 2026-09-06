@@ -941,6 +941,10 @@ the file to edit when the viewer wants a new field. `decoder_plugin.h` says how
 the two halves are matched, and `trace_wire.h` is the part that is not generated
 at all: the record format itself.
 
+**`DECODING.md` beside this is the handoff for all of it** -- the contracts it
+rests on, what each failure message means, and what was left undone. Read it
+before changing anything in that path.
+
 ### What the viewer now has to know
 
 Two things that used to be somebody else's problem, and both are the price of
@@ -968,13 +972,15 @@ key covers the generated source -- which stands for the tables it came from,
 whole -- plus `events.h`, `trace_wire.h`, the ABI header, the compiler's version
 and a version number standing for the generator itself, so a cache hit is the
 same plugin and nothing is stale. A hit costs reading the tables again and a
-`dlopen`: 27 ms of a 1.7 s startup on `entry-layout-run`.
+`dlopen`: 21 ms of a 348 ms release startup on `entry-layout-run`.
 
-The plugin is compiled `-Wl,-Bsymbolic`, and that flag is load-bearing. The
-viewer includes `trace_wire.h` too, so its own copies of those inline functions
-are in its `.dynsym` -- put there by the `-rdynamic` the `on_decode_*` symbols
-need -- and without `-Bsymbolic` the plugin's calls to *its* copies bind to the
-viewer's instead. Nothing fails; `pass_decode` is just 210 ms instead of 137.
+The plugin is compiled `-Wl,-Bsymbolic`, and that flag is load-bearing in the
+default build. The viewer includes `trace_wire.h` too, so at `-O0` its own
+out-of-line copies of those inline functions are in its `.dynsym` -- put there by
+the `-rdynamic` the `on_decode_*` symbols need -- and without `-Bsymbolic` the
+plugin's calls to *its* copies bind to the viewer's unoptimised ones instead.
+Nothing fails; `pass_decode` is just 210 ms instead of 137. In release the viewer
+inlines them and the flag measures as a no-op. See `DECODING.md`.
 
 Each cache directory is self-contained -- the generated `plugin.cc` and the three
 headers it is compiled against -- so a compile that failed can be repeated by

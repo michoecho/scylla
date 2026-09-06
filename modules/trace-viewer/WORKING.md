@@ -1,8 +1,9 @@
 # Working on the tracer, end to end
 
 `README.md` beside this says what the thing *is*. `DESIGN.md` says how
-`viewer.cc` is put together and which of its properties are load-bearing. This
-one is the third question -- **how the work is actually done**: how to get a
+`viewer.cc` is put together and which of its properties are load-bearing.
+`DECODING.md` says how a trace becomes events, which is the one part of this
+with contracts compiled into other binaries. This one is the fourth question -- **how the work is actually done**: how to get a
 Scylla with your tracepoint in it, how to get a trace out of it, how to find
 out where the viewer's startup went, and which of the traps here have already
 cost somebody a day.
@@ -162,7 +163,7 @@ Three consequences worth having in mind:
 * **The viewer compiles C++ at startup**, so it needs a compiler on PATH. Run it
   from inside `nix develop`. The first run for a set of objects costs 2.4 s;
   after that the `.so` is cached under `~/.cache/trace-viewer` and it costs
-  reading the tables again and a `dlopen`, 27 ms.
+  reading the tables again and a `dlopen` -- 21 ms release, 27 ms debug.
 * **`pass_decoder` prints what the tables and `events.h` disagree about**, one
   line each. Read it. An empty column is often that, and not a bug in a pass.
 * **A snapshot from a tracer older than the viewer does not read at all.** The
@@ -387,7 +388,7 @@ the viewer as it stands**: see "after a capture" above.
 | `wrapped-run` | 12x the load, so the debug ring **wrapped** and every shard's trace starts mid-stream. The fixture for anything about missing data |
 | `latte-run` | 2M CL=ALL reads from latte at 47k op/s, both rings full on all six shards. The fixture for eviction at its worst: the debug window is 0.74-1.03 s against 8.4-8.8 s of info, and the quantile table degenerates -- see "the two windows" below. 6.75M events, ~3.0 s release startup |
 | `boot-id-run` | older still, predates the task queue tracepoints |
-| `entry-layout-run` | the first capture with the current entry layout and wire format, and therefore **the only one the viewer reads today**. Same load as `sched-group-run` -- 2239 requests -- from a newer Scylla: 29 tracepoints, 21 bridged, 503 locations all resolved, 97117 of 97123 task queue runs closed, 58 of 58 connections, 575093 rectangles. Median request 3 parts, 0.104 ms, 0.068 ms of cpu |
+| `entry-layout-run` | the first capture with the current entry layout and wire format, and therefore **the only one the viewer reads today**. Same load as `sched-group-run` -- 2239 requests -- from a newer Scylla: 29 tracepoints, 21 bridged, 503 locations all resolved, 97117 of 97123 task queue runs closed, 58 of 58 connections, 575093 rectangles. Median request 3 parts, 0.104 ms, 0.068 ms of cpu. 348 ms release startup, of which pass_decode is 87 ms and pass_decoder 21 ms |
 
 ---
 

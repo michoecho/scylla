@@ -237,6 +237,9 @@ has to be told is the list of event *structs*, which is `VIEWER_EVENT_LIST` in
 Nothing else in this file knows any of it happened. `decode_sink` takes
 `viewer::events::run_task`, which is the same shape it always took.
 
+`DECODING.md` is the handoff for that whole path, and the place the contracts it
+rests on are written down.
+
 ---
 
 ## The tables
@@ -528,7 +531,8 @@ time is what a request is.
   viewer needs a C++ compiler on PATH -- run it from inside `nix develop`. It is
   compiled `-Wl,-Bsymbolic`, without which its calls to its own copies of
   `trace_wire.h`'s inline functions bind to the viewer's exported ones and
-  `pass_decode` silently takes half again as long.
+  `pass_decode` silently takes half again as long in the default build. See
+  `DECODING.md`.
 - **A trace from a tracer older than this viewer does not read at all.** The
   wire format is `trace_wire.h` and the entry layout is asserted in `tracer.h`;
   both have moved, and neither is versioned. Recapture rather than debug.

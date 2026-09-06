@@ -64,7 +64,7 @@ namespace trace {
 // Views rather than pointers: a plugin's table of these is a constexpr array
 // over string literals either way, and a pointer would cost a `strlen` per
 // string per record on the way into the viewer's event_meta. That is 5 ms of a
-// 140 ms decode -- small, but it buys nothing.
+// 137 ms decode in the default build -- small, but it buys nothing.
 //
 // `has_timestamp` is false for a tracepoint declared with TRACEPOINT_UNTIMED(),
 // whose records carry no time of their own: such a record is handed the moment
