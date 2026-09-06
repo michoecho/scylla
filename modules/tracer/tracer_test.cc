@@ -20,9 +20,9 @@
 #include "snapshot/check.h"
 #include "snapshot/regex_text.h"
 #include "static_keys/static_keys.h"
-#include "tracer/codegen.h"
+#include "trace_reader.h"
+#include "trace_wire.h"
 #include "tracer/tracer.h"
-#include "tracer_generated/decoder.h"
 
 namespace {
 
@@ -48,9 +48,9 @@ std::string read_env_file(const char* variable) {
 // columns variable.
 //
 // A line whose timestamp column is not a number is a record of a tracepoint
-// that carries no timestamp -- the decoder program prints a dash for those --
-// and it is kept literal, column and all: what such a record is worth asserting
-// is exactly that it has no time of its own.
+// that carries no timestamp -- a dash is printed for those -- and it is kept
+// literal, column and all: what such a record is worth asserting is exactly
+// that it has no time of its own.
 RegexText serialize_trace_columns(std::string_view text) {
     RegexText out;
     std::size_t from = 0;
@@ -108,45 +108,16 @@ RegexText serialize_trace_columns(std::string_view text) {
                      ::tracer::fixed_string{#__VA_ARGS__},                       \
                      decltype(::tracer::sig_probe(__VA_ARGS__))>::value.data())
 
-// A tracepoint table assembled by hand, which is the only way to hand the code
-// generator a table it should reject: a malformed one cannot be written as a
-// TRACEPOINT(), and two tracepoints disagreeing under one name is a fact about
-// two call sites at once.
-//
-// The key is left null. Generating a decoder reads names, types and locations
-// and never touches a key.
-tracer::tracepoint_entry fake(
-    const char* name, const char* signature, int line = 1,
-    tracer::tracepoint_id static_id = tracer::tracepoint_id::none,
-    tracer::timestamp_encoding timestamps = tracer::timestamp_encoding::delta) {
-    return {name, "fake.cc", line, "void fake()", signature, nullptr, static_id, timestamps};
-}
-
-// That table as the one object of a program, under a made-up build ID. The
-// generator never loads an object; a build ID is only the name it files one
-// under.
-std::string generate_from(std::span<const tracer::tracepoint_entry> table) {
-    const tracer::codegen_object object{"00fake00", table};
-    return tracer::generate_decoder_source(std::span{&object, 1});
-}
-
-// The same, for two objects -- which is how a tracepoint written in a shared
-// header reaches the generator: once from each library that included it.
-std::string generate_from(std::span<const tracer::tracepoint_entry> first,
-                          std::span<const tracer::tracepoint_entry> second) {
-    const std::array<tracer::codegen_object, 2> objects{
-        tracer::codegen_object{"00first0", first}, tracer::codegen_object{"00second", second}};
-    return tracer::generate_decoder_source(objects);
-}
-
-// A trace naming objects that are not this decoder's, plus whatever bytes the
+// A trace naming objects that are not the demo's, plus whatever bytes the
 // caller wants read as records -- for the cases where what is being tested is
 // the refusal rather than the decode.
 //
 // The metadata records are written out by hand, which is the point: the entry
 // addresses in them are zero, and a decoder reads the prologue anyway, because
-// the first N+1 records of a metadata stream are read by the invariant rather
-// than by their addresses.
+// its first N+2 records are read by their position rather than by their
+// addresses. Get that shape wrong and the refusal under test would be the
+// prologue's rather than the record's, which is why it is written out in full
+// here -- a clock sync, a count, and a load event apiece.
 std::vector<std::byte> fake_trace(
     std::span<const std::pair<std::string_view, std::uint64_t>> objects,
     std::span<const std::byte> records = {}) {
@@ -159,6 +130,14 @@ std::vector<std::byte> fake_trace(
         put(std::uint64_t{0});  // the entry address, which the prologue does not need
         put(std::uint8_t{0});   // zero timestamp delta, which comes before everything
     };
+
+    // The clock sync every metadata stream opens with. Its timestamp is a
+    // delta from its own first parameter, so the vint above is followed by the
+    // three parameters of tracer.h's clock_sync.
+    record_header();
+    put(std::uint64_t{0});  // tsc
+    put(std::uint64_t{0});  // realtime_ns
+    put(tracer::default_tsc_ticks_per_second);
 
     record_header();
     put(static_cast<std::uint32_t>(objects.size()));
@@ -250,38 +229,56 @@ std::size_t count_named(std::string_view name) {
     return found;
 }
 
-// A callback assembled from lambdas, for a test that wants one tracepoint and
-// does not care about the rest. decode() calls cb for every record, so the
-// catch-all is not optional.
-template <typename... Fs>
-struct overloaded : Fs... {
-    using Fs::operator()...;
-};
+// Where the build put the demo's objects. They are two things at once: the
+// tracepoint tables that say what a record means, and the files a source
+// location -- an address inside one of them -- is read out of.
+std::string dso_dir() {
+    const char* const path = std::getenv("TRACER_DSOS");
+    REQUIRE_MESSAGE(path != nullptr, "TRACER_DSOS is not set");
+    return path;
+}
 
-// A trace consumer: one operator() per tracepoint it has something particular
-// to say about, and a template one for the rest. The two named overloads reach
-// into the fields by name; the fallback prints whole events through to_string().
-//
-// At namespace scope rather than inside the test case that uses it, because a
-// local class may not have member templates.
-struct collector {
-    std::string text;
+// A decoder for those tables, built once: reading them is an ELF walk per
+// object, and every case below wants the same answer from it.
+const trace_test::trace_reader& demo_reader() {
+    static const trace_test::trace_reader reader(dso_dir());
+    return reader;
+}
 
-    void operator()(const trace::accepted_connection& event,
-                    const trace::tracepoint_metadata& meta) {
-        text += std::format("{}: connection {}, keepalive {}\n", meta.name, event.conn,
-                            event.keepalive);
+// The demo trace the build took, as bytes. It outlives the events decoded from
+// it -- a decoded string field is a copy, but a test comparing bytes wants the
+// buffer -- so it is static too.
+std::span<const std::byte> demo_trace() {
+    static const std::string raw = read_env_file("TRACER_TRACE");
+    return {reinterpret_cast<const std::byte*>(raw.data()), raw.size()};
+}
+
+// The events of the demo trace, resolved against the objects it came from.
+const std::vector<trace_test::event>& demo_events() {
+    static const std::vector<trace_test::event> events = demo_reader().decode(demo_trace());
+    return events;
+}
+
+// Every event of one tracepoint, in the order they were recorded.
+std::vector<trace_test::event> events_named(const std::vector<trace_test::event>& events,
+                                            std::string_view name) {
+    std::vector<trace_test::event> found;
+    for (const trace_test::event& e : events) {
+        if (e.name == name) {
+            found.push_back(e);
+        }
     }
+    return found;
+}
 
-    void operator()(const trace::request_header& event, const trace::tracepoint_metadata& meta) {
-        text += std::format("{}: {} {}\n", meta.name, event.method, event.path);
-    }
-
-    template <typename Event>
-    void operator()(const Event& event, const trace::tracepoint_metadata& meta) {
-        text += std::format("{}:{} {}\n", meta.file, meta.line, event.to_string());
-    }
-};
+// One field of one event, by name. REQUIREd rather than returned as a pointer:
+// a case reaching for a parameter that is not there has already failed, and
+// what it wants to say is which parameter.
+const trace_test::field& field_of(const trace_test::event& e, std::string_view name) {
+    const trace_test::field* const found = e.find(name);
+    REQUIRE_MESSAGE(found != nullptr, e.name, " has no parameter ", name);
+    return *found;
+}
 
 }  // namespace
 
@@ -725,199 +722,51 @@ TEST_CASE("the tick rate is a plausible one, measured or not") {
 // and a trace collected after that would have none at all. So a rotation writes
 // another, into the fresh buffer and ahead of the record that forced it.
 //
-// Asserted on the demo trace, read back with the generated decoder -- the same
-// pair of build steps the snapshot at the bottom of this file covers. It has to
-// be that trace and not one taken here: a sync record is written by code
-// inlined from tracer.h into whichever object built the tracer, this binary is
-// that object for a tracer built here, and a record of this binary's is one the
-// generated decoder refuses. The producer sizes its buffers below the size of
-// its workload, so a ring rotates part way through it; see emit_trace().
+// Asserted on the demo trace rather than one taken here, and for the same
+// reason the whole of the decoding side is: a record is only readable against
+// the tracepoint table of the object that wrote it, and the tables the tests
+// have are the demo's -- this test binary is not one of them. The producer
+// sizes its buffers below the size of its workload, so a ring rotates part way
+// through it; see emit_trace().
 TEST_CASE("every ring opens with a clock sync, and gets another one on rotation") {
-    const std::string raw = read_env_file("TRACER_TRACE");
-    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
-                                           raw.size()};
+    const std::vector<trace_test::event>& events = demo_events();
+    const std::vector<trace_test::event> syncs = events_named(events, "clock_sync");
 
-    std::vector<trace::clock_sync> syncs;
-    std::size_t events = 0;  // everything the trace holds, syncs included
-    std::size_t opening_run = 0;  // syncs before the first record of the workload
-    trace::decode(bytes, overloaded{
-                             [&](const trace::clock_sync& event,
-                                 const trace::tracepoint_metadata&) {
-                                 ++events;
-                                 syncs.push_back(event);
-                                 if (syncs.size() == events) {
-                                     ++opening_run;
-                                 }
-                             },
-                             [&](const auto&, const trace::tracepoint_metadata&) { ++events; },
-                         });
-
-    // Two openers -- the info ring's and the debug ring's, and not the metadata
-    // ring's, which never gets one -- ahead of any record the workload wrote.
+    // Two openers -- the info ring's and the debug ring's -- ahead of any
+    // record the workload wrote. The metadata ring's opening sync is not among
+    // them: it is the head of the stream the mappings are read from, consumed
+    // rather than delivered.
+    std::size_t opening_run = 0;
+    for (const trace_test::event& e : events) {
+        if (e.name != "clock_sync") {
+            break;
+        }
+        ++opening_run;
+    }
     CHECK(opening_run == 2);
 
     // And more than that in total, which is the rotations: a trace whose rings
     // had never rotated would hold exactly the two.
     CHECK(syncs.size() > 2);
-    CHECK(syncs.size() < events);
+    CHECK(syncs.size() < events.size());
 
     // Every one carries both halves of the conversion. The wall clock is the
     // demo's fixed one -- its records have to be reproducible for the snapshot
     // the build takes of them -- and the rate is the uncalibrated default,
     // since nothing in the producer calibrates.
-    for (const trace::clock_sync& sync : syncs) {
-        CHECK(sync.ticks_per_second == tracer::default_tsc_ticks_per_second);
-        CHECK(sync.realtime_ns == syncs.front().realtime_ns);
+    for (const trace_test::event& sync : syncs) {
+        CHECK(field_of(sync, "ticks_per_second").number ==
+              tracer::default_tsc_ticks_per_second);
+        CHECK(field_of(sync, "realtime_ns").number ==
+              field_of(syncs.front(), "realtime_ns").number);
     }
 }
 
-// A tracepoint's name becomes a struct's name and its parameters become that
-// struct's members, so a table the generator accepts is one C++ will too. What
-// it cannot express, it refuses -- naming the call site, because a build step's
-// diagnostic is all its author gets.
-TEST_CASE("the code generator refuses a table it cannot turn into structs") {
-    const auto rejects = [](std::vector<tracer::tracepoint_entry> table) {
-        return [table] {
-            (void)generate_from(table);
-        };
-    };
-
-    CHECK_THROWS_AS(rejects({fake("hello world", "")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("2fast", "")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("", "")})(), std::runtime_error);
-
-    CHECK_THROWS_AS(rejects({fake("tp", "a:u32,a:u32")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("tp", "not an identifier:u32")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("tp", "u32")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("tp", "a:")})(), std::runtime_error);
-    CHECK_THROWS_AS(rejects({fake("tp", "a:u128")})(), std::runtime_error);
-
-    // And a table it does accept produces the struct it promised.
-    const std::vector<tracer::tracepoint_entry> table{fake("cache_hit", "key:str,age:u16")};
-    const std::string source = generate_from(table);
-    CHECK(source.find("struct cache_hit {") != std::string::npos);
-    CHECK(source.find("std::string_view key;") != std::string::npos);
-    CHECK(source.find("std::uint16_t age;") != std::string::npos);
-}
-
-// The price of naming a tracepoint by hand. An address is unique because the
-// linker made it so; an id is unique because the person who wrote it down
-// checked, and this is what does the checking for them.
-TEST_CASE("a static id names one tracepoint") {
-    constexpr auto id = tracer::tracepoint_id{4};
-
-    const std::vector<tracer::tracepoint_entry> clashing{
-        fake("first_event", "value:u32", 1, id), fake("second_event", "value:u32", 2, id)};
-    CHECK_THROWS_AS((void)generate_from(clashing), std::runtime_error);
-
-    // Two entries of *one* tracepoint are not a clash: a tracepoint in a header
-    // is compiled into every object that includes it, and both copies carry the
-    // id the header gave it.
-    const std::vector<tracer::tracepoint_entry> shared{fake("shared_event", "value:u32", 1, id)};
-    std::string source;
-    CHECK_NOTHROW(source = generate_from(shared, shared));
-
-    // And the decoder maps the id to that tracepoint without consulting any
-    // object: an id says which tracepoint it is on its own, which is the other
-    // half of what it is for.
-    CHECK(source.find("case 4: return 0;") != std::string::npos);
-
-    // An id nothing was generated from is refused rather than guessed at.
-    CHECK(source.find("default: return no_decoder_id;") != std::string::npos);
-}
-
-// One name is one struct, and several tracepoints may wear it.
-//
-// This is what a tracepoint written in a shared header looks like from the
-// outside: every object that includes it compiles its own, so the process holds
-// several entries that mean one event. They are merged rather than rejected --
-// but only while they agree, because the struct can only be one shape.
-TEST_CASE("the code generator merges tracepoints that share a name") {
-    const std::vector<tracer::tracepoint_entry> twice{fake("tp", "a:u32", 7),
-                                                      fake("tp", "a:u32", 7)};
-    const std::string source = generate_from(twice);
-
-    // One struct and one reader, but an entry apiece: each keeps its own
-    // metadata and its own id, so a record still says which copy fired.
-    CHECK(source.find("struct tp {") != std::string::npos);
-    CHECK(source.rfind("struct tp {") == source.find("struct tp {"));
-    CHECK(source.find("metadata_0") != std::string::npos);
-    CHECK(source.find("metadata_1") != std::string::npos);
-
-    // The same across two objects, which is the case that actually arises.
-    const std::vector<tracer::tracepoint_entry> first{fake("tp", "a:u32", 7)};
-    const std::vector<tracer::tracepoint_entry> second{fake("tp", "a:u32", 7),
-                                                       fake("other", "b:str", 9)};
-    const std::string shared = generate_from(first, second);
-    CHECK(shared.find("struct tp {") != std::string::npos);
-    CHECK(shared.rfind("struct tp {") == shared.find("struct tp {"));
-    CHECK(shared.find("\"00first0\", 0, 1") != std::string::npos);
-    CHECK(shared.find("\"00second\", 1, 2") != std::string::npos);
-
-    // Disagreeing about the parameters is still an error, and the complaint
-    // names both call sites -- neither of which is wrong on its own.
-    const std::vector<tracer::tracepoint_entry> disagreeing{fake("dup", "a:u32", 3),
-                                                            fake("dup", "b:u32", 4)};
-    try {
-        (void)generate_from(disagreeing);
-        FAIL("two shapes under one tracepoint name were accepted");
-    } catch (const std::runtime_error& e) {
-        CHECK(std::string_view(e.what()) ==
-              "fake.cc:4 (tracepoint \"dup\"): a tracepoint of this name is defined at "
-              "fake.cc:3 with a different parameter list (\"a:u32\" there, \"b:u32\" here)");
-    }
-
-    // And so is disagreeing about the timestamp, for the same reason: one
-    // struct is read by one reader, and the timestamp is the front of what that
-    // reader reads.
-    const std::vector<tracer::tracepoint_entry> half_timed{
-        fake("half", "a:u32", 5),
-        fake("half", "a:u32", 6, tracer::tracepoint_id::none,
-             tracer::timestamp_encoding::none)};
-    try {
-        (void)generate_from(half_timed);
-        FAIL("one tracepoint name timed two ways was accepted");
-    } catch (const std::runtime_error& e) {
-        CHECK(std::string_view(e.what()) ==
-              "fake.cc:6 (tracepoint \"half\"): a tracepoint of this name is defined at "
-              "fake.cc:5 with a different timestamp encoding (a delta from the record "
-              "before it there, no timestamp here)");
-    }
-}
-
-// The generator's half of a timestamp-less tracepoint: which reader a record's
-// body opens with is a fact about its tracepoint, so it is decided here, per
-// id, rather than by the loop that walks the records.
-TEST_CASE("the code generator reads the timestamp as the front of a body") {
-    const std::vector<tracer::tracepoint_entry> table{
-        fake("timed", "a:u32", 1),
-        fake("untimed", "a:u32", 2, tracer::tracepoint_id::none,
-             tracer::timestamp_encoding::none),
-    };
-    const std::string source = generate_from(table);
-
-    // The untimed one gets a case of its own; the timed one is the default,
-    // which is also where a record this decoder cannot place ends up.
-    CHECK(source.find("case 1: return read_timestamp_none(p, end, last);") != std::string::npos);
-    CHECK(source.find("case 0: return") == std::string::npos);
-    CHECK(source.find("default: return read_timestamp_delta(p, end, last);") !=
-          std::string::npos);
-
-    // And a consumer is told which it was handed, because a record that carries
-    // no time of its own is still given one.
-    CHECK(source.find("\"untimed\", \"fake.cc\", 2, \"void fake()\", false, 0}") !=
-          std::string::npos);
-    CHECK(source.find("\"timed\", \"fake.cc\", 1, \"void fake()\", true, 0}") !=
-          std::string::npos);
-
-    // A tracepoint timed from its own first parameter needs one to be timed
-    // from: this is the tracer's own clock_sync, and the shape of it is what
-    // the whole metadata stream is read against.
-    const std::vector<tracer::tracepoint_entry> mistimed{
-        fake("sync", "when:u32", 1, tracer::tracepoint_id::none,
-             tracer::timestamp_encoding::sync)};
-    CHECK_THROWS_AS((void)generate_from(mistimed), std::runtime_error);
-}
+// The cases that were here -- what a table the generator cannot read does, how
+// two entries of one tracepoint are folded together, which timestamp reader an
+// id selects -- are now in //modules/trace-viewer:decoder_plugin_test, beside
+// the generator they are about. Nothing in this module generates a decoder any
+// more.
 
 // A shared library's tracepoints are its own: its own section, its own
 // __start/__stop brackets, its own static keys. What makes them the process's
@@ -1048,14 +897,14 @@ TEST_CASE("a tracer records the objects it was built with, and the changes it is
 // than which ones were there. Each tracer says what it was built with, so a
 // record is read against the mapping its own trace describes.
 //
-// The traces below are decoded with this build's generated decoder, which knows
-// the plugin (it is the same library the pipeline was generated from) and does
-// not know this test binary. So only the plugin's tracepoint is switched on:
-// what is being tested is that the plugin's records survive its own reload.
+// The traces below are read against the demo's tables, which have the plugin in
+// them (it is the same library the demo was built with) and do not have this
+// test binary. So only the plugin's tracepoints are switched on: what is being
+// tested is that the plugin's records survive its own reload.
 TEST_CASE("a plugin can be replaced without its records being misread") {
-    // This binary's own records -- which a sync record is -- are not decodable
-    // by the generated decoder: it was generated from the producer's table and
-    // the plugin's, and this executable is neither.
+    // This binary's own records -- which a sync record is -- cannot be read
+    // against those tables: an address in this executable is in no object the
+    // demo's dsos directory holds.
     const without_clock_sync quiet;
 
     // Taken before anything is loaded, so that "the object that is not this
@@ -1100,9 +949,9 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
     MESSAGE("plugin table at ", first_address, " then ", second_address);
     const auto decoded = [](std::span<const std::byte> trace) {
         std::string text;
-        trace::decode(trace, [&text](const auto& event, const trace::tracepoint_metadata& meta) {
-            text += std::format("{}:{} {}\n", meta.file, meta.line, event.to_string());
-        });
+        for (const trace_test::event& e : demo_reader().decode(trace)) {
+            text += std::format("{}:{} {}\n", e.file, e.line, e.to_string());
+        }
         return text;
     };
     CHECK(decoded(first) ==
@@ -1114,29 +963,18 @@ TEST_CASE("a plugin can be replaced without its records being misread") {
 
 namespace {
 
-// Where the build put the producer's objects. A source location is an address
-// inside one of them, so a decoder needs the files themselves -- unlike a
-// tracepoint, whose name and file are compiled into the decoder.
-std::string dso_dir() {
-    const char* const path = std::getenv("TRACER_DSOS");
-    REQUIRE_MESSAGE(path != nullptr, "TRACER_DSOS is not set");
-    return path;
-}
-
-// Every table_opened event of the demo trace, which is the tracepoint carrying a
-// location. `dsos` is the caller's, because what these cases differ in is which
-// objects the decoder was given.
-std::vector<trace::table_opened> opened_tables(trace::dso_directory& dsos) {
-    const std::string raw = read_env_file("TRACER_TRACE");
-    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
-                                           raw.size()};
-    std::vector<trace::table_opened> found;
-    trace::decode(bytes, overloaded{
-                             [&found](const trace::table_opened& event,
-                                      const trace::tracepoint_metadata&) { found.push_back(event); },
-                             [](const auto&, const trace::tracepoint_metadata&) {},
-                         },
-                  dsos);
+// Every table_opened event of the demo trace, which is the tracepoint carrying
+// a location, with its locations resolved against `dsos`. The directory is the
+// caller's, because what the two cases below differ in is which objects the
+// decoder was given to read a location out of -- and not, as everything else
+// here differs, in what it was told a record means.
+std::vector<trace::source_location> opened_tables(trace::dso_directory& dsos) {
+    std::vector<trace::source_location> found;
+    for (const trace_test::event& e : demo_reader().decode(demo_trace(), dsos)) {
+        if (e.name == "table_opened") {
+            found.push_back(field_of(e, "opened_at").location);
+        }
+    }
     return found;
 }
 
@@ -1149,65 +987,78 @@ std::vector<trace::table_opened> opened_tables(trace::dso_directory& dsos) {
 // object's base address and not just its tracepoint table's.
 TEST_CASE("a source location decodes to the place it was captured") {
     trace::dso_directory dsos(dso_dir());
-    const std::vector<trace::table_opened> opened = opened_tables(dsos);
+    const std::vector<trace::source_location> opened = opened_tables(dsos);
     REQUIRE(opened.size() == 3);
 
     // The two captured ones name their *call sites* -- two different lines of
     // trace_producer.cc -- and not the tracepoint, which is one line inside
     // open_table() and is what meta.file/meta.line would have said.
-    CHECK(opened[0].opened_at.resolved);
-    CHECK(opened[0].opened_at.file == "modules/tracer/trace_producer.cc");
-    CHECK(opened[0].opened_at.function.find("run_demo") != std::string::npos);
-    CHECK(opened[0].opened_at.column > 0);
+    CHECK(opened[0].resolved);
+    CHECK(opened[0].file == "modules/tracer/trace_producer.cc");
+    CHECK(opened[0].function.find("run_demo") != std::string::npos);
+    CHECK(opened[0].column > 0);
 
-    CHECK(opened[1].opened_at.resolved);
-    CHECK(opened[1].opened_at.file == opened[0].opened_at.file);
-    CHECK(opened[1].opened_at.line == opened[0].opened_at.line + 1);
+    CHECK(opened[1].resolved);
+    CHECK(opened[1].file == opened[0].file);
+    CHECK(opened[1].line == opened[0].line + 1);
 
     // And the one that was never captured decodes as nothing rather than as an
     // address that happens to be zero.
-    CHECK_FALSE(opened[2].opened_at.resolved);
-    CHECK(opened[2].opened_at.address == 0);
-    CHECK(opened[2].opened_at.to_string() == "<none>");
+    CHECK_FALSE(opened[2].resolved);
+    CHECK(opened[2].address == 0);
+    CHECK(opened[2].to_string() == "<none>");
 }
 
-// The bargain the address makes. A tracepoint is decodable from the generated
-// header alone; a location is not, and a decoder without the objects has to say
-// so rather than invent a file. It says so per location, so the rest of the
-// trace still decodes -- a missing object is a decoder that was set up wrong,
-// not a trace that is wrong.
+// The bargain the address makes. What a record *is* comes out of a tracepoint
+// table; a location does not, and a decoder without the objects themselves has
+// to say so rather than invent a file. It says so per location, so the rest of
+// the trace still decodes -- a missing object is a decoder that was set up
+// wrong, not a trace that is wrong.
 TEST_CASE("a location whose object the decoder has not got stays unresolved") {
     trace::dso_directory empty("/nonexistent");
-    const std::vector<trace::table_opened> opened = opened_tables(empty);
+    const std::vector<trace::source_location> opened = opened_tables(empty);
     REQUIRE(opened.size() == 3);
 
-    CHECK_FALSE(opened[0].opened_at.resolved);
-    CHECK(opened[0].opened_at.file.empty());
+    CHECK_FALSE(opened[0].resolved);
+    CHECK(opened[0].file.empty());
     // The address it was recorded as survives, and so does the identity of the
     // object it is in -- which is what the metadata stream can say without any
     // file at all.
-    CHECK(opened[0].opened_at.address != 0);
-    CHECK_FALSE(opened[0].opened_at.object.empty());
-    CHECK(opened[0].opened_at.to_string().starts_with("<unresolved 0x"));
+    CHECK(opened[0].address != 0);
+    CHECK_FALSE(opened[0].object.empty());
+    CHECK(opened[0].to_string().starts_with("<unresolved 0x"));
 
     // Two call sites are still two addresses, unresolved or not.
-    CHECK(opened[0].opened_at.address != opened[1].opened_at.address);
+    CHECK(opened[0].address != opened[1].address);
 }
 
 // The end-to-end pipeline, asserted on its output.
 //
-// Everything upstream of this is a build step: :trace_producer emits both a
-// trace and the header of a decoder for its own tracepoint table, :trace_decoder
-// is a program built against that header, and :decoded_trace is it run on the
-// trace. What lands here is its stdout.
+// Everything upstream of this is a build step: :trace_producer runs the demo
+// workload and dumps the trace, and dumps the objects it was written by. What
+// is asserted here is those two put back together -- the records read against
+// the tracepoint tables in those objects, which is the whole of what decoding
+// is now.
 //
 // Timestamps are a counter rather than rdtsc (see trace_producer.cc), and the
 // snapshot keeps the source files, event values, and the rest of the output
 // literal. Timestamps and source line and column numbers are the only fields
 // allowed to move.
 TEST_CASE("decoded trace") {
-    const RegexText decoded = serialize_trace_columns(read_env_file("TRACER_DECODED"));
-    check_snapshot(decoded, R"snap(
+    // The two columns a record carries besides its own fields: when it was
+    // taken, and where the tracepoint is. A dash for a record of a tracepoint
+    // that carries no timestamp -- it is handed the moment of the record before
+    // it, which is a real answer to "when" but not one this column should
+    // claim. See tracer.h's timestamp_encoding.
+    constexpr int fileline_width = 44;
+    std::string text;
+    for (const trace_test::event& e : demo_events()) {
+        text += std::format("{:>18} | {:<{}} | {}\n",
+                            e.has_timestamp ? std::format("{}", e.timestamp) : "-",
+                            std::format("{}:{}", e.file, e.line), fileline_width, e.to_string());
+    }
+
+    check_snapshot(serialize_trace_columns(text), R"snap(
         |               500 | modules/tracer/include/tracer/tracer.h:1682   | clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |               700 | modules/tracer/include/tracer/tracer.h:1682   | clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
         |              1800 | modules/tracer/trace_producer.cc:58           | listening{port=8080}
@@ -1237,46 +1088,44 @@ TEST_CASE("decoded trace") {
         )snap"_snap);
 }
 
-// The same trace, decoded in this process against the same generated header --
-// which is the way a program that wants the events rather than the text would
-// use it.
-TEST_CASE("a decoded trace is structs, not text") {
-    const std::string raw = read_env_file("TRACER_TRACE");
-    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
-                                           raw.size()};
+// The same trace, as values rather than as that text. A field is read by the
+// name its parameter was declared with and comes back typed -- an integer as a
+// number, a string as its bytes -- which is what a consumer that wants the
+// events rather than a printout of them gets.
+TEST_CASE("a decoded record is fields, not a line of text") {
+    const std::vector<trace_test::event>& events = demo_events();
 
-    collector out;
-    trace::dso_directory dsos(dso_dir());
-    trace::decode(bytes, out, dsos);
+    const std::vector<trace_test::event> accepted =
+        events_named(events, "accepted_connection");
+    REQUIRE(accepted.size() == 3);
+    CHECK(field_of(accepted[0], "conn").number == 0);
+    CHECK(field_of(accepted[0], "keepalive").number == 1);
+    CHECK(field_of(accepted[1], "conn").number == 1);
+    CHECK(field_of(accepted[1], "keepalive").number == 0);
 
-    check_snapshot(serialize_trace_columns(out.text), R"snap(
-        |modules/tracer/include/tracer/tracer.h:1682 clock_sync{tsc=400, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/include/tracer/tracer.h:1682 clock_sync{tsc=600, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/trace_producer.cc:58 listening{port=8080}
-        |accepted_connection: connection 0, keepalive true
-        |request_header: GET /
-        |accepted_connection: connection 1, keepalive false
-        |request_header: GET /index.html
-        |accepted_connection: connection 2, keepalive true
-        |request_header: GET /
-        |modules/tracer/trace_producer.cc:73 cache_miss{key=73657373696f6e, slot=0xdeadbeef}
-        |modules/tracer/trace_producer.cc:76 clock_skew{nanoseconds=-4200, retries=3}
-        |modules/tracer/plugin/trace_plugin.cc:19 plugin_loaded{connections=2}
-        |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=0, label=handshake}
-        |modules/tracer/plugin/trace_plugin.cc:22 plugin_work{step=1, label=handshake}
-        |modules/tracer/plugin/common_tracepoints.h:42 shared_event{sequence=2}
-        |modules/tracer/plugin/common_tracepoints.h:42 shared_event{sequence=99}
-        |modules/tracer/trace_producer.cc:51 table_opened{name=users, opened_at=modules/tracer/trace_producer.cc:86:5}
-        |modules/tracer/trace_producer.cc:51 table_opened{name=sessions, opened_at=modules/tracer/trace_producer.cc:87:5}
-        |modules/tracer/include/tracer/tracer.h:1682 clock_sync{tsc=3500, realtime_ns=1700000000000000000, ticks_per_second=3187000000}
-        |modules/tracer/trace_producer.cc:89 table_opened{name=anonymous, opened_at=<none>}
-        |modules/tracer/trace_producer.cc:102 table_snapshot_begin{tables=3}
-        |modules/tracer/trace_producer.cc:107 table_snapshot_row{table=users, rows=10}
-        |modules/tracer/trace_producer.cc:107 table_snapshot_row{table=sessions, rows=20}
-        |modules/tracer/trace_producer.cc:107 table_snapshot_row{table=anonymous, rows=30}
-        |modules/tracer/trace_producer.cc:113 table_snapshot_end{}
-        |modules/tracer/trace_producer.cc:115 shutting_down{}
-        )snap"_snap);
+    const std::vector<trace_test::event> headers = events_named(events, "request_header");
+    REQUIRE(headers.size() == 3);
+    CHECK(field_of(headers[0], "method").bytes == "GET");
+    CHECK(field_of(headers[1], "path").bytes == "/index.html");
+
+    // The widths and the signs are the signature's, not the printer's: a
+    // negative parameter comes back negative rather than as a very large
+    // unsigned one.
+    const std::vector<trace_test::event> skew = events_named(events, "clock_skew");
+    REQUIRE(skew.size() == 1);
+    CHECK(field_of(skew[0], "nanoseconds").signed_number == -4200);
+    CHECK(field_of(skew[0], "retries").number == 3);
+
+    // A byte span is bytes, and keeps whatever is in them; the text column
+    // above is the hex rendering of these.
+    const std::vector<trace_test::event> misses = events_named(events, "cache_miss");
+    REQUIRE(misses.size() == 1);
+    CHECK(field_of(misses[0], "key").bytes == "session");
+    CHECK(field_of(misses[0], "slot").number == 0xdeadbeef);
+
+    // A parameter no tracepoint of this name has is a question with no answer,
+    // rather than a zero.
+    CHECK(misses[0].find("no_such_parameter") == nullptr);
 }
 
 // The other end of TRACEPOINT_UNTIMED(): what a consumer is handed for a record
@@ -1286,25 +1135,10 @@ TEST_CASE("a decoded trace is structs, not text") {
 // closing it -- of which only the first is timed. See run_demo() in
 // trace_producer.cc.
 TEST_CASE("a record with no timestamp is dated from the record before it") {
-    const std::string raw = read_env_file("TRACER_TRACE");
-    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(raw.data()),
-                                           raw.size()};
+    const std::vector<trace_test::event>& events = demo_events();
 
-    struct event {
-        std::string name;
-        bool has_timestamp;
-        std::uint64_t timestamp;
-    };
-    std::vector<event> events;
-    trace::dso_directory dsos(dso_dir());
-    trace::decode(
-        bytes,
-        [&events](const auto&, const trace::tracepoint_metadata& meta) {
-            events.push_back({std::string(meta.name), meta.has_timestamp, meta.timestamp});
-        },
-        dsos);
-
-    const auto at = std::ranges::find(events, "table_snapshot_begin", &event::name);
+    const auto at =
+        std::ranges::find(events, "table_snapshot_begin", &trace_test::event::name);
     REQUIRE(at != events.end());
     // In the order they were written, which is the order a stream of records
     // with no timestamps between them can be read in and no other.
@@ -1318,7 +1152,7 @@ TEST_CASE("a record with no timestamp is dated from the record before it") {
     // Each of them carries the moment of the record before it -- which, for a
     // run of them, is the moment the run opened -- and says that the moment is
     // not its own.
-    for (const event& row : std::span{at + 1, 4}) {
+    for (const trace_test::event& row : std::span{at + 1, 4}) {
         CHECK_FALSE(row.has_timestamp);
         CHECK(row.timestamp == at[0].timestamp);
     }
@@ -1333,7 +1167,7 @@ TEST_CASE("a record with no timestamp is dated from the record before it") {
     // Everything else in this trace is timed, which is what the flag is for:
     // it is a fact about the tracepoint, and a consumer reads it per record
     // rather than keeping a list of which tracepoints are which.
-    for (const event& other : events) {
+    for (const trace_test::event& other : events) {
         if (!other.name.starts_with("table_snapshot_")) {
             CHECK(other.has_timestamp);
         }
@@ -1341,51 +1175,52 @@ TEST_CASE("a record with no timestamp is dated from the record before it") {
 }
 
 TEST_CASE("a trace that cannot be decoded stops the decode") {
-    const auto ignore = [](const auto&, const trace::tracepoint_metadata&) {};
+    const trace_test::trace_reader& reader = demo_reader();
+    const auto decode = [&reader](std::span<const std::byte> trace) {
+        (void)reader.decode(trace);
+    };
 
     // Fewer bytes than the magic, and then bytes that are not a trace at all.
     // Neither is something to read addresses out of.
     const std::array<std::byte, 3> truncated{};
-    CHECK_THROWS_AS(trace::decode(truncated, ignore), std::runtime_error);
+    CHECK_THROWS_AS(decode(truncated), std::runtime_error);
     const std::array<std::byte, 8> garbage{std::byte{0xFF}};
-    CHECK_THROWS_AS(trace::decode(garbage, ignore), std::runtime_error);
+    CHECK_THROWS_AS(decode(garbage), std::runtime_error);
 
-    // A record from an object the trace names but this decoder was not
-    // generated from. Its address means nothing here, and guessing at the
-    // object below it would decode the wrong tracepoint rather than fail.
+    // A record from an object the trace names and the decoder has no table
+    // for. Its address means nothing here, and guessing at the object below it
+    // would decode the wrong tracepoint rather than fail.
     const std::array<std::pair<std::string_view, std::uint64_t>, 1> stranger{
         std::pair<std::string_view, std::uint64_t>{"00stranger00", 0x1000}};
     std::array<std::byte, tracer::record_header_size> record{};
     const auto address = std::uint64_t{0x1000};
     std::memcpy(record.data(), &address, sizeof(address));
-    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, record), ignore), std::runtime_error);
+    CHECK_THROWS_AS(decode(fake_trace(stranger, record)), std::runtime_error);
 
     // A record below every object loaded at its timestamp, which no offset can
     // be taken from.
     const std::array<std::byte, tracer::record_header_size> below{};
-    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, below), ignore), std::runtime_error);
+    CHECK_THROWS_AS(decode(fake_trace(stranger, below)), std::runtime_error);
 
-    // A record naming a static id this decoder has never heard of, which is a
-    // trace from a build with tracepoints this one has not. Nothing places it:
+    // A record naming a static id no table here claims, which is a trace from
+    // a build with tracepoints these objects have not. Nothing places it:
     // an id says which tracepoint it is on its own or not at all.
     std::array<std::byte, tracer::record_header_size> unknown_id{};
     // Id 63 doubled and made odd is 127, which fits in a byte with an empty
     // length tag -- so one byte of id, and the rest is timestamp.
     unknown_id[0] = std::byte{127 << 1};
-    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, unknown_id), ignore), std::runtime_error);
+    CHECK_THROWS_AS(decode(fake_trace(stranger, unknown_id)), std::runtime_error);
 
     // Half a record: its address and timestamp vint are there and its arguments are
     // not, which cannot be told from a record that has not been reached yet
     // until it is read.
     const std::array<std::byte, tracer::record_header_size / 2> half{};
-    CHECK_THROWS_AS(trace::decode(fake_trace(stranger, half), ignore), std::runtime_error);
+    CHECK_THROWS_AS(decode(fake_trace(stranger, half)), std::runtime_error);
 
     // And a real trace with its last chunk cut short. A chunk says how long it
     // is, so this is caught where the streams are laid out rather than in the
     // middle of a record.
-    const std::string raw = read_env_file("TRACER_TRACE");
-    const std::span<const std::byte> whole{reinterpret_cast<const std::byte*>(raw.data()),
-                                           raw.size()};
-    CHECK_NOTHROW(trace::decode(whole, ignore));
-    CHECK_THROWS_AS(trace::decode(whole.first(whole.size() - 4), ignore), std::runtime_error);
+    const std::span<const std::byte> whole = demo_trace();
+    CHECK_NOTHROW(decode(whole));
+    CHECK_THROWS_AS(decode(whole.first(whole.size() - 4)), std::runtime_error);
 }

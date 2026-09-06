@@ -47,13 +47,70 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "plugin_abi.h"
+#include "tracepoint_table.h"
 
 namespace plugin {
+
+// The two steps between a set of tables and a `.so`, as functions on plain
+// values: the plan the tables fold into, and the C++ that plan is written as.
+//
+// They are here rather than hidden in the source because they are the part of
+// this with tests. A table two builds disagree about, or one naming a wire type
+// this viewer has no reader for, is a sentence to write down and an ELF object
+// to produce -- see decoder_plugin_test.cc.
+namespace detail {
+
+// One distinct shape of tracepoint: a name, a parameter list, and how its
+// records carry their time.
+//
+// Several entries share one. A tracepoint written in a header is compiled into
+// every object that includes it, and a cluster mid-upgrade has the same
+// tracepoint in two builds -- one reader each time would be one copy of the
+// same code each time. What is *not* required is that two entries of one name
+// agree: two builds that spell `run_task` differently are two shapes here, with
+// a reader each, both delivering to the same events.h struct. That is the thing
+// a generated header could not do, because the two would have wanted one struct
+// name.
+struct shape {
+    std::string name;
+    std::string signature;
+    std::uint8_t timestamps = 0;
+    std::vector<tracepoints::field> fields;
+    bool bridged = false;  // events.h has a struct of this name
+};
+
+// Where a record's address comes from: one object's run of ids.
+struct slice {
+    std::string build_id;
+    std::size_t first_id = 0;
+    std::size_t count = 0;
+};
+
+struct plan {
+    std::vector<shape> shapes;
+    std::vector<std::size_t> shape_of_id;  // by decoder id, in the order the ids run
+    std::vector<const tracepoints::entry*> by_id;
+    std::vector<slice> slices;
+    std::map<std::uint64_t, std::size_t> static_ids;  // static id -> decoder id
+    std::vector<std::string> notes;
+};
+
+// Fold every object's table into that. Holds pointers into `objects`, which has
+// to outlive the plan.
+[[nodiscard]] plan make_plan(const std::vector<tracepoints::object>& objects);
+
+// The plugin's whole source, or "" with `error` set for a plan nothing can be
+// generated from.
+[[nodiscard]] std::string generate(const plan& planned, std::string& error);
+
+}  // namespace detail
 
 // What became of the decoder.
 struct decoder {

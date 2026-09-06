@@ -10,12 +10,8 @@ load("//buck:module.bzl", "add_module")
 # keeps the producer's tracepoint table equal to its own call sites.
 cxx_library(
     name = "tracer_core",
-    srcs = [
-        "codegen.cc",
-        "tracer.cc",
-    ],
+    srcs = ["tracer.cc"],
     exported_headers = {
-        "tracer/codegen.h": "include/tracer/codegen.h",
         "tracer/tracer.h": "include/tracer/tracer.h",
     },
     header_namespace = "",
@@ -83,8 +79,10 @@ cxx_library(
     visibility = ["PUBLIC"],
 )
 
-# Step 1: the binary that owns the tracepoints. It can print a decoder for its
-# own table, and it can run a workload and dump the resulting trace.
+# The binary that owns the demo's tracepoints: it runs a workload and dumps the
+# trace, and it dumps the objects that trace has to be read against. Nothing
+# generates a decoder any more -- what reads this trace is the wire format in
+# //modules/trace-viewer:trace_wire plus the tables in these very objects.
 cxx_binary(
     name = "trace_producer",
     srcs = ["trace_producer.cc"],
@@ -95,89 +93,59 @@ cxx_binary(
     ],
 )
 
-# Step 2: generate the decoder's source from that binary's tracepoint table.
-# This is where a tracepoint whose name or parameter names cannot become a
-# struct becomes a build failure, with a diagnostic naming the call site.
-genrule(
-    name = "decoder_src",
-    out = "decoder.h",
-    cmd = "$(exe :trace_producer) --emit-decoder > $OUT",
-)
-
-# The generated header, as something to depend on. Both the decoder program and
-# the module's own tests are built against it.
-cxx_library(
-    name = "decoder",
-    exported_headers = {
-        "tracer_generated/decoder.h": ":decoder_src",
-    },
-    header_namespace = "",
-    preferred_linkage = "static",
-    visibility = ["PUBLIC"],
-)
-
-# Step 3: separately, run the workload and dump a trace. Independent of step 2
-# because a record is decoded through the object header the trace carries, not
-# through the addresses this particular run happened to be given -- otherwise
-# these two runs of a PIE binary, with a shared library each mapped somewhere
-# else again, would disagree.
+# The trace. Taken in a run of its own, separate from the objects below,
+# because a record is decoded through the mappings the trace itself carries and
+# not through the addresses this particular run happened to be given --
+# otherwise two runs of a PIE binary, with a shared library each mapped
+# somewhere else again, would disagree.
 genrule(
     name = "trace_bin",
     out = "trace.bin",
     cmd = "$(exe :trace_producer) --emit-trace $OUT",
 )
 
-# Step 3b: the objects the trace's source locations point into, filed by build
-# ID. A location is one address inside a loaded object, so unlike a tracepoint --
-# whose name and file are compiled into the decoder -- reading one back needs the
-# object file itself. See "handing the objects to a decoder" in tracer.h.
+# The objects the trace was written by, filed by build ID: their `tracepoints`
+# sections are what says which tracepoint a record is and what its bytes mean,
+# and their bodies are what a source location -- one address inside a loaded
+# object -- is read out of. See "handing the objects to a decoder" in tracer.h.
+#
+# //modules/trace-viewer:decoder_plugin_test reads these too, as the one real
+# pair of tracepoint tables in the repository.
 genrule(
     name = "dso_dir",
     out = "dsos",
     cmd = "$(exe :trace_producer) --emit-dsos $OUT",
-)
-
-# Step 4: a program that decodes with the generated header. It is a callback
-# that prints and nothing else -- and it is the check that the generated header
-# compiles standing on its own, outside the test that also includes it.
-cxx_binary(
-    name = "trace_decoder",
-    srcs = ["trace_decoder.cc"],
-    header_namespace = "",
-    deps = [":decoder"],
-)
-
-# Step 5: decode the trace. Its output is what the snapshot test asserts on.
-genrule(
-    name = "decoded_trace",
-    out = "decoded.txt",
-    # TRACE_DSO_DIR is where the generated decoder looks for the objects; the
-    # decoder program itself says nothing about them.
-    cmd = "TRACE_DSO_DIR=$(location :dso_dir) $(exe :trace_decoder) $(location :trace_bin) > $OUT",
+    visibility = ["PUBLIC"],
 )
 
 add_module(
     name = "tracer",
-    srcs = ["tracer_test.cc"],
+    srcs = [
+        "trace_reader.cc",
+        "tracer_test.cc",
+    ],
     deps = [
-        ":decoder",
         ":tracer_core",
         "//:doctest",
         "//modules/snapshot:snapshot",
+        # What reads a trace back. The producer's half of the wire format is in
+        # tracer.h and the reader's half is over there, and these tests are
+        # where the two are put against each other -- which is the only thing
+        # that keeps them the same format. See trace_reader.h.
+        "//modules/trace-viewer:tracepoint_table",
+        "//modules/trace-viewer:trace_wire",
     ],
     resources = {
-        "decoded.txt": ":decoded_trace",
         # The library is never linked into the test: it is dlopen()ed by the
         # DSO test, which wants to watch the process's view of the tracepoint
         # tables change as it arrives and leaves.
         "trace_plugin": ":trace_plugin",
         "trace.bin": ":trace_bin",
-        # The producer's objects, so that the test can resolve the source
-        # locations in the trace exactly as :decoded_trace does.
+        # The producer's objects: both the tables the demo trace is decoded
+        # against and the files its source locations are read out of.
         "dsos": ":dso_dir",
     },
     env = {
-        "TRACER_DECODED": "$(location :decoded_trace)",
         "TRACER_DSOS": "$(location :dso_dir)",
         "TRACER_PLUGIN": "$(location :trace_plugin)",
         "TRACER_TRACE": "$(location :trace_bin)",

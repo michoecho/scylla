@@ -154,7 +154,7 @@ Deliberately crudely. Scylla's CMake pulls the tracer in by **absolute path**:
 
 - `seastar/CMakeLists.txt` sets `Scylla_TRACER_REPO` to
   `/home/michal/projects/cpp_template` and compiles `modules/tracer/tracer.cc`
-  `modules/tracer/codegen.cc` and `modules/utils/barrier.cc` into
+  and `modules/utils/barrier.cc` into
   `libseastar.so` -- alongside `src/core/scylla_tracer.cc`,
   `src/core/rendezvous.cc` and `src/core/scylla_stacktrace_sampler.cc` -- with
   `-w` because they are not written to Seastar's
@@ -218,7 +218,6 @@ records.
 The endpoint returns the directory it wrote, under `<workdir>/traces/<stamp>/`:
 
 ```
-decoder.h                       generated from this binary's tracepoint table (only main.cc reads it)
 <uuid>.trace                    one file per shard *and level*
 <uuid>.metadata.json            what that file is: build, process, shard, level, times
 ...
@@ -394,12 +393,13 @@ A `time curl` on this endpoint reads ~5 ms, which is almost entirely curl
 starting up: `curl -w %{time_total}` puts the request itself at 0.2-0.5 ms,
 and the process-side log line at a few tens of microseconds.
 
-## The new viewer
+## The viewer
 
-`viewer.cc` is a second viewer beside `main.cc`, and where the two disagree it
-is the one to believe. Same traces, same questions -- written around its tables
-instead of around its control flow, and reading its decoder out of the objects
-rather than out of a generated header.
+`viewer.cc` is the viewer. It replaced one written around its control flow --
+`main.cc`, deleted along with the generated decoder header it was the last
+reader of -- with one written around its tables, reading what a record means out
+of the objects a snapshot came from rather than out of a header generated beside
+it.
 
 ```sh
 TRACE_DSO_DIR=<run>/dsos buck2 run //modules/trace-viewer:viewer -- \
@@ -992,19 +992,8 @@ The compiler is `$TRACE_CXX`, or the first of `clang++`, `c++`, `g++` on PATH.
 **The viewer therefore needs a compiler at runtime**: run it from inside
 `nix develop`. Without one, `pass_decoder` says so and nothing decodes.
 
-### The old viewer
-
-`modules/trace-viewer/decoder.h` is still checked in, and is still one global
-generated decoder for the whole program. It is there for `main.cc`, the old
-viewer, which has not been ported; when a tracepoint changes, that copy has to be
-replaced by hand from a snapshot that carries one:
-
-```sh
-cp third-party/scylladb/ignored/<run>/node1/decoder.h modules/trace-viewer/decoder.h
-```
-
-`viewer` does not read it and does not care. (`smoke.trace` predates all of this
-and no longer decodes against anything; nothing reads it.)
+(`smoke.trace` predates all of this and no longer decodes against anything;
+nothing reads it.)
 
 ### Source locations
 
@@ -1079,11 +1068,10 @@ Same 404 locations, all 404 resolved, either way. The viewer prints that count o
 the way in, which is the quick check that a `dsos/` directory is the right one:
 every location unresolved means a missing, stripped or mismatched directory.
 
-`mmap` lives in `dso_directory::object()`, in `trace_wire.h`, which both the
-viewer and every plugin it compiles include. (The same class appears in the
-generated `decoder.h` the old viewer reads, from
-`tracer::generate_decoder_source()`; the two are the same code and neither is
-derived from the other.)
+`mmap` lives in `dso_directory::object()`, in `trace_wire.h`, which the viewer,
+every plugin it compiles, and `modules/tracer`'s tests all include. It is the
+only copy of it there is; a second one used to live in the decoder header the
+tracer generated, and keeping the two the same was nobody's job.
 
 Stack samples are the exception. `llvm-symbolizer` *does* read debug info, so
 against stripped objects a backtrace comes out as function names from the
@@ -1098,7 +1086,7 @@ thousands of times, so the viewer interns them by address and each record holds
 an index.
 
 Two things a location needs that the obvious reading of "just look it up in the
-object" misses, both handled by the generated decoder:
+object" misses, both handled in `trace_wire.h`:
 
 - The `file` and `function` of a `std::source_location` in a **shared** object
   are not in its file. x86-64 uses RELA, so the place holds zero and the value
@@ -1139,9 +1127,9 @@ is why the "fell inside a task" count is below the total.
 
 When something else looks wrong, decode headlessly and count. Reading the
 generated `plugin.cc` in the cache directory says exactly what the viewer thinks
-each record is; a ~40 line program over `modules/tracer`'s generated decoder,
-with one `operator()` per tracepoint, will tell you how
-many distinct tasks own an `io_begin` -- if that number is small, the chain is
+each record is; a ~40 line program over `trace_wire.h` and the tables --
+`modules/tracer/trace_reader.{h,cc}` is one, written for the tracer's tests --
+will tell you how many distinct tasks own an `io_begin` -- if that number is small, the chain is
 broken somewhere. Also worth counting: how many `cql_request` records there are,
 and whether the ids in one shard's file were minted by the other shard's
 requests.

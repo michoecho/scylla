@@ -1,36 +1,40 @@
+load("//buck:module.bzl", "add_module")
+
 # Latency trace viewer.  The UI sources are source-backed external cells so
 # updating them does not require a nixpkgs package for either library.
 
-# The decoder the *old* viewer (main.cc) reads with: a generated header, copied
-# in from a snapshot rather than built here, and one global one for the whole
-# program. That is exactly the assumption the new viewer no longer makes -- a
-# cluster part way through an upgrade writes traces from several builds at once,
-# and no single decoder.h can read them -- so `viewer` does not depend on this.
-# See decoder_plugin.h.
+# The wire format, as a header and nothing else. Two things include it: the
+# decoder plugin the viewer compiles at startup, which is this file plus a
+# switch over tracepoint ids, and anything that wants to read a trace's bytes
+# without knowing what any particular record means -- modules/tracer's tests,
+# which write records with the tracer and read them back with this.
+#
+# It is the only description of the format now. There used to be a second, in a
+# decoder header the tracer generated; the two agreed by inspection, which is
+# not a thing that stays true.
 cxx_library(
-    name = "decoder",
-    exported_headers = {"decoder.h": "decoder.h"},
+    name = "trace_wire",
+    exported_headers = {"trace_wire.h": "trace_wire.h"},
     header_namespace = "",
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
 )
 
-cxx_binary(
-    name = "trace_viewer",
-    srcs = ["main.cc"],
+# Turning an ELF object into the list of tracepoints it was built with, which is
+# the other half of what a decode needs. Separate from the module below so that
+# a reader of traces can have it without the generator, the compiler and the
+# dlopen that come with a plugin.
+cxx_library(
+    name = "tracepoint_table",
+    srcs = ["tracepoint_table.cc"],
+    exported_headers = {"tracepoint_table.h": "tracepoint_table.h"},
     header_namespace = "",
-    link_style = "static",
-    deps = [
-        ":decoder",
-        "//modules/address-decoder:address_decoder",
-        "//:doctest_impl",
+    exported_deps = [
+        ":trace_wire",
         "//:fmt",
-        "//:opengl",
-        "//:sdl3",
-        "imgui//:imgui",
-        "imgui//:imgui_sdl3_opengl3",
-        "implot//:implot",
     ],
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
 )
 
 # The three headers a decoder plugin is compiled against, as text, for the
@@ -77,25 +81,59 @@ cxx_library(
     preferred_linkage = "static",
 )
 
-# The rewrite: the same trace, read into a catalogue of tables and a sequence
-# of passes over them. See the header comment in viewer.cc.
+# The decoding half of the viewer: the tables in, the generated plugin out. It
+# is a module rather than two sources of the binary because it is the part with
+# tests -- the plan and the source it writes are ordinary values, and a table
+# that is a table nothing can be built from is easier to hand it than to build.
+#
+# The test binary is //modules/trace-viewer:decoder_plugin_test; the viewer
+# itself links the library, test cases and all, which costs a few registrations
+# it never runs.
+add_module(
+    name = "decoder_plugin",
+    srcs = [
+        "decoder_plugin.cc",
+        "decoder_plugin_test.cc",
+    ],
+    exported_headers = {
+        "decoder_plugin.h": "decoder_plugin.h",
+        "events.h": "events.h",
+        "plugin_abi.h": "plugin_abi.h",
+    },
+    deps = [
+        ":embedded_sources_header",
+        ":tracepoint_table",
+        ":trace_wire",
+        "//:doctest",
+        "//:fmt",
+    ],
+    # dlopen(), which is how a compiled plugin is reached. Exported so that the
+    # module's own test binary links as well as the viewer does.
+    exported_linker_flags = ["-ldl"],
+    # The demo's objects, so that the ELF side of this has something real to be
+    # read against: two objects, one of them a shared library, with a tracepoint
+    # written in a header compiled into both.
+    resources = {
+        "dsos": "//modules/tracer:dso_dir",
+    },
+    env = {
+        "TRACER_DSOS": "$(location //modules/tracer:dso_dir)",
+    },
+    module_source_dir = "modules/trace-viewer",
+)
+
+# The viewer: the same trace, read into a catalogue of tables and a sequence of
+# passes over them. See the header comment in viewer.cc.
 #
 # -rdynamic because a decoder plugin calls back into this binary by name: the
 # `on_decode_*` symbols beside decode_sink have to be in .dynsym for dlopen() to
 # bind them. -ldl for the dlopen itself.
 cxx_binary(
     name = "viewer",
-    srcs = [
-        "decoder_plugin.cc",
-        "tracepoint_table.cc",
-        "viewer.cc",
-    ],
+    srcs = ["viewer.cc"],
     headers = [
-        "decoder_plugin.h",
         "events.h",
         "plugin_abi.h",
-        "tracepoint_table.h",
-        "trace_wire.h",
     ],
     header_namespace = "",
     link_style = "static",
@@ -104,7 +142,7 @@ cxx_binary(
         "-ldl",
     ],
     deps = [
-        ":embedded_sources_header",
+        ":decoder_plugin",
         "//:doctest_impl",
         "//:fmt",
         "//:opengl",

@@ -21,10 +21,11 @@
 // source location, which is read out of an object file and copied, because the
 // mapping it came from is not the record's to keep.
 //
-// Derived from the fixed part of the header tracer::generate_decoder_source()
-// used to emit, which is why the two read the same bytes the same way; see
-// modules/tracer/include/tracer/tracer.h for the writer's side of every
-// encoding here.
+// Derived from the fixed part of the header modules/tracer used to generate --
+// which was the second description of this format, and is gone: this is the
+// only one now. See modules/tracer/include/tracer/tracer.h for the writer's
+// side of every encoding here, and modules/tracer/trace_reader.h for the tests
+// that write with one and read with the other.
 
 #pragma once
 

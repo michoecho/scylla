@@ -208,40 +208,11 @@ std::string escape(std::string_view s) {
 //  the plan
 // ============================================================================
 
-// One distinct shape of tracepoint: a name, a parameter list, and how its
-// records carry their time.
-//
-// Several entries share one. A tracepoint written in a header is compiled into
-// every object that includes it, and a cluster mid-upgrade has the same
-// tracepoint in two builds -- one reader each time would be one copy of the
-// same code each time. What is *not* required is that two entries of one name
-// agree: two builds that spell `run_task` differently are two shapes here, with
-// a reader each, both delivering to the same events.h struct. That is the thing
-// a generated header could not do, because the two would have wanted one struct
-// name.
-struct shape {
-    std::string name;
-    std::string signature;
-    std::uint8_t timestamps = 0;
-    std::vector<tracepoints::field> fields;
-    bool bridged = false;  // events.h has a struct of this name
-};
-
-// Where a record's address comes from: one object's run of ids.
-struct slice {
-    std::string build_id;
-    std::size_t first_id = 0;
-    std::size_t count = 0;
-};
-
-struct plan {
-    std::vector<shape> shapes;
-    std::vector<std::size_t> shape_of_id;  // by decoder id, in the order the ids run
-    std::vector<const tracepoints::entry*> by_id;
-    std::vector<slice> slices;
-    std::map<std::uint64_t, std::size_t> static_ids;  // static id -> decoder id
-    std::vector<std::string> notes;
-};
+// The plan's own types are in decoder_plugin.h, where the tests can reach
+// them; everything that folds tables into one is here.
+using detail::plan;
+using detail::shape;
+using detail::slice;
 
 // The events events.h declares, which is the whole of what the generator is
 // told about it. See VIEWER_EVENT_LIST there.
@@ -253,6 +224,10 @@ const std::set<std::string, std::less<>>& viewer_events() {
     };
     return names;
 }
+
+}  // namespace
+
+namespace detail {
 
 plan make_plan(const std::vector<tracepoints::object>& objects) {
     plan out;
@@ -320,6 +295,10 @@ plan make_plan(const std::vector<tracepoints::object>& objects) {
     }
     return out;
 }
+
+}  // namespace detail
+
+namespace {
 
 // ============================================================================
 //  the generated source
@@ -529,10 +508,6 @@ std::string generate_metadata_reader(const shape& s, std::size_t index,
                        "    {0} out{{}};\n{2}    return out;\n}}\n\n",
                        type_name, index, body);
 }
-
-// The whole plugin source. `error` is set, and the result empty, if these
-// tables cannot be turned into a decoder at all.
-std::string generate(const plan& planned, std::string& error);
 
 // The fixed half of the generated file: everything that does not depend on
 // which tracepoints there are. Kept as text rather than in trace_wire.h because
@@ -922,6 +897,10 @@ extern "C" void trace_plugin_notes(trace_plugin_note_fn emit, void* ctx) {
 @@NOTES@@}
 )cpp";
 
+}  // namespace
+
+namespace detail {
+
 std::string generate(const plan& planned, std::string& error) {
     // The shapes of the tracer's own tracepoints, which the prologue is read
     // by. Looked up by name, and required to be one shape each: a snapshot
@@ -1092,6 +1071,10 @@ std::string generate(const plan& planned, std::string& error) {
     return source;
 }
 
+}  // namespace detail
+
+namespace {
+
 // ============================================================================
 //  the cache, the compile, the dlopen
 // ============================================================================
@@ -1154,14 +1137,14 @@ decoder build(const std::string& dso_root) {
     }
     out.objects = objects.size();
 
-    const plan planned = make_plan(objects);
+    const plan planned = detail::make_plan(objects);
     out.tracepoints = planned.by_id.size();
     for (std::size_t id = 0; id < planned.by_id.size(); ++id) {
         out.bridged += planned.shapes[planned.shape_of_id[id]].bridged ? 1 : 0;
     }
 
     std::string why;
-    const std::string source = generate(planned, why);
+    const std::string source = detail::generate(planned, why);
     if (!why.empty()) {
         out.error = why;
         return out;

@@ -5,7 +5,7 @@
 // -- so the description of what a trace means is *in the object that wrote it*,
 // and this reads it back out.
 //
-// That is the whole input to a decoder now. The viewer used to be handed a
+// That is the whole input to a decoder. The viewer used to be handed a
 // generated `decoder.h` per build and parse the C++; the tables are what that
 // header was generated from, they are already in the objects the viewer must
 // have anyway to resolve a source location, and reading them directly is one

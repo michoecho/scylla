@@ -1,8 +1,9 @@
 // A latency trace viewer, rebuilt around its tables.
 //
-// The old viewer (main.cc beside this) grew as a chain of logic: a step that
-// could only run after another step, reaching into globals that another step
-// had filled in. This one is the same job written the other way round. It is a
+// The viewer this replaced -- main.cc, deleted with the generated decoder it
+// read -- grew as a chain of logic: a step that could only run after another
+// step, reaching into globals that another step had filled in. This one is the
+// same job written the other way round. It is a
 // catalogue of arrays, and a sequence of passes each of which says which arrays
 // it reads and which arrays it writes. A pass is expendable -- rewrite it,
 // replace its algorithm, drop it and lose exactly the columns it filled -- and

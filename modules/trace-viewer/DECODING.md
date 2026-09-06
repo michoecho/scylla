@@ -3,8 +3,11 @@
 `README.md` says what the tracer and the viewer *are*. `DESIGN.md` says how
 `viewer.cc` is put together. `WORKING.md` says how the work is done. This one is
 narrower and it is a handoff: **everything between the bytes on disk and
-`decode_sink`**, as of `513302ae0` -- what it is, what it rests on, what it will
-do when it breaks, and what was deliberately left undone.
+`decode_sink`** -- what it is, what it rests on, what it will do when it breaks,
+and what was deliberately left undone. The numbers below were taken at
+`513302ae0`; since then the decoder header `modules/tracer` used to generate has
+been deleted, and with it the second description of the format, so `trace_wire.h`
+is now the only one.
 
 Read it before changing anything under "the contracts" below. The rest of the
 viewer is table-shaped and forgiving; this part is a wire format with three
@@ -206,8 +209,10 @@ in a tracepoint table and both are handled in `pointer_relocations`:
   reading it needs `.dynsym`.
 
 Only collecting the first is a table whose header-defined tracepoints come back
-with empty names -- which is what happens if you port this code from the older
-`decoder.h`, which only ever needed the first.
+with empty names -- which is what happened when this was ported from the older
+generated `decoder.h`, which only ever needed the first. The case is pinned by
+"a tracepoint written in a header is read out of both objects that have it" in
+`decoder_plugin_test.cc`.
 
 ---
 
@@ -238,21 +243,21 @@ locations resolved. All of them, or you have the wrong directory.
 
 In the order somebody should probably pick them up.
 
-**The wire format is written down twice.** `modules/tracer/codegen.cc` still
-generates a standalone `decoder.h` -- for the tracer module's own demo and its
-snapshot test -- and about 900 of its lines are the same readers, ELF code and
-record loop that now live in `trace_wire.h` and in `decoder_plugin.cc`'s
-`preamble`. Nothing in the viewer uses it. It was kept because it is the only
-*tested* description of the format: `tracer_test.cc` round-trips real records
-through it and a snapshot test pins the output. The right end state is one
-description -- port those tests onto `trace_wire.h` and delete `codegen.{h,cc}`,
-the `:decoder`/`:trace_decoder`/`:decoded_trace` chain, and (with `main.cc`) the
-1853-line `decoder.h` checked in here. That is roughly 3500 lines out, and the
-test port is the only real work in it.
+**The generated plugin is not compiled by any test.**
+`decoder_plugin_test.cc` asserts the plan and the source it writes, against both
+the demo's real tables and tables written by hand, and stops there: what it does
+not do is run a compiler over the result. A generated source that will not
+compile is caught by running the viewer -- see "verifying a change" below --
+which is a second or two and a directory of objects, and is why the test does
+not. If the generator grows much more of an opinion about C++, that trade is
+worth revisiting.
 
-**Nothing tests `trace_wire.h` directly.** Its checks today are that
-`entry-layout-run` decodes and that the counts match. The module has no test
-target at all.
+**A table that will not parse is not covered by a test.**
+`tracepoint_table.cc` refuses an object whose entries do not come out as
+identifiers, or whose signature does not parse, and says which and why; the
+tests cover the tables it accepts, because producing one it should refuse means
+building an object to be broken on purpose. The refusal is exercised by hand
+against a snapshot older than contract 1, which is what it is for.
 
 **Old snapshots do not decode.** `sched-group-run`, `boot-id-run`, `wrapped-run`
 and `latte-run` were all written by tracers older than contracts 1 and 2. The
@@ -273,10 +278,6 @@ between them per object -- the identifier check is already the evidence that
 would decide it -- but nothing needs it yet, and the loud refusal is better than
 a wrong guess.
 
-**`main.cc` still reads the checked-in `decoder.h`.** It is the old viewer, it is
-not ported, and it has to have that file replaced by hand from a snapshot that
-carries one.
-
 ---
 
 ## Verifying a change here
@@ -284,21 +285,29 @@ carries one.
 Two checks, both cheap, and between them they caught everything that went wrong
 while this was written.
 
-**Against the demo, which needs nothing but this repo.** `modules/tracer`'s
-producer emits a trace and a `dsos/` in the current format, *and* a decoder
-generated in-process from the same tables. Point the viewer at them and compare
-the generated `plugin.cc`'s object table, id numbering, static-id switch and
-timestamp dispatch with the generated `decoder.h`'s. They should be identical,
-line for line. If the ELF reader is wrong, this is where it shows.
+**The tests, which need nothing but this repo.** Two suites, and between them
+they cover both halves of this:
 
 ```sh
-buck2 build //modules/tracer:trace_bin //modules/tracer:dso_dir //modules/tracer:decoder_src
+buck2 test //modules/trace-viewer:decoder_plugin_test //modules/tracer:tracer_test
 ```
 
-**Against Scylla, decoded both ways.** Capture with
-`third-party/scylladb/capture-trace.sh`, which writes a `decoder.h` beside each
-node's traces. Run the current viewer headless, then `git stash` your change,
-run it again, and diff the output: every count should match to the digit. That
-is how the rewrite was verified -- 2239 requests, 10135 parts, 503 of 503 source
-locations, 97117 of 97123 task queue runs closed, 575093 rectangles, identical
-both ways.
+`decoder_plugin_test` reads the demo's real objects -- a binary and a shared
+library with a tracepoint in a header compiled into both, which is where the ELF
+reader and the relocation forms show -- and asserts the plan and the generated
+source against tables written out by hand.
+
+`tracer_test` comes at it from the writer's end: it records through `tracer.h`
+and reads the result back with `trace_wire.h`, and snapshots the whole demo
+trace decoded. Its reader (`modules/tracer/trace_reader.{h,cc}`) walks the
+tables per record where the plugin has a switch compiled for them -- a second
+*loop*, deliberately, but over the same primitives and the same format, which is
+what makes it a check on this side rather than a second description to keep in
+step.
+
+**Against Scylla, both ways round the change.** Capture with
+`third-party/scylladb/capture-trace.sh`. Run the current viewer headless, then
+`git stash` your change, run it again, and diff the output: every count should
+match to the digit. That is how the rewrite was verified -- 2239 requests,
+10135 parts, 503 of 503 source locations, 97117 of 97123 task queue runs closed,
+575093 rectangles, identical both ways.

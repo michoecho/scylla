@@ -9,9 +9,9 @@
 // tracepoint -- same name, same file, same line, same parameters -- and a trace
 // may hold records from either.
 //
-// That is what the code generator has to tolerate: the copies collapse into one
-// struct, and only a *disagreement* about the parameter list is an error. See
-// tracer/codegen.h.
+// That is what a decoder has to tolerate: the copies collapse into one reader,
+// and two that disagree about the parameter list are two readers delivering
+// into one struct. See modules/trace-viewer/decoder_plugin.h.
 
 #include <cstdint>
 

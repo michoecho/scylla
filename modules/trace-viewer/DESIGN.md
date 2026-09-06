@@ -1,8 +1,9 @@
 # The design of `viewer.cc`
 
-This is a handoff. `viewer.cc` is a rewrite of `main.cc` beside it, and the
-rewrite exists for one reason: the old viewer was a chain of logic, and became
-too hard to keep under control. Every step depended on a step before it,
+This is a handoff. `viewer.cc` is a rewrite of the viewer that used to be
+`main.cc` beside it -- deleted along with the generated `decoder.h` it was the
+last reader of -- and the rewrite exists for one reason: the old viewer was a
+chain of logic, and became too hard to keep under control. Every step depended on a step before it,
 reached into globals a third step had filled in, and could only be understood
 by replaying the whole chain in your head. Bugs hid in the gaps between the
 steps.

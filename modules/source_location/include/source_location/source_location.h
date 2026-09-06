@@ -21,8 +21,8 @@
 // What the address costs is that it is a fact about one run: turning it back
 // into a file and a line needs the object it points into and the offset it sits
 // at. modules/tracer carries both -- its metadata stream says which object was
-// mapped where -- and its generated decoders read the location out of the object
-// file itself. See "resolving a location" in tracer/codegen.h.
+// mapped where -- and a decoder reads the location out of the object file
+// itself. See "resolving a location" in modules/trace-viewer/trace_wire.h.
 
 #include <bit>
 #include <cstdint>

@@ -171,13 +171,10 @@ Three consequences worth having in mind:
   viewer now, and neither is versioned: a capture from before a change to either
   is dead weight. Recapture instead of trying to read it.
 
-`main.cc`, the old viewer, still reads the one `decoder.h` checked in beside it
--- and a snapshot still writes one, which nothing else reads now. That copy does
-have to be replaced by hand:
-
-```sh
-cp <run>/node1/decoder.h modules/trace-viewer/decoder.h
-```
+Nothing has to be copied into the source tree any more. A snapshot used to
+carry a generated `decoder.h` and the old viewer read a copy of one checked in
+beside it; both are gone, and what a snapshot is read against is the `dsos/`
+beside it and nothing else.
 
 The `dsos/` are gathered by `capture-trace.sh`, but if you take a snapshot by
 hand, do it **from the binary the trace came from, before rebuilding it** -- a
@@ -448,9 +445,12 @@ everything up front is a deliberate choice (`DESIGN.md` rule 7) -- if it needs
 to be faster, make the rendering cheaper, do not add a cache keyed on the
 selection.
 
-**There is still no test suite.** The checks are the counts each pass prints
-and the headless dump against `entry-layout-run`. The table-per-pass shape makes
-a real test of one pass easy to write, and nobody has written one.
+**No pass has a test.** The decoding half does now --
+`//modules/trace-viewer:decoder_plugin_test`, and `//modules/tracer:tracer_test`
+on the other side of the wire format -- but everything downstream of
+`decode_sink` is still checked by the counts each pass prints and the headless
+dump against `entry-layout-run`. The table-per-pass shape makes a real test of
+one pass easy to write, and nobody has written one.
 
 ---
 
@@ -459,8 +459,7 @@ a real test of one pass easy to write, and nobody has written one.
 - **`dsos/` and the traces are one pair.** The decoder is generated from the
   tracepoint tables in those objects, so the wrong `dsos/` decodes nothing. The
   other thing it needs is a **C++ compiler at runtime** -- it compiles the
-  decoder at startup -- so run it from inside `nix develop`. (`main.cc` is the
-  one that still wants a `decoder.h` copied in.)
+  decoder at startup -- so run it from inside `nix develop`.
 - **The default build is `-O0`.** 9x. Profile `-m release`.
 - **`perf` on a hybrid CPU** splits `cycles` across two PMUs. Use `task-clock`.
 - **buck2 from the repo root**, never from `third-party/scylladb`.

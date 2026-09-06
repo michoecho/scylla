@@ -1,12 +1,13 @@
-// The binary the build generates a decoder from, and takes a trace from.
+// The binary the build takes a demo trace from, and the objects to read it
+// against.
 //
-// Both jobs have to live in one executable: a decoder is only valid for the
-// tracepoint table of the binary that produced the trace, and that table is
-// this file's TRACEPOINT() call sites. Run it two ways --
+// Both jobs have to live in one executable: a trace only means anything beside
+// the tracepoint tables of the binary that wrote it, and that table is this
+// file's TRACEPOINT() call sites. Run it two ways --
 //
-//     trace_producer --emit-decoder        C++ header of the matching decoder
 //     trace_producer --emit-trace FILE     a trace of the demo workload
-//     trace_producer --emit-dsos DIR       the objects a decoder needs, by build ID
+//     trace_producer --emit-dsos DIR       the objects that trace is read
+//                                          against, by build ID
 //
 // -- and see modules/tracer/BUCK for how those become build steps.
 //
@@ -33,7 +34,6 @@
 #include "tracer_demo/trace_plugin.h"
 
 #include "source_location/source_location.h"
-#include "tracer/codegen.h"
 #include "tracer/tracer.h"
 
 namespace {
@@ -51,7 +51,7 @@ void open_table(std::string_view name, srcloc::location from = {}) {
     TRACEPOINT(event_level::info, "table_opened", "name", name, "opened_at", from);
 }
 
-// A workload chosen to cover every wire type the codegen can emit: the integer
+// A workload chosen to cover every wire type there is: the integer
 // widths, bool, a string, a length-prefixed byte span, a pointer, a source
 // location, and no parameters at all.
 void run_demo() {
@@ -157,24 +157,14 @@ int emit_trace(const char* path) {
 int main(int argc, char** argv) {
     const std::string_view mode = argc > 1 ? argv[1] : "";
 
-    if (mode == "--emit-decoder" && argc == 2) {
-        // A table this binary cannot describe is a build failure with a
-        // diagnostic, not a generated header that fails to compile.
-        try {
-            std::cout << tracer::generate_decoder_source();
-        } catch (const std::exception& e) {
-            std::cerr << "cannot generate a decoder: " << e.what() << "\n";
-            return 1;
-        }
-        return 0;
-    }
     if (mode == "--emit-trace" && argc == 3) {
         return emit_trace(argv[2]);
     }
     if (mode == "--emit-dsos" && argc == 3) {
         // This binary and the library it is linked against, filed by build ID.
-        // A source location is an address inside one of them, so a decoder
-        // cannot read one back without the files themselves.
+        // Their tracepoint tables are what says what a record means, and a
+        // source location is an address inside one of them, so neither can be
+        // read back without the files themselves.
         try {
             tracer::write_dso_directory(argv[2]);
         } catch (const std::exception& e) {
@@ -185,6 +175,6 @@ int main(int argc, char** argv) {
     }
 
     std::cerr << "usage: " << argv[0]
-              << " (--emit-decoder | --emit-trace FILE | --emit-dsos DIR)\n";
+              << " (--emit-trace FILE | --emit-dsos DIR)\n";
     return 2;
 }

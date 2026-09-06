@@ -45,13 +45,13 @@
 // which is the one parameter type whose meaning is not in the tables at all: it
 // is an address inside a loaded object, so a decoder needs the object files
 // themselves. See "handing the objects to a decoder" below, and "resolving a
-// location" in tracer/codegen.h.
+// location" in modules/trace-viewer/trace_wire.h.
 //
-// Decoding is the other half, and it is not in this header: tracer/codegen.h
-// walks that same section and emits the C++ source of a decoder specialised to
-// this binary's tracepoints -- one struct per tracepoint, with the parameter
-// names as members. See modules/tracer/BUCK for how the two halves are wired
-// into a build.
+// Decoding is the other half, and it is nowhere in this module: what a record
+// means is in the `tracepoints` section of the object that wrote it, and what
+// reads that section back -- and the records -- is the viewer, in
+// modules/trace-viewer/{tracepoint_table,trace_wire}.h. modules/tracer's own
+// tests read a trace back with those; see trace_reader.h beside them.
 //
 // Derived from the Seastar tracer patch in references/tracer.patch, with the
 // bugs noted there fixed and the argument-list macro machinery replaced.
@@ -565,8 +565,8 @@ consteval std::string_view type_to_sig() {
         // A caller's source location, recorded as the one word it is: the
         // address of the compiler's own constant. Only a decoder with the
         // object in hand can read it back -- see "resolving a location" in
-        // codegen.h -- which is why it is a wire type of its own rather than a
-        // "ptr".
+        // modules/trace-viewer/trace_wire.h -- which is why it is a wire type
+        // of its own rather than a "ptr".
         return "srcloc";
     } else if constexpr (std::is_same_v<T, bool>) {
         return "bool";
@@ -1474,10 +1474,11 @@ void append_chunk(std::vector<std::byte>& out, event_level level,
 // TRACEPOINT(level, name, "param", value, "param", value, ...)
 //
 // `name` and each parameter name must be string literals. `name` names the
-// tracepoint, the static key gating it, and the struct the generated decoder
-// deserialises this tracepoint's records into; the parameter names become that
-// struct's members. Both are checked for being usable as identifiers -- and for
-// being unique -- by the code generator, in tracer/codegen.h.
+// tracepoint, the static key gating it, and the struct a decoder deserialises
+// this tracepoint's records into; the parameter names become that struct's
+// members. Both have to be usable as identifiers, and unique: a decoder
+// generated from a table where they are not is refused, by name, in
+// modules/trace-viewer/decoder_plugin.cc.
 //
 // Every tracepoint is compiled behind a static key of its own, named after the
 // tracepoint -- and *disabled* at startup, so a program which never says
