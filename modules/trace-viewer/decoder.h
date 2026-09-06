@@ -5,6 +5,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -64,20 +65,23 @@ To read_unaligned(const std::byte*& p, const std::byte* end) {
     return dst;
 }
 
-inline std::uint64_t read_vint(const std::byte*& p, const std::byte* end) {
+inline std::uint64_t read_int(const std::byte*& p, const std::byte* end) {
+    // The length is a run of one bits at the bottom of the first byte, and the
+    // value sits above it, little-endian. See write_int() in tracer.h.
     require(p, end, 1);
-    const std::uint8_t first = std::to_integer<std::uint8_t>(*p++);
-    std::size_t extra = 0;
-    while (extra < 8 && (first & (std::uint8_t{0x80} >> extra)) != 0) {
-        ++extra;
+    const auto first = std::to_integer<std::uint8_t>(*p);
+    const std::size_t size = static_cast<std::size_t>(std::countr_one(first)) + 1;
+    require(p, end, size);
+    if (size == 9) {
+        // A value of more than 56 bits: a tag byte of nothing but ones, and the
+        // whole value behind it.
+        ++p;
+        return read_unaligned<std::uint64_t>(p, end);
     }
-    const std::uint8_t value_mask = static_cast<std::uint8_t>(0xffU >> extra);
-    std::uint64_t value = first & value_mask;
-    require(p, end, extra);
-    for (std::size_t i = 0; i < extra; ++i) {
-        value = (value << 8) | std::to_integer<std::uint8_t>(*p++);
-    }
-    return value;
+    std::uint64_t word = 0;
+    std::memcpy(&word, p, size);
+    p += size;
+    return word >> size;
 }
 
 // Length-prefixed runs. Both views point into the trace buffer rather than
@@ -1372,11 +1376,11 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
     {
         stream& meta = streams.front();
         detail::read_unaligned<std::uint64_t>(meta.p, meta.end);  // entry address, not yet placeable
-        meta.last_timestamp += detail::read_vint(meta.p, meta.end);
+        meta.last_timestamp += detail::read_int(meta.p, meta.end);
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(meta.p, meta.end);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_unaligned<std::uint64_t>(meta.p, meta.end);
-            meta.last_timestamp += detail::read_vint(meta.p, meta.end);
+            meta.last_timestamp += detail::read_int(meta.p, meta.end);
             load(detail::read_trace_object_loaded(meta.p, meta.end));
         }
     }
@@ -1395,7 +1399,7 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
             const auto address = detail::read_unaligned<std::uint64_t>(peek, candidate.end);
             const bool sync = is_clock_sync(address);
             const std::uint64_t at =
-                (sync ? 0 : candidate.last_timestamp) + detail::read_vint(peek, candidate.end);
+                (sync ? 0 : candidate.last_timestamp) + detail::read_int(peek, candidate.end);
             if (next == nullptr || at < earliest) {
                 next = &candidate;
                 earliest = at;
@@ -1409,7 +1413,7 @@ void decode(std::span<const std::byte> trace, Callback&& cb,
         const std::byte* const q_end = next->end;
         const auto address = detail::read_unaligned<std::uint64_t>(q, q_end);
         const auto timestamp =
-            (is_clock_sync(address) ? 0 : next->last_timestamp) + detail::read_vint(q, q_end);
+            (is_clock_sync(address) ? 0 : next->last_timestamp) + detail::read_int(q, q_end);
         next->last_timestamp = timestamp;
 
         const auto above = std::upper_bound(
@@ -1678,13 +1682,13 @@ inline std::vector<object_mapping> trace_mappings(std::span<const std::byte> tra
         const std::byte* q = p;
         const std::byte* const q_end = p + length;
         detail::read_unaligned<std::uint64_t>(q, q_end);  // entry address
-        detail::read_vint(q, q_end);  // timestamp delta from zero
+        detail::read_int(q, q_end);  // timestamp delta from zero
         const trace_objects_loaded counted = detail::read_trace_objects_loaded(q, q_end);
         std::vector<object_mapping> out;
         out.reserve(counted.count);
         for (std::uint32_t i = 0; i < counted.count; i++) {
             detail::read_unaligned<std::uint64_t>(q, q_end);
-            detail::read_vint(q, q_end);
+            detail::read_int(q, q_end);
             const trace_object_loaded loaded = detail::read_trace_object_loaded(q, q_end);
             out.push_back({std::string(loaded.build_id), loaded.base_address,
                            loaded.mapping_size});

@@ -83,42 +83,57 @@ inline std::uint64_t rdtsc() noexcept {
     return (hi << 32) | lo;
 }
 
-// An unsigned vint: the first byte contains a run of one bits describing the
-// number of following bytes, followed by the value in big-endian order. The
-// size calculation and write loop are deliberately shaped like the optimized
-// implementation used in Scylla; the tracer does not share its wire format.
+// An unsigned vint. The value is stored little-endian above a length tag: the
+// low `size` bits of the first byte are a run of `size - 1` one bits, so a
+// reader counts the trailing ones of the byte it is looking at and knows how
+// many bytes to take. A value of 0x1234 -- fourteen significant bits, so two
+// bytes -- goes down as (0x1234 << 2) | 0b01.
+//
+// The tag is at the bottom and the value is little-endian, rather than
+// Scylla's leading run of ones over a big-endian value, because that puts the
+// whole encoding one shift away from a word: write_int() computes it with a
+// shift and an or, and stores it with a single eight-byte store.
+//
+// How many bytes that is: each byte gives one bit to the tag, so a value takes
+// as many bytes as it has groups of seven bits. A value of more than 56 bits
+// does not fit that scheme -- its tag would fill a byte on its own -- and takes
+// nine, an all-ones tag byte and the value behind it.
 inline constexpr std::size_t vint_size(std::uint64_t value) noexcept {
     const auto magnitude = static_cast<std::int64_t>(std::countl_zero(value | 1));
     return std::size_t{9} - static_cast<std::size_t>((magnitude - 1) / 7);
 }
 
-inline void write_vint(std::byte*& out, std::uint64_t value) noexcept {
+// Write one, advancing `out` by vint_size(value).
+//
+// The caller must leave *nine* bytes writable at `out` however few the value
+// needs: the common path stores eight bytes whatever the encoded length is, and
+// only the pointer knows the difference. Writing the tail of a record over
+// bytes that the arguments are about to be written into is the point -- it is
+// what makes a one-byte timestamp cost one store rather than one store per
+// byte.
+inline void write_int(std::byte*& out, std::uint64_t value) noexcept {
     const std::size_t size = vint_size(value);
-    const int extra = static_cast<int>(size - 1);
-    const std::uint8_t value_mask = static_cast<std::uint8_t>(0xffU >> extra);
-    const int shift = (extra * 8) % 64;
-    *out++ = static_cast<std::byte>(
-        static_cast<std::uint8_t>((value >> shift) & value_mask) |
-        static_cast<std::uint8_t>(~value_mask));
-
-    // Direct the writes past the vint into a thread-local byte once all real
-    // output bytes have been emitted. This keeps the loop branch-free while
-    // still advancing the caller's pointer by exactly the encoded length.
-    static thread_local std::byte garbage;
-    value = std::rotl(value, (8 - extra) * 8);
-    int remaining = extra;
-    std::byte* cursor = out;
-#pragma GCC unroll 8
-    for (int i = 0; i < 8; ++i) {
-        std::byte* const destination =
-            __builtin_unpredictable(remaining > 0) ? cursor : &garbage;
-        value = std::rotl(value, 8);
-        *destination = static_cast<std::byte>(value);
-        ++cursor;
-        --remaining;
+    if (size == 9) [[unlikely]] {
+        // More than 56 bits: the tag byte is full, so the value goes behind it
+        // rather than above it. Reached by the first record of a buffer, whose
+        // timestamp is an absolute tick count rather than a delta, on a machine
+        // whose counter has run long enough to need 57 bits.
+        *out = std::byte{0xff};
+        std::memcpy(out + 1, &value, sizeof(value));
+        out += size;
+        return;
     }
-    out += extra;
+    const std::uint64_t encoded = (value << size) | ((std::uint64_t{1} << (size - 1)) - 1);
+    std::memcpy(out, &encoded, sizeof(encoded));
+    out += size;
 }
+
+// The most a record's header can take: the entry address and the longest vint.
+// What a ring checks before it writes, since the length of the timestamp is not
+// known until it has been sampled -- and what write_int() needs writable at the
+// timestamp whatever it ends up storing there. See record_header_size below for
+// the other end of the range.
+inline constexpr std::size_t max_record_header_size = sizeof(std::uint64_t) + 9;
 
 // The timestamp source, as a macro so that overriding it costs nothing at
 // runtime. Define it before including this header to substitute another clock;
@@ -246,11 +261,14 @@ public:
                                                     std::uint64_t timestamp) {
         const std::uint64_t delta = timestamp - last_timestamp_;
         const std::size_t header_size = sizeof(std::uint64_t) + vint_size(delta);
-        assert(fits(args_size + header_size));
+        // The record occupies header_size + args_size bytes, but write_int()
+        // stores eight whatever it advances by, so what has to fit is the
+        // largest header rather than this one.
+        assert(fits(args_size + max_record_header_size));
         std::byte* out = write_unchecked(args_size + header_size);
         std::memcpy(out, &address, sizeof(address));
         out += sizeof(address);
-        write_vint(out, delta);
+        write_int(out, delta);
         last_timestamp_ = timestamp;
         return out;
     }
@@ -334,11 +352,10 @@ public:
     [[gnu::always_inline]] std::byte* write(event_level level, std::uint64_t address,
                                             std::size_t args_size) {
         buffer_group& group = groups_[static_cast<std::size_t>(level)];
-        // Check against the largest vint before sampling. If rotation is
+        // Check against the largest header before sampling. If rotation is
         // needed, the first sample must belong to the emitted record rather
         // than being discarded while the cold path writes its sync record.
-        constexpr std::size_t max_record_size = sizeof(address) + 9;
-        if (!group.fits(args_size + max_record_size)) [[unlikely]] {
+        if (!group.fits(args_size + max_record_header_size)) [[unlikely]] {
             return write_slow(level, address, args_size);
         }
         const std::uint64_t timestamp = TRACER_TIMESTAMP();
@@ -986,8 +1003,8 @@ void set_all_tracepoints_enabled(bool enabled);
 // a level -- one ring per thread, say -- and there is exactly one chunk of the
 // metadata level, which is the process's stream rather than any thread's.
 //
-// A record is: uint64 tracepoint entry address, unsigned vint timestamp delta,
-// then packed arguments. The address rather than an index -- which is what an earlier
+// A record is: uint64 tracepoint entry address, an unsigned vint timestamp
+// delta, then packed arguments. The address rather than an index -- which is what an earlier
 // version of this stored -- because an index is only meaningful against a table,
 // and with shared libraries in the picture there is no single table to index:
 // every object has one of its own, and an index into "the" table is a number
@@ -1218,7 +1235,7 @@ inline trace_buffers::trace_buffers(std::size_t info_capacity, std::size_t debug
 inline std::byte* trace_buffers::write_slow(event_level level, std::uint64_t address,
                                              std::size_t args_size) {
     buffer_group& group = groups_[static_cast<std::size_t>(level)];
-    assert(args_size + sizeof(address) + vint_size(UINT64_MAX) <= group.buffer_size() &&
+    assert(args_size + max_record_header_size <= group.buffer_size() &&
            "record larger than one trace buffer");
 
     // The timestamp source is a macro and may be overridden by the translation

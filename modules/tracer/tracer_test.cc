@@ -313,6 +313,45 @@ struct without_clock_sync {
     ~without_clock_sync() { tracer::set_clock_sync_enabled(true); }
 };
 
+// The one piece of the wire format that is not a plain field. Both halves are
+// asserted here -- the bytes write_int() puts down, and that the generated
+// decoder reads them back -- because a producer and a decoder that agree on a
+// wrong encoding say nothing.
+TEST_CASE("an integer carries its own length in the low bits of its first byte") {
+    const auto encode = [](std::uint64_t value) {
+        std::array<std::byte, 16> bytes{};
+        std::byte* out = bytes.data();
+        tracer::write_int(out, value);
+        const auto size = static_cast<std::size_t>(out - bytes.data());
+        CHECK(size == tracer::vint_size(value));
+
+        const std::byte* p = bytes.data();
+        CHECK(trace::detail::read_int(p, bytes.data() + bytes.size()) == value);
+        CHECK(static_cast<std::size_t>(p - bytes.data()) == size);
+
+        std::uint64_t word = 0;
+        std::memcpy(&word, bytes.data(), sizeof(word));
+        return std::pair{size, word};
+    };
+
+    // Seven bits: one byte, one tag bit, and that bit is zero.
+    const auto [small_size, small] = encode(0x42);
+    CHECK(small_size == 1);
+    CHECK((small & 0xff) == 0x42 << 1);
+
+    // Fourteen: two bytes, and a tag of one bit set below the value.
+    const auto [medium_size, medium] = encode(0x1234);
+    CHECK(medium_size == 2);
+    CHECK((medium & 0xffff) == ((0x1234 << 2) | 0b01));
+
+    // The largest value that still fits above its tag, and the first one that
+    // does not: 56 bits, then 57.
+    CHECK(encode((std::uint64_t{1} << 56) - 1).first == 8);
+    CHECK(encode(std::uint64_t{1} << 56).first == 9);
+    CHECK(encode(UINT64_MAX).first == 9);
+    CHECK(encode(0).first == 1);
+}
+
 TEST_CASE("tracer records land in the buffer with their header") {
     const without_clock_sync quiet;
     tracer::trace_buffers buffers(4096, 4096, 4096, 512);
