@@ -45,8 +45,8 @@ ids, look for a third such place.
 
 ## The events
 
-The ordinary hooks are declared in `seastar/include/seastar/core/scylla_tracer.hh`
-and defined in `seastar/src/core/scylla_tracer.cc`. `run_task` is the hot-loop
+The ordinary hooks are declared in `tracing/tracer.hh` and defined in
+`tracing/tracer.cc`. `run_task` is the hot-loop
 exception: it is emitted directly in `seastar/src/core/reactor.cc` with static
 wire id `1`. The viewer flattens them back into the numeric event ids its
 analysis keys off.
@@ -155,7 +155,7 @@ Deliberately crudely. Scylla's CMake pulls the tracer in by **absolute path**:
 - `seastar/CMakeLists.txt` sets `Scylla_TRACER_REPO` to
   `/home/michal/projects/cpp_template` and compiles `modules/tracer/tracer.cc`
   and `modules/utils/barrier.cc` into
-  `libseastar.so` -- alongside `src/core/scylla_tracer.cc`,
+  `libseastar.so` -- alongside `tracing/tracer.cc`,
   `src/core/rendezvous.cc` and `src/core/scylla_stacktrace_sampler.cc` -- with
   `-w` because they are not written to Seastar's
   `-Wall -Werror`. The barrier is what the rendezvous below gathers the shards
@@ -168,12 +168,12 @@ detection and no fallback.
 
 Everything lives in `libseastar.so` and nowhere else: one tracepoint table, one
 static-key jump table, one registry. Nearly every `TRACEPOINT()` call site is in
-`scylla_tracer.cc` behind an out-of-line hook rather than inlined where it is
+`tracer.cc` behind an out-of-line hook rather than inlined where it is
 wanted. The hot `run_task` event is the direct-call exception; its static id also
 keeps its record header short. This is a placement convention, not a language
 constraint: a gated tracepoint inside an inline or template function in a shared
 library compiles and works, which `modules/tracer/plugin/common_tracepoints.h`
-exercises on purpose. The header comment on `scylla_tracer.hh` has the full
+exercises on purpose. The header comment on `tracer.hh` has the full
 reasoning, and `key_ref` in `static_keys.h` has the mechanism.
 
 ## Building Scylla
@@ -189,9 +189,9 @@ The build directory is already configured (Ninja Multi-Config, `Dev` only). In
 `Dev` mode Seastar is a shared library, which is what lets the tracer live in it.
 
 **Builds are slow, and touching a core Seastar header rebuilds nearly
-everything.** `scylla_tracer.hh` is included by `task.hh`, which is included by
+everything.** `tracer.hh` is included by `task.hh`, which is included by
 almost every translation unit in both projects -- so a change there is a ~10
-minute full rebuild, while one confined to `scylla_tracer.cc` is a handful of
+minute full rebuild, while one confined to `tracer.cc` is a handful of
 steps and a relink. It is often worth putting something in the `.cc` with a
 dynamic initialiser rather than widening the header.
 
@@ -266,7 +266,7 @@ falling back to the directory for the node and the name for the shard.
 
 Every Seastar process picks a **boot id** during reactor construction: a
 version-1 (time-based) UUID, one per process and shared by every shard. It is in
-`seastar/include/seastar/core/scylla_tracer.hh`, and the reactor's constructor is
+`tracing/tracer.hh`, and the reactor's constructor is
 what makes the first call, so it is fixed before any shard can trace or open a
 connection.
 
@@ -347,8 +347,8 @@ Flipping a tracepoint's static key **rewrites the branch instruction at its
 call site**, and a shard executing that instruction while it changes is
 undefined. So the endpoint does not just call the setter:
 
-- `seastar::set_tracepoints_enabled()` (`core/scylla_tracer_control.hh`, split
-  out of `scylla_tracer.hh` because that one is included by `task.hh` and may
+- `seastar::set_tracepoints_enabled()` (`tracing/tracer_control.hh`, split
+  out of `tracer.hh` because that one is included by `task.hh` and may
   not pull in `future.hh`) hands the work to
   `seastar::run_at_rendezvous()` in `core/rendezvous.hh`.
 - Every shard runs a **rendezvous poller**, registered last in the reactor's

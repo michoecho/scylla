@@ -24,8 +24,8 @@ look:
 | where | what | history |
 |---|---|---|
 | `.` (cpp_template) | the tracepoint machinery (`modules/tracer`), the viewer (`modules/trace-viewer`) | this repo |
-| `third-party/scylladb` | the instrumentation and the snapshot API | its **own** git repo, untracked from here |
-| `third-party/scylladb/seastar` | where nearly all the instrumentation lives | a **submodule** of that one |
+| `third-party/scylladb` | the tracer, instrumentation and snapshot API | its **own** git repo, untracked from here |
+| `third-party/scylladb/seastar` | the Seastar integration points | a **submodule** of that one |
 
 So a change to a tracepoint is usually **three commits**: seastar, then the
 submodule bump in scylladb, then the viewer here. All three of the last change
@@ -60,8 +60,8 @@ it. **Do not build or run Scylla's tests.**
 
 Two things about the cost:
 
-- A change confined to `src/core/scylla_tracer.cc` is a handful of steps and a
-  relink. A change to `scylla_tracer.hh` is **~15 minutes**, because `task.hh`
+- A change confined to `tracing/tracer.cc` is a handful of steps and a
+  relink. A change to `tracer.hh` is **~15 minutes**, because `task.hh`
   includes it and nearly every translation unit includes `task.hh`. Adding a
   hook means touching both, so budget for the long one; it is often worth
   putting something in the `.cc` with a dynamic initialiser rather than
@@ -73,8 +73,8 @@ Two things about the cost:
 
 For an ordinary hooked event, four edits, in this order:
 
-1. **`seastar/include/seastar/core/scylla_tracer.hh`** -- declare the hook.
-2. **`seastar/src/core/scylla_tracer.cc`** -- define it, one `TRACEPOINT()`
+1. **`tracing/tracer.hh`** -- declare the hook.
+2. **`tracing/tracer.cc`** -- define it, one `TRACEPOINT()`
    inside. *Every* call site lives in this file, by convention rather than by
    constraint: it keeps the whole table inside `libseastar.so`, and it keeps
    the hook out of a header that costs 15 minutes to touch. A gated tracepoint
@@ -87,7 +87,7 @@ For an ordinary hooked event, four edits, in this order:
 
 For a tracepoint in a sufficiently hot loop, put `TRACEPOINT_STATIC_ID()` at
 the call site instead. Give it a unique small id, include
-`scylla_tracer_control.hh` and `tracer/tracer.h`, and call
+`tracer_control.hh` and `tracer/tracer.h`, and call
 `ensure_thread_tracer()` immediately before it. Do not also leave a hooked
 tracepoint with the same name and payload: the direct call site is the one
 definition the generated decoder should see.
