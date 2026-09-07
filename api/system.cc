@@ -17,8 +17,8 @@
 #include <rapidjson/document.h>
 #include <boost/lexical_cast.hpp>
 #include <seastar/core/reactor.hh>
-#include <seastar/core/scylla_tracer.hh>
-#include <seastar/core/scylla_tracer_control.hh>
+#include <tracing/tracer.hh>
+#include <tracing/tracer_control.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/metrics_api.hh>

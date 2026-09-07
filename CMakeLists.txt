@@ -44,6 +44,7 @@ option(Scylla_ENABLE_LTO "Turn on link-time optimization for the 'release' mode.
 # (see seastar/CMakeLists.txt); Scylla only needs the headers, for the call
 # sites in transport/server.cc and the snapshot API in api/system.cc.
 include_directories(
+    ${CMAKE_SOURCE_DIR}
     /home/michal/projects/cpp_template/modules/tracer/include
     /home/michal/projects/cpp_template/modules/static_keys/include
     /home/michal/projects/cpp_template/modules/source_location/include)

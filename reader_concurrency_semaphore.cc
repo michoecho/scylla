@@ -14,7 +14,7 @@
 #include <seastar/core/coroutine.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 #include <seastar/core/metrics.hh>
-#include <seastar/core/scylla_tracer.hh>
+#include <tracing/tracer.hh>
 #include <utility>
 
 #include "reader_concurrency_semaphore.hh"
@@ -1047,8 +1047,8 @@ future<> reader_concurrency_semaphore::execution_loop() noexcept {
                 // sstable reads it goes on to do -- and their io_begin/io_end --
                 // are attributed to that request rather than to this loop.
                 const uint64_t requester = permit.traced_task_id();
-                switch_task st(requester);
-                trace_semaphore_execute(st.prev(), requester);
+                [[maybe_unused]] switch_task st(requester);
+                trace_semaphore_execute(requester);
                 func(reader_permit(permit.shared_from_this())).forward_to(std::move(pr));
             } catch (...) {
                 pr.set_exception(std::current_exception());

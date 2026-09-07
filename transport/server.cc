@@ -14,7 +14,7 @@
 #include "cql3/statements/strong_consistency/modification_statement.hh"
 #include "cql3/statements/strong_consistency/statement_helpers.hh"
 #include <seastar/core/scheduling.hh>
-#include <seastar/core/scylla_tracer.hh>
+#include <tracing/tracer.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/coroutine/switch_to.hh>
 #include <seastar/coroutine/try_future.hh>
@@ -1213,8 +1213,8 @@ future<> cql_server::connection::process_request() {
         // create -- continuations, execution stage work items, I/O descriptors
         // -- inherits this id, which is what lets a trace be cut back into
         // per-request timelines afterwards.
-        auto st = switch_task(fresh_task_id++);
-        trace_cql_request(st.prev(), current_task_id);
+        [[maybe_unused]] auto st = switch_task(fresh_task_id++);
+        trace_cql_request(current_task_id);
 
         auto& f = *maybe_frame;
         auto request_start_time = db::timeout_clock::now();
