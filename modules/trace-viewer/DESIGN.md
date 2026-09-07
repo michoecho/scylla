@@ -271,6 +271,7 @@ rests on are written down.
 | `.query_of_task` | which request each task on this reactor belongs to |
 | `.log_lines` + `.log_text` | every record of it, rendered |
 | `.slices` + `.slice_reach` | every rectangle of it, in ms, sorted by start |
+| `.io_slices` + `.io_reach` | every I/O rectangle whole and overlapping, as `pass_render` made it, for the overlay |
 | `.lods` | the same rectangles at coarser and coarser scales, one level per scale, finest first |
 
 The `*_by_task` indices are sorted arrays rather than hash maps on purpose:
@@ -319,13 +320,17 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 16 | `pass_prefix_sums` | `by_latency` + query costs → latency and CPU prefix sums |
 | 17 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
 | 18 | `pass_render` | every event table → `log_lines`, `slices` |
-| 19 | `pass_lod` | `slices` → `lods`, the same rectangles at coarser scales |
+| 19 | `pass_io_stack` | `slices` → `slices` + `io_slices`, the I/O band flattened to the span on top |
+| 20 | `pass_lod` | `slices` → `lods`, the same rectangles at coarser scales |
 
 Three orderings in there are real constraints rather than convention, and each
 is commented at the call site: `pass_attribute` must precede `pass_index`,
 because the index is keyed on the task it fills in; `pass_order` runs again
 after `pass_retime`; and `pass_task_queue_runs` must follow the last `pass_order`,
-because it walks the timeline and wants it in the order the rings hold it.
+because it walks the timeline and wants it in the order the rings hold it. A
+fourth was added with `pass_io_stack`: it must run before `pass_lod`, because
+the pyramid has to be built from the flattened I/O band rather than from the
+overlapping one it replaces.
 
 ### The three joins worth understanding
 
@@ -478,25 +483,68 @@ smears the next rectangle overwrote. So `pass_lod` builds a pyramid per
 reactor: the level with scale `s` holds every rectangle at least `s` wide
 verbatim, plus one *summary* per `s`-wide bin standing for the narrower ones
 inside it, carrying how much of the bin they covered and how many they were. A
-frame picks the coarsest level whose scale is under half a pixel and draws it
+frame picks the coarsest level whose scale is under a pixel and draws it
 with the code that drew `.slices` -- the arrays are the same shape, so it is
 still one binary search and a scan, **one array per row per frame**. Not a
 query per gap, and no merging of levels: that is what the pyramid is bought
 for.
 
 Three properties of it are load-bearing. The scales double and every bin is
-aligned to a multiple of its own scale, so bins *nest exactly* and each level
-is coarsened from the one below rather than from `.slices` -- which is what
-makes a coarse summary an exact sum of finer ones, and the whole pyramid one
-pass plus a geometric tail (~0.3x the rectangles, ~1.5% of startup). The cpu
-and the I/O bands are accumulated separately, because a stretch of cpu and an
-I/O drawn over it are different bands of the picture and adding them up would
-say the reactor was busier than it was. And the pyramid *starts* at a small
-multiple of the average time between one rectangle and the next: below that,
-the zoom that would pick such a level has only a couple of thousand rectangles
-in view anyway, and the plot reads `.slices` as it always did. `.lods` empty is
-a legal state -- delete `pass_lod` and the plot draws `.slices` at every zoom,
-which is exactly what it did before.
+aligned to a multiple of its own scale, so bins *nest exactly* and every level
+above the finest is coarsened from the one below rather than from `.slices` --
+which is what makes a coarse summary an exact sum of finer ones, and the
+coarse half of the pyramid a geometric tail. The cpu and the I/O bands are
+accumulated separately, because a stretch of cpu and an I/O drawn over it are
+different bands of the picture and adding them up would say the reactor was
+busier than it was.
+
+And **where the pyramid stops is measured, not guessed**. It used to stop at
+the average time between one rectangle and the next, on the argument that a
+zoom fine enough to want a finer level has few enough rectangles in view
+anyway. That argument is wrong, because rectangles are not spread out evenly:
+on `trace-viewer-20260907` that scale is 31 us, 99% of a reactor's rectangles
+are narrower than it, and the frame that first fell through to `.slices` drew
+twelve thousand rectangles of a thousandth of a pixel each, every one of them
+widened to a pixel and overwriting the last -- the smear the pyramid exists to
+avoid, arriving as a step from "nothing thinner than a pixel" to "one pixel
+standing for a hundred rectangles". So `pass_lod` instead goes finer while a
+level still *halves* the rectangles it stands for, and stops at the first one
+that does not: below that level the plot reads `.slices` and draws at most
+twice what the level would have. Those extra levels are built from `.slices`
+rather than from the level below, because there is no level below them yet.
+The floor lands at 2 us rather than 31 us on that fixture, five octaves of
+zoom lower, and costs what a deeper pyramid costs: 1.3x the rectangles rather
+than 0.3x, and 25 ms of startup rather than 5 ms (7.6% rather than 1.5%). The
+2x test in `pass_lod` is the knob if that trade ever needs moving. `.lods`
+empty is a legal state -- delete `pass_lod` and the plot draws `.slices` at
+every zoom, which is exactly what it did before.
+
+**Overlapping I/O is flattened to the one span you can see.** A loaded shard
+has a hundred I/Os in flight at once, all drawn in the same narrow band of the
+row, so every pixel column of that band carried as many rectangles as there
+were outstanding requests under it and all but the last were painted over.
+The pyramid cannot help: it summarises what is *too narrow* to draw, and a
+hundred overlapping 5 ms spans are each far wider than a pixel. Measured on
+`latte-run-20260907`, the worst frame drew 285k I/O rectangles against 42k
+summaries. So `pass_io_stack` sweeps the band with a stack of what is open and
+keeps, at every instant, the **most recently opened** span still in flight --
+the same reading as the top edge of a flame graph, and the same picture the
+plot was already painting, at a hundredth of the cost. A span comes out as one
+rectangle where nothing interrupted it and several where something did; a span
+covered for its whole life comes out as none at all. Each segment keeps the row
+it came from, so hovering still names its I/O. The check that this preserves
+the picture is that the flattened band covers *exactly* the union of the
+originals -- it does, to the last microsecond, on both fixtures -- and the
+worst latte frame falls from 333k rectangles to 50k.
+
+The originals are kept, whole and overlapping, in `.io_slices`. A picked
+request's own I/O may be buried under a newer one belonging to somebody else,
+so the plot draws it from there, over the flattened band, whether or not the
+row is on a level of detail: an overlay is one request on one reactor, a few
+rectangles, and it neither needs the pyramid nor would gain anything from it.
+It is drawn but not *hovered*: the pointer keeps landing on the flattened band
+the plot is really made of, so what a tooltip says does not depend on which
+request happens to be picked.
 
 **A summary has no single request, so it is drawn with its density colour.**
 Its colour is its band's washed colour with the alpha saying how busy the

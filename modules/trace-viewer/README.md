@@ -500,9 +500,18 @@ then, and most of it is thinner than a pixel. So `pass_lod` builds a pyramid of
 levels per reactor -- at scale `s`, every rectangle at least `s` wide as it is,
 and one summary per `s`-wide bin standing for the narrower ones inside it,
 saying how much of the bin they covered. A frame picks the coarsest level whose
-scale is under half a pixel and draws it exactly as it draws the rectangles
+scale is under a pixel and draws it exactly as it draws the rectangles
 themselves, which turns a zoomed-out row from a hundred thousand rectangles
-into a couple of thousand. A summary keeps the first query represented in its
+into a couple of thousand. The pyramid goes finer for as long as a level still
+halves the rectangles it stands for, so the zoom at which the plot falls back
+to the rectangles themselves is the zoom at which drawing them costs about what
+drawing the level would have. Overlapping I/O is dealt with before that, and differently: `pass_io_stack`
+flattens the I/O band to the most recently opened span still in flight, because
+a shard with a hundred I/Os outstanding put a hundred rectangles on every pixel
+column of that band and the pyramid cannot summarise them -- they are each far
+wider than a pixel. The originals are kept for the overlay, so a picked
+request's own I/O is still drawn whole, on top, even where a newer I/O buried
+it. A summary keeps the first query represented in its
 bin, so hovering it picks that request even though the bin may contain several
 requests. The picked request's own rectangles are drawn over summaries;
 highlighted rectangles under one pixel are also redrawn when ordinary slices
