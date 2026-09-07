@@ -269,7 +269,6 @@ rests on are written down.
 | `.timeline` | **all of the above**, in time order |
 | `.switch_by_task`, `.rpc_by_task` | `(task, row)` sorted by task -- built once, read many |
 | `.query_of_task` | which request each task on this reactor belongs to |
-| `.log_lines` + `.log_text` | every record of it, rendered |
 | `.slices` + `.slice_reach` | every rectangle of it, in ms, sorted by start |
 | `.io_slices` + `.io_reach` | every I/O rectangle whole and overlapping, as `pass_render` made it, for the overlay |
 | `.lods` | the same rectangles at coarser and coarser scales, one level per scale, finest first |
@@ -319,7 +318,7 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 15 | `pass_cost` | `switches` + io spans → `query.t1`, `.cpu_ticks`, `by_latency` |
 | 16 | `pass_prefix_sums` | `by_latency` + query costs → latency and CPU prefix sums |
 | 17 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
-| 18 | `pass_render` | every event table → `log_lines`, `slices` |
+| 18 | `pass_render` | every event table → `slices` |
 | 19 | `pass_io_stack` | `slices` → `slices` + `io_slices`, the I/O band flattened to the span on top |
 | 20 | `pass_lod` | `slices` → `lods`, the same rectangles at coarser scales |
 
@@ -327,7 +326,25 @@ Three orderings in there are real constraints rather than convention, and each
 is commented at the call site: `pass_attribute` must precede `pass_index`,
 because the index is keyed on the task it fills in; `pass_order` runs again
 after `pass_retime`; and `pass_task_queue_runs` must follow the last `pass_order`,
-because it walks the timeline and wants it in the order the rings hold it. A
+because it walks the timeline and wants it in the order the rings hold it. **`pass_render` builds rectangles, not text.** It used to do both: a record's
+log line was formatted once at startup into a per-reactor arena and read back
+by the log window a screenful at a time. On `latte-run-task32` that is
+thirteen million lines and 617 MB of text, and it was four fifths of the pass
+-- to serve the fifty rows an `ImGuiListClipper` asks for in a frame.
+Formatting fifty lines is microseconds, so the lines are formatted where they
+are shown (`format_event`, and the log window's columns) and nothing about the
+text survives startup. The pass went 2879 ms to 255 ms and the process 757 MB
+lighter, and the only code that had to change was the headless dump, which
+now formats its own lines.
+
+What is left of it is two halves built at once -- `switches` and `io_begins`,
+each already in time order because the table it reads is -- merged rather than
+sorted. That merge is what the old `std::ranges::sort` was really doing, at
+340 ms per pass over eleven million rectangles. `pass_index` and `pass_lod`
+(~550 ms each) are per-reactor in the same way and are what is left to spread
+out; `in_parallel` is the helper for it.
+
+A
 fourth was added with `pass_io_stack`: it must run before `pass_lod`, because
 the pyramid has to be built from the flattened I/O band rather than from the
 overlapping one it replaces.

@@ -443,7 +443,6 @@ files nodes cpus                   what the snapshot directories describe
              .conns                a connection opened, closed, or was dumped
              .rpcs                 a message crossed the wire
              .timeline             all of the above, in time order
-             .log_lines            every record of it, rendered as text
              .slices               every rectangle of it, in milliseconds
              .lods                 the same, at coarser and coarser scales
 locations statements connections   interned, and joined end to end
@@ -474,7 +473,7 @@ The passes, in the order `run()` calls them:
 | `pass_query_rows` | parts | `row.query`, on every row |
 | `pass_cost` | switches, io spans | `query.t1`, `query.cpu_ticks`, by_latency |
 | `pass_prefix_sums` | by_latency, query costs | latency and CPU prefix sums for selection aggregates |
-| `pass_render` | every event table | log_lines, slices |
+| `pass_render` | every event table | slices |
 | `pass_lod` | slices | lods: the same rectangles at coarser scales |
 
 All of it runs once, at startup: 27 MB of traces over three nodes and six
@@ -482,8 +481,14 @@ shards -- 630 000 events -- is 3.7 seconds to the window, of which the last
 pass is half. After that **the UI only reads.** There is no cache to
 invalidate and nothing is rebuilt when the selection changes, because
 `pass_render` renders the whole trace rather than the selected request:
-618 000 log lines into a per-reactor arena (41 MB of text) and 530 000
-rectangles, in milliseconds from one origin every row shares.
+530 000 rectangles, in milliseconds from one origin every row shares.
+
+The *text* is the exception, and deliberately so. A record's log line used to
+be formatted once at startup into a per-reactor arena; on a large capture that
+was thirteen million lines, 617 MB, and four fifths of the pass. A frame shows
+the fifty rows the clipper asks for, so the lines are formatted where they are
+shown instead -- microseconds a frame, against seconds and hundreds of
+megabytes at startup.
 
 That is what lets both windows be scrolled *past* the request. A selection
 moves them to it and recolours what is in it -- a rectangle takes its colour

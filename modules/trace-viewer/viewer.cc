@@ -73,9 +73,9 @@
 //                                                 by_latency
 //   pass_prefix_sums  by_latency + queries      -> latency/cpu prefix sums
 //   pass_query_statement  prep_runs + queries  -> query.statement
-//   pass_render       every event table        -> log_lines, slices: the text
-//                                                 and the rectangles, for the
-//                                                 whole trace, once
+//   pass_render       every event table        -> slices: every rectangle of
+//                                                 the whole trace, once. The
+//                                                 text is formatted per frame
 //   pass_io_stack     slices                   -> slices, io_slices: the I/O
 //                                                 band flattened to the span
 //                                                 on top, originals kept
@@ -103,6 +103,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cinttypes>
 #include <cstdint>
@@ -121,6 +122,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <thread>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
@@ -378,13 +380,14 @@ struct cpu_tables {
     // Built by pass_query_rows: which query each task on this cpu belongs to.
     std::unordered_map<uint32_t, int32_t> query_of_task;
 
-    // Built by pass_render: this reactor's whole trace, drawn. One log line
-    // per timeline entry, in this table's own arena, and every rectangle of
-    // its timeline sorted by where it starts. slice_reach is a running maximum
-    // of the slices' ends, which is what makes culling to the visible x range
-    // a binary search.
-    std::vector<str> log_lines;
-    arena log_text;
+    // Built by pass_render: every rectangle of this reactor's timeline, sorted
+    // by where it starts. slice_reach is a running maximum of the slices'
+    // ends, which is what makes culling to the visible x range a binary
+    // search.
+    //
+    // No text here. A record's line is formatted where it is shown -- see
+    // format_event and the log window -- because a frame shows the fifty rows
+    // the clipper asks for and a trace holds thirteen million.
     std::vector<slice_row> slices;
     std::vector<double> slice_reach;
 
@@ -2412,12 +2415,19 @@ int32_t query_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
 // is selected. A selection moves the window and recolours what is in it; it
 // never decides what exists. Nothing is rebuilt when it changes.
 //
-// Two tables per cpu:
+// One table per cpu:
 //
-//   .log_lines   one str per timeline entry, in the cpu's own arena
 //   .slices      every rectangle: a stretch on the cpu, or an I/O in flight,
 //                in milliseconds from the start of the trace, carrying the
 //                query it belongs to so a frame's only decision is the colour
+//
+// The text is *not* built here, and used to be. A record's line was formatted
+// once at startup into a per-reactor arena -- thirteen million of them, 617 MB
+// of text, four fifths of this pass -- and read back by the log window a
+// screenful at a time. A screenful is what a frame draws: the clipper asks for
+// the fifty rows it can show, and formatting fifty lines is microseconds. So
+// the lines are formatted where they are shown, and the only thing rendered up
+// front is what the plot needs to *find* a rectangle without walking the trace.
 //
 // Kept alongside the slices, .slice_reach is a running maximum of their ends.
 // It is what makes culling to the visible x range a binary search rather than
@@ -2489,6 +2499,35 @@ inline ImU32 darker(ImU32 colour, float by) {
            (colour & (0xffu << IM_COL32_A_SHIFT));
 }
 
+// Runs `body(i)` for every i in [0, n), on as many lanes as the machine has
+// cores, each taking the next i rather than a fixed share -- the chunks of a
+// reactor's timeline do not cost the same, and a static split would leave
+// every lane waiting for the slowest. Sequential when there is one chunk, so
+// a small trace pays nothing for the machinery.
+template <typename F>
+void in_parallel(size_t n, F&& body) {
+    const auto lanes = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
+    if (lanes <= 1) {
+        for (size_t i = 0; i < n; ++i) {
+            body(i);
+        }
+        return;
+    }
+    std::atomic<size_t> next = 0;
+    std::vector<std::thread> workers;
+    workers.reserve(lanes);
+    for (size_t lane = 0; lane < lanes; ++lane) {
+        workers.emplace_back([&] {
+            for (size_t i = next++; i < n; i = next++) {
+                body(i);
+            }
+        });
+    }
+    for (std::thread& w : workers) {
+        w.join();
+    }
+}
+
 void pass_render(trace_data& d) {
     // One origin for every reactor, so that two rows of the plot are the same
     // axis and a time in the log is a time in the plot.
@@ -2507,46 +2546,43 @@ void pass_render(trace_data& d) {
         }
     }
 
-    size_t bytes = 0;
     size_t slices = 0;
     for (uint32_t cpu = 0; cpu < d.tables.size(); ++cpu) {
         cpu_tables& t = d.tables[cpu];
-
-        t.log_lines.clear();
-        t.log_lines.reserve(t.timeline.size());
-        for (const timeline_row& e : t.timeline) {
-            t.log_lines.push_back(t.log_text.put(format_event(d, cpu, e.table, e.index)));
-        }
-
-        // A stretch on the cpu runs from the switch that picked the task up to
-        // switch_ends() -- the end of its task queue run, or the next switch on
-        // the shard, whichever the snapshot has. The same bound pass_cost uses,
-        // so the picture and the number agree.
-        //
-        // Nothing is cut out of it. An I/O is drawn *over* the cpu it overlaps,
-        // as a narrow bar inside the row (see band_of), because that overlap is
-        // the thing worth seeing: a task holding the cpu while its own read is
-        // outstanding looks different from one blocked on it, and subtracting
-        // one from the other would hide both.
-        t.slices.clear();
+        // Two halves, built at once and merged rather than sorted. Each half
+        // comes out in time order already, because the table it is read from
+        // is in time order, so what the old sort was really doing was
+        // interleaving two sorted sequences -- 340 ms of one pass over
+        // eleven million rectangles.
         const int64_t cpu_end = t.timeline.empty() ? 0 : t.timeline.back().ts;
-        const auto emit = [&](int64_t from, int64_t to, int32_t query, uint16_t table,
-                              uint32_t index) {
-            if (to > from) {
-                t.slices.push_back({d.ms(from - d.origin), d.ms(to - d.origin), query, index,
-                                    1.0f, table, false});
+        std::vector<slice_row> halves[2];
+        in_parallel(2, [&](size_t half) {
+            std::vector<slice_row>& out = halves[half];
+            const auto emit = [&](int64_t from, int64_t to, int32_t query, uint16_t table,
+                                  uint32_t index) {
+                if (to > from) {
+                    out.push_back({d.ms(from - d.origin), d.ms(to - d.origin), query, index, 1.0f,
+                                   table, false});
+                }
+            };
+            if (half == 0) {
+                out.reserve(t.switches.size());
+                for (uint32_t i = 0; i < t.switches.size(); ++i) {
+                    const switch_row& sw = t.switches[i];
+                    emit(sw.ts, switch_ends(t, i, cpu_end), sw.query, tab_switch, i);
+                }
+            } else {
+                out.reserve(t.io_begins.size());
+                for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
+                    const io_begin_row& b = t.io_begins[i];
+                    emit(b.ts, b.end >= 0 ? t.io_ends[b.end].ts : cpu_end, b.query, tab_io_begin, i);
+                }
             }
-        };
-        for (uint32_t i = 0; i < t.switches.size(); ++i) {
-            const switch_row& sw = t.switches[i];
-            emit(sw.ts, switch_ends(t, i, cpu_end), sw.query, tab_switch, i);
-        }
-        for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
-            const io_begin_row& b = t.io_begins[i];
-            emit(b.ts, b.end >= 0 ? t.io_ends[b.end].ts : cpu_end, b.query, tab_io_begin, i);
-        }
-
-        std::ranges::sort(t.slices, {}, &slice_row::t0);
+        });
+        t.slices.clear();
+        t.slices.reserve(halves[0].size() + halves[1].size());
+        std::ranges::merge(halves[0], halves[1], std::back_inserter(t.slices), {}, &slice_row::t0,
+                           &slice_row::t0);
         t.slice_reach.clear();
         t.slice_reach.reserve(t.slices.size());
         double reach = -std::numeric_limits<double>::infinity();
@@ -2555,15 +2591,13 @@ void pass_render(trace_data& d) {
             t.slice_reach.push_back(reach);
         }
 
-        bytes += t.log_text.bytes.size();
         slices += t.slices.size();
     }
-    fmt::print("{} log lines ({:.1f} MB of text), {} rectangles, all rendered up front\n",
+    fmt::print("{} rectangles over {} records, drawn up front; the text is not\n", slices,
                std::accumulate(d.tables.begin(), d.tables.end(), size_t(0),
                                [](size_t n, const cpu_tables& t) {
-                                   return n + t.log_lines.size();
-                               }),
-               double(bytes) / (1 << 20), slices);
+                                   return n + t.timeline.size();
+                               }));
 }
 
 // ============================================================================
@@ -4181,7 +4215,7 @@ static int run(int argc, char** argv) {
                     continue;
                 }
                 fmt::print("  {:+13.6f} ms  {}\n", d.ms(e.ts - d.origin) - v.t0,
-                           t.log_text.get(t.log_lines[i]));
+                           format_event(d, cpu, e.table, e.index));
             }
         }
         return 0;
