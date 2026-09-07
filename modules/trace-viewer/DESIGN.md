@@ -498,13 +498,14 @@ in view anyway, and the plot reads `.slices` as it always did. `.lods` empty is
 a legal state -- delete `pass_lod` and the plot draws `.slices` at every zoom,
 which is exactly what it did before.
 
-**A summary belongs to no request, so the selection is drawn over it.** Its
-colour is its band's washed colour with the alpha saying how busy the stretch
-was; it has no `query`, and hovering one leaves the selection alone and offers
-to zoom rather than naming a record. That would make a request whose every
-rectangle is thinner than a pixel vanish from a zoomed-out plot -- which is the
-plot you are looking at when you ask where a request went -- so the picked and
-hovered requests' own rectangles are drawn again, verbatim, over the summaries.
+**A summary has no single request, so it is drawn with its density colour.**
+Its colour is its band's washed colour with the alpha saying how busy the
+stretch was; its `query` is the first request represented in it. Hovering one
+therefore picks that request, even though the summary covers more than one
+record. That would make a request whose every rectangle is thinner than a pixel
+vanish from a zoomed-out plot -- which is the plot you are looking at when you
+ask where a request went -- so the picked and hovered requests' own rectangles
+are drawn again, verbatim, over the summaries.
 The same redraw also covers highlighted rectangles under one pixel when the
 ordinary slices are used: their one-pixel minimum can otherwise be covered by
 a later neighbouring rectangle.

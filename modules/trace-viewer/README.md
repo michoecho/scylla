@@ -502,11 +502,13 @@ and one summary per `s`-wide bin standing for the narrower ones inside it,
 saying how much of the bin they covered. A frame picks the coarsest level whose
 scale is under half a pixel and draws it exactly as it draws the rectangles
 themselves, which turns a zoomed-out row from a hundred thousand rectangles
-into a couple of thousand. What the summaries lose is whose work they were, so
-the picked request's own rectangles are drawn over them; highlighted rectangles
-under one pixel are also redrawn when ordinary slices are used, so their
-one-pixel minimum is not covered by a neighbour. Hovering a summary says how
-many records are in there and offers the zoom that would show them.
+into a couple of thousand. A summary keeps the first query represented in its
+bin, so hovering it picks that request even though the bin may contain several
+requests. The picked request's own rectangles are drawn over summaries;
+highlighted rectangles under one pixel are also redrawn when ordinary slices
+are used, so their one-pixel minimum is not covered by a neighbour. Hovering a
+summary says how many records are in there and offers the zoom that would show
+them.
 
 ### Reading a trace with it
 

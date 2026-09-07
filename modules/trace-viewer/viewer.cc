@@ -326,15 +326,16 @@ struct timeline_row {
 // row serves a request that is selected and one that is not.
 //
 // It is also what a *summary* is: one rectangle standing for all the ones too
-// narrow to draw at some zoom (see pass_lod). A summary belongs to no request,
-// covers no single record, and says with `density` how much of its span the
-// rectangles it replaced covered. The fields that change meaning are marked
-// below; everything that draws a rectangle draws both kinds the same
-// way and only asks about `summary` to pick the colour.
+// narrow to draw at some zoom (see pass_lod). A summary covers no single
+// record, and says with `density` how much of its span the rectangles it
+// replaced covered. Its `query` is the first request represented by those
+// rectangles, or none if they were all unattributed. The fields that change
+// meaning are marked below; everything that draws a rectangle draws both kinds
+// the same way and only asks about `summary` to pick the colour.
 struct slice_row {
     double t0 = 0;  // milliseconds from the start of the trace
     double t1 = 0;
-    int32_t query = none;  // summary: always none -- it is nobody's work
+    int32_t query = none;  // summary: first query represented, or none
     uint32_t index = 0;    // the row of `table` it was drawn from.
                            // summary: how many rectangles it stands for
     float density = 1.0f;  // summary: the fraction of its span they covered
@@ -2445,7 +2446,8 @@ void pass_render(trace_data& d) {
 //   - every rectangle at least `s` wide, verbatim, exactly as .slices has it;
 //   - one *summary* per `s`-wide bin (aligned to multiples of `s` from the
 //     start of the trace) standing for the narrower ones that fall in it,
-//     carrying the fraction of the bin they covered and how many they were.
+//     carrying the fraction of the bin they covered, how many they were, and
+//     the first query represented in it.
 //
 // A frame picks the coarsest level whose scale is still under half a pixel and
 // draws it the way it drew .slices: one binary search, then a scan. Not a
@@ -2462,10 +2464,12 @@ void pass_render(trace_data& d) {
 // another name -- everything is wider than the scale, nothing is summarised,
 // and the plot may as well read .slices, which is what it does.
 //
-// What a summary loses is whose work it was. That matters in exactly one
-// place: the selected request would vanish from a zoomed-out plot, which is
-// where you most want to see where it went. The plot draws that one request's
-// own rectangles again, over the summaries -- see the timeline window.
+// A summary does not retain all the requests whose work it represents. That
+// matters in exactly one place: the selected request would vanish from a
+// zoomed-out plot, which is where you most want to see where it went. The plot
+// draws that one request's own rectangles again, over the summaries -- see the
+// timeline window. It does retain the first request represented, so hovering
+// a summary can pick something useful.
 
 // Everything in `src` narrower than `scale` collapsed into summaries `scale`
 // wide, everything wider carried over as it stands. `src` is in t0 order and
@@ -2490,6 +2494,8 @@ std::vector<slice_row> coarsen(const std::vector<slice_row>& src, double scale) 
         double busy = 0;
         uint32_t count = 0;
         double carry = 0;
+        int32_t query = none;
+        int32_t carry_query = none;
     };
     band_acc acc[2];
     int64_t cur = std::numeric_limits<int64_t>::min();
@@ -2497,32 +2503,36 @@ std::vector<slice_row> coarsen(const std::vector<slice_row>& src, double scale) 
     std::vector<slice_row> wide;  // the wide rectangles of `cur`, held back
     out.reserve(src.size() / 2 + 16);
 
-    const auto summary = [&](int k, int64_t bin, double busy, uint32_t count) {
+    const auto summary = [&](int k, int64_t bin, double busy, uint32_t count,
+                             int32_t query) {
         if (busy <= 0) {
             return;
         }
         const double t0 = double(bin) * scale;
-        out.push_back({t0, t0 + scale, none, count, float(std::min(1.0, busy / scale)),
+        out.push_back({t0, t0 + scale, query, count, float(std::min(1.0, busy / scale)),
                        uint16_t(k == 1 ? tab_io_begin : tab_switch), true});
     };
     // Close the bin being filled and open `next`. Its summaries go out first
     // and the wide rectangles that start inside it after, which is what keeps
     // the output in t0 order without ever sorting it.
     const auto close = [&](int64_t next) {
-        summary(0, cur, acc[0].busy, acc[0].count);
-        summary(1, cur, acc[1].busy, acc[1].count);
+        summary(0, cur, acc[0].busy, acc[0].count, acc[0].query);
+        summary(1, cur, acc[1].busy, acc[1].count, acc[1].query);
         out.insert(out.end(), wide.begin(), wide.end());
         wide.clear();
         for (int k = 0; k < 2; ++k) {
             band_acc& a = acc[k];
             if (next == cur + 1) {
                 a.busy = a.carry;  // what straddled into the bin we are opening
+                a.query = a.carry_query;
             } else {
-                summary(k, cur + 1, a.carry, 0);
+                summary(k, cur + 1, a.carry, 0, a.carry_query);
                 a.busy = 0;
+                a.query = none;
             }
             a.count = 0;
             a.carry = 0;
+            a.carry_query = none;
         }
         cur = next;
     };
@@ -2542,10 +2552,16 @@ std::vector<slice_row> coarsen(const std::vector<slice_row>& src, double scale) 
         band_acc& a = acc[s.table == tab_io_begin ? 1 : 0];
         const double covered = s.summary ? double(s.density) : 1.0;
         const double bin_end = double(bin + 1) * scale;
+        if (a.query == none && s.query >= 0) {
+            a.query = s.query;
+        }
         a.busy += covered * (std::min(s.t1, bin_end) - s.t0);
         a.count += s.summary ? s.index : 1;
         if (s.t1 > bin_end) {
             a.carry += covered * (s.t1 - bin_end);
+            if (a.carry_query == none && s.query >= 0) {
+                a.carry_query = s.query;
+            }
         }
     }
     if (cur != std::numeric_limits<int64_t>::min()) {
@@ -3253,8 +3269,8 @@ void draw_plot_window(const trace_data& d, view& v) {
         v.axis_mouse = pt.x;
 
         // One rectangle, wherever it came from. A verbatim one is coloured by
-        // whose work it is; a summary, which is nobody's, by how busy it says
-        // that stretch was.
+        // whose work it is; a summary, which has no single owner, by how busy
+        // it says that stretch was.
         const auto draw_slice = [&](const slice_row& s, size_t row) {
             const ImU32 colour =
                 s.summary ? summary_colour(s.table, s.density)
@@ -3310,7 +3326,7 @@ void draw_plot_window(const trace_data& d, view& v) {
                 }
             }
             // The two selected requests, drawn again over the summaries that
-            // swallowed them. A summary belongs to no request, so without this
+            // swallowed them. A summary has no single request, so without this
             // a request whose every rectangle is thinner than a pixel would be
             // invisible on a zoomed-out plot -- which is exactly the plot you
             // are looking at when you ask where a request went. The same pass
