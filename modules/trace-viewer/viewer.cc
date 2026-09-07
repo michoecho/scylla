@@ -2230,6 +2230,96 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
     }
 }
 
+const char* event_kind_name(const trace_data& d, uint32_t cpu, uint16_t table,
+                            uint32_t index) {
+    const cpu_tables& t = d.tables[cpu];
+    switch (table) {
+        case tab_switch: return switch_cause_name(t.switches[index].cause);
+        case tab_tq_run: return t.tq_runs[index].kind == tq_begin ? "TQ+" : "TQ-";
+        case tab_io_begin: return "IO-BEGIN";
+        case tab_io_end: return "IO-END";
+        case tab_prep_run: return "PREPARED";
+        case tab_prep_delta: {
+            const uint8_t kind = t.prep_deltas[index].kind;
+            return kind == prep_added ? "PREP+" : kind == prep_removed ? "PREP-" : "PREP=";
+        }
+        case tab_conn: {
+            const uint8_t kind = t.conns[index].kind;
+            return kind == conn_open ? "CONN+" : kind == conn_close ? "CONN-" : "CONN=";
+        }
+        case tab_rpc: return rpc_kind_name(t.rpcs[index].kind);
+        default: return "?";
+    }
+}
+
+std::string format_event_details(const trace_data& d, uint32_t cpu, uint16_t table,
+                                 uint32_t index) {
+    const cpu_tables& t = d.tables[cpu];
+    switch (table) {
+        case tab_switch: {
+            const switch_row& r = t.switches[index];
+            std::string details;
+            if (r.group >= 0) {
+                details = fmt::format("scheduling group {}", r.group);
+            }
+            if (const std::string at = format_location(d, r.loc); !at.empty()) {
+                if (!details.empty()) {
+                    details += ", ";
+                }
+                details += fmt::format("at {}", at);
+            }
+            return details;
+        }
+        case tab_tq_run: {
+            const tq_run_row& r = t.tq_runs[index];
+            return r.kind == tq_begin ? fmt::format("scheduling group {}", r.group) : "";
+        }
+        case tab_io_begin: {
+            const io_begin_row& r = t.io_begins[index];
+            std::string details = fmt::format("I/O {:016x}", r.io);
+            if (r.end >= 0) {
+                fmt::format_to(std::back_inserter(details), ", {:.3f} ms",
+                               d.seconds(t.io_ends[r.end].ts - r.ts) * 1e3);
+            } else {
+                details += ", never completed in this trace";
+            }
+            return details;
+        }
+        case tab_io_end:
+            return fmt::format("I/O {:016x}", t.io_ends[index].io);
+        case tab_prep_run: {
+            const prep_run_row& r = t.prep_runs[index];
+            if (r.statement >= 0) {
+                const statement_row& s = d.statements[r.statement];
+                return fmt::format("{}: {}", d.text(s.keyspace), d.text(s.text));
+            }
+            return fmt::format("id {} (not in the cache at this point)", format_bytes(d.text(r.id)));
+        }
+        case tab_prep_delta: {
+            const prep_delta_row& r = t.prep_deltas[index];
+            return fmt::format("{}: {}", d.text(r.keyspace), d.text(r.statement));
+        }
+        case tab_conn: {
+            const conn_row& r = t.conns[index];
+            return fmt::format("connection {}: {} -> {}, peer shard {}", r.connection,
+                               d.text(r.local), d.text(r.remote), r.peer_shard);
+        }
+        case tab_rpc: {
+            const rpc_row& r = t.rpcs[index];
+            std::string details = fmt::format("connection {}, sequence {}", r.connection,
+                                              r.sequence);
+            if (r.peer_row >= 0) {
+                const rpc_row& far = d.tables[r.peer_cpu].rpcs[r.peer_row];
+                fmt::format_to(std::back_inserter(details), ", <-> {} task {:08x} ({:+.3f} ms)",
+                               d.cpus[r.peer_cpu].label, far.task,
+                               d.seconds(far.ts - r.ts) * 1e3);
+            }
+            return details;
+        }
+        default: return {};
+    }
+}
+
 // The task a row is about, whichever table it is in. Used by the log's
 // highlight and by the plot's tooltip.
 uint32_t task_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t index) {
@@ -2717,6 +2807,11 @@ struct view {
     float borrowed_log_scroll = 0;
     int32_t borrowed_range_for = none - 1;
     int32_t borrowed_clicked = none;
+    // A transient hover borrows the log position. Histogram previews already
+    // borrow the plot axis too; timeline hovers only borrow the log, so they
+    // can follow the hovered record and then return to wherever the reader was
+    // before the hover.
+    bool borrowed_log = false;
     // One-shots, consumed by the plot and the log in the frame a preview ends.
     bool restore_axis = false;
     bool restore_log = false;
@@ -2864,6 +2959,7 @@ void follow_selection(const trace_data& d, view& v) {
     // plot that is already there: it asks "whose is this bar", and moving the
     // plot to answer would take the bar out from under the pointer.
     const bool preview = v.hover.query >= 0 && !v.hover.from_timeline;
+    const bool transient_log_hover = v.hover.log_cpu >= 0;
     const int32_t primary = preview ? none : v.clicked.query;
     const int32_t secondary = v.hover.query;
 
@@ -2889,11 +2985,18 @@ void follow_selection(const trace_data& d, view& v) {
     // to give back. The histogram sets `clicked` and leaves `pending` empty
     // while the button is down, so that arrives here as a preview ending with
     // a different `clicked.query` than it began with.
+    if (transient_log_hover && !v.borrowed_log) {
+        v.borrowed_log = true;
+        v.borrowed_log_scroll = v.log_scroll;
+    } else if (!transient_log_hover && v.borrowed_log) {
+        v.borrowed_log = false;
+        v.restore_log = true;
+    }
+
     if (preview && !v.borrowed) {
         v.borrowed = true;
         v.borrowed_lo = v.axis_lo;
         v.borrowed_hi = v.axis_hi;
-        v.borrowed_log_scroll = v.log_scroll;
         v.borrowed_range_for = v.range_for;
         v.borrowed_clicked = v.clicked.query;
     } else if (!preview && v.borrowed) {
@@ -3507,44 +3610,77 @@ void draw_log_window(const trace_data& d, view& v) {
     v.scrolled_to = focus;
     ImGui::Separator();
 
-    ImGui::BeginChild("##lines", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-    if (v.restore_log) {
-        ImGui::SetScrollY(v.borrowed_log_scroll);
-        v.restore_log = false;
-    } else {
-        // Where the reader is, for a preview to borrow. Read rather than
-        // remembered, because the scrollbar and the wheel move it too.
-        v.log_scroll = ImGui::GetScrollY();
-    }
-    ImGuiListClipper clipper;
-    clipper.Begin(int(t.timeline.size()));
-    if (scroll && focus >= 0) {
-        clipper.IncludeItemByIndex(focus);
-    }
-    while (clipper.Step()) {
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-            const timeline_row& e = t.timeline[i];
-            const bool focused = i == focus;
-            const bool in_query =
-                v.query() >= 0 && query_of(d, uint32_t(cpu), e.table, e.index) == v.query();
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                                  focused    ? IM_COL32(255, 220, 100, 255)
-                                  : in_query ? IM_COL32(120, 240, 120, 255)
-                                             : IM_COL32(150, 150, 158, 255));
-            // Relative to the request, wherever in the trace the line is, so
-            // that scrolling away from it reads as a distance from it.
-            ImGui::Text("%+10.3f ms  %s", d.ms(e.ts - d.origin) - v.t0,
-                        std::string(t.log_text.get(t.log_lines[i])).c_str());
-            ImGui::PopStyleColor();
-            if (focused && scroll) {
-                // From the line itself rather than from an estimate of where
-                // it is, which is the one way of getting it right when the
-                // clipper means most lines were never laid out.
-                ImGui::SetScrollHereY(0.4f);
+    if (ImGui::BeginTable("##events", 4,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp |
+                              ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY,
+                          ImVec2(0, 0))) {
+        ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 105.0f);
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        ImGui::TableSetupColumn("Task", ImGuiTableColumnFlags_WidthFixed, 95.0f);
+        ImGui::TableSetupColumn("Details", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        if (v.restore_log) {
+            ImGui::SetScrollY(v.borrowed_log_scroll);
+            v.restore_log = false;
+        } else {
+            // Where the reader is, for a preview to borrow. Read rather than
+            // remembered, because the table's scrollbar and the wheel move it too.
+            v.log_scroll = ImGui::GetScrollY();
+        }
+
+        // The details column is deliberately one line: the clipper needs a
+        // stable row height when the histogram changes the included range.
+        const float event_row_height =
+            ImGui::GetTextLineHeight() + 2.0f * ImGui::GetStyle().CellPadding.y;
+        ImGuiListClipper clipper;
+        clipper.Begin(int(t.timeline.size()), event_row_height);
+        if (scroll && focus >= 0) {
+            clipper.IncludeItemByIndex(focus);
+        }
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const timeline_row& e = t.timeline[i];
+                const bool focused = i == focus;
+                const bool in_query =
+                    v.query() >= 0 && query_of(d, uint32_t(cpu), e.table, e.index) == v.query();
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, event_row_height);
+                if (focused || in_query) {
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1,
+                                           focused ? IM_COL32(100, 78, 20, 180)
+                                                   : IM_COL32(20, 90, 45, 140));
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                                      focused    ? IM_COL32(255, 220, 100, 255)
+                                      : in_query ? IM_COL32(120, 240, 120, 255)
+                                                 : IM_COL32(150, 150, 158, 255));
+
+                ImGui::TableSetColumnIndex(0);
+                // Relative to the request, wherever in the trace the row is,
+                // so scrolling away from it reads as a distance from it.
+                ImGui::Text("%+.3f ms", d.ms(e.ts - d.origin) - v.t0);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(event_kind_name(d, uint32_t(cpu), e.table, e.index));
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%08" PRIx32, task_of(d, uint32_t(cpu), e.table, e.index));
+                ImGui::TableSetColumnIndex(3);
+                std::string details = format_event_details(d, uint32_t(cpu), e.table, e.index);
+                std::ranges::replace_if(details, [](char c) { return c == '\r' || c == '\n'; }, ' ');
+                ImGui::TextUnformatted(details.empty() ? "—" : details.c_str());
+                ImGui::PopStyleColor();
+
+                if (focused && scroll) {
+                    // From the row itself rather than an estimate of where it
+                    // is, which is the one way to get it right when the
+                    // clipper means most rows were never laid out.
+                    ImGui::SetScrollHereY(0.4f);
+                }
             }
         }
+        ImGui::EndTable();
     }
-    ImGui::EndChild();
     ImGui::End();
 }
 
