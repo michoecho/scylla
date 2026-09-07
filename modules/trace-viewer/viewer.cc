@@ -3292,6 +3292,9 @@ void draw_plot_window(const trace_data& d, view& v) {
         const double per_pixel =
             (limits.X.Max - limits.X.Min) / double(std::max(1.0f, ImPlot::GetPlotSize().x));
         const double thinnest = 0.5 * per_pixel;
+        const auto is_subpixel = [&](const slice_row& s) {
+            return s.t1 - s.t0 < per_pixel;
+        };
 
         for (size_t row = 0; row < v.rows.size(); ++row) {
             const cpu_tables& t = d.tables[v.rows[row]];
@@ -3310,12 +3313,15 @@ void draw_plot_window(const trace_data& d, view& v) {
             // swallowed them. A summary belongs to no request, so without this
             // a request whose every rectangle is thinner than a pixel would be
             // invisible on a zoomed-out plot -- which is exactly the plot you
-            // are looking at when you ask where a request went.
+            // are looking at when you ask where a request went. The same pass
+            // also puts subpixel highlighted rectangles back on top when the
+            // ordinary slices are being drawn: draw_slice widens them to one
+            // pixel, but a later neighbouring slice can still cover that pixel.
             //
             // It costs a binary search and a scan of the request's own stretch
             // of time, not of the row: a request's rectangles are contiguous
             // in time, because a stretch of time is what a request is.
-            if (lod != nullptr) {
+            if (lod != nullptr || v.clicked.query >= 0 || v.hover.query >= 0) {
                 for (const int32_t q : {v.clicked.query, v.hover.query}) {
                     if (q < 0) {
                         continue;
@@ -3325,7 +3331,8 @@ void draw_plot_window(const trace_data& d, view& v) {
                         slices_in(t, d.ms(qr.t0 - d.origin), d.ms(qr.t1 - d.origin));
                     for (int layer = 0; layer < 2; ++layer) {
                         for (const slice_row& s : mine) {
-                            if (s.query == q && layer_of(s.table) == layer) {
+                            if (s.query == q && layer_of(s.table) == layer &&
+                                (lod != nullptr || is_subpixel(s))) {
                                 draw_slice(s, row);
                             }
                         }

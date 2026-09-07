@@ -505,6 +505,9 @@ to zoom rather than naming a record. That would make a request whose every
 rectangle is thinner than a pixel vanish from a zoomed-out plot -- which is the
 plot you are looking at when you ask where a request went -- so the picked and
 hovered requests' own rectangles are drawn again, verbatim, over the summaries.
+The same redraw also covers highlighted rectangles under one pixel when the
+ordinary slices are used: their one-pixel minimum can otherwise be covered by
+a later neighbouring rectangle.
 It costs a binary search and a scan of the request's own stretch of time, not
 of the row: a request's rectangles are contiguous in time, because a stretch of
 time is what a request is.
