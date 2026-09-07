@@ -367,7 +367,7 @@ public:
         return _func;
     }
 
-    uint64_t traced_task_id() const noexcept {
+    uint32_t traced_task_id() const noexcept {
         return _task_id;
     }
 
@@ -1046,7 +1046,7 @@ future<> reader_concurrency_semaphore::execution_loop() noexcept {
                 // Hand the read back to the task that asked for it, so that the
                 // sstable reads it goes on to do -- and their io_begin/io_end --
                 // are attributed to that request rather than to this loop.
-                const uint64_t requester = permit.traced_task_id();
+                const uint32_t requester = permit.traced_task_id();
                 [[maybe_unused]] switch_task st(requester);
                 trace_semaphore_execute(requester);
                 func(reader_permit(permit.shared_from_this())).forward_to(std::move(pr));

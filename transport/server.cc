@@ -1213,7 +1213,7 @@ future<> cql_server::connection::process_request() {
         // create -- continuations, execution stage work items, I/O descriptors
         // -- inherits this id, which is what lets a trace be cut back into
         // per-request timelines afterwards.
-        [[maybe_unused]] auto st = switch_task(fresh_task_id++);
+        [[maybe_unused]] auto st = switch_task(next_task_id());
         trace_cql_request(current_task_id);
 
         auto& f = *maybe_frame;
