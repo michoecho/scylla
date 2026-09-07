@@ -53,13 +53,13 @@ analysis keys off.
 
 | tracepoint | meaning | viewer id |
 |---|---|---|
-| `run_task{prev, task, at}` | the reactor picked a task off a run queue, and where that task was created; static wire id `1` | `0` |
+| `run_task{task, at}` | the reactor picked a task off a run queue, and where that task was created; static wire id `1` | `0` |
 | `task_queue_run_begin{scheduling_group}` / `task_queue_run_end{}` | the reactor gave the cpu to one task queue and took it back; every `run_task` between the two ran under that scheduling group | |
-| `cql_request{prev, task}` | a CQL frame arrived and opened a new chain | `1` |
+| `cql_request{task}` | a CQL frame arrived and opened a new chain | `1` |
 | `io_begin{task, io}` | a task submitted an I/O and is now waiting | `0x4` |
 | `io_end{task, io}` | that I/O completed | `0x5` |
-| `semaphore_execute{prev, task}` | the reader semaphore's loop ran a queued read | `0xa` |
-| `execution_stage{prev, task}` | an execution stage ran a queued work item | `0xb` |
+| `semaphore_execute{task}` | the reader semaphore's loop ran a queued read | `0xa` |
+| `execution_stage{task}` | an execution stage ran a queued work item | `0xb` |
 | `stacktrace_sample{shard, time_ns, frames}` | a shard was interrupted for a stack sample | `0xc` |
 | `prepared_query_run{id}` | a prepared statement was executed | `0xd` |
 | `prepared_statement_added{keyspace, statement, id}` | a prepared statement entered the shard cache | `0xe` |
@@ -141,11 +141,12 @@ against.
 The viewer also has a formatter for `0x3`, a reader-semaphore admission
 decision, which nothing currently emits.
 
-Task and I/O ids carry the shard in their top bits (`shard << 48`). They are not
-shard-local -- a request coordinated on one shard reaches a tablet on another,
-and the continuations there inherit its id -- so one request's records appear in
-*two* shards' trace files under a single id. The viewer relies on that: it does
-not namespace ids by shard, because that would cut every cross-shard request in
+Task ids are process-wide 32-bit sequence numbers. They are not shard-local --
+a request coordinated on one shard reaches a tablet on another, and the
+continuations there inherit its id -- so one request's records appear in *two*
+shards' trace files under a single id. I/O ids still carry their shard in the
+top bits (`shard << 48`) for pairing. The viewer relies on task ids being shared
+across shards; namespacing them by shard would cut every cross-shard request in
 half.
 
 ## How the two builds meet
@@ -472,6 +473,7 @@ The passes, in the order `run()` calls them:
 | `pass_queries` | switches, rpcs | queries, parts |
 | `pass_query_rows` | parts | `row.query`, on every row |
 | `pass_cost` | switches, io spans | `query.t1`, `query.cpu_ticks`, by_latency |
+| `pass_prefix_sums` | by_latency, query costs | latency and CPU prefix sums for selection aggregates |
 | `pass_render` | every event table | log_lines, slices |
 | `pass_lod` | slices | lods: the same rectangles at coarser scales |
 
@@ -879,10 +881,10 @@ the sample's task that carries it:
 
 Which task a sample interrupted is worked out once, at load: the samples are
 placed on the trace's clock, everything is merged into one timeline, and one
-walk carrying the current task **per shard** answers it for all of them. Per
-shard is the point -- a task id has the shard that *minted* it in its top bits,
-not the one running it, so the only honest answer to "which cpu was this" is
-which file the record came out of. That is what `entry::shard` is.
+walk carrying the current task **per shard** answers it for all of them. The
+task id is process-wide, not the shard running it, so the only honest answer to
+"which cpu was this" is which file the record came out of. That is what
+`entry::shard` is.
 
 A sample taken while the shard was between tasks keeps task 0 and appears only
 in this window.

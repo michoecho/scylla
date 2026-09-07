@@ -129,7 +129,7 @@ because two log lines for one record would be a lie.)*
 ```c
 #define ROW_COMMON     \
     int64_t ts = 0;    \
-    uint64_t task = 0; \
+    uint32_t task = 0; \
     int32_t query = none
 ```
 
@@ -316,9 +316,10 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 13 | `pass_queries` | `switches` + `rpcs` → `queries`, `parts` |
 | 14 | `pass_query_rows` | `parts` → `row.query`, on every row |
 | 15 | `pass_cost` | `switches` + io spans → `query.t1`, `.cpu_ticks`, `by_latency` |
-| 16 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
-| 17 | `pass_render` | every event table → `log_lines`, `slices` |
-| 18 | `pass_lod` | `slices` → `lods`, the same rectangles at coarser scales |
+| 16 | `pass_prefix_sums` | `by_latency` + query costs → latency and CPU prefix sums |
+| 17 | `pass_query_statement` | `prep_runs` + `queries` → `query.statement` |
+| 18 | `pass_render` | every event table → `log_lines`, `slices` |
+| 19 | `pass_lod` | `slices` → `lods`, the same rectangles at coarser scales |
 
 Three orderings in there are real constraints rather than convention, and each
 is commented at the call site: `pass_attribute` must precede `pass_index`,

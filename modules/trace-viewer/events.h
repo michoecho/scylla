@@ -78,29 +78,24 @@ struct event_meta {
 struct events {
     // --- the five ways a reactor picks up a task ---------------------------
     struct run_task {
-        std::uint64_t prev = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
         source_location at;
     };
     struct cql_request {
-        std::uint64_t prev = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
     };
     struct semaphore_execute {
-        std::uint64_t prev = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
     };
     struct execution_stage {
-        std::uint64_t prev = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
     };
     // Also the far end of a message, which is what joins two nodes; the viewer
     // makes two rows of it. See decode_sink.
     struct rpc_request_handled {
         std::uint64_t connection = 0;
         std::uint64_t sequence = 0;
-        std::uint64_t prev = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
     };
 
     // --- the reactor's turn on the cpu -------------------------------------
@@ -111,11 +106,11 @@ struct events {
 
     // --- i/o ---------------------------------------------------------------
     struct io_begin {
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
         std::uint64_t io = 0;
     };
     struct io_end {
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
         std::uint64_t io = 0;
     };
 
@@ -167,7 +162,7 @@ struct events {
     struct rpc_message_sent {
         std::uint64_t connection = 0;
         std::uint64_t sequence = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
     };
     struct rpc_message_received {
         std::uint64_t connection = 0;
@@ -177,7 +172,7 @@ struct events {
         std::uint64_t connection = 0;
         std::uint64_t sequence = 0;
         std::int64_t msg_id = 0;
-        std::uint64_t task = 0;
+        std::uint32_t task = 0;
     };
     struct rpc_reply_received {
         std::uint64_t connection = 0;

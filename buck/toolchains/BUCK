@@ -49,7 +49,10 @@ nix_cxx_toolchain(
             "-O0",
             "-g",
         ],
-        "root//:build_mode[release]": ["-O3"],
+        "root//:build_mode[release]": [
+            "-O3",
+            "-g",
+        ],
     }) + select({
         "root//:libafl": [
             "-fsanitize-coverage=trace-pc-guard,trace-cmp",

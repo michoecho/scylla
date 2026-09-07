@@ -71,6 +71,7 @@
 //   pass_query_rows   parts                    -> row.query everywhere
 //   pass_cost         switches + io + parts     -> query.t1, query.cpu_ticks,
 //                                                 by_latency
+//   pass_prefix_sums  by_latency + queries      -> latency/cpu prefix sums
 //   pass_query_statement  prep_runs + queries  -> query.statement
 //   pass_render       every event table        -> log_lines, slices: the text
 //                                                 and the rectangles, for the
@@ -231,12 +232,11 @@ constexpr int32_t none = -1;
 //   query  index into trace::queries, or `none`. Filled by pass_query_rows.
 #define ROW_COMMON     \
     int64_t ts = 0;    \
-    uint64_t task = 0; \
+    uint32_t task = 0; \
     int32_t query = none
 
 struct switch_row {
     ROW_COMMON;
-    uint64_t prev = 0;    // the task that was running until now
     uint32_t loc = 0;     // trace::locations, where `task` was created
     uint8_t cause = 0;    // switch_cause
     int32_t rpc = none;   // for sw_rpc_handled: the rpc row that opened it
@@ -367,11 +367,11 @@ struct cpu_tables {
     // tables a query walk has to ask "what did task T do here" of. A sorted
     // array rather than a hash map because it is built once, read many times,
     // and equal_range over it is two cache lines.
-    std::vector<std::pair<uint64_t, uint32_t>> switch_by_task;
-    std::vector<std::pair<uint64_t, uint32_t>> rpc_by_task;
+    std::vector<std::pair<uint32_t, uint32_t>> switch_by_task;
+    std::vector<std::pair<uint32_t, uint32_t>> rpc_by_task;
 
     // Built by pass_query_rows: which query each task on this cpu belongs to.
-    std::unordered_map<uint64_t, int32_t> query_of_task;
+    std::unordered_map<uint32_t, int32_t> query_of_task;
 
     // Built by pass_render: this reactor's whole trace, drawn. One log line
     // per timeline entry, in this table's own arena, and every rectangle of
@@ -468,7 +468,7 @@ struct connection_row {
 // the same node, and re-minted on the far side of every RPC.
 struct part_row {
     uint32_t cpu = 0;
-    uint64_t task = 0;
+    uint32_t task = 0;
     int32_t query = none;
 };
 
@@ -476,7 +476,7 @@ struct query_row {
     int64_t t0 = 0;  // the cql_request record: when the frame arrived
     int64_t t1 = 0;  // the last record of any of its parts
     uint32_t root_cpu = 0;
-    uint64_t root_task = 0;
+    uint32_t root_task = 0;
     int32_t statement = none;  // trace::statements, if a prepared query ran
     uint32_t parts_begin = 0;  // [begin, end) into trace::parts
     uint32_t parts_end = 0;
@@ -505,6 +505,11 @@ struct trace_data {
     std::vector<query_row> queries;
     std::vector<part_row> parts;
     std::vector<uint32_t> by_latency;
+    // Built by pass_prefix_sums: cumulative latency and cpu time in
+    // by_latency order. The extra element at the front makes a selection's
+    // aggregate a pair of range queries.
+    std::vector<double> latency_prefix;
+    std::vector<double> cpu_prefix;
 
     std::vector<std::vector<clock_sync_row>> syncs;  // parallel to nodes
 
@@ -869,27 +874,26 @@ struct decode_sink {
         return it->second;
     }
 
-    void switch_to(uint8_t cause, uint64_t prev, uint64_t task,
+    void switch_to(uint8_t cause, uint32_t task,
                    const viewer::event_meta& m, uint32_t loc) const {
         switch_row r;
         r.task = task;
-        r.prev = prev;
         r.cause = cause;
         r.loc = loc;
         push(tab_switch, t.switches, r, m);
     }
 
     void operator()(const viewer::events::run_task& e, const viewer::event_meta& m) const {
-        switch_to(sw_run_task, e.prev, e.task, m, intern(e.at));
+        switch_to(sw_run_task, e.task, m, intern(e.at));
     }
     void operator()(const viewer::events::cql_request& e, const viewer::event_meta& m) const {
-        switch_to(sw_cql_request, e.prev, e.task, m, 0);
+        switch_to(sw_cql_request, e.task, m, 0);
     }
     void operator()(const viewer::events::semaphore_execute& e, const viewer::event_meta& m) const {
-        switch_to(sw_semaphore, e.prev, e.task, m, 0);
+        switch_to(sw_semaphore, e.task, m, 0);
     }
     void operator()(const viewer::events::execution_stage& e, const viewer::event_meta& m) const {
-        switch_to(sw_execution_stage, e.prev, e.task, m, 0);
+        switch_to(sw_execution_stage, e.task, m, 0);
     }
     // An inbound request opens a task chain on this shard, which is a switch in
     // exactly the sense the four above are -- and it is also the far end of a
@@ -911,7 +915,6 @@ struct decode_sink {
 
         switch_row s;
         s.task = e.task;
-        s.prev = e.prev;
         s.cause = sw_rpc_handled;
         s.rpc = rpc_index;
         push(tab_switch, t.switches, s, m);
@@ -1002,7 +1005,7 @@ struct decode_sink {
                    e.peer_boot_lsb, e.peer_shard, m);
     }
 
-    void message(uint8_t kind, uint64_t conn, uint64_t seq, int64_t msg_id, uint64_t task,
+    void message(uint8_t kind, uint64_t conn, uint64_t seq, int64_t msg_id, uint32_t task,
                  const viewer::event_meta& m) const {
         rpc_row r;
         r.task = task;
@@ -1361,9 +1364,9 @@ void pass_index(trace_data& d) {
 // The rows of `index` whose task is `task`, as a [first, last) pair of
 // iterators. The values are row numbers into whichever table the index was
 // built from.
-inline auto rows_of_task(const std::vector<std::pair<uint64_t, uint32_t>>& index, uint64_t task) {
+inline auto rows_of_task(const std::vector<std::pair<uint32_t, uint32_t>>& index, uint32_t task) {
     return std::ranges::equal_range(index, task, {},
-                                    &std::pair<uint64_t, uint32_t>::first);
+                                    &std::pair<uint32_t, uint32_t>::first);
 }
 
 // Which task the reactor was running at `ts`: the switch at or before it. The
@@ -1870,15 +1873,15 @@ void pass_rpc_pair(trace_data& d) {
 // shared task -- were there one -- merging two requests into one.
 
 void pass_queries(trace_data& d) {
-    std::map<std::pair<uint32_t, uint64_t>, int32_t> claimed;  // (cpu, task) -> query
-    std::vector<std::pair<uint32_t, uint64_t>> frontier;
+    std::map<std::pair<uint32_t, uint32_t>, int32_t> claimed;  // (cpu, task) -> query
+    std::vector<std::pair<uint32_t, uint32_t>> frontier;
 
     // Seeds, in time order across the whole trace, so that query indices read
     // in the order the requests arrived.
     struct seed {
         int64_t ts;
         uint32_t cpu;
-        uint64_t task;
+        uint32_t task;
     };
     std::vector<seed> seeds;
     for (uint32_t cpu = 0; cpu < d.tables.size(); ++cpu) {
@@ -1904,7 +1907,7 @@ void pass_queries(trace_data& d) {
         d.queries.push_back(row);
 
         frontier.clear();
-        const auto reach = [&](uint32_t cpu, uint64_t task) {
+        const auto reach = [&](uint32_t cpu, uint32_t task) {
             if (task == 0) {
                 return;
             }
@@ -2089,7 +2092,25 @@ void pass_cost(trace_data& d) {
 }
 
 // ============================================================================
-//  18. pass_query_statement -- prep_runs + queries -> query.statement
+//  18. pass_prefix_sums -- by_latency + query costs -> prefix sums
+// ============================================================================
+//
+// The histogram's selection is a contiguous range in by_latency. Keep the
+// two quantities it aggregates in that same order, so changing the selection
+// only needs two prefix-sum range queries rather than a walk over its queries.
+
+void pass_prefix_sums(trace_data& d) {
+    d.latency_prefix.assign(d.by_latency.size() + 1, 0.0);
+    d.cpu_prefix.assign(d.by_latency.size() + 1, 0.0);
+    for (size_t i = 0; i < d.by_latency.size(); ++i) {
+        const query_row& q = d.queries[d.by_latency[i]];
+        d.latency_prefix[i + 1] = d.latency_prefix[i] + d.seconds(q.t1 - q.t0);
+        d.cpu_prefix[i + 1] = d.cpu_prefix[i] + d.seconds(q.cpu_ticks);
+    }
+}
+
+// ============================================================================
+//  19. pass_query_statement -- prep_runs + queries -> query.statement
 // ============================================================================
 
 void pass_query_statement(trace_data& d) {
@@ -2103,7 +2124,7 @@ void pass_query_statement(trace_data& d) {
 }
 
 // ============================================================================
-//  19. rendering a record as text
+//  20. rendering a record as text
 // ============================================================================
 //
 // One line per record, for the log. Everything a record is joined to -- the
@@ -2135,8 +2156,8 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
     switch (table) {
         case tab_switch: {
             const switch_row& r = t.switches[index];
-            std::string line = fmt::format("{:<7} task {:016x} from {:016x}",
-                                           switch_cause_name(r.cause), r.task, r.prev);
+            std::string line = fmt::format("{:<7} task {:08x}",
+                                           switch_cause_name(r.cause), r.task);
             if (r.group >= 0) {
                 fmt::format_to(std::back_inserter(line), "  sg {}", r.group);
             }
@@ -2154,7 +2175,7 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
         }
         case tab_io_begin: {
             const io_begin_row& r = t.io_begins[index];
-            std::string line = fmt::format("{:<7} task {:016x} io {:016x}", "IO-BEGIN", r.task, r.io);
+            std::string line = fmt::format("{:<7} task {:08x} io {:016x}", "IO-BEGIN", r.task, r.io);
             if (r.end >= 0) {
                 fmt::format_to(std::back_inserter(line), "  {:.3f} ms",
                                d.seconds(t.io_ends[r.end].ts - r.ts) * 1e3);
@@ -2165,7 +2186,7 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
         }
         case tab_io_end: {
             const io_end_row& r = t.io_ends[index];
-            return fmt::format("{:<7} task {:016x} io {:016x}", "IO-END", r.task, r.io);
+            return fmt::format("{:<7} task {:08x} io {:016x}", "IO-END", r.task, r.io);
         }
         case tab_prep_run: {
             const prep_run_row& r = t.prep_runs[index];
@@ -2193,11 +2214,11 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
         }
         case tab_rpc: {
             const rpc_row& r = t.rpcs[index];
-            std::string line = fmt::format("{:<7} conn {} seq {} task {:016x}",
+            std::string line = fmt::format("{:<7} conn {} seq {} task {:08x}",
                                            rpc_kind_name(r.kind), r.connection, r.sequence, r.task);
             if (r.peer_row >= 0) {
                 const rpc_row& far = d.tables[r.peer_cpu].rpcs[r.peer_row];
-                fmt::format_to(std::back_inserter(line), "  <-> {} task {:016x} ({:+.3f} ms)",
+                fmt::format_to(std::back_inserter(line), "  <-> {} task {:08x} ({:+.3f} ms)",
                                d.cpus[r.peer_cpu].label, far.task,
                                d.seconds(far.ts - r.ts) * 1e3);
             }
@@ -2210,7 +2231,7 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
 
 // The task a row is about, whichever table it is in. Used by the log's
 // highlight and by the plot's tooltip.
-uint64_t task_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t index) {
+uint32_t task_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t index) {
     const cpu_tables& t = d.tables[cpu];
     switch (table) {
         case tab_switch: return t.switches[index].task;
@@ -2241,7 +2262,7 @@ int32_t query_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
 }
 
 // ============================================================================
-//  20. pass_render -- the event tables -> the text and the rectangles
+//  21. pass_render -- the event tables -> the text and the rectangles
 // ============================================================================
 //
 // The last preprocessing pass, and the one the UI draws straight out of. Every
@@ -2407,7 +2428,7 @@ void pass_render(trace_data& d) {
 }
 
 // ============================================================================
-//  21. pass_lod -- the same rectangles, at coarser and coarser scales
+//  22. pass_lod -- the same rectangles, at coarser and coarser scales
 // ============================================================================
 //
 // reads: .slices (of every cpu)   ->  writes: .lods (of every cpu)
@@ -2585,7 +2606,7 @@ void pass_lod(trace_data& d) {
 }
 
 // ============================================================================
-//  22. the view -- which part of all that is on screen
+//  23. the view -- which part of all that is on screen
 // ============================================================================
 //
 // What is left once everything is rendered in advance: a selection, and where
@@ -2959,7 +2980,7 @@ void apply_keys(view& v) {
 }
 
 // ============================================================================
-//  23. the latency histogram
+//  24. the latency histogram
 // ============================================================================
 //
 // The picture the whole tool hangs off. x is 1/(1-quantile) on a log axis, so
@@ -2995,16 +3016,11 @@ histogram build_histogram(const trace_data& d) {
     return h;
 }
 
-// The aggregate over a range of quantiles: what the DragRect selects. Two
-// numbers per query, so two distributions, and they are drawn as CDFs over
-// exactly the queries between the two quantile bounds.
+// The aggregate over a range of quantiles: what the DragRect selects.
 struct aggregate {
     size_t count = 0;
     double latency_mean = 0;
     double cpu_mean = 0;
-    std::vector<double> fraction;  // 0..1, the x of the two CDFs
-    std::vector<double> latency;   // seconds
-    std::vector<double> cpu;
 };
 
 aggregate build_aggregate(const trace_data& d, size_t from, size_t to) {
@@ -3012,37 +3028,23 @@ aggregate build_aggregate(const trace_data& d, size_t from, size_t to) {
     if (from > to) {
         std::swap(from, to);
     }
-    to = std::min(to + 1, d.by_latency.size());
-    a.count = to - from;
-    if (a.count == 0) {
+    if (d.by_latency.empty()) {
         return a;
     }
-    std::vector<double> cpu;
-    cpu.reserve(a.count);
-    for (size_t i = from; i < to; ++i) {
-        const query_row& q = d.queries[d.by_latency[i]];
-        a.latency_mean += d.seconds(q.t1 - q.t0);
-        cpu.push_back(d.seconds(q.cpu_ticks));
-        a.cpu_mean += cpu.back();
+    from = std::min(from, d.by_latency.size());
+    to = std::min(to, d.by_latency.size() - 1);
+    if (from > to) {
+        return a;
     }
-    a.latency_mean /= double(a.count);
-    a.cpu_mean /= double(a.count);
-    // by_latency is already sorted by latency; cpu time is not.
-    std::ranges::sort(cpu);
-    constexpr int steps = 256;
-    for (int i = 0; i < steps; ++i) {
-        const double f = double(i) / double(steps - 1);
-        const auto at = std::min(size_t(f * double(a.count - 1)), a.count - 1);
-        a.fraction.push_back(f);
-        a.latency.push_back(d.seconds(d.queries[d.by_latency[from + at]].t1 -
-                                      d.queries[d.by_latency[from + at]].t0));
-        a.cpu.push_back(cpu[at]);
-    }
+    const size_t end = to + 1;
+    a.count = end - from;
+    a.latency_mean = (d.latency_prefix[end] - d.latency_prefix[from]) / double(a.count);
+    a.cpu_mean = (d.cpu_prefix[end] - d.cpu_prefix[from]) / double(a.count);
     return a;
 }
 
 // ============================================================================
-//  24. the windows
+//  25. the windows
 // ============================================================================
 
 constexpr ImU32 colour_hover = IM_COL32(255, 255, 255, 70);
@@ -3111,13 +3113,6 @@ void draw_queries_window(const trace_data& d, view& v, const histogram& h, doubl
                 1.0 - 1.0 / std::clamp(rect[2], 1.0, quantile_max));
     ImGui::Text("mean latency %.3f ms, mean cpu time %.3f ms", a.latency_mean * 1e3,
                 a.cpu_mean * 1e3);
-    if (a.count > 0 && ImPlot::BeginPlot("distribution over the selection", ImVec2(-1, 200))) {
-        ImPlot::SetupAxes("fraction of the selection", "seconds",
-                          ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-        ImPlot::PlotLine("latency", a.fraction.data(), a.latency.data(), int(a.fraction.size()));
-        ImPlot::PlotLine("cpu time", a.fraction.data(), a.cpu.data(), int(a.fraction.size()));
-        ImPlot::EndPlot();
-    }
     ImGui::End();
 }
 
@@ -3132,7 +3127,7 @@ void describe_query(const trace_data& d, int32_t query, const char* what) {
         return;
     }
     const query_row& q = d.queries[query];
-    ImGui::Text("query %d, task %016" PRIx64 " on %s", query, q.root_task,
+    ImGui::Text("query %d, task %08" PRIx32 " on %s", query, q.root_task,
                 d.cpus[q.root_cpu].label.c_str());
     ImGui::Text("latency %.3f ms, cpu time %.3f ms", d.seconds(q.t1 - q.t0) * 1e3,
                 d.seconds(q.cpu_ticks) * 1e3);
@@ -3597,7 +3592,7 @@ struct pass_clock {
 }  // namespace
 
 // ============================================================================
-//  25. main
+//  26. main
 // ============================================================================
 
 // The whole of the program, so that main is the one place that has to decide
@@ -3657,6 +3652,7 @@ static int run(int argc, char** argv) {
     timing.run("pass_queries", [&] { pass_queries(d); });
     timing.run("pass_query_rows", [&] { pass_query_rows(d); });
     timing.run("pass_cost", [&] { pass_cost(d); });
+    timing.run("pass_prefix_sums", [&] { pass_prefix_sums(d); });
     timing.run("pass_query_statement", [&] { pass_query_statement(d); });
     timing.run("pass_render", [&] { pass_render(d); });
     // After pass_render, which is where the rectangles it coarsens come from.
@@ -3678,7 +3674,7 @@ static int run(int argc, char** argv) {
         v.pinned.assign(d.cpus.size(), 0);
         follow_selection(d, v);
         const query_row& q = d.queries[v.query()];
-        fmt::print("\nquery {} at quantile {}: task {:016x} on {}, {:.3f} ms, {:.3f} ms of cpu\n",
+        fmt::print("\nquery {} at quantile {}: task {:08x} on {}, {:.3f} ms, {:.3f} ms of cpu\n",
                    v.query(), at, q.root_task, d.cpus[q.root_cpu].label,
                    d.seconds(q.t1 - q.t0) * 1e3, d.seconds(q.cpu_ticks) * 1e3);
         if (q.statement >= 0) {
@@ -3686,7 +3682,7 @@ static int run(int argc, char** argv) {
                        d.text(d.statements[q.statement].text));
         }
         for (uint32_t p = q.parts_begin; p < q.parts_end; ++p) {
-            fmt::print("  part {} task {:016x}\n", d.cpus[d.parts[p].cpu].label,
+            fmt::print("  part {} task {:08x}\n", d.cpus[d.parts[p].cpu].label,
                        d.parts[p].task);
         }
         for (size_t row = 0; row < v.rows.size(); ++row) {

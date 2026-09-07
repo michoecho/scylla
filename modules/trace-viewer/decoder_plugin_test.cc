@@ -250,7 +250,7 @@ TEST_CASE("a tracepoint written in a header is read out of both objects that hav
 TEST_CASE("entries that spell one tracepoint the same way share a reader") {
     const auto entries = [] {
         std::vector<tracepoints::entry> out;
-        out.push_back(make_entry("run_task", "prev:u64,task:u64", 7));
+        out.push_back(make_entry("run_task", "task:u32", 7));
         return out;
     };
     const std::vector<tracepoints::object> twice{make_object("00first0", entries()),
@@ -279,7 +279,7 @@ TEST_CASE("entries that spell one tracepoint the same way share a reader") {
     // Two builds that spell it differently are two shapes and no complaint. The
     // reader each gets fills in whichever fields events.h has.
     std::vector<tracepoints::entry> moved;
-    moved.push_back(make_entry("run_task", "prev:u64,task:u64,at:srcloc", 7));
+    moved.push_back(make_entry("run_task", "task:u32,at:srcloc", 7));
     const std::vector<tracepoints::object> upgrading{make_object("00first0", entries()),
                                                      make_object("00second", std::move(moved))};
     const plan mixed = make_plan(upgrading);
@@ -296,9 +296,9 @@ TEST_CASE("entries that spell one tracepoint the same way share a reader") {
 // this is what checks for them.
 TEST_CASE("a static id names one tracepoint") {
     std::vector<tracepoints::entry> first;
-    first.push_back(make_entry("run_task", "prev:u64,task:u64", 1, /*static_id=*/4));
+    first.push_back(make_entry("run_task", "task:u32", 1, /*static_id=*/4));
     std::vector<tracepoints::entry> second;
-    second.push_back(make_entry("cql_request", "prev:u64,task:u64", 2, /*static_id=*/4));
+    second.push_back(make_entry("cql_request", "task:u32", 2, /*static_id=*/4));
 
     const std::vector<tracepoints::object> clashing{
         make_object("00first0", std::move(first)),
@@ -311,7 +311,7 @@ TEST_CASE("a static id names one tracepoint") {
     // id the header gave it.
     const auto shared_entry = [] {
         std::vector<tracepoints::entry> out;
-        out.push_back(make_entry("run_task", "prev:u64,task:u64", 1, /*static_id=*/4));
+        out.push_back(make_entry("run_task", "task:u32", 1, /*static_id=*/4));
         return out;
     };
     const std::vector<tracepoints::object> agreeing{make_object("00first0", shared_entry()),
@@ -332,7 +332,7 @@ TEST_CASE("a static id names one tracepoint") {
 // than a bug in a pass.
 TEST_CASE("what the tables and events.h disagree about is said once, by name") {
     std::vector<tracepoints::entry> entries;
-    entries.push_back(make_entry("run_task", "prev:u64,task:u64", 1));
+    entries.push_back(make_entry("run_task", "task:u32", 1));
     entries.push_back(make_entry("cache_hit", "key:str,age:u16", 2));
     const std::vector<tracepoints::object> objects{
         make_object("00fake00", std::move(entries))};
@@ -358,9 +358,9 @@ TEST_CASE("what the tables and events.h disagree about is said once, by name") {
 // is decided here, per id, rather than by the loop that walks the records.
 TEST_CASE("the timestamp is read as the front of a body, by the id") {
     std::vector<tracepoints::entry> entries;
-    entries.push_back(make_entry("run_task", "prev:u64,task:u64", 1));
+    entries.push_back(make_entry("run_task", "task:u32", 1));
     entries.push_back(
-        make_entry("cql_request", "prev:u64,task:u64", 2, /*static_id=*/0, /*timestamps=*/2));
+        make_entry("cql_request", "task:u32", 2, /*static_id=*/0, /*timestamps=*/2));
     const std::string source =
         source_of({make_object("00fake00", std::move(entries))});
 
@@ -384,7 +384,7 @@ TEST_CASE("the timestamp is read as the front of a body, by the id") {
 // being left out.
 TEST_CASE("a parameter this viewer cannot read stops the records of its tracepoint") {
     std::vector<tracepoints::entry> entries;
-    entries.push_back(make_entry("run_task", "prev:u64,task:u128", 1));
+    entries.push_back(make_entry("run_task", "task:u128", 1));
     const std::string source = source_of({make_object("00fake00", std::move(entries))});
     CHECK(source.find("has a parameter") != std::string::npos);
     CHECK(source.find("u128") != std::string::npos);
@@ -417,7 +417,7 @@ TEST_CASE("the tracer's own tracepoints have to agree across builds") {
 TEST_CASE("tables with no tracer tracepoints in them are refused") {
     tracepoints::object object;
     object.build_id = "00fake00";
-    object.entries.push_back(make_entry("run_task", "prev:u64,task:u64", 1));
+    object.entries.push_back(make_entry("run_task", "task:u32", 1));
     // Named by the tracepoint it wanted: all four are missing here, and the
     // one the message names is whichever was looked for last.
     const std::string why = refusal_of({std::move(object)});
