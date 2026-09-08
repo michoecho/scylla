@@ -198,7 +198,8 @@
           # configure.py's defaults -- are the fast ones.  This also moves the
           # shell from the nixpkgs default clang to the pinned clang 22.
           default = pkgs.mkShell.override {
-            stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = my_packages.clang-optimized; });
+            #stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = my_packages.clang-optimized; });
+            stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = my_packages.clang-stock; });
           } {
             shellHook = ''
               export SCYLLA_WASM_CLANG="${wasmClang}/bin/clang"
