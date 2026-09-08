@@ -3142,6 +3142,14 @@ struct view {
     bool restore_axis = false;
     bool restore_log = false;
 
+    // A record picked in the *log* that the axis is not showing. The log holds
+    // the whole trace and the plot shows a stretch of it, so it is the one
+    // place a record can be picked from off screen -- and a selection nothing
+    // moves to is a selection nobody can see. The zoom is left alone: this
+    // pans to the record and no more. Consumed by the plot, like `refit`.
+    bool bring_into_view = false;
+    double bring_to = 0;  // ms from the start of the trace
+
     // Where the keyboard has moved the timeline to, and whether it moved it
     // this frame. The same shape as `refit`: an instruction the plot consumes
     // and forgets, so that the axis is the user's again the moment the key
@@ -3703,12 +3711,20 @@ void draw_plot_window(const trace_data& d, view& v) {
             // is that the axis need not be on it.
             ImPlot::SetupAxisLimits(ImAxis_X1, v.borrowed_lo, v.borrowed_hi,
                                     ImPlotCond_Always);
+        } else if (v.bring_into_view) {
+            // A record picked in the log that was off the axis: centred, at
+            // the width the axis already had. Panning and not zooming, so that
+            // what the plot shows of the trace stays the size the reader chose.
+            const double width = v.axis_hi - v.axis_lo;
+            ImPlot::SetupAxisLimits(ImAxis_X1, v.bring_to - width * 0.5,
+                                    v.bring_to + width * 0.5, ImPlotCond_Always);
         } else if (v.key_axis) {
             // Where w/a/s/d have moved it to. Last of the three, so that a
             // request picked this frame still wins the axis: a key held down
             // is a continuous thing and picks itself up again next frame.
             ImPlot::SetupAxisLimits(ImAxis_X1, v.key_lo, v.key_hi, ImPlotCond_Always);
         }
+        v.bring_into_view = false;
         v.restore_axis = false;
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, double(v.rows.size()), ImPlotCond_Always);
         ImPlot::PushPlotClipRect();
@@ -3985,10 +4001,45 @@ void draw_plot_window(const trace_data& d, view& v) {
     ImGui::End();
 }
 
+// A row of the log was clicked: that record becomes the picked one, which is
+// the same selection a click on its rectangle in the plot would have made.
+// The two directions are then the same gesture read either way -- point at a
+// bar to find the line, click the line to find the bar.
+//
+// The request comes with it where the record has one, because that is what
+// picking a bar does: the log is full of work the trace could not attribute,
+// and a line that has no request leaves the picked one alone rather than
+// clearing it.
+void pick_log_row(const trace_data& d, view& v, uint32_t cpu, int32_t line) {
+    v.clicked.log_cpu = int32_t(cpu);
+    v.clicked.focus = line;
+    const timeline_row& e = d.tables[cpu].timeline[line];
+    if (const int32_t query = query_of(d, cpu, e.table, e.index); query >= 0) {
+        v.clicked.query = query;
+    }
+    // As a pick off the timeline is: the axis is not sent to the request,
+    // because the reader is looking at something they can already see.
+    v.clicked.from_timeline = true;
+    // What the log has already scrolled to, so that the row just clicked is
+    // not dragged to the middle of the window under the pointer that clicked
+    // it. The reader was looking at it; it stays where they were looking.
+    v.scrolled_cpu = int32_t(cpu);
+    v.scrolled_to = line;
+    // The record itself, though, may be nowhere near the stretch of trace the
+    // plot is showing -- and then the plot is moved to it, keeping the zoom.
+    const double at = d.ms(e.ts - d.origin);
+    if (v.axis_hi > v.axis_lo && (at < v.axis_lo || at > v.axis_hi)) {
+        v.bring_into_view = true;
+        v.bring_to = at;
+    }
+}
+
 // One reactor's whole trace, scrolled to the request. Every line is rendered
 // already, so the clipper draws the handful on screen out of a hundred
 // thousand and the scrollbar reaches the rest of the trace -- what the shard
 // was doing before the request arrived and after it answered is one drag away.
+//
+// A row is a hit target across all four of its columns: see pick_log_row.
 void draw_log_window(const trace_data& d, view& v) {
     ImGui::Begin("Log");
     const int32_t cpu = v.log_cpu();
@@ -4069,7 +4120,20 @@ void draw_log_window(const trace_data& d, view& v) {
                 ImGui::TableSetColumnIndex(0);
                 // Relative to the request, wherever in the trace the row is,
                 // so scrolling away from it reads as a distance from it.
-                ImGui::Text("%+.6f ms", d.ms(e.ts - d.origin) - v.t0);
+                //
+                // The time is also the row's hit target, spanning the columns
+                // beside it: a Selectable is what makes the whole line
+                // clickable and gives it the hover it needs to look clickable.
+                // Never drawn as *selected* -- the row's own background says
+                // which record is picked, and the two highlights on one row
+                // would be one too many.
+                ImGui::PushID(i);
+                if (ImGui::Selectable(
+                        fmt::format("{:+.6f} ms", d.ms(e.ts - d.origin) - v.t0).c_str(), false,
+                        ImGuiSelectableFlags_SpanAllColumns)) {
+                    pick_log_row(d, v, uint32_t(cpu), i);
+                }
+                ImGui::PopID();
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(event_kind_name(d, uint32_t(cpu), e.table, e.index));
                 ImGui::TableSetColumnIndex(2);

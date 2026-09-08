@@ -593,6 +593,15 @@ A **query** is a CQL request, and the tool is four windows around it.
   the request" returns after a scroll. There is no second "full log" window,
   because this is it.
 
+  **Clicking a line picks that record**, anywhere along it, which is the same
+  selection clicking its rectangle on the timeline makes -- the record, and the
+  request it belongs to where it has one, which is what recolours the plot. So
+  the link runs both ways: point at a bar to find the line, click the line to
+  find the bar. Where the plot's axis is nowhere near the record -- the log
+  holds the whole trace and the plot shows a stretch of it, so this is the one
+  place a record can be picked from off screen -- the axis pans to it, keeping
+  the zoom.
+
 - **Selected query** is both selections at once, the picked one over the one
   under the pointer -- because comparing two requests is the whole method, and
   the second is gone the moment the pointer moves.

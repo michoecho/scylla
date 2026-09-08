@@ -469,6 +469,19 @@ is a *highlight* on the plot already there: rows and axis stay, only colours
 change, because moving the plot would take the bar out from under the pointer.
 `selection::from_timeline` is what tells them apart.
 
+**The log picks records too.** A click on a line of the log is the same
+selection a click on its rectangle would have made: `pick_log_row` writes what
+the plot's own click writes, `from_timeline` included, so the axis is not sent
+to the request. It also writes `scrolled_cpu`/`scrolled_to`, because otherwise
+the next frame reads the new focus as a move to follow and drags the line the
+reader just clicked into the middle of the window.
+
+The log is the one place a record can be picked from *off screen*, though,
+because it holds the whole trace while the plot shows a stretch of it. So
+`view::bring_into_view` pans the axis to a record outside it, keeping the zoom,
+and is consumed by the plot like `refit` -- ordered after `restore_axis` and
+before the keys.
+
 **A preview borrows the view and gives it back.** The pan and the zoom a
 preview displaces are the *user's*, not the selection's, so `follow_selection`
 keeps the axis and the log's scroll as the last frame actually drew them
@@ -493,7 +506,8 @@ from `view::axis_hovered/axis_mouse` -- the plot's own hover test and mouse
 position, kept from the frame that drew them for the same reason the axis is --
 and on the centre of the view when the pointer is elsewhere. It is ordered last of the three
 things that can seize the axis (`refit`, then `restore_axis`, then the keys),
-so a request picked this frame still wins and a held key resumes next frame.
+so a request picked this frame still wins and a held key resumes next frame
+(four now, with `bring_into_view` between the restore and the keys).
 
 Guard it on `io.WantTextInput` and **not** `io.WantCaptureKeyboard`: with
 `NavEnableKeyboard` set, which this program sets, the latter is true whenever
