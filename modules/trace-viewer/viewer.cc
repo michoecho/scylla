@@ -2343,7 +2343,7 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
         case tab_tq_run: {
             const tq_run_row& r = t.tq_runs[index];
             if (r.kind == tq_begin) {
-                return fmt::format("{:<7} scheduling group {}", "TQ+", r.group);
+                return fmt::format("{:<7} sg {}", "TQ+", r.group);
             }
             return fmt::format("{:<7}", "TQ-");
         }
@@ -2433,7 +2433,7 @@ std::string format_event_details(const trace_data& d, uint32_t cpu, uint16_t tab
             const switch_row& r = t.switches[index];
             std::string details;
             if (r.group >= 0) {
-                details = fmt::format("scheduling group {}", r.group);
+                details = fmt::format("sg {}", r.group);
             }
             if (const std::string at = format_location(d, r.loc); !at.empty()) {
                 if (!details.empty()) {
@@ -2445,7 +2445,7 @@ std::string format_event_details(const trace_data& d, uint32_t cpu, uint16_t tab
         }
         case tab_tq_run: {
             const tq_run_row& r = t.tq_runs[index];
-            return r.kind == tq_begin ? fmt::format("scheduling group {}", r.group) : "";
+            return r.kind == tq_begin ? fmt::format("sg {}", r.group) : "";
         }
         case tab_io_begin: {
             const io_begin_row& r = t.io_begins[index];
