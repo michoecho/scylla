@@ -6,7 +6,8 @@ target_sources(scylla_tracing
     tracing.cc
     trace_keyspace_helper.cc
     trace_state.cc
-    traced_file.cc)
+    traced_file.cc
+    tracer.cc)
 target_include_directories(scylla_tracing
   PUBLIC
     ${CMAKE_SOURCE_DIR})
@@ -20,6 +21,11 @@ target_link_libraries(scylla_tracing
 if (Scylla_USE_PRECOMPILED_HEADER_USE)
   target_precompile_headers(scylla_tracing REUSE_FROM scylla-precompiled-header)
 endif()
+
+# The binary tracepoints of tracer.cc are call sites, not the tracer: that lives
+# in libseastar.so, and Seastar::seastar carries the include directories for it.
+# -w because the tracer's headers are not written to Scylla's warning set.
+set_source_files_properties (tracer.cc PROPERTIES COMPILE_OPTIONS "-w")
 
 add_whole_archive(tracing scylla_tracing)
 

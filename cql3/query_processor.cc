@@ -19,6 +19,8 @@
 
 #include <span>
 
+#include <tracing/tracer.hh>
+
 #include "service/storage_proxy.hh"
 #include "service/migration_manager.hh"
 #include "service/mapreduce_service.hh"

@@ -10,7 +10,7 @@ set(CMAKE_C_COMPILE_OPTIONS_COLOR_DIAGNOSTICS "")
 
 # Frame pointers everywhere, for the stack sampler: the kernel walks the user
 # stack by rbp on every sample -- see
-# seastar/include/seastar/core/scylla_stacktrace_sampler.hh -- and a frame that
+# seastar/include/seastar/core/stacktrace_sampler.hh -- and a frame that
 # omitted its pointer ends the walk. Seastar sets the same flag in its own
 # CMakeLists.txt, because in a multi-config build it is configured as a
 # separate project and does not inherit this.
@@ -40,9 +40,11 @@ endif(DEFINED CMAKE_BUILD_TYPE)
 
 option(Scylla_ENABLE_LTO "Turn on link-time optimization for the 'release' mode." ON)
 
-# The cpp_template playground's binary tracepoints. Compiled into libseastar.so
-# (see seastar/CMakeLists.txt); Scylla only needs the headers, for the call
-# sites in transport/server.cc and the snapshot API in api/system.cc.
+# The cpp_template playground's binary tracepoints. The tracer itself is
+# compiled into libseastar.so (see seastar/CMakeLists.txt); Scylla needs the
+# headers because its own tracepoints -- the CQL, semaphore and prepared
+# statement events of tracing/tracer.cc -- are call sites in the executable,
+# registering a tracepoint table of their own beside Seastar's.
 include_directories(
     ${CMAKE_SOURCE_DIR}
     /home/michal/projects/cpp_template/modules/tracer/include
