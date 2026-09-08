@@ -144,6 +144,16 @@ statically, so a `std::runtime_error` thrown in a plugin would be compared
 against a different `std::type_info` and go uncaught. `trace_plugin_decode`
 catches everything and returns a message in a buffer.
 
+**6. `trace_plugin_decode` is reentrant.** `pass_decode` runs a thread per
+shard, so several decodes are in the plugin at once. What they share is the
+`dso_directory` behind its static map -- one per `dso_root`, so that an object
+is read and relocated once rather than once per file -- and that class locks
+the two caches it builds on demand. Nothing else in a decode is shared: the
+mappings, the streams and the timestamps are all per call. A decode looks an
+object up when its metadata stream *maps* it, not per record, so the lock is
+taken a handful of times per file. The sink is the viewer's problem; see
+`decode_shared` in `viewer.cc`.
+
 ---
 
 ## What it costs

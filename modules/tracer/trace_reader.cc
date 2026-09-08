@@ -283,16 +283,12 @@ std::vector<event> trace_reader::decode(std::span<const std::byte> trace,
                 found = &object;
             }
         }
-        // The build ID is copied out of the trace and kept, because a mapping
-        // outlives the record that made it and the string_view forms here point
-        // into the buffer either way.
-        mappings.push_back({value_of(fields, "table_address"), value_of(fields, "base_address"),
-                            value_of(fields, "mapping_size"), found, {}});
-        mappings.back().build_id = found != nullptr ? found->build_id : std::string_view{};
-        std::sort(mappings.begin(), mappings.end(),
-                  [](const trace::detail::mapping& a, const trace::detail::mapping& b) {
-                      return a.table < b.table;
-                  });
+        // The build ID the mapping keeps is the descriptor's, not the one read
+        // out of this record: a mapping outlives the record that made it, and
+        // the string_view forms here point into the buffer.
+        where.add(value_of(fields, "table_address"), value_of(fields, "base_address"),
+                  value_of(fields, "mapping_size"), found,
+                  found != nullptr ? found->build_id : std::string_view{});
     };
     const auto unload = [&](const std::vector<field>& fields) {
         const std::uint64_t base = value_of(fields, "base_address");

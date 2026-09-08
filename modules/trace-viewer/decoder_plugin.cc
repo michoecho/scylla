@@ -705,21 +705,17 @@ void decode(std::span<const std::byte> trace, void* sink, trace::dso_directory& 
     trace::detail::locator where(dsos);
     std::vector<trace::detail::mapping>& mappings = where.mappings;
 
-    const auto load = [&mappings](const object_loaded& event) {
+    const auto load = [&where](const object_loaded& event) {
         const trace::object_descriptor* found = nullptr;
         for (const trace::object_descriptor& object : objects) {
             if (object.build_id == event.build_id) {
                 found = &object;
             }
         }
-        mappings.push_back({event.table_address, event.base_address, event.mapping_size, found,
-                            event.build_id});
-        // Sorted so that "the object a tracepoint address is in" is a binary
-        // search for the greatest table address not above it.
-        std::sort(mappings.begin(), mappings.end(),
-                  [](const trace::detail::mapping& a, const trace::detail::mapping& b) {
-                      return a.table < b.table;
-                  });
+        // Which reads the object out of the directory once, here, rather than
+        // once per location resolved against it.
+        where.add(event.table_address, event.base_address, event.mapping_size, found,
+                  event.build_id);
     };
 
     // By base address, which is the one thing that is unique per load: two

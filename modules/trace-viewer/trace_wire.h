@@ -40,6 +40,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -637,6 +638,12 @@ struct section {
 // whole file is read rather than mapped: a decode reads a handful of scattered
 // words out of each object, and a lifetime that ends when this object does is
 // worth more here than the pages saved.
+//
+// One of these is shared by decodes running at once -- the viewer decodes a
+// snapshot's files a thread apiece -- so the two lazy caches are locked. Only
+// the lookup is: nothing here is ever erased or overwritten, so the bytes and
+// the relocations a caller was handed stay put while other threads add their
+// own objects beside them.
 class dso_directory {
 public:
     explicit dso_directory(std::string root) : root_(std::move(root)) {}
@@ -652,6 +659,7 @@ public:
     // Misses are remembered too: a trace holds many records from one object, and
     // a missing object should be one failed open rather than thousands.
     [[nodiscard]] std::span<const std::byte> object(const std::string& build_id) {
+        const std::lock_guard<std::mutex> held(mutex_);
         const auto found = files_.find(build_id);
         if (found != files_.end()) {
             return found->second.bytes();
@@ -697,16 +705,20 @@ public:
     // so this is built on first use and kept.
     [[nodiscard]] const std::vector<std::pair<std::uint64_t, std::uint64_t>>& relocations(
         const std::string& build_id) {
+        // Outside the lock, because object() takes it as well and reading the
+        // file is the expensive half of this either way.
+        const std::span<const std::byte> image = object(build_id);
+        const std::lock_guard<std::mutex> held(mutex_);
         const auto found = relocations_.find(build_id);
         if (found != relocations_.end()) {
             return found->second;
         }
-        return relocations_.emplace(build_id, detail::pointer_relocations(object(build_id)))
-            .first->second;
+        return relocations_.emplace(build_id, detail::pointer_relocations(image)).first->second;
     }
 
 private:
     std::string root_;
+    std::mutex mutex_;  // files_ and relocations_, which are built on demand
     std::map<std::string, detail::mapped_file, std::less<>> files_;
     std::map<std::string, std::vector<std::pair<std::uint64_t, std::uint64_t>>, std::less<>>
         relocations_;
@@ -732,6 +744,12 @@ struct mapping {
     std::uint64_t size;   // how far past the base it reaches
     const object_descriptor* object;
     std::string_view build_id;
+    // What resolving a location in this object needs, looked up in the
+    // directory when the mapping is made rather than per record: a trace holds
+    // a location per record and a handful of load events. Empty and null for
+    // an object the directory has not got. See locator::add.
+    std::span<const std::byte> image;
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>>* fixups = nullptr;
 };
 
 // The mappings a record is read against, and the objects a location is read out
@@ -743,6 +761,24 @@ public:
     explicit locator(dso_directory& dsos) : dsos_(&dsos) {}
 
     std::vector<mapping> mappings;  // sorted by table address
+
+    // An object was mapped: the one place a mapping is made, because it is
+    // where the object's bytes and relocations are fetched out of the
+    // directory. Kept sorted so that "the object a tracepoint address is in"
+    // is a binary search for the greatest table address not above it.
+    void add(std::uint64_t table, std::uint64_t base, std::uint64_t size,
+             const object_descriptor* object, std::string_view build_id) {
+        const std::string id(build_id);
+        const std::span<const std::byte> image = dsos_->object(id);
+        // A mapping with no bytes behind it is still kept -- it is what stops
+        // that object's records being attributed to the object below it -- and
+        // there is nothing to relocate against.
+        const std::vector<std::pair<std::uint64_t, std::uint64_t>>* fixups =
+            image.empty() ? nullptr : &dsos_->relocations(id);
+        mappings.push_back({table, base, size, object, build_id, image, fixups});
+        std::sort(mappings.begin(), mappings.end(),
+                  [](const mapping& a, const mapping& b) { return a.table < b.table; });
+    }
 
     // Fill in a location from the object it points into. Silent about failure
     // by design: a location whose object is not in the directory, or which was
@@ -759,7 +795,7 @@ public:
             }
             out.object = std::string(m.build_id);
 
-            const std::span<const std::byte> image = dsos_->object(out.object);
+            const std::span<const std::byte> image = m.image;
             if (image.empty()) {
                 return;  // the object is named, and not in the directory
             }
@@ -779,10 +815,9 @@ public:
             std::memcpy(&function_at, entry + 8, sizeof(function_at));
             // In a shared object those two are zero in the file and the value is
             // in .rela.dyn; in a non-PIE executable they are already right.
-            if (file_at == 0 || function_at == 0) {
-                const auto& fixups = dsos_->relocations(out.object);
-                file_at = relocated(fixups, entry_at, file_at);
-                function_at = relocated(fixups, entry_at + 8, function_at);
+            if ((file_at == 0 || function_at == 0) && m.fixups != nullptr) {
+                file_at = relocated(*m.fixups, entry_at, file_at);
+                function_at = relocated(*m.fixups, entry_at + 8, function_at);
             }
             std::memcpy(&out.line, entry + 16, sizeof(out.line));
             std::memcpy(&out.column, entry + 20, sizeof(out.column));

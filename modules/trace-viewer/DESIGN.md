@@ -302,7 +302,7 @@ In the order `run()` calls them. The middle column is the whole contract.
 |---|---|---|
 | 1 | `pass_gather` | argv → `files`, `nodes`, `cpus` |
 | 1b | `pass_decoder` | `dsos/` → one compiled decoder (no table) |
-| 2 | `pass_decode` | `files` + the decoder → every event table, `syncs`, `locations` |
+| 2 | `pass_decode` | `files` + the decoder → every event table, `syncs`, `locations`. A thread per shard |
 | 3 | `pass_order` | event tables → the same, in timestamp order |
 | 4 | `pass_retime` | `syncs` → every `ts`, in node 0's clock |
 | 5 | `pass_order` | again: retiming is monotone only if the clocks are |
@@ -343,6 +343,22 @@ sorted. That merge is what the old `std::ranges::sort` was really doing, at
 340 ms per pass over eleven million rectangles. `pass_index` and `pass_lod`
 (~550 ms each) are per-reactor in the same way and are what is left to spread
 out; `in_parallel` is the helper for it.
+
+**`pass_decode` is a thread per shard**, which is the same idea one pass
+earlier. A shard's tables are written by its own decode and by nothing else,
+and its files are read one after another on that thread, because a level's
+records are appended after the level before it and `interpolate_untimed` reads
+back the run the file before it left. What the shards do share is
+`decode_shared`: the string arena, the interned `locations`, and their node's
+`syncs`, behind one lock. That lock is taken per prepared statement, per
+connection and per clock sync -- thousands of records against millions -- and
+once per source location a shard has not seen before, each sink keeping a map
+of the addresses it has already asked about. The decoder plugin is shared too,
+and is reentrant; `DECODING.md` says on what terms. On `latte-run-task32`
+(three nodes of two shards, thirteen million events) the pass went 2400 ms to
+720 ms, with the headless dump identical record for record. The lines each
+file prints are collected and printed in file order after the join, since a
+dozen threads writing to stdout would interleave them.
 
 A
 fourth was added with `pass_io_stack`: it must run before `pass_lod`, because

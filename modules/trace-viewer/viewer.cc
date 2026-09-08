@@ -55,7 +55,8 @@
 //
 //   pass_gather       argv                     -> files, nodes, cpus
 //   pass_decode       files                    -> every event table, syncs,
-//                                                 locations. Records that carry
+//                                                 locations. A thread per
+//                                                 shard. Records that carry
 //                                                 no timestamp are given one
 //                                                 here; see interpolate_untimed
 //   pass_order        event tables             -> the same, in timestamp order
@@ -111,12 +112,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -135,7 +138,7 @@
 namespace {
 
 // ============================================================================
-//  1. the arena
+//  1. the arena, and the lanes
 // ============================================================================
 //
 // Every string in every table is a `str`: an offset and a length into one
@@ -166,6 +169,41 @@ struct arena {
         return {bytes.data() + s.off, s.len};
     }
 };
+
+// --- the lanes ---------------------------------------------------------------
+
+// Runs `body(i)` for every i in [0, n), on as many lanes as the machine has
+// cores, each taking the next i rather than a fixed share -- neither a
+// shard's files nor the chunks of a reactor's timeline cost the same, and a
+// static split would leave every lane waiting for the slowest. Sequential when
+// there is one item, so a small trace pays nothing for the machinery.
+//
+// `body` is called from another thread: what it writes has to be its own. The
+// two passes that use it -- pass_decode over the shards, pass_render over the
+// chunks -- both hand each i a piece of the tables nothing else touches.
+template <typename F>
+void in_parallel(size_t n, F&& body) {
+    const auto lanes = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
+    if (lanes <= 1) {
+        for (size_t i = 0; i < n; ++i) {
+            body(i);
+        }
+        return;
+    }
+    std::atomic<size_t> next = 0;
+    std::vector<std::thread> workers;
+    workers.reserve(lanes);
+    for (size_t lane = 0; lane < lanes; ++lane) {
+        workers.emplace_back([&] {
+            for (size_t i = next++; i < n; i = next++) {
+                body(i);
+            }
+        });
+    }
+    for (std::thread& w : workers) {
+        w.join();
+    }
+}
 
 // ============================================================================
 //  2. the rows
@@ -846,13 +884,42 @@ void pass_gather(trace_data& d, int argc, char** argv) {
 // dropped by the plugin and never arrives here. A field events.h wants and a
 // build has not got arrives at its default, and pass_decoder has said so by
 // name.
+//
+// A shard's files are decoded on a thread of their own -- see pass_decode --
+// so a sink writes to its own cpu's tables and to nothing else another sink
+// can see, bar the three things below that belong to the whole trace.
+
+// The arena, the locations and the nodes' syncs: what a decode writes that is
+// not its cpu's. One lock over all three, held for a prepared statement, a
+// connection, a clock sync -- thousands of records rather than millions -- and
+// for the first sighting of a source location, which is where the per-sink
+// cache beside it earns its keep.
+struct decode_shared {
+    std::mutex mutex;
+    std::unordered_map<uint64_t, uint32_t> interned;  // address -> locations row
+};
 
 struct decode_sink {
     trace_data& d;
     cpu_tables& t;
     uint32_t cpu;
     uint32_t node;
+    decode_shared& shared;
+    // This shard's answers to intern(), so that the thousands of records off
+    // one call site cost one lock between them and not one apiece.
     std::unordered_map<uint64_t, uint32_t>& interned;
+
+    // The arena is the trace's, so a string goes in under the lock. Called for
+    // the statement and connection records only: nothing on the hot path
+    // stores a string.
+    str put(std::string_view text) const {
+        const std::lock_guard<std::mutex> held(shared.mutex);
+        return d.strings.put(text);
+    }
+    str put(std::span<const std::byte> raw) const {
+        const std::lock_guard<std::mutex> held(shared.mutex);
+        return d.strings.put(raw);
+    }
 
     // Append a row, and the timeline entry that points at it. Every event in
     // the trace goes through here, which is what makes the timeline complete
@@ -878,7 +945,12 @@ struct decode_sink {
         if (loc.address == 0 && !loc.resolved) {
             return 0;
         }
-        const auto [it, fresh] = interned.emplace(loc.address, uint32_t(d.locations.size()));
+        if (const auto seen = interned.find(loc.address); seen != interned.end()) {
+            return seen->second;
+        }
+        const std::lock_guard<std::mutex> held(shared.mutex);
+        const auto [it, fresh] =
+            shared.interned.emplace(loc.address, uint32_t(d.locations.size()));
         if (fresh) {
             std::string_view file = loc.file;
             if (const auto slash = file.rfind('/'); slash != std::string_view::npos) {
@@ -887,6 +959,7 @@ struct decode_sink {
             d.locations.push_back({loc.address, d.strings.put(file),
                                    d.strings.put(loc.function), loc.line, loc.resolved});
         }
+        interned.emplace(loc.address, it->second);
         return it->second;
     }
 
@@ -967,16 +1040,16 @@ struct decode_sink {
     void operator()(const viewer::events::prepared_query_run& e,
                     const viewer::event_meta& m) const {
         prep_run_row r;
-        r.id = d.strings.put(e.id);
+        r.id = put(e.id);
         push(tab_prep_run, t.prep_runs, r, m);
     }
     void delta(uint8_t kind, std::string_view keyspace, std::string_view statement,
                std::span<const std::byte> id, const viewer::event_meta& m) const {
         prep_delta_row r;
         r.kind = kind;
-        r.id = d.strings.put(id);
-        r.keyspace = d.strings.put(keyspace);
-        r.statement = d.strings.put(statement);
+        r.id = put(id);
+        r.keyspace = put(keyspace);
+        r.statement = put(statement);
         push(tab_prep_delta, t.prep_deltas, r, m);
     }
     void operator()(const viewer::events::prepared_statement_added& e,
@@ -998,8 +1071,8 @@ struct decode_sink {
         conn_row r;
         r.kind = kind;
         r.connection = id;
-        r.local = d.strings.put(local);
-        r.remote = d.strings.put(remote);
+        r.local = put(local);
+        r.remote = put(remote);
         r.peer_boot_msb = msb;
         r.peer_boot_lsb = lsb;
         r.peer_shard = peer_shard;
@@ -1052,6 +1125,10 @@ struct decode_sink {
 
     // Not an event of the program's own: it is how pass_retime dates the rest.
     void operator()(const viewer::events::clock_sync& e, const viewer::event_meta& m) const {
+        // A node's syncs are one list for all of its shards, so this is the
+        // one per-record write that two sinks can make at once. There are a
+        // few hundred of them in a trace.
+        const std::lock_guard<std::mutex> held(shared.mutex);
         d.syncs[node].push_back({int64_t(m.timestamp), e.realtime_ns, e.ticks_per_second});
     }
 
@@ -1169,49 +1246,94 @@ void pass_decoder(const plugin::decoder& dec) {
 }
 
 // --- pass_decode -- files + the plugin -> the event tables -------------------
+//
+// One thread per shard. A shard's tables are written by nothing but its own
+// decode -- that is what makes this parallel at all -- and its files are read
+// one after another on that thread, because a level's records are appended
+// after the level before it and interpolate_untimed reads back the run the
+// file before it left. What the shards share is decode_shared: the arena, the
+// locations, and their node's clock syncs.
+//
+// The plugin is shared too, and reentrant: the objects a location resolves
+// against live in one dso_directory, which locks the two maps it builds on
+// demand -- and a decode looks an object up when its metadata stream maps it
+// rather than per record. See trace_wire.h.
+//
+// The lines are collected rather than printed, and printed in file order after
+// the join: a dozen threads writing to stdout would interleave them.
 
 void pass_decode(trace_data& d, const plugin::decoder& dec, const std::string& dso_root) {
     if (dec.decode == nullptr) {
         return;  // pass_decoder said so already
     }
-    std::unordered_map<uint64_t, uint32_t> interned;
-    for (const file_row& f : d.files) {
-        // Sized, rather than the std::istreambuf_iterator pair this used to be.
-        // The iterator pair reads a byte at a time through the streambuf and
-        // grows the vector as it goes, and a shard's debug file is tens of
-        // megabytes; one file_size, one allocation and one read is about 6% of
-        // the whole startup back.
-        const auto size = std::filesystem::file_size(f.path);
-        std::ifstream in(f.path, std::ios::binary);
-        std::vector<char> raw(size);
-        if (!in || (size != 0 && !in.read(raw.data(), std::streamsize(size)))) {
-            throw std::system_error(errno, std::generic_category(), f.path.string());
+    std::vector<std::vector<size_t>> per_cpu(d.tables.size());
+    for (size_t i = 0; i < d.files.size(); ++i) {
+        per_cpu[size_t(d.files[i].cpu)].push_back(i);
+    }
+    decode_shared shared;
+    std::vector<std::string> lines(d.files.size());
+    // A file that cannot be read throws, and it throws on a thread of its own:
+    // the first one is rethrown here, where the caller expects it.
+    std::vector<std::exception_ptr> thrown(per_cpu.size());
+
+    in_parallel(per_cpu.size(), [&](size_t cpu) {
+        std::unordered_map<uint64_t, uint32_t> interned;
+        try {
+            for (const size_t which : per_cpu[cpu]) {
+                const file_row& f = d.files[which];
+                // Sized, rather than the std::istreambuf_iterator pair this
+                // used to be. The iterator pair reads a byte at a time through
+                // the streambuf and grows the vector as it goes, and a shard's
+                // debug file is tens of megabytes; one file_size, one
+                // allocation and one read is about 6% of the whole startup
+                // back.
+                const auto size = std::filesystem::file_size(f.path);
+                std::ifstream in(f.path, std::ios::binary);
+                std::vector<char> raw(size);
+                if (!in || (size != 0 && !in.read(raw.data(), std::streamsize(size)))) {
+                    throw std::system_error(errno, std::generic_category(), f.path.string());
+                }
+                const std::span<const std::byte> bytes{
+                    reinterpret_cast<const std::byte*>(raw.data()), raw.size()};
+                cpu_tables& t = d.tables[cpu];
+                // A record is not self-delimiting, so a decode that fails
+                // cannot be resynchronised past -- but what it read before that
+                // point is in the tables and consistent, and the other files
+                // are unaffected. The failure worth expecting is a `dsos/` that
+                // does not go with these traces: see "Decoders" in the README.
+                const size_t first = t.timeline.size();
+                decode_sink sink{d, t, uint32_t(cpu), uint32_t(f.node), shared, interned};
+                // No exception crosses the plugin boundary -- see plugin_abi.h
+                // -- so a failure comes back as a message rather than as a
+                // throw.
+                std::array<char, 1024> failure{};
+                if (dec.decode(bytes.data(), bytes.size(), const_cast<decode_sink*>(&sink),
+                               dso_root.c_str(), failure.data(), failure.size()) != 0) {
+                    lines[which] += fmt::format("{}: {}\n", f.path.filename().string(),
+                                                failure.data());
+                }
+                // Over what this file appended, decode order and all, before
+                // the next file's records are put after it. A decode that threw
+                // part way through still leaves the records it did read, and
+                // they are interpolated like any others.
+                interpolate_untimed(t, first);
+                lines[which] +=
+                    fmt::format("{} (node {} shard {} {}): {} events on this cpu so far\n",
+                                f.path.filename().string(), f.node, f.shard,
+                                f.level.empty() ? "all levels" : f.level, t.timeline.size());
+            }
+        } catch (...) {
+            thrown[cpu] = std::current_exception();
         }
-        const std::span<const std::byte> bytes{
-            reinterpret_cast<const std::byte*>(raw.data()), raw.size()};
-        cpu_tables& t = d.tables[f.cpu];
-        // A record is not self-delimiting, so a decode that fails cannot be
-        // resynchronised past -- but what it read before that point is in the
-        // tables and consistent, and the other files are unaffected. The
-        // failure worth expecting is a `dsos/` that does not go with these
-        // traces: see "Decoders" in the README.
-        const size_t first = t.timeline.size();
-        decode_sink sink{d, t, uint32_t(f.cpu), uint32_t(f.node), interned};
-        // No exception crosses the plugin boundary -- see plugin_abi.h -- so a
-        // failure comes back as a message rather than as a throw.
-        std::array<char, 1024> failure{};
-        if (dec.decode(bytes.data(), bytes.size(), const_cast<decode_sink*>(&sink),
-                       dso_root.c_str(), failure.data(), failure.size()) != 0) {
-            fmt::print("{}: {}\n", f.path.filename().string(), failure.data());
+    });
+
+    for (const std::string& line : lines) {
+        fmt::print("{}", line);
+    }
+    for (const std::exception_ptr& failure : thrown) {
+        if (failure) {
+            std::rethrow_exception(failure);
         }
-        // Over what this file appended, decode order and all, before the next
-        // file's records are put after it. A decode that threw part way through
-        // still leaves the records it did read, and they are interpolated like
-        // any others.
-        interpolate_untimed(t, first);
-        fmt::print("{} (node {} shard {} {}): {} events on this cpu so far\n",
-                   f.path.filename().string(), f.node, f.shard,
-                   f.level.empty() ? "all levels" : f.level, t.timeline.size());
     }
     size_t resolved = 0;
     for (const location_row& l : d.locations) {
@@ -2497,35 +2619,6 @@ inline ImU32 darker(ImU32 colour, float by) {
     };
     return channel(IM_COL32_R_SHIFT) | channel(IM_COL32_G_SHIFT) | channel(IM_COL32_B_SHIFT) |
            (colour & (0xffu << IM_COL32_A_SHIFT));
-}
-
-// Runs `body(i)` for every i in [0, n), on as many lanes as the machine has
-// cores, each taking the next i rather than a fixed share -- the chunks of a
-// reactor's timeline do not cost the same, and a static split would leave
-// every lane waiting for the slowest. Sequential when there is one chunk, so
-// a small trace pays nothing for the machinery.
-template <typename F>
-void in_parallel(size_t n, F&& body) {
-    const auto lanes = std::min<size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
-    if (lanes <= 1) {
-        for (size_t i = 0; i < n; ++i) {
-            body(i);
-        }
-        return;
-    }
-    std::atomic<size_t> next = 0;
-    std::vector<std::thread> workers;
-    workers.reserve(lanes);
-    for (size_t lane = 0; lane < lanes; ++lane) {
-        workers.emplace_back([&] {
-            for (size_t i = next++; i < n; i = next++) {
-                body(i);
-            }
-        });
-    }
-    for (std::thread& w : workers) {
-        w.join();
-    }
 }
 
 void pass_render(trace_data& d) {
