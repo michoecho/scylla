@@ -433,114 +433,140 @@
             export LD_PRELOAD="$preload"
             exec ${nativelinkPackage}/bin/nativelink "$@"
           '';
-        in
-        {
-          default = pkgs.mkShell.override { stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; }); } {
-            packages = with pkgs; [
-              # An interactive bash, so running `bash` inside the shell gets a
-              # readline build. Without it PATH resolves to the minimal bash
-              # pulled in as a build dependency, which has no readline and so
-              # prints PS1's \[ \] non-printing markers literally instead of
-              # honouring them -- a visibly mangled prompt.
-              bashInteractive
-              aflplusplus
-              cli11
-              doctest
-              glaze
-              nanobench
-              llvmPkgs.clang-tools
-              llvmPkgs.llvm
-              gdb
-              boost.dev
-              boost
-              # Name resolution backend for Boost.Stacktrace.
-              libbacktrace
-              zstd
-              lz4
 
-              # Test runner for the Python tools under tools/, plus the
-              # scientific stack the map-lookup cost study analyses its sweep
-              # with (modules/playground/map_lookup_report.ipynb).
-              (python3.withPackages (ps: [
-                ps.pytest
-                ps.numpy
-                ps.pandas
-                ps.scipy
-                ps.matplotlib
-                ps.jupyter
-                ps.nbconvert
-              ]))
+          # Python for the test suites under tools/. The dev shell replaces
+          # this with the fuller stack below, so the two never sit on PATH
+          # together.
+          pythonMinimal = pkgs.python3.withPackages (ps: [ ps.pytest ]);
 
-              # Property-based testing; see src/hegel_test.cc. hegel-cpp
-              # propagates reflect-cpp and the engine shared library needed by
-              # the Buck2 C++ targets.
-              (hegelPackagesFor pkgs).hegel-cpp
+          # Everything `buck2 build` and `buck2 test` need, and nothing else.
+          # The C++ dependencies wired into BUCK come from the flake's own
+          # packages (see `flake.package` / `flake.prebuilt_pkgconfig_library`
+          # in ./BUCK), so what is listed here is the toolchain itself plus the
+          # few headers the compiler picks up from the shell environment --
+          # CLI11 and nanobench, which src/main.cc and modules/main/bench.cc
+          # include without a Buck dependency.
+          minimalPackages = with pkgs; [
+            # An interactive bash, so running `bash` inside the shell gets a
+            # readline build. Without it PATH resolves to the minimal bash
+            # pulled in as a build dependency, which has no readline and so
+            # prints PS1's \[ \] non-printing markers literally instead of
+            # honouring them -- a visibly mangled prompt.
+            bashInteractive
 
-              # Rust, for modules/libafl -- the wrapper that puts LibAFL's
-              # in-process fuzzer behind a C ABI for TEST_RNG=libafl.
-              cargo
-              rustc
-              # Regenerates third-party/rust/BUCK from Cargo manifests for
-              # Buck2 consumption.
-              reindeer
+            buck2Wrapped
+            # Command runner for the recipes in ./justfile.
+            just
+            pkg-config
+            # The Buck2 toolchain resolves its C++ dependencies by shelling
+            # out to `nix build` (see buck/flake.bzl), and buck2 itself looks
+            # up the project root with git. Both are listed so the shell does
+            # not quietly depend on the host having them -- `nix develop
+            # --ignore-env` has neither.
+            nix
+            git
 
-              pkgs-unstable.claude-code
-              code
-              pkgs-unstable.codex
+            cli11
+            doctest
+            glaze
+            nanobench
+            boost.dev
+            boost
+            # Name resolution backend for Boost.Stacktrace.
+            libbacktrace
+            zstd
+            lz4
+            spdlog
+            fmt
+            abseil-cpp
 
-              # Build tools for the Buck2 VS Code extension.
-              nodejs
-              yarn
+            # Property-based testing; see src/hegel_test.cc. hegel-cpp
+            # propagates reflect-cpp and the engine shared library needed by
+            # the Buck2 C++ targets.
+            (hegelPackagesFor pkgs).hegel-cpp
 
-              # Language server and formatter behind the nix-ide extension
-              # baked into `code` above. Referenced by name from
-              # .vscode/settings.json, so they are found on PATH -- which means
-              # Nix language support works in an editor launched from this
-              # shell, and degrades to syntax highlighting in one that isn't.
-              nixd
-              nixfmt
+            shader-slang
+            vulkan-loader
+            vulkan-headers
+            vulkan-memory-allocator
+            # Instance/device selection and swapchain building for the
+            # vulkan module.
+            vk-bootstrap
+            glslang
+            freetype
+            libglvnd
+            libxkbcommon
+            wayland
+            wayland-protocols
+            wayland-scanner
+            dbus
+            sdl3
+          ];
 
-              shader-slang
-              vulkan-loader
-              vulkan-headers
-              vulkan-tools
-              vulkan-validation-layers
-              vulkan-memory-allocator
-              glslang
-              freetype
-              libglvnd
-              libxkbcommon
-              wayland
-              wayland-protocols
-              wayland-scanner
-              pkg-config
-              dbus
-              abseil-cpp
-              sdl3
-              # Instance/device selection and swapchain building for the
-              # vulkan module.
-              vk-bootstrap
+          # Optional tooling: editors, fuzzers, debuggers, the remote cache,
+          # and the helpers behind the justfile's dev recipes. None of it is
+          # needed to build or test the project, so it lives in the `dev`
+          # shell only and the default shell stays cheap to instantiate.
+          devPackages = with pkgs; [
+            # The scientific stack the map-lookup cost study analyses its
+            # sweep with (modules/playground/map_lookup_report.ipynb), on top
+            # of the pytest that pythonMinimal already provides.
+            (python3.withPackages (ps: [
+              ps.pytest
+              ps.numpy
+              ps.pandas
+              ps.scipy
+              ps.matplotlib
+              ps.jupyter
+              ps.nbconvert
+            ]))
 
-              buck2Wrapped
-              nativelinkWrapped
+            aflplusplus
+            llvmPkgs.clang-tools
+            llvmPkgs.llvm
+            gdb
 
-              # Command runner for the recipes in ./justfile.
-              just
-              # File watcher behind `just watch-compdb`, which stands in for
-              # the reconfigure step buck2 does not have: it re-runs the
-              # compilation-database BXL when a build file changes.
-              watchexec
-              # Supervisor for the long-running dev processes; see
-              # ./process-compose.yaml and `just dev`.
-              process-compose
-              spdlog
-              fmt
-            ];
+            # Rust, for modules/libafl -- the wrapper that puts LibAFL's
+            # in-process fuzzer behind a C ABI for TEST_RNG=libafl. The Buck2
+            # rust toolchain gets its compiler from the flake's `rustc`
+            # package, so these are for driving cargo by hand.
+            cargo
+            rustc
+            # Regenerates third-party/rust/BUCK from Cargo manifests for
+            # Buck2 consumption.
+            reindeer
 
-            # For Vulkan on wayland
-            VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
-            FIRA_CODE_PATH = "${pkgs.nerd-fonts.fira-code}";
+            pkgs-unstable.claude-code
+            code
+            pkgs-unstable.codex
 
+            # Build tools for the Buck2 VS Code extension.
+            nodejs
+            yarn
+
+            # Language server and formatter behind the nix-ide extension
+            # baked into `code` above. Referenced by name from
+            # .vscode/settings.json, so they are found on PATH -- which means
+            # Nix language support works in an editor launched from this
+            # shell, and degrades to syntax highlighting in one that isn't.
+            nixd
+            nixfmt
+
+            vulkan-tools
+            vulkan-validation-layers
+
+            # Remote cache server; see `just nativelink`.
+            nativelinkWrapped
+            # File watcher behind `just watch-compdb`, which stands in for
+            # the reconfigure step buck2 does not have: it re-runs the
+            # compilation-database BXL when a build file changes.
+            watchexec
+            # Supervisor for the long-running dev processes; see
+            # ./process-compose.yaml and `just dev`.
+            process-compose
+          ];
+
+          commonShellArgs = {
             # Keep Python bytecode out of the source tree: without this, running
             # anything in tools/ drops a __pycache__/ next to it. The prefix
             # must be absolute, and the repo root isn't known until the shell
@@ -553,6 +579,26 @@
             hardeningDisable = [ "all" ];
           };
 
+          mkProjectShell = pkgs.mkShell.override {
+            stdenv = pkgs.overrideCC pkgs.stdenv (pkgs.ccacheWrapper.override { cc = llvmPkgs.clang; });
+          };
+        in
+        {
+          # The build-and-test shell. `nix develop` gets you a working
+          # `buck2 build //...` / `buck2 test //...` and nothing more.
+          default = mkProjectShell (commonShellArgs // {
+            packages = minimalPackages ++ [ pythonMinimal ];
+          });
+
+          # The shell this repo is developed in: everything above, plus the
+          # optional tooling. `.envrc` loads this one.
+          dev = mkProjectShell (commonShellArgs // {
+            packages = minimalPackages ++ devPackages;
+
+            # For Vulkan on wayland
+            VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+            FIRA_CODE_PATH = "${pkgs.nerd-fonts.fira-code}";
+          });
         }
         # A shell per package, which is how buck2's
         # `flake.prebuilt_pkgconfig_library` asks a package where its headers
