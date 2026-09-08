@@ -266,9 +266,6 @@
               systemd
               lttng-ust
               ccache
-              code
-              pkgs-unstable.claude-code
-              pkgs-unstable.codex
 
               elfutils
               systemtap-sdt.stapBuild
