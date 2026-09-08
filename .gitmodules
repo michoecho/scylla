@@ -4,14 +4,14 @@
 	ignore = dirty
 [submodule "swagger-ui"]
 	path = swagger-ui
-	url = ../scylla-swagger-ui
+	url = ../../scylladb/scylla-swagger-ui
 	ignore = dirty
 [submodule "abseil"]
 	path = abseil
-	url = ../abseil-cpp
+	url = ../../scylladb/abseil-cpp
 [submodule "scylla-python3"]
 	path = tools/python3
-	url = ../scylla-python3
+	url = ../../scylladb/scylla-python3
 [submodule "tools/cqlsh"]
 	path = tools/cqlsh
-	url = ../scylla-cqlsh
+	url = ../../scylladb/scylla-cqlsh
