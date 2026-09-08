@@ -48,3 +48,4 @@ test/resource/wasm/rust/target
 # An instrumented clang drops counters in $PWD when LLVM_PROFILE_FILE is unset,
 # which cmake's compiler probes manage to do.
 *.profraw
+ignored
