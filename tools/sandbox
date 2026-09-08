@@ -123,6 +123,23 @@ def optional_binds(home, whole_sys=False):
     if Path("/dev/dri").is_dir():
         args += ["--dev-bind", "/dev/dri", "/dev/dri"]
 
+    # KVM node, for running VMs (qemu) inside the sandbox. Also wiped by
+    # --dev /dev, so bind it back. Must be --dev-bind, not --ro-bind: KVM is
+    # driven purely by ioctl() on a read-write fd, so a read-only bind makes
+    # open(O_RDWR) fail with EACCES.
+    if Path("/dev/kvm").exists():
+        args += ["--dev-bind", "/dev/kvm", "/dev/kvm"]
+
+    # qemu tap/bridge networking. /dev/net doesn't exist in the tmpfs --dev
+    # creates, but bwrap makes missing parent dirs for a bind destination, so
+    # binding the node directly is enough. vhost-net is the in-kernel virtio
+    # datapath — optional, but qemu falls back to userspace virtio without it.
+    # We share the host netns (--share-net), so a tap device created on the
+    # host is already visible in here; only the control node needs binding.
+    for node in ("/dev/net/tun", "/dev/vhost-net"):
+        if Path(node).exists():
+            args += ["--dev-bind", node, node]
+
     # /sys: the whole tree when asked (perf/Intel PT), else the GPU subset.
     # The wide bind is a superset, so it covers Mesa's probing too.
     args += whole_sys_binds() if whole_sys else gpu_sys_binds()
