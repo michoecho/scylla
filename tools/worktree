@@ -1,261 +1,812 @@
 #!/usr/bin/env python3
-"""Create and remove worktrees with submodule worktrees attached to them.
+"""Manage superproject worktrees whose submodules share Git common dirs.
 
 Usage:
-
   tools/worktree create NAME [REVISION]
-  tools/worktree remove NAME
-  tools/worktree clean
+  tools/worktree remove [--force] NAME
+  tools/worktree status [NAME]
+  tools/worktree clean [--force] [NAME]
 
-The main worktree follows normal ``git worktree add`` behavior.  Submodules
-are initialized as detached worktrees of the corresponding submodule in the
-main worktree, so no submodule is cloned from its configured upstream URL.
+Each submodule is a linked worktree of the corresponding initialized
+submodule in the main superproject worktree. Objects, refs, and configuration
+are shared; HEAD and the index remain worktree-local.
+
+Git's submodule porcelain does not manage this nonstandard topology. Do not
+deinitialize source submodules or run ``git submodule deinit`` in a managed
+worktree. This tool journals every registration so interrupted operations can
+be inspected and removal can be resumed.
 """
 
 import argparse
+import fcntl
+import hashlib
+import json
+import os
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+
+
+MANIFEST_VERSION = 1
+STATE_DIRECTORY = "worktree-tool"
 
 
 class WorktreeError(RuntimeError):
     """An expected worktree operation failed."""
 
 
-def run_git(repository, *arguments, check=True):
-    """Run Git in *repository* and return its standard output."""
+def run_git(repository, *arguments, git_dir=None, check=True):
+    """Run Git in a worktree or against an explicit Git common directory."""
+    if repository is not None and git_dir is not None:
+        raise ValueError("repository and git_dir are mutually exclusive")
     command = ["git"]
     if repository is not None:
         command += ["-C", str(repository)]
+    elif git_dir is not None:
+        command += [f"--git-dir={git_dir}"]
     command += list(arguments)
     result = subprocess.run(command, text=True, capture_output=True)
     if check and result.returncode:
         details = result.stderr.strip() or result.stdout.strip()
+        rendered = subprocess.list2cmdline(command)
         raise WorktreeError(
-            f"{' '.join(command)} failed"
-            + (f": {details}" if details else ""))
+            f"{rendered} failed" + (f": {details}" if details else ""))
     return result
 
 
-def git_output(repository, *arguments):
-    """Run Git and return non-empty standard output lines as text."""
-    return run_git(repository, *arguments).stdout
+def git_output(repository, *arguments, git_dir=None):
+    return run_git(repository, *arguments, git_dir=git_dir).stdout
 
 
-def repository_root():
-    return Path(
-        git_output(None, "rev-parse", "--show-toplevel").strip()
-    ).resolve()
+def normalized(path):
+    return Path(path).resolve(strict=False)
 
 
-def worktree_path(root, name):
-    """Return a NAME path below root/.worktrees, rejecting path escapes."""
-    candidate = Path(name)
-    if candidate.is_absolute():
-        raise WorktreeError("worktree name must be relative")
-
-    worktrees = (root / ".worktrees").resolve()
-    path = (worktrees / candidate).resolve()
-    try:
-        path.relative_to(worktrees)
-    except ValueError as error:
-        raise WorktreeError("worktree name must stay below .worktrees") from error
-    if path == worktrees:
-        raise WorktreeError("worktree name must not be empty")
-    return path
+def same_path(left, right):
+    return normalized(left) == normalized(right)
 
 
-def gitlinks(repository):
-    """Yield (path, object ID) for the submodules in a repository index."""
+def git_path(repository, argument):
+    return normalized(git_output(
+        repository, "rev-parse", "--path-format=absolute", argument
+    ).strip())
+
+
+def repository_info(path):
+    """Return worktree/Git-dir information, or None if PATH is not a root."""
+    path = normalized(path)
+    if not path.is_dir():
+        return None
+    top = run_git(path, "rev-parse", "--show-toplevel", check=False)
+    if top.returncode or not same_path(top.stdout.strip(), path):
+        return None
+    return {
+        "worktree": path,
+        "git_dir": git_path(path, "--absolute-git-dir"),
+        "common_dir": git_path(path, "--git-common-dir"),
+    }
+
+
+def require_repository(path, description):
+    info = repository_info(path)
+    if info is None:
+        raise WorktreeError(f"{description} is not an initialized repository: {path}")
+    return info
+
+
+def parse_worktree_list(output):
+    """Parse ``git worktree list --porcelain -z``."""
+    records = []
+    record = {}
+    for field in output.split("\0"):
+        if not field:
+            if record:
+                records.append(record)
+                record = {}
+            continue
+        key, separator, value = field.partition(" ")
+        record[key] = value if separator else True
+    if record:
+        records.append(record)
+    return records
+
+
+def worktree_records(common_dir):
+    output = git_output(
+        None, "worktree", "list", "--porcelain", "-z", git_dir=common_dir)
+    return parse_worktree_list(output)
+
+
+def worktree_record(common_dir, target):
+    for record in worktree_records(common_dir):
+        if "worktree" in record and same_path(record["worktree"], target):
+            return record
+    return None
+
+
+def repository_context():
+    """Return the common Git dir and main worktree, from any linked worktree."""
+    current_root = git_output(None, "rev-parse", "--show-toplevel").strip()
+    current = require_repository(current_root, "current directory")
+    records = worktree_records(current["common_dir"])
+    if not records or "worktree" not in records[0] or records[0].get("bare"):
+        raise WorktreeError("the superproject has no main worktree")
+    main = normalized(records[0]["worktree"])
+    main_info = require_repository(main, "main superproject worktree")
+    if main_info["common_dir"] != current["common_dir"]:
+        raise WorktreeError("Git reported an inconsistent main worktree")
+    return main_info
+
+
+def checked_gitlinks(repository):
+    """Return stage-zero (path, commit) gitlinks; reject an unmerged index."""
+    result = []
     output = git_output(repository, "ls-files", "--stage", "-z")
     for entry in output.split("\0"):
         if not entry:
             continue
         metadata, path = entry.split("\t", 1)
-        mode, object_id, _stage = metadata.split()
-        if mode == "160000":
-            yield Path(path), object_id
+        mode, object_id, stage = metadata.split()
+        if mode != "160000":
+            continue
+        if stage != "0":
+            raise WorktreeError(
+                f"cannot manage unmerged submodule entry {path!r} in {repository}")
+        result.append((Path(path), object_id))
+    return result
 
 
-def require_worktree(path, description):
-    """Ensure Git resolves PATH to PATH itself, not to a parent repository."""
-    if not path.is_dir():
-        raise WorktreeError(f"{description} is not initialized: {path}")
+def checked_child(parent, child):
+    parent = normalized(parent)
+    result = normalized(parent / child)
     try:
-        actual = Path(
-            git_output(path, "rev-parse", "--show-toplevel").strip()
-        ).resolve()
+        result.relative_to(parent)
+    except ValueError as error:
+        raise WorktreeError(f"path escapes its parent worktree: {child}") from error
+    return result
+
+
+def validate_name(main, name):
+    candidate = Path(name)
+    if candidate.is_absolute() or not candidate.parts:
+        raise WorktreeError("worktree name must be a non-empty relative path")
+    if any(part in ("", ".", "..") for part in candidate.parts):
+        raise WorktreeError("worktree name contains an invalid path component")
+    branch = f"worktree/{name}"
+    run_git(main, "check-ref-format", "--branch", branch)
+    base = normalized(main / ".worktrees")
+    target = normalized(base / candidate)
+    try:
+        target.relative_to(base)
+    except ValueError as error:
+        raise WorktreeError("worktree name must stay below .worktrees") from error
+    return target, branch
+
+
+def state_directory(common_dir, create=False):
+    path = Path(common_dir) / STATE_DIRECTORY
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def manifest_path(common_dir, name):
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    return state_directory(common_dir) / f"{digest}.json"
+
+
+def validate_manifest(common_dir, manifest, expected_name=None):
+    """Reject malformed state before using any recorded path destructively."""
+    required = {
+        "branch", "main", "name", "state", "submodules",
+        "super_common_dir", "target", "version",
+    }
+    if not isinstance(manifest, dict) or not required <= manifest.keys():
+        raise WorktreeError("worktree manifest is missing required fields")
+    if manifest["version"] != MANIFEST_VERSION:
+        raise WorktreeError("worktree manifest has an unsupported version")
+    if expected_name is not None and manifest["name"] != expected_name:
+        raise WorktreeError("worktree manifest name does not match its lookup key")
+    if not isinstance(manifest["name"], str) or not isinstance(
+            manifest["submodules"], list):
+        raise WorktreeError("worktree manifest has invalid field types")
+    if manifest["state"] not in {
+            "creating", "ready", "removing", "removed", "failed", "rolled_back"}:
+        raise WorktreeError("worktree manifest has an invalid state")
+    if normalized(manifest["super_common_dir"]) != normalized(common_dir):
+        raise WorktreeError("worktree manifest belongs to another repository")
+
+    records = worktree_records(common_dir)
+    if not records or "worktree" not in records[0]:
+        raise WorktreeError("cannot validate manifest without a main worktree")
+    actual_main = normalized(records[0]["worktree"])
+    if normalized(manifest["main"]) != actual_main:
+        raise WorktreeError("worktree manifest names a different main worktree")
+
+    expected_target, expected_branch = validate_name(actual_main, manifest["name"])
+    if normalized(manifest["target"]) != expected_target:
+        raise WorktreeError("worktree manifest target is outside its managed path")
+    if manifest["branch"] != f"refs/heads/{expected_branch}":
+        raise WorktreeError("worktree manifest contains an unexpected branch")
+
+    valid_states = {"adding", "attached", "removed"}
+    for record in manifest["submodules"]:
+        fields = {
+            "common_dir", "expected_oid", "parent", "path",
+            "path_in_parent", "source", "state",
+        }
+        if not isinstance(record, dict) or not fields <= record.keys():
+            raise WorktreeError("worktree manifest has an invalid submodule record")
+        if any(not isinstance(record[field], str) for field in fields):
+            raise WorktreeError("worktree manifest has invalid submodule field types")
+        if record["state"] not in valid_states:
+            raise WorktreeError("worktree manifest has an invalid submodule state")
+        for field in ("parent", "path", "path_in_parent"):
+            value = Path(record[field])
+            if value.is_absolute() or ".." in value.parts:
+                raise WorktreeError(
+                    f"worktree manifest has unsafe submodule {field}: {value}")
+        checked_child(expected_target, record["path"])
+        checked_child(expected_target, record["parent"])
+    return manifest
+
+
+def write_manifest(common_dir, manifest):
+    directory = state_directory(common_dir, create=True)
+    destination = manifest_path(common_dir, manifest["name"])
+    descriptor, temporary = tempfile.mkstemp(prefix="manifest-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(manifest, output, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+        directory_descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def read_manifest(common_dir, name):
+    path = manifest_path(common_dir, name)
+    try:
+        with path.open(encoding="utf-8") as source:
+            manifest = json.load(source)
+    except FileNotFoundError as error:
+        raise WorktreeError(f"no managed worktree named {name!r}") from error
+    except (OSError, json.JSONDecodeError) as error:
+        raise WorktreeError(f"cannot read worktree manifest {path}: {error}") from error
+    try:
+        return validate_manifest(common_dir, manifest, expected_name=name)
     except WorktreeError as error:
-        raise WorktreeError(f"{description} is not initialized: {path}") from error
-    if actual != path.resolve():
-        raise WorktreeError(
-            f"{description} is not initialized: {path} "
-            f"(Git resolves it to {actual})")
+        raise WorktreeError(f"invalid worktree manifest {path}: {error}") from error
 
 
-def add_submodule_worktrees(source, target, registrations):
-    """Recursively attach TARGET's submodules to SOURCE's repositories."""
-    for path, object_id in gitlinks(target):
-        source_submodule = source / path
-        target_submodule = target / path
+def all_manifests(common_dir):
+    directory = state_directory(common_dir)
+    if not directory.is_dir():
+        return []
+    manifests = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            with path.open(encoding="utf-8") as source:
+                manifest = json.load(source)
+        except (OSError, json.JSONDecodeError) as error:
+            raise WorktreeError(f"cannot read worktree manifest {path}: {error}") from error
+        try:
+            manifests.append(validate_manifest(common_dir, manifest))
+        except WorktreeError as error:
+            raise WorktreeError(f"invalid worktree manifest {path}: {error}") from error
+    return manifests
 
-        # This deliberately does not run `git submodule update`: the source
-        # submodule worktree is the local repository whose objects we share.
-        require_worktree(
-            source_submodule,
-            "submodule in the toplevel worktree",
-        )
+
+@contextmanager
+def state_lock(common_dir, exclusive=True):
+    directory = state_directory(common_dir, create=True)
+    with (directory / "lock").open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+
+
+def ensure_empty_directory(path, description):
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise WorktreeError(f"{description} is not empty: {path}")
+
+
+def ref_exists(repository, ref):
+    return run_git(
+        repository, "show-ref", "--verify", "--quiet", ref, check=False
+    ).returncode == 0
+
+
+def object_is_commit(common_dir, object_id):
+    return run_git(
+        None, "cat-file", "-e", f"{object_id}^{{commit}}",
+        git_dir=common_dir, check=False,
+    ).returncode == 0
+
+
+def attach_submodules(source, target, outer, manifest, ancestry):
+    """Attach target gitlinks recursively and journal every attempted add."""
+    require_repository(target, "target parent worktree")
+    for relative, object_id in checked_gitlinks(target):
+        source_submodule = checked_child(source, relative)
+        target_submodule = checked_child(target, relative)
+        display = target_submodule.relative_to(outer)
+        source_info = require_repository(
+            source_submodule, f"source submodule for {display}")
+        common_dir = source_info["common_dir"]
+        if str(common_dir) in ancestry:
+            raise WorktreeError(
+                f"recursive submodule cycle through common Git dir {common_dir}")
+        if not object_is_commit(common_dir, object_id):
+            raise WorktreeError(
+                f"source repository {common_dir} lacks submodule commit {object_id}; "
+                f"fetch it in {source_submodule} and retry")
+        ensure_empty_directory(target_submodule, "submodule target")
+        if worktree_record(common_dir, target_submodule) is not None:
+            raise WorktreeError(
+                f"submodule target is already registered in {common_dir}: "
+                f"{target_submodule}")
+
+        record = {
+            "common_dir": str(common_dir),
+            "expected_oid": object_id,
+            "git_dir": None,
+            "parent": str(normalized(target).relative_to(outer)),
+            "path": str(target_submodule.relative_to(outer)),
+            "path_in_parent": str(relative),
+            "source": str(source_submodule),
+            "state": "adding",
+        }
+        manifest["submodules"].append(record)
+        write_manifest(manifest["super_common_dir"], manifest)
 
         run_git(
-            source_submodule,
-            "worktree",
-            "add",
-            "--detach",
-            str(target_submodule),
-            object_id,
+            None, "worktree", "add", "--detach", str(target_submodule), object_id,
+            git_dir=common_dir,
         )
-        registrations.append((source_submodule, target_submodule))
-        add_submodule_worktrees(
-            source_submodule, target_submodule, registrations)
-
-
-def remove_submodule_worktrees(source, target, registrations):
-    """Collect child worktrees before the parent worktree is removed."""
-    for path, _object_id in gitlinks(target):
-        source_submodule = source / path
-        target_submodule = target / path
-        require_worktree(
-            source_submodule,
-            "submodule in the toplevel worktree",
+        target_info = require_repository(target_submodule, "new submodule worktree")
+        if target_info["common_dir"] != common_dir:
+            raise WorktreeError(
+                f"new submodule worktree uses {target_info['common_dir']}, "
+                f"expected {common_dir}")
+        record["git_dir"] = str(target_info["git_dir"])
+        record["state"] = "attached"
+        write_manifest(manifest["super_common_dir"], manifest)
+        attach_submodules(
+            source_submodule, target_submodule, outer, manifest,
+            ancestry | {str(common_dir)},
         )
-        registrations.append((source_submodule, target_submodule))
-        remove_submodule_worktrees(
-            source_submodule, target_submodule, registrations)
 
 
-def cleanup_registrations(registrations):
-    """Delist child worktrees, including entries whose directories vanished."""
-    for source, target in reversed(registrations):
+def directory_has_entries(path):
+    return path.is_dir() and any(path.iterdir())
+
+
+def registration_git_dir(common, target, recorded=None):
+    """Find and validate TARGET's private gitdir below COMMON/worktrees."""
+    common = normalized(common)
+    target_gitfile = normalized(target) / ".git"
+    candidates = []
+    if recorded:
+        candidates.append(normalized(recorded))
+    worktrees = common / "worktrees"
+    if worktrees.is_dir():
+        candidates.extend(path.parent for path in worktrees.glob("*/gitdir"))
+
+    for candidate in candidates:
+        gitdir_pointer = candidate / "gitdir"
+        commondir_pointer = candidate / "commondir"
+        try:
+            points_to = normalized(gitdir_pointer.read_text().strip())
+            relative_common = commondir_pointer.read_text().strip()
+            candidate_common = normalized(candidate / relative_common)
+        except OSError:
+            continue
+        if points_to == target_gitfile and candidate_common == common:
+            return candidate
+    return None
+
+
+def restore_missing_gitfile(common, target, recorded_git_dir):
+    """Repair a deleted gitfile after validating both sides of its link."""
+    target = normalized(target)
+    if target.exists() and (not target.is_dir() or directory_has_entries(target)):
+        return False
+    private = registration_git_dir(common, target, recorded_git_dir)
+    if private is None:
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    (target / ".git").write_text(f"gitdir: {private}\n")
+    return True
+
+
+def remove_registered_worktree(record, force, rollback=False):
+    """Remove one verified registration; return None or an error string."""
+    target = normalized(record["target"])
+    common = normalized(record["common_dir"])
+    registration = worktree_record(common, target)
+    info = repository_info(target)
+    if info is not None and info["common_dir"] != common:
+        return f"{target} belongs to foreign common Git dir {info['common_dir']}"
+    if info is not None and registration is None:
+        return f"{target} is a repository but is not registered in {common}"
+    if info is None and target.exists() and directory_has_entries(target):
+        return f"{target} is not the expected repository and is not empty"
+    if registration is not None:
+        if info is None:
+            restored = restore_missing_gitfile(
+                common, target, record.get("git_dir"))
+            if not restored:
+                return (
+                    f"cannot safely reconstruct missing gitfile for stale "
+                    f"registration {target} in {common}")
+        arguments = ["worktree", "remove"]
+        # Missing worktrees have no data to preserve. Rollback only touches
+        # worktrees created by the unfinished transaction.
+        if force or rollback or info is None:
+            arguments.append("--force")
+        arguments.append(str(target))
+        result = run_git(None, *arguments, git_dir=common, check=False)
+        if result.returncode:
+            details = result.stderr.strip() or result.stdout.strip()
+            return f"cannot remove {target} from {common}: {details}"
+    return None
+
+
+def rollback_create(manifest):
+    """Best-effort rollback without masking cleanup failures."""
+    errors = []
+    outer = normalized(manifest["target"])
+    for record in reversed(manifest["submodules"]):
+        expanded = dict(record, target=str(outer / record["path"]))
+        error = remove_registered_worktree(expanded, force=True, rollback=True)
+        if error:
+            errors.append(error)
+        else:
+            record["state"] = "removed"
+
+    if not errors and worktree_record(manifest["super_common_dir"], outer):
         result = run_git(
-            source,
-            "worktree",
-            "remove",
-            "--force",
-            str(target),
-            check=False,
+            None, "worktree", "remove", "--force", str(outer),
+            git_dir=manifest["super_common_dir"], check=False,
         )
         if result.returncode:
             details = result.stderr.strip() or result.stdout.strip()
-            raise WorktreeError(
-                f"could not delist submodule worktree {target}"
-                + (f": {details}" if details else ""))
+            errors.append(f"cannot remove outer worktree {outer}: {details}")
+    elif not errors and outer.exists():
+        try:
+            outer.rmdir()
+        except OSError:
+            errors.append(f"unregistered outer worktree path remains: {outer}")
+
+    branch = manifest["branch"]
+    if not errors and manifest.get("initial_oid") and ref_exists(manifest["main"], branch):
+        current = git_output(manifest["main"], "rev-parse", branch).strip()
+        if current == manifest["initial_oid"]:
+            run_git(manifest["main"], "update-ref", "-d", branch, current)
+        else:
+            errors.append(f"preserved changed rollback branch {branch}")
+    return errors
 
 
-def worktree_branches(root):
-    """Return branches currently checked out by any worktree."""
-    output = git_output(root, "worktree", "list", "--porcelain")
-    prefix = "branch refs/heads/"
-    return {
-        line[len(prefix):]
-        for line in output.splitlines()
-        if line.startswith(prefix)
-    }
-
-
-def create(root, name, revision=None):
-    target = worktree_path(root, name)
+def create(main_info, name, revision=None):
+    main = main_info["worktree"]
+    common = main_info["common_dir"]
+    target, branch_short = validate_name(main, name)
+    branch = f"refs/heads/{branch_short}"
+    if manifest_path(common, name).exists():
+        old = read_manifest(common, name)
+        raise WorktreeError(
+            f"managed worktree {name!r} already has state {old['state']!r}; "
+            "remove or clean it first")
     if target.exists():
         raise WorktreeError(f"worktree path already exists: {target}")
+    if ref_exists(main, branch):
+        raise WorktreeError(f"worktree branch already exists: {branch_short}")
+
+    start = revision if revision is not None else "HEAD"
+    initial_oid = git_output(main, "rev-parse", "--verify", f"{start}^{{commit}}").strip()
+
+    # Keep every shared common directory outside a replaceable submodule
+    # worktree. This is idempotent and is Git's standard migration for old-form
+    # submodules with an embedded .git directory; it recurses when needed.
+    run_git(main, "submodule", "absorbgitdirs")
+
     target.parent.mkdir(parents=True, exist_ok=True)
-
-    command = ["worktree", "add", "-b", f"worktree/{name}", str(target)]
-    if revision is not None:
-        command.append(revision)
-    run_git(root, *command)
-
-    registrations = []
+    manifest = {
+        "branch": branch,
+        "initial_oid": initial_oid,
+        "main": str(main),
+        "name": name,
+        "state": "creating",
+        "submodules": [],
+        "super_common_dir": str(common),
+        "target": str(target),
+        "version": MANIFEST_VERSION,
+    }
+    write_manifest(common, manifest)
     try:
-        add_submodule_worktrees(root, target, registrations)
-    except Exception:
-        # Keep a failed create from leaving either the main worktree or child
-        # worktree registrations behind.
-        cleanup_registrations(registrations)
-        run_git(root, "worktree", "remove", "--force", str(target), check=False)
-        raise
-
+        arguments = ["worktree", "add", "-b", branch_short, str(target)]
+        if revision is not None:
+            arguments.append(revision)
+        run_git(None, *arguments, git_dir=common)
+        outer_info = require_repository(target, "new superproject worktree")
+        if outer_info["common_dir"] != common:
+            raise WorktreeError("new worktree has an unexpected common Git directory")
+        manifest["initial_oid"] = git_output(target, "rev-parse", "HEAD").strip()
+        manifest["outer_git_dir"] = str(outer_info["git_dir"])
+        write_manifest(common, manifest)
+        attach_submodules(main, target, target, manifest, {str(common)})
+        manifest["state"] = "ready"
+        write_manifest(common, manifest)
+    except BaseException as original:
+        errors = rollback_create(manifest)
+        manifest["state"] = "failed" if errors else "rolled_back"
+        manifest["errors"] = errors
+        write_manifest(common, manifest)
+        if isinstance(original, KeyboardInterrupt):
+            raise
+        details = f"; rollback problems: {'; '.join(errors)}" if errors else ""
+        raise WorktreeError(f"creation failed: {original}{details}") from original
     print(f"created {target}")
 
 
-def remove(root, name):
-    target = worktree_path(root, name)
-    if not target.exists():
-        raise WorktreeError(f"worktree path does not exist: {target}")
-
-    registrations = []
-    remove_submodule_worktrees(root, target, registrations)
-
-    # Removing the parent also removes the child directories.  The explicit
-    # child removals below are still needed to delist them from each
-    # submodule's worktree metadata.
-    run_git(root, "worktree", "remove", "--force", str(target))
-    cleanup_registrations(registrations)
-    print(f"removed {target}")
+def operation_markers(repository):
+    names = (
+        "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG",
+        "rebase-apply", "rebase-merge",
+    )
+    present = []
+    for name in names:
+        path = git_output(repository, "rev-parse", "--git-path", name).strip()
+        if Path(path).exists():
+            present.append(name)
+    return present
 
 
-def clean(root):
-    """Delete worktree branches that are not checked out by a worktree."""
-    branches = git_output(
-        root,
-        "for-each-ref",
-        "--format=%(refname:short)",
-        "refs/heads/worktree/",
-    ).splitlines()
-    checked_out = worktree_branches(root)
+def dirty(repository):
+    return bool(git_output(
+        repository, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+        "--ignore-submodules=all",
+    ))
 
-    for branch in sorted(branch for branch in branches if branch not in checked_out):
-        run_git(root, "branch", "-D", branch)
-        print(f"removed {branch}")
+
+def expected_gitlink(record, outer):
+    parent = outer / record["parent"]
+    if repository_info(parent) is None:
+        return record["expected_oid"]
+    result = run_git(
+        parent, "rev-parse", "--verify", f":{record['path_in_parent']}",
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else record["expected_oid"]
+
+
+def removal_preflight(manifest, force):
+    """Validate ownership and preservation conditions before deleting."""
+    errors = []
+    outer = normalized(manifest["target"])
+    super_common = normalized(manifest["super_common_dir"])
+    outer_registration = worktree_record(super_common, outer)
+    outer_info = repository_info(outer)
+    if outer_info is not None and outer_info["common_dir"] != super_common:
+        errors.append(f"outer path belongs to foreign repository: {outer}")
+    elif outer_info is not None and outer_registration is None:
+        errors.append(f"outer path is not registered in {super_common}: {outer}")
+    elif outer_info is None and outer.exists() and directory_has_entries(outer):
+        errors.append(f"outer path is not the expected repository and is not empty: {outer}")
+
+    for record in manifest["submodules"]:
+        target = outer / record["path"]
+        common = normalized(record["common_dir"])
+        registration = worktree_record(common, target)
+        info = repository_info(target)
+        if info is not None and info["common_dir"] != common:
+            errors.append(
+                f"submodule path {target} belongs to foreign repository "
+                f"{info['common_dir']}")
+            continue
+        if info is not None and registration is None:
+            errors.append(f"submodule path is not registered in {common}: {target}")
+            continue
+        if info is None and target.exists() and directory_has_entries(target):
+            errors.append(f"submodule path is not a repository and is not empty: {target}")
+            continue
+        if info is None:
+            continue
+        if not force:
+            head = git_output(target, "rev-parse", "HEAD").strip()
+            expected = expected_gitlink(record, outer)
+            if head != expected:
+                errors.append(
+                    f"submodule HEAD is {head}, but its parent records {expected}: {target}")
+            if dirty(target):
+                errors.append(f"submodule has staged, unstaged, or untracked changes: {target}")
+            markers = operation_markers(target)
+            if markers:
+                errors.append(f"submodule has operation state {markers}: {target}")
+    if outer_info is not None and not force:
+        if dirty(outer):
+            errors.append(f"superproject has staged, unstaged, or untracked changes: {outer}")
+        markers = operation_markers(outer)
+        if markers:
+            errors.append(f"superproject has operation state {markers}: {outer}")
+    return errors
+
+
+def remove(main_info, name, force=False):
+    common = main_info["common_dir"]
+    manifest = read_manifest(common, name)
+    outer = normalized(manifest["target"])
+    errors = removal_preflight(manifest, force)
+    if errors:
+        raise WorktreeError("refusing removal:\n  - " + "\n  - ".join(errors))
+    manifest["state"] = "removing"
+    write_manifest(common, manifest)
+    outer_is_registered = worktree_record(common, outer) is not None
+
+    # Entries are appended parent-first. Remove leaves first, restoring empty
+    # gitlink placeholders so each parent remains clean for its own removal.
+    for record in reversed(manifest["submodules"]):
+        target = outer / record["path"]
+        expanded = dict(record, target=str(target))
+        error = remove_registered_worktree(expanded, force=force)
+        if error:
+            manifest["state"] = "failed"
+            manifest["errors"] = [error]
+            write_manifest(common, manifest)
+            raise WorktreeError(error)
+        record["state"] = "removed"
+        if outer_is_registered:
+            target.mkdir(parents=True, exist_ok=True)
+        write_manifest(common, manifest)
+
+    if worktree_record(common, outer) is not None:
+        arguments = ["worktree", "remove"]
+        if force:
+            arguments.append("--force")
+        arguments.append(str(outer))
+        run_git(None, *arguments, git_dir=common)
+    elif outer.exists():
+        try:
+            outer.rmdir()
+        except OSError as error:
+            raise WorktreeError(f"cannot remove unregistered outer path {outer}: {error}")
+    manifest["state"] = "removed"
+    manifest.pop("errors", None)
+    write_manifest(common, manifest)
+    print(f"removed {outer}; retained branch {manifest['branch']}")
+
+
+def manifest_issues(manifest):
+    issues = []
+    outer = normalized(manifest["target"])
+    common = normalized(manifest["super_common_dir"])
+    outer_registered = worktree_record(common, outer) is not None
+    if manifest["state"] in ("creating", "ready", "removing", "failed"):
+        if not outer_registered:
+            issues.append("outer worktree is not registered")
+    elif outer_registered:
+        issues.append("outer worktree remains registered")
+    for record in manifest["submodules"]:
+        target = outer / record["path"]
+        registered = worktree_record(record["common_dir"], target) is not None
+        should_exist = record["state"] in ("adding", "attached")
+        if should_exist and not registered:
+            issues.append(f"missing submodule registration: {record['path']}")
+        if not should_exist and registered:
+            issues.append(f"stale submodule registration: {record['path']}")
+        info = repository_info(target)
+        if info is not None and info["common_dir"] != normalized(record["common_dir"]):
+            issues.append(f"foreign repository at submodule path: {record['path']}")
+        elif info is not None and dirty(target):
+            issues.append(f"dirty submodule: {record['path']}")
+    return issues
+
+
+def status(main_info, name=None):
+    common = main_info["common_dir"]
+    manifests = [read_manifest(common, name)] if name else all_manifests(common)
+    if not manifests:
+        print("no managed worktrees")
+        return 0
+    broken = False
+    for manifest in sorted(manifests, key=lambda item: item["name"]):
+        issues = manifest_issues(manifest)
+        print(f"{manifest['name']}: {manifest['state']} ({manifest['target']})")
+        for issue in issues:
+            print(f"  ! {issue}")
+        broken |= bool(issues)
+    return 1 if broken else 0
+
+
+def clean(main_info, name=None, force=False):
+    common = main_info["common_dir"]
+    manifests = [read_manifest(common, name)] if name else all_manifests(common)
+    failures = []
+    for manifest in manifests:
+        if manifest["state"] not in ("removed", "rolled_back"):
+            failures.append(
+                f"{manifest['name']}: state is {manifest['state']}, not removed")
+            continue
+        branch = manifest["branch"]
+        users = [
+            record["worktree"] for record in worktree_records(common)
+            if record.get("branch") == branch
+        ]
+        if users:
+            failures.append(f"{manifest['name']}: branch is checked out at {users}")
+            continue
+        if ref_exists(main_info["worktree"], branch):
+            short = branch.removeprefix("refs/heads/")
+            result = run_git(
+                main_info["worktree"], "branch", "-D" if force else "-d", "--",
+                short, check=False,
+            )
+            if result.returncode:
+                details = result.stderr.strip() or result.stdout.strip()
+                failures.append(
+                    f"{manifest['name']}: {details}")
+                continue
+            print(f"removed branch {short}")
+        manifest_path(common, manifest["name"]).unlink()
+    if failures:
+        raise WorktreeError("clean did not remove all state:\n  - " + "\n  - ".join(failures))
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Create or remove a worktree with local submodule worktrees."
-    )
+        description="manage worktrees with shared-gitdir submodule worktrees")
     commands = parser.add_subparsers(dest="command", required=True)
-
-    create_parser = commands.add_parser("create", help="create a worktree")
+    create_parser = commands.add_parser("create", help="create a managed worktree")
     create_parser.add_argument("name", metavar="NAME")
-    create_parser.add_argument(
-        "revision",
-        nargs="?",
-        help="revision to check out (default: Git's normal worktree behavior)",
-    )
-
-    remove_parser = commands.add_parser("remove", help="remove a worktree")
+    create_parser.add_argument("revision", nargs="?", metavar="REVISION")
+    remove_parser = commands.add_parser("remove", help="remove a managed worktree")
     remove_parser.add_argument("name", metavar="NAME")
-
-    commands.add_parser(
-        "clean",
-        help="remove worktree branches without matching worktrees",
-    )
-
+    remove_parser.add_argument(
+        "--force", action="store_true",
+        help="discard dirty or divergent managed worktrees")
+    status_parser = commands.add_parser("status", help="inspect recorded state")
+    status_parser.add_argument("name", nargs="?", metavar="NAME")
+    clean_parser = commands.add_parser(
+        "clean", help="delete branches and manifests for removed worktrees")
+    clean_parser.add_argument("name", nargs="?", metavar="NAME")
+    clean_parser.add_argument(
+        "--force", action="store_true",
+        help="delete owned branches even when they are not merged")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     try:
-        root = repository_root()
-        if args.command == "create":
-            create(root, args.name, args.revision)
-        elif args.command == "remove":
-            remove(root, args.name)
-        else:
-            clean(root)
-    except (OSError, WorktreeError, subprocess.CalledProcessError) as error:
+        main_info = repository_context()
+        with state_lock(
+                main_info["common_dir"], exclusive=args.command != "status"):
+            if args.command == "create":
+                create(main_info, args.name, args.revision)
+                return 0
+            if args.command == "remove":
+                remove(main_info, args.name, args.force)
+                return 0
+            if args.command == "status":
+                return status(main_info, args.name)
+            clean(main_info, args.name, args.force)
+            return 0
+    except (OSError, ValueError, WorktreeError) as error:
         print(f"worktree: {error}", file=sys.stderr)
         return 1
-    return 0
 
 
 if __name__ == "__main__":

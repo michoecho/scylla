@@ -1,9 +1,12 @@
 [submodule "third-party/fuzztest"]
 	path = third-party/fuzztest
-	url = https://github.com/google/fuzztest.git
+	url = https://github.com/michoecho/fuzztest.git
 [submodule "third-party/imgui"]
 	path = third-party/imgui
-	url = https://github.com/ocornut/imgui.git
+	url = https://github.com/michoecho/imgui.git
 [submodule "third-party/implot"]
 	path = third-party/implot
-	url = https://github.com/epezent/implot.git
+	url = https://github.com/michoecho/implot.git
+[submodule "third-party/scylladb"]
+	path = third-party/scylladb
+	url = https://github.com/michoecho/scylla
