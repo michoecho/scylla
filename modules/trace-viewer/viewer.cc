@@ -28,7 +28,8 @@
 //
 //   .switches           the reactor picked up a task: run_task, cql_request,
 //                       semaphore_execute, execution_stage, rpc_request_handled
-//   .io_begins/.io_ends a task submitted an I/O, and that I/O completed
+//   .io_queues/.io_steps a task submitted an I/O, and what became of it:
+//                       dispatched to the backend, completed, or cancelled
 //   .prep_runs          a prepared statement was executed
 //   .prep_deltas        the prepared-statement cache changed, or was dumped
 //   .conns              an RPC connection opened, closed, or was dumped
@@ -64,7 +65,7 @@
 //   pass_attribute    switches + the rest      -> row.task where the record
 //                                                 did not carry one
 //   pass_index        the event tables         -> per-cpu task indices
-//   pass_io_spans     io_begins + io_ends      -> io_begin.end
+//   pass_io_spans     io_queues + io_steps     -> io_queued.dispatch/.end
 //   pass_statements   prep_deltas + prep_runs  -> statements, prep_run.statement
 //   pass_connections  conns                    -> connections (paired)
 //   pass_rpc_pair     rpcs + connections       -> rpc.peer_cpu/.peer_row
@@ -213,14 +214,27 @@ void in_parallel(size_t n, F&& body) {
 // are declared in cpu_tables, and for_each_table below visits them in it.
 enum table_id : uint16_t {
     tab_switch = 0,
-    tab_io_begin,
-    tab_io_end,
+    tab_io_queued,
+    tab_io_step,
     tab_prep_run,
     tab_prep_delta,
     tab_conn,
     tab_rpc,
     tab_tq_run,
     n_tables,
+};
+
+// Which of the three later I/O records a step row is, and which way a queued
+// one went. Both are the tracepoint's own field, kept as it came.
+enum io_kind : uint8_t {
+    io_dispatched = 0,
+    io_completed,
+    io_cancelled,
+};
+
+enum io_direction : uint8_t {
+    io_read = 0,
+    io_write = 1,
 };
 
 // Which tracepoint a switch row came from. A switch is "the reactor is running
@@ -300,16 +314,29 @@ struct tq_run_row {
     uint8_t kind = 0;      // tq_kind
 };
 
-struct io_begin_row {
+// An I/O request as the queue took it in. Everything about the request itself
+// is here and on none of the three records that follow, which is how Seastar
+// emits them: the shape does not change, so it is said once.
+struct io_queued_row {
     ROW_COMMON;
-    uint64_t io = 0;     // seastar's io descriptor id
-    int32_t end = none;  // the io_end row that closed it, on this cpu
+    uint64_t io = 0;          // seastar's io id, unique within its shard
+    uint64_t offset = 0;      // where in the file, and how much of it
+    uint64_t length = 0;
+    int32_t fd = 0;
+    uint32_t priority_class = 0;  // the fair queue class it was charged to
+    uint8_t direction = 0;        // io_direction
+    int32_t dispatch = none;      // the io_step row that dispatched it
+    int32_t end = none;           // the io_step row that closed it, on this cpu
 };
 
-struct io_end_row {
+// What happened to it afterwards: dispatched to the backend, and then either
+// completed or cancelled. One table for the three because they are one record
+// each -- an id, and which of the three it is.
+struct io_step_row {
     ROW_COMMON;
     uint64_t io = 0;
-    int32_t begin = none;
+    uint8_t kind = 0;      // io_kind
+    int32_t begin = none;  // the io_queued row this belongs to
 };
 
 struct prep_run_row {
@@ -383,7 +410,7 @@ struct slice_row {
     uint32_t index = 0;    // the row of `table` it was drawn from.
                            // summary: how many rectangles it stands for
     float density = 1.0f;  // summary: the fraction of its span they covered
-    uint16_t table = 0;    // tab_switch: on the cpu. tab_io_begin: in an I/O.
+    uint16_t table = 0;    // tab_switch: on the cpu. tab_io_queued: in an I/O.
     bool summary = false;
 };
 
@@ -399,8 +426,8 @@ struct lod_level {
 struct cpu_tables {
     std::vector<switch_row> switches;
     std::vector<tq_run_row> tq_runs;
-    std::vector<io_begin_row> io_begins;
-    std::vector<io_end_row> io_ends;
+    std::vector<io_queued_row> io_queues;
+    std::vector<io_step_row> io_steps;
     std::vector<prep_run_row> prep_runs;
     std::vector<prep_delta_row> prep_deltas;
     std::vector<conn_row> conns;
@@ -450,8 +477,8 @@ struct cpu_tables {
 template <typename F>
 void for_each_table(cpu_tables& t, F&& f) {
     f(tab_switch, t.switches);
-    f(tab_io_begin, t.io_begins);
-    f(tab_io_end, t.io_ends);
+    f(tab_io_queued, t.io_queues);
+    f(tab_io_step, t.io_steps);
     f(tab_prep_run, t.prep_runs);
     f(tab_prep_delta, t.prep_deltas);
     f(tab_conn, t.conns);
@@ -1024,17 +1051,37 @@ struct decode_sink {
         tq_run(tq_end, none, m);
     }
 
-    void operator()(const viewer::events::io_begin& e, const viewer::event_meta& m) const {
-        io_begin_row r;
+    void operator()(const viewer::events::io_queued& e, const viewer::event_meta& m) const {
+        io_queued_row r;
         r.task = e.task;
         r.io = e.io;
-        push(tab_io_begin, t.io_begins, r, m);
+        r.fd = e.fd;
+        r.direction = uint8_t(e.direction);
+        r.priority_class = e.priority_class;
+        r.offset = e.offset;
+        r.length = e.length;
+        push(tab_io_queued, t.io_queues, r, m);
     }
-    void operator()(const viewer::events::io_end& e, const viewer::event_meta& m) const {
-        io_end_row r;
-        r.task = e.task;
-        r.io = e.io;
-        push(tab_io_end, t.io_ends, r, m);
+    // The three that follow carry an id and, on the completion, the task that
+    // was waiting. The other two happen in whichever task the queue's poller
+    // was running, so their own is filled in from the queued record they pair
+    // with -- see pass_io_spans.
+    void io_step(uint8_t kind, uint64_t io, uint32_t task,
+                 const viewer::event_meta& m) const {
+        io_step_row r;
+        r.kind = kind;
+        r.io = io;
+        r.task = task;
+        push(tab_io_step, t.io_steps, r, m);
+    }
+    void operator()(const viewer::events::io_dispatched& e, const viewer::event_meta& m) const {
+        io_step(io_dispatched, e.io, 0, m);
+    }
+    void operator()(const viewer::events::io_completed& e, const viewer::event_meta& m) const {
+        io_step(io_completed, e.io, e.task, m);
+    }
+    void operator()(const viewer::events::io_cancelled& e, const viewer::event_meta& m) const {
+        io_step(io_cancelled, e.io, 0, m);
     }
 
     void operator()(const viewer::events::prepared_query_run& e,
@@ -1674,38 +1721,58 @@ inline int64_t switch_ends(const cpu_tables& t, uint32_t i, int64_t cpu_end) {
 }
 
 // ============================================================================
-//  11. pass_io_spans -- io_begins + io_ends -> io_begin.end
+//  11. pass_io_spans -- io_queues + io_steps -> io_queued.dispatch/.end
 // ============================================================================
 //
-// An I/O is a pair of records sharing a descriptor id. The id is reused once
-// the descriptor is freed, so the pairing is "the open begin with this id",
-// which one sweep in timestamp order answers. A begin whose end is not in the
-// trace keeps `none`: the ring evicted it, or the snapshot was taken while the
-// I/O was still in flight, and both are worth seeing as an unclosed bar.
+// An I/O is a queued record and the two or three that follow it, sharing an id.
+// The id is reused once the descriptor is freed, so the pairing is "the open
+// queued record with this id", which one sweep in timestamp order answers.
+//
+// A dispatch does not close the request -- it is the moment the queue handed it
+// to the backend, and the completion is still to come -- so it is recorded on
+// the queued row and the id stays open. A completion or a cancellation closes
+// it. A request whose closer is not in the trace keeps `none`: the ring evicted
+// it, or the snapshot was taken while the I/O was still in flight, and both are
+// worth seeing as an unclosed bar.
+//
+// The step also gets the queued record's task, unless it carried one of its
+// own: a dispatch and a cancellation happen in whatever task the queue's poller
+// was running, and the task that the record is *about* is the one that asked
+// for the I/O.
 
 void pass_io_spans(trace_data& d) {
     size_t paired = 0;
     size_t open = 0;
     for (cpu_tables& t : d.tables) {
-        std::unordered_map<uint64_t, uint32_t> pending;  // io id -> io_begin row
+        std::unordered_map<uint64_t, uint32_t> pending;  // io id -> io_queued row
         size_t at_begin = 0;
-        size_t at_end = 0;
-        while (at_begin < t.io_begins.size() || at_end < t.io_ends.size()) {
+        size_t at_step = 0;
+        while (at_begin < t.io_queues.size() || at_step < t.io_steps.size()) {
             const bool take_begin =
-                at_end == t.io_ends.size() ||
-                (at_begin < t.io_begins.size() && t.io_begins[at_begin].ts <= t.io_ends[at_end].ts);
+                at_step == t.io_steps.size() ||
+                (at_begin < t.io_queues.size() &&
+                 t.io_queues[at_begin].ts <= t.io_steps[at_step].ts);
             if (take_begin) {
-                pending[t.io_begins[at_begin].io] = uint32_t(at_begin);
+                pending[t.io_queues[at_begin].io] = uint32_t(at_begin);
                 ++at_begin;
             } else {
-                const auto found = pending.find(t.io_ends[at_end].io);
+                io_step_row& step = t.io_steps[at_step];
+                const auto found = pending.find(step.io);
                 if (found != pending.end()) {
-                    t.io_begins[found->second].end = int32_t(at_end);
-                    t.io_ends[at_end].begin = int32_t(found->second);
-                    pending.erase(found);
-                    ++paired;
+                    io_queued_row& begin = t.io_queues[found->second];
+                    step.begin = int32_t(found->second);
+                    if (step.task == 0) {
+                        step.task = begin.task;
+                    }
+                    if (step.kind == io_dispatched) {
+                        begin.dispatch = int32_t(at_step);
+                    } else {
+                        begin.end = int32_t(at_step);
+                        pending.erase(found);
+                        ++paired;
+                    }
                 }
-                ++at_end;
+                ++at_step;
             }
         }
         open += pending.size();
@@ -2205,10 +2272,10 @@ void pass_cost(trace_data& d) {
         for (const switch_row& r : t.switches) {
             extend(r.query, r.ts);
         }
-        for (const io_begin_row& r : t.io_begins) {
-            extend(r.query, r.end >= 0 ? t.io_ends[r.end].ts : r.ts);
+        for (const io_queued_row& r : t.io_queues) {
+            extend(r.query, r.end >= 0 ? t.io_steps[r.end].ts : r.ts);
         }
-        for (const io_end_row& r : t.io_ends) {
+        for (const io_step_row& r : t.io_steps) {
             extend(r.query, r.ts);
         }
         for (const rpc_row& r : t.rpcs) {
@@ -2325,6 +2392,18 @@ std::string format_bytes(std::string_view raw) {
     return out;
 }
 
+// What the request was: which file, which way, and how much of it. The offset
+// and length are the ones the queue was given, so a short read still reads as
+// what was asked for.
+inline std::string format_io_request(const io_queued_row& r) {
+    return fmt::format("fd {} {} {}+{} pc {}", r.fd, r.direction == io_write ? "write" : "read",
+                       r.offset, r.length, r.priority_class);
+}
+
+inline const char* io_kind_name(uint8_t kind) {
+    return kind == io_dispatched ? "IO-DISP" : kind == io_completed ? "IO-DONE" : "IO-CANC";
+}
+
 std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t index) {
     const cpu_tables& t = d.tables[cpu];
     switch (table) {
@@ -2347,20 +2426,26 @@ std::string format_event(const trace_data& d, uint32_t cpu, uint16_t table, uint
             }
             return fmt::format("{:<7}", "TQ-");
         }
-        case tab_io_begin: {
-            const io_begin_row& r = t.io_begins[index];
-            std::string line = fmt::format("{:<7} task {:08x} io {:016x}", "IO-BEGIN", r.task, r.io);
+        case tab_io_queued: {
+            const io_queued_row& r = t.io_queues[index];
+            std::string line = fmt::format("{:<7} task {:08x} io {:016x}  {}", "IO-Q", r.task, r.io,
+                                           format_io_request(r));
             if (r.end >= 0) {
-                fmt::format_to(std::back_inserter(line), "  {:.6f} ms",
-                               d.seconds(t.io_ends[r.end].ts - r.ts) * 1e3);
+                fmt::format_to(std::back_inserter(line), "  {:.6f} ms{}",
+                               d.seconds(t.io_steps[r.end].ts - r.ts) * 1e3,
+                               t.io_steps[r.end].kind == io_cancelled ? ", cancelled" : "");
             } else {
                 line += "  (never completed in this trace)";
             }
+            if (r.dispatch >= 0) {
+                fmt::format_to(std::back_inserter(line), "  queued {:.6f} ms",
+                               d.seconds(t.io_steps[r.dispatch].ts - r.ts) * 1e3);
+            }
             return line;
         }
-        case tab_io_end: {
-            const io_end_row& r = t.io_ends[index];
-            return fmt::format("{:<7} task {:08x} io {:016x}", "IO-END", r.task, r.io);
+        case tab_io_step: {
+            const io_step_row& r = t.io_steps[index];
+            return fmt::format("{:<7} task {:08x} io {:016x}", io_kind_name(r.kind), r.task, r.io);
         }
         case tab_prep_run: {
             const prep_run_row& r = t.prep_runs[index];
@@ -2409,8 +2494,8 @@ const char* event_kind_name(const trace_data& d, uint32_t cpu, uint16_t table,
     switch (table) {
         case tab_switch: return switch_cause_name(t.switches[index].cause);
         case tab_tq_run: return t.tq_runs[index].kind == tq_begin ? "TQ+" : "TQ-";
-        case tab_io_begin: return "IO-BEGIN";
-        case tab_io_end: return "IO-END";
+        case tab_io_queued: return "IO-Q";
+        case tab_io_step: return io_kind_name(t.io_steps[index].kind);
         case tab_prep_run: return "PREPARED";
         case tab_prep_delta: {
             const uint8_t kind = t.prep_deltas[index].kind;
@@ -2447,19 +2532,20 @@ std::string format_event_details(const trace_data& d, uint32_t cpu, uint16_t tab
             const tq_run_row& r = t.tq_runs[index];
             return r.kind == tq_begin ? fmt::format("sg {}", r.group) : "";
         }
-        case tab_io_begin: {
-            const io_begin_row& r = t.io_begins[index];
-            std::string details = fmt::format("I/O {:016x}", r.io);
+        case tab_io_queued: {
+            const io_queued_row& r = t.io_queues[index];
+            std::string details = fmt::format("I/O {:016x}, {}", r.io, format_io_request(r));
             if (r.end >= 0) {
-                fmt::format_to(std::back_inserter(details), ", {:.6f} ms",
-                               d.seconds(t.io_ends[r.end].ts - r.ts) * 1e3);
+                fmt::format_to(std::back_inserter(details), ", {:.6f} ms{}",
+                               d.seconds(t.io_steps[r.end].ts - r.ts) * 1e3,
+                               t.io_steps[r.end].kind == io_cancelled ? ", cancelled" : "");
             } else {
                 details += ", never completed in this trace";
             }
             return details;
         }
-        case tab_io_end:
-            return fmt::format("I/O {:016x}", t.io_ends[index].io);
+        case tab_io_step:
+            return fmt::format("I/O {:016x}", t.io_steps[index].io);
         case tab_prep_run: {
             const prep_run_row& r = t.prep_runs[index];
             if (r.statement >= 0) {
@@ -2499,8 +2585,8 @@ uint32_t task_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
     const cpu_tables& t = d.tables[cpu];
     switch (table) {
         case tab_switch: return t.switches[index].task;
-        case tab_io_begin: return t.io_begins[index].task;
-        case tab_io_end: return t.io_ends[index].task;
+        case tab_io_queued: return t.io_queues[index].task;
+        case tab_io_step: return t.io_steps[index].task;
         case tab_prep_run: return t.prep_runs[index].task;
         case tab_prep_delta: return t.prep_deltas[index].task;
         case tab_conn: return t.conns[index].task;
@@ -2514,8 +2600,8 @@ int32_t query_of(const trace_data& d, uint32_t cpu, uint16_t table, uint32_t ind
     const cpu_tables& t = d.tables[cpu];
     switch (table) {
         case tab_switch: return t.switches[index].query;
-        case tab_io_begin: return t.io_begins[index].query;
-        case tab_io_end: return t.io_ends[index].query;
+        case tab_io_queued: return t.io_queues[index].query;
+        case tab_io_step: return t.io_steps[index].query;
         case tab_prep_run: return t.prep_runs[index].query;
         case tab_prep_delta: return t.prep_deltas[index].query;
         case tab_conn: return t.conns[index].query;
@@ -2575,13 +2661,13 @@ struct band {
 };
 
 inline band band_of(uint16_t table) {
-    return table == tab_io_begin ? band{0.40, 0.60} : band{0.08, 0.92};
+    return table == tab_io_queued ? band{0.40, 0.60} : band{0.08, 0.92};
 }
 
 // Drawn in this order, back to front: an I/O sits inside the stretch of cpu it
 // interrupts, so it goes over it.
 inline int layer_of(uint16_t table) {
-    return table == tab_io_begin ? 1 : 0;
+    return table == tab_io_queued ? 1 : 0;
 }
 
 // Three states, not two: the picked request, the one under the pointer, and
@@ -2590,7 +2676,7 @@ inline int layer_of(uint16_t table) {
 // row it touches at once rather than only under the pointer; and the washed
 // pair is the reactor's other work.
 inline ImU32 colour_of(uint16_t table, int32_t query, int32_t primary, int32_t secondary) {
-    const bool is_io = table == tab_io_begin;
+    const bool is_io = table == tab_io_queued;
     if (query >= 0 && query == primary) {
         return is_io ? IM_COL32(90, 140, 240, 255) : IM_COL32(64, 200, 64, 255);
     }
@@ -2665,10 +2751,10 @@ void pass_render(trace_data& d) {
                     emit(sw.ts, switch_ends(t, i, cpu_end), sw.query, tab_switch, i);
                 }
             } else {
-                out.reserve(t.io_begins.size());
-                for (uint32_t i = 0; i < t.io_begins.size(); ++i) {
-                    const io_begin_row& b = t.io_begins[i];
-                    emit(b.ts, b.end >= 0 ? t.io_ends[b.end].ts : cpu_end, b.query, tab_io_begin, i);
+                out.reserve(t.io_queues.size());
+                for (uint32_t i = 0; i < t.io_queues.size(); ++i) {
+                    const io_queued_row& b = t.io_queues[i];
+                    emit(b.ts, b.end >= 0 ? t.io_steps[b.end].ts : cpu_end, b.query, tab_io_queued, i);
                 }
             }
         });
@@ -2731,7 +2817,7 @@ void pass_io_stack(trace_data& d) {
     for (cpu_tables& t : d.tables) {
         t.io_slices.clear();
         for (const slice_row& s : t.slices) {
-            if (s.table == tab_io_begin) {
+            if (s.table == tab_io_queued) {
                 t.io_slices.push_back(s);
             }
         }
@@ -2789,7 +2875,7 @@ void pass_io_stack(trace_data& d) {
         // Back into .slices, which the flattened band leaves sorted: the cpu
         // rectangles keep their order and the segments come out in time order,
         // so the two only have to be merged.
-        std::erase_if(t.slices, [](const slice_row& s) { return s.table == tab_io_begin; });
+        std::erase_if(t.slices, [](const slice_row& s) { return s.table == tab_io_queued; });
         std::vector<slice_row> merged;
         merged.reserve(t.slices.size() + flat.size());
         std::ranges::merge(t.slices, flat, std::back_inserter(merged), {}, &slice_row::t0,
@@ -2891,7 +2977,7 @@ std::vector<slice_row> coarsen(const std::vector<slice_row>& src, double scale) 
         }
         const double t0 = double(bin) * scale;
         out.push_back({t0, t0 + scale, query, count, float(std::min(1.0, busy / scale)),
-                       uint16_t(k == 1 ? tab_io_begin : tab_switch), true});
+                       uint16_t(k == 1 ? tab_io_queued : tab_switch), true});
     };
     // Close the bin being filled and open `next`. Its summaries go out first
     // and the wide rectangles that start inside it after, which is what keeps
@@ -2930,7 +3016,7 @@ std::vector<slice_row> coarsen(const std::vector<slice_row>& src, double scale) 
         // A summary of the level below covered `density` of its own span; a
         // rectangle covers all of its own. Either way it is "how much time
         // does this stand for", which is what the coarser bin adds up.
-        band_acc& a = acc[s.table == tab_io_begin ? 1 : 0];
+        band_acc& a = acc[s.table == tab_io_queued ? 1 : 0];
         const double covered = s.summary ? double(s.density) : 1.0;
         const double bin_end = double(bin + 1) * scale;
         if (a.query == none && s.query >= 0) {
@@ -3903,7 +3989,7 @@ void draw_plot_window(const trace_data& d, view& v) {
                     // and the way to see them is to zoom until they are drawn.
                     if (s.summary) {
                         ImGui::Text("%u %s here, %.0f%% of the time", s.index,
-                                    s.table == tab_io_begin ? "I/Os" : "stretches on the cpu",
+                                    s.table == tab_io_queued ? "I/Os" : "stretches on the cpu",
                                     100.0 * double(s.density));
                         ImGui::TextUnformatted("too narrow to draw -- zoom in for the records");
                         ImGui::EndTooltip();
@@ -3919,7 +4005,7 @@ void draw_plot_window(const trace_data& d, view& v) {
                                             std::string(d.text(l.function)).c_str());
                             }
                         }
-                        ImGui::Text("%s%s", s.table == tab_io_begin ? "waiting for this I/O"
+                        ImGui::Text("%s%s", s.table == tab_io_queued ? "waiting for this I/O"
                                                                    : "on the cpu",
                                     s.query < 0 ? ", no request"
                                     : s.query == v.clicked.query ? ", the picked request"
@@ -4357,7 +4443,7 @@ static int run(int argc, char** argv) {
                 const double covered =
                     std::max(0.0, std::min(sl.t1, v.t1) - std::max(sl.t0, v.t0));
                 on_cpu += mine && sl.table == tab_switch ? covered : 0;
-                in_io += mine && sl.table == tab_io_begin ? covered : 0;
+                in_io += mine && sl.table == tab_io_queued ? covered : 0;
                 bars += mine ? 1 : 0;
             }
             fmt::print("  row {} {}: {} bars, {:.3f} ms on the cpu, {:.3f} ms in I/O\n", row,

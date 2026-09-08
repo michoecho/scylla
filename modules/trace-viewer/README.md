@@ -56,8 +56,10 @@ analysis keys off.
 | `run_task{task, at}` | the reactor picked a task off a run queue, and where that task was created; static wire id `1` | `0` |
 | `task_queue_run_begin{scheduling_group}` / `task_queue_run_end{}` | the reactor gave the cpu to one task queue and took it back; every `run_task` between the two ran under that scheduling group | |
 | `cql_request{task}` | a CQL frame arrived and opened a new chain | `1` |
-| `io_begin{task, io}` | a task submitted an I/O and is now waiting | `0x4` |
-| `io_end{task, io}` | that I/O completed | `0x5` |
+| `io_queued{task, io, fd, direction, priority_class, offset, length}` | a task submitted an I/O and is now waiting, and what the request is | `0x4` |
+| `io_dispatched{io}` | the I/O queue handed it to the backend | |
+| `io_completed{task, io}` | that I/O completed | `0x5` |
+| `io_cancelled{io}` | it was cancelled before dispatch | |
 | `semaphore_execute{task}` | the reader semaphore's loop ran a queued read | `0xa` |
 | `execution_stage{task}` | an execution stage ran a queued work item | `0xb` |
 | `stacktrace_sample{shard, time_ns, frames}` | a shard was interrupted for a stack sample | `0xc` |
@@ -437,7 +439,8 @@ against.
 files nodes cpus                   what the snapshot directories describe
   tables[cpu].switches             the reactor picked up a task
              .tq_runs              the reactor gave the cpu to a task queue
-             .io_begins/.io_ends   an I/O was submitted, and completed
+             .io_queues/.io_steps  an I/O was submitted, and dispatched,
+                                   completed or cancelled
              .prep_runs            a prepared statement was executed
              .prep_deltas          the statement cache changed, or was dumped
              .conns                a connection opened, closed, or was dumped
@@ -465,7 +468,7 @@ The passes, in the order `run()` calls them:
 | `pass_retime` | syncs | every timestamp, in node 0's clock |
 | `pass_attribute` | switches | `row.task` where the record carried none |
 | `pass_index` | the event tables | the per-cpu task indices |
-| `pass_io_spans` | io_begins, io_ends | `io_begin.end` |
+| `pass_io_spans` | io_queues, io_steps | `io_queued.dispatch`, `io_queued.end` |
 | `pass_statements` | prep_deltas, prep_runs | statements, `prep_run.statement` |
 | `pass_connections` | conns | connections, paired end to end |
 | `pass_rpc_pair` | rpcs, connections | `rpc.peer_cpu`, `rpc.peer_row` |
@@ -1158,7 +1161,7 @@ When something else looks wrong, decode headlessly and count. Reading the
 generated `plugin.cc` in the cache directory says exactly what the viewer thinks
 each record is; a ~40 line program over `trace_wire.h` and the tables --
 `modules/tracer/trace_reader.{h,cc}` is one, written for the tracer's tests --
-will tell you how many distinct tasks own an `io_begin` -- if that number is small, the chain is
+will tell you how many distinct tasks own an `io_queued` -- if that number is small, the chain is
 broken somewhere. Also worth counting: how many `cql_request` records there are,
 and whether the ids in one shard's file were minted by the other shard's
 requests.

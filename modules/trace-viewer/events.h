@@ -105,12 +105,28 @@ struct events {
     struct task_queue_run_end {};
 
     // --- i/o ---------------------------------------------------------------
-    struct io_begin {
+    // The I/O queue's four records, which are Seastar's LTTng ones with a task
+    // id added. `io` is what pairs them: a request is queued, dispatched to the
+    // backend, and then either completed or cancelled. What the request *is* is
+    // on the queued record alone, because that is where the queue knows it and
+    // because none of it changes afterwards.
+    struct io_queued {
+        std::uint32_t task = 0;
+        std::uint64_t io = 0;
+        std::int32_t fd = 0;
+        std::uint32_t direction = 0;  // 0 = read, 1 = write
+        std::uint32_t priority_class = 0;
+        std::uint64_t offset = 0;
+        std::uint64_t length = 0;
+    };
+    struct io_dispatched {
+        std::uint64_t io = 0;
+    };
+    struct io_completed {
         std::uint32_t task = 0;
         std::uint64_t io = 0;
     };
-    struct io_end {
-        std::uint32_t task = 0;
+    struct io_cancelled {
         std::uint64_t io = 0;
     };
 
@@ -208,8 +224,10 @@ struct events {
     X(rpc_request_handled)               \
     X(task_queue_run_begin)              \
     X(task_queue_run_end)                \
-    X(io_begin)                          \
-    X(io_end)                            \
+    X(io_queued)                         \
+    X(io_dispatched)                     \
+    X(io_completed)                      \
+    X(io_cancelled)                      \
     X(prepared_query_run)                \
     X(prepared_statement_added)          \
     X(prepared_statement_removed)        \

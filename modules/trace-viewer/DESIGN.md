@@ -261,7 +261,7 @@ rests on are written down.
 |---|---|
 | `.switches` | the reactor picked up a task (five tracepoints; `cause` says which) |
 | `.tq_runs` | the reactor gave the cpu to a task queue, or took it back. The end is what bounds every switch inside it |
-| `.io_begins` / `.io_ends` | an I/O was submitted, and completed |
+| `.io_queues` / `.io_steps` | an I/O was submitted, and dispatched, completed or cancelled |
 | `.prep_runs` | a prepared statement was executed |
 | `.prep_deltas` | the statement cache changed, or was dumped |
 | `.conns` | a connection opened, closed, or was dumped |
@@ -309,7 +309,7 @@ In the order `run()` calls them. The middle column is the whole contract.
 | 6 | `pass_attribute` | `switches` → `row.task` where the record carried none |
 | 7 | `pass_task_queue_runs` | `tq_runs` + `timeline` → `switch.run`, `.group`, `tq_run.end` |
 | 8 | `pass_index` | event tables → the `*_by_task` indices |
-| 9 | `pass_io_spans` | `io_begins` + `io_ends` → `io_begin.end` |
+| 9 | `pass_io_spans` | `io_queues` + `io_steps` → `io_queued.dispatch`, `io_queued.end` |
 | 10 | `pass_statements` | `prep_deltas` + `prep_runs` → `statements`, `prep_run.statement` |
 | 11 | `pass_connections` | `conns` → `connections`, paired end to end |
 | 12 | `pass_rpc_pair` | `rpcs` + `connections` → `rpc.peer_cpu`, `.peer_row` |
@@ -337,7 +337,7 @@ text survives startup. The pass went 2879 ms to 255 ms and the process 757 MB
 lighter, and the only code that had to change was the headless dump, which
 now formats its own lines.
 
-What is left of it is two halves built at once -- `switches` and `io_begins`,
+What is left of it is two halves built at once -- `switches` and `io_queues`,
 each already in time order because the table it reads is -- merged rather than
 sorted. That merge is what the old `std::ranges::sort` was really doing, at
 340 ms per pass over eleven million rectangles. `pass_index` and `pass_lod`
