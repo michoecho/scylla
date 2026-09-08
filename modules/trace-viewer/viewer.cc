@@ -233,8 +233,10 @@ enum io_kind : uint8_t {
 };
 
 enum io_direction : uint8_t {
-    io_read = 0,
-    io_write = 1,
+    // These values are Seastar's wire representation, not an arbitrary
+    // viewer enum. io_direction_and_length::write_idx is 0 and read_idx is 1.
+    io_write = 0,
+    io_read = 1,
 };
 
 // Which tracepoint a switch row came from. A switch is "the reactor is running

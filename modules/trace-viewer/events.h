@@ -114,7 +114,9 @@ struct events {
         std::uint32_t task = 0;
         std::uint64_t io = 0;
         std::int32_t fd = 0;
-        std::uint32_t direction = 0;  // 0 = read, 1 = write
+        // Seastar's io_direction_and_length stores the R/W flag in bit 0:
+        // write is 0 and read is 1.
+        std::uint32_t direction = 0;
         std::uint32_t priority_class = 0;
         std::uint64_t offset = 0;
         std::uint64_t length = 0;
