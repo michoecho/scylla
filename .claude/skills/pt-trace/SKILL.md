@@ -62,9 +62,7 @@ mistake does not announce itself — see the empty-trace note in Troubleshooting
 - For `run --ftf` / `run --perfetto`: the `perf2perfetto` dlfilter. Nothing to do —
   it lives at `modules/perf2perfetto`, and pt-trace builds
   `//modules/perf2perfetto:dlfilter` itself to find it. Without a working
-  `buck2` you must pass `--dlfilter PATH`. (The original Rust implementation is
-  still vendored at `third-party/rust/perf2perfetto` and still builds as
-  `//:perf2perfetto`; it writes byte-identical traces.)
+  `buck2` you must pass `--dlfilter PATH`.
 
 ## 1. Make the test traceable
 

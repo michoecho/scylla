@@ -314,17 +314,6 @@
             rustc
             ;
 
-          # bindgen's runtime dependencies, for the crates under
-          # third-party/rust whose build scripts run it (perf2perfetto).
-          # bindgen dlopen()s libclang at build-script time rather than linking
-          # it, so it needs a directory to find it in; and it drives clang
-          # directly, which means the kernel UAPI headers a wrapper header
-          # includes (<linux/perf_event.h>) have to be pointed at explicitly.
-          # Both are handed to the build script through Buck; see
-          # third-party/rust/fixups/perf2perfetto/fixups.toml.
-          libclang = pkgs.llvmPackages_22.libclang;
-          linux-headers = pkgs.linuxHeaders;
-
           cxx = pkgs.llvmPackages_22.stdenv.mkDerivation {
             name = "buck2-cxx";
             dontUnpack = true;

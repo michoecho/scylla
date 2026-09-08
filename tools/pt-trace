@@ -62,9 +62,9 @@ ACK_ENV = "PERF_ACK_FIFO"
 # built by Buck2, so rather than being told where it is, pt-trace asks the
 # build system -- see dlfilter_from_buck().
 #
-# The original Rust implementation is still vendored at
-# third-party/rust/perf2perfetto and still buildable as `//:perf2perfetto`; the
-# two write byte-identical traces. Pass --dlfilter with its path to use it.
+# It began as a port of a Rust crate of the same name, which used to be vendored
+# here as a submodule. The port replaced it outright, so the submodule is gone;
+# --dlfilter still takes a path if you have another filter to point at.
 DLFILTER_TARGET = "//modules/perf2perfetto:dlfilter"
 
 # The repo root, so pt-trace can find the build system regardless of the

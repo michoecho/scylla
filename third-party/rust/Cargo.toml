@@ -4,9 +4,9 @@
 # never built, and no rules are generated for it. Its only job is to name, in
 # `[dependencies]`, the crates that should get a public Buck target. Reindeer
 # treats the first-order dependencies of a workspace member as the public set,
-# so listing the two local crates here is what turns them into
-# `rust_third_party//:libafl-c` and `rust_third_party//:perf2perfetto` rather
-# than package-private rules nothing outside this file could reference.
+# so listing the local crate here is what turns it into
+# `rust_third_party//:libafl-c` rather than a package-private rule nothing
+# outside this file could reference.
 [package]
 name = "rust-third-party"
 version = "0.0.0"
@@ -20,16 +20,14 @@ name = "rust_third_party"
 path = "pseudo.rs"
 
 [dependencies]
-# Local crates, vendored in this directory. `include_workspace_members` in
-# reindeer.toml is what makes reindeer emit rules for them; naming them here is
+# Local crate, vendored in this directory. `include_workspace_members` in
+# reindeer.toml is what makes reindeer emit rules for it; naming it here is
 # what makes those rules public.
 libafl-c = { path = "libafl-c" }
-perf2perfetto = { path = "perf2perfetto" }
 
 [workspace]
 members = [
     "libafl-c",
-    "perf2perfetto",
 ]
 resolver = "2"
 

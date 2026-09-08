@@ -166,25 +166,3 @@ nix_rust_toolchain(
     rustdoc = ":rustc[rustdoc]",
     visibility = ["PUBLIC"],
 )
-
-# bindgen's runtime dependencies, for build scripts under third-party/rust that
-# run it. bindgen dlopen()s libclang rather than linking it, so what it wants is
-# a directory (LIBCLANG_PATH); and it invokes clang directly rather than through
-# the cxx toolchain, so the kernel UAPI headers have to be handed to it as an
-# explicit -isystem. See third-party/rust/fixups/perf2perfetto/fixups.toml.
-flake.package(
-    name = "libclang",
-    files = {"lib": "lib"},
-    # Multi-output derivation; libclang.so lives in `lib`, not the default `out`.
-    output = "lib",
-    path = "root//:flake",
-    visibility = ["PUBLIC"],
-)
-
-flake.package(
-    name = "linux_headers",
-    files = {"include": "include"},
-    package = "linux-headers",
-    path = "root//:flake",
-    visibility = ["PUBLIC"],
-)
