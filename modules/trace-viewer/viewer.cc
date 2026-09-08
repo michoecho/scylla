@@ -3176,7 +3176,9 @@ struct view {
     std::vector<uint8_t> pinned;  // parallel to trace::cpus
     uint32_t pins = 0;            // bumped on every change, so rows notice
 
-    double t0 = 0;  // the picked request, in the plot's milliseconds
+    // The range the plot is currently following. A histogram hover may borrow
+    // this range temporarily; it is deliberately not the Log's time origin.
+    double t0 = 0;
     double t1 = 0;
     std::vector<uint32_t> rows;  // one cpu per plot row
 
@@ -3261,6 +3263,16 @@ struct view {
     // while I/O spans overlap each other. These two say what to divide by.
     size_t visible_rows = 0;
     double lod_scale_pixels = 0;  // 0 when the row is drawing .slices
+
+    // The Log's Time column is relative to the committed primary selection.
+    // Derive it instead of caching it alongside the previewable plot range:
+    // hovering another query must not be able to change the reference point.
+    [[nodiscard]] double reference_time(const trace_data& d) const {
+        if (clicked.query < 0) {
+            return 0;
+        }
+        return d.ms(d.queries[clicked.query].t0 - d.origin);
+    }
 };
 
 // The plot's rows: the pinned reactors, then the picked request's, then
@@ -4130,6 +4142,7 @@ void draw_log_window(const trace_data& d, view& v) {
     ImGui::Begin("Log");
     const int32_t cpu = v.log_cpu();
     const int32_t focus = v.focus();
+    const double reference = v.reference_time(d);
     if (cpu < 0) {
         ImGui::TextUnformatted("click a row of the timeline to read that shard's log");
         ImGui::End();
@@ -4204,8 +4217,10 @@ void draw_log_window(const trace_data& d, view& v) {
                                                  : IM_COL32(150, 150, 158, 255));
 
                 ImGui::TableSetColumnIndex(0);
-                // Relative to the request, wherever in the trace the row is,
-                // so scrolling away from it reads as a distance from it.
+                // Relative to the committed primary request, wherever in the
+                // trace the row is, so scrolling away from it reads as a
+                // distance from it. A transient hover changes the highlighted
+                // row, not this reference.
                 //
                 // The time is also the row's hit target, spanning the columns
                 // beside it: a Selectable is what makes the whole line
@@ -4215,7 +4230,8 @@ void draw_log_window(const trace_data& d, view& v) {
                 // would be one too many.
                 ImGui::PushID(i);
                 if (ImGui::Selectable(
-                        fmt::format("{:+.6f} ms", d.ms(e.ts - d.origin) - v.t0).c_str(), false,
+                        fmt::format("{:+.6f} ms", d.ms(e.ts - d.origin) - reference).c_str(),
+                        false,
                         ImGuiSelectableFlags_SpanAllColumns)) {
                     pick_log_row(d, v, uint32_t(cpu), i);
                 }
