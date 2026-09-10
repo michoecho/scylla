@@ -5243,6 +5243,11 @@ class data_read_resolver : public abstract_read_resolver {
     bool _increase_per_partition_limit = false;
     bool _all_reached_end = true;
     query::short_read _is_short_read;
+    // The earliest stop of a replica which did not reach the end of its range. It is set only
+    // when short reads are allowed. The converted page must not continue past it.
+    std::optional<full_position> _earliest_replica_stop;
+    // Whether the reconciled result was trimmed at _earliest_replica_stop.
+    bool _trimmed_to_replica_stop = false;
     std::vector<reply> _data_results;
     mutations_per_partition_key_map _diffs;
 private:
@@ -5387,20 +5392,25 @@ private:
                 continue;
             }
             auto replica_stop = get_replica_last_position(s, versions, i);
-            if (cmp(replica_stop, last_reconciled_position)) {
-                if (short_reads_allowed) {
-                    if (!earliest_replica_stop || cmp(replica_stop, *earliest_replica_stop)) {
-                        earliest_replica_stop = std::move(replica_stop);
-                    }
-                } else {
-                    return true;
-                }
+            if (!short_reads_allowed && cmp(replica_stop, last_reconciled_position)) {
+                return true;
+            }
+            if (!earliest_replica_stop || cmp(replica_stop, *earliest_replica_stop)) {
+                earliest_replica_stop = std::move(replica_stop);
             }
         }
 
-        // Short reads are allowed, trim the reconciled result.
-        if (earliest_replica_stop) {
+        if (!short_reads_allowed || !earliest_replica_stop) {
+            return false;
+        }
+        // A stop at or after the last reconciled row does not trim the result, but it still bounds
+        // the cursor of the converted page.
+        _earliest_replica_stop = full_position(earliest_replica_stop->partition.key(), earliest_replica_stop->position);
+
+        // Short reads are allowed. Trim the reconciled result if a replica stopped before its last row.
+        if (cmp(*earliest_replica_stop, last_reconciled_position)) {
             _is_short_read = query::short_read::yes;
+            _trimmed_to_replica_stop = true;
 
             // Drop partitions which the least-advanced replica did not examine.
             auto it = rp.begin();
@@ -5538,6 +5548,12 @@ public:
     }
     bool all_reached_end() const {
         return _all_reached_end;
+    }
+    const std::optional<full_position>& earliest_replica_stop() const {
+        return _earliest_replica_stop;
+    }
+    bool trimmed_to_replica_stop() const {
+        return _trimmed_to_replica_stop;
     }
     future<std::optional<reconcilable_result>> resolve(const query::read_command& cmd, uint64_t original_row_limit, uint64_t original_per_partition_limit,
             uint32_t original_partition_limit) {
@@ -5980,6 +5996,24 @@ protected:
 
                     auto result = ::make_foreign(::make_lw_shared<query::result>(
                             co_await to_data_query_result(std::move(*rr_opt), _schema, _cmd->slice, _cmd->get_row_limit(), _cmd->partition_limit)));
+                    if (auto stop = data_resolver->earliest_replica_stop()) {
+                        const auto& converted_stop = result->last_position();
+                        // Never continue past a replica which did not reach the end of its range.
+                        // If reconciliation trimmed the result at that replica's stop, the stop is
+                        // the cursor. The trimmed mutation may retain a fragment after it (for
+                        // example, a range tombstone). Conversion also produces a partition-start
+                        // cursor if the stop partition has no static row, rows or tombstones left.
+                        // Otherwise, conversion may still consume a trailing range tombstone from a
+                        // replica which reached the end, past the stop. Lower the cursor then, but
+                        // keep an earlier converted cursor: conversion can stop at a row or
+                        // partition limit.
+                        if (data_resolver->trimmed_to_replica_stop() || !converted_stop
+                                || full_position::cmp(*_schema, *stop, *converted_stop) < 0) {
+                            result->set_last_position(std::move(stop));
+                            // The pager must consume the lowered cursor even if no replica page was short.
+                            result->mark_as_short_read();
+                        }
+                    }
                     qlogger.trace("reconciled: {}", result->pretty_printer(_schema, _cmd->slice));
 
                     // Un-reverse mutations for reversed queries. When a mutation comes from a node in mixed-node cluster

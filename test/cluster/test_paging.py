@@ -631,3 +631,168 @@ async def test_reconciliation_uses_range_tombstone_as_rowless_replica_position(
         assert [r.ck for r in rows] == (list(reversed(live_rows)) if reverse_order else live_rows)
 
         assert await read_retries(manager, servers[0]) == retries_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reverse_order", "legacy_reverse_format"),
+    [
+        pytest.param(False, False, id="forward"),
+        pytest.param(True, False, id="reverse-native"),
+        pytest.param(
+            True,
+            True,
+            id="reverse-legacy",
+            marks=pytest.mark.skip_mode(mode="release", reason="error injections are not supported in release mode"),
+        ),
+    ],
+)
+async def test_reconciliation_does_not_page_past_earliest_range_tombstone_stop(
+        manager: ScyllaClusterManager, reverse_order: bool, legacy_reverse_format: bool) -> None:
+    """
+    Keep paging at the earliest replica stop when later range tombstones remain.
+
+    A mutation page from one replica contains many range tombstones and no live
+    rows, while another replica contains live rows on both sides of a range
+    tombstone which covers neither row. Reconciliation trims the result to the
+    first replica's tombstone stop. The tombstone from the other replica must
+    not become the outgoing cursor, or the live row between the two positions
+    is skipped on the continuation page.
+
+    The continuation uses the paging state from the first response, so a new
+    query cannot hide a cursor which was advanced too far.
+    """
+    cfg = {
+        'query_page_size_in_bytes': 1024,
+        'hinted_handoff_enabled': False,
+        'cache_hit_rate_read_balancing': False,
+    }
+    if legacy_reverse_format:
+        cfg['error_injections_at_startup'] = [
+            {'name': 'suppress_features', 'value': 'NATIVE_REVERSE_QUERIES'},
+        ]
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+    cql0 = await manager.get_cql_exclusive(servers[0])
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        # Put the tombstone-only page's progress before the live rows in query
+        # order. In a reversed query, larger clustering keys come first.
+        tombstone_base = 100000 if reverse_order else 0
+        await manager.server_stop_gracefully(servers[1].server_id)
+        delete_range = cql0.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck >= ? AND ck <= ?")
+        delete_range.consistency_level = ConsistencyLevel.ONE
+        for ck in range(tombstone_base, tombstone_base + 100, 2):
+            await cql0.run_async(delete_range, [ck, ck + 1])
+        await manager.server_start(servers[1].server_id, wait_others=1)
+
+        await manager.server_stop_gracefully(servers[0].server_id)
+        cql1 = await manager.get_cql_exclusive(servers[1])
+        delete_range_on_cql1 = cql1.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck >= ? AND ck <= ?")
+        delete_range_on_cql1.consistency_level = ConsistencyLevel.ONE
+        await cql1.run_async(delete_range_on_cql1, [160, 200])
+        for ck in [150, 250]:
+            await cql1.run_async(SimpleStatement(
+                f"INSERT INTO {table} (pk, ck, v) VALUES (0, {ck}, {ck})",
+                consistency_level=ConsistencyLevel.ONE))
+        await manager.server_start(servers[0].server_id, wait_others=1)
+        # Both nodes have restarted. Let the shared session reconnect before
+        # the keyspace is dropped with it.
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        order_by = " ORDER BY ck DESC" if reverse_order else ""
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} WHERE pk = 0{order_by}",
+                                 consistency_level=ConsistencyLevel.ALL,
+                                 fetch_size=2)
+        response_future = cql0.execute_async(select)
+        first_page = await _wrap_future(response_future)
+        assert first_page == []
+        assert response_future.has_more_pages
+        response_future.start_fetching_next_page()
+        rows = await _wrap_future(response_future, all_pages=True)
+
+        assert [r.ck for r in rows] == ([250, 150] if reverse_order else [150, 250])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reverse_order", "legacy_reverse_format"),
+    [
+        pytest.param(False, False, id="forward"),
+        pytest.param(True, False, id="reverse-native"),
+        pytest.param(
+            True,
+            True,
+            id="reverse-legacy",
+            marks=pytest.mark.skip_mode(mode="release", reason="error injections are not supported in release mode"),
+        ),
+    ],
+)
+async def test_reconciliation_does_not_page_past_untrimmed_replica_stop(
+        manager: ScyllaClusterManager, reverse_order: bool, legacy_reverse_format: bool) -> None:
+    """
+    Do not let a trailing range tombstone move the cursor past a short replica's stop.
+
+    Node 0 holds large live rows and stops on its page size after a few of
+    them. Node 1 holds no rows, only a range tombstone after all of node 0's
+    rows in query order, and finishes its range. Node 0's stop is its last
+    returned row, which is also the last reconciled row, so reconciliation does
+    not trim the result. Converting the result nevertheless consumes node 1's
+    tombstone. Its end must not become the cursor, or node 0's remaining rows
+    are skipped.
+    """
+    cfg = {
+        'query_page_size_in_bytes': 1024,
+        'hinted_handoff_enabled': False,
+    }
+    if legacy_reverse_format:
+        cfg['error_injections_at_startup'] = [
+            {'name': 'suppress_features', 'value': 'NATIVE_REVERSE_QUERIES'},
+        ]
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+    cql0 = await manager.get_cql_exclusive(servers[0])
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v text, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        # Put the tombstone after the live rows in query order. In a reversed
+        # query, larger clustering keys come first.
+        live_rows = list(range(1000, 1010)) if reverse_order else list(range(10))
+        tombstone_start, tombstone_end = (100, 200) if reverse_order else (1000, 1100)
+
+        # Each row is large enough that node 0 stops after a few of them.
+        await manager.server_stop_gracefully(servers[1].server_id)
+        insert = cql0.prepare(f"INSERT INTO {table} (pk, ck, v) VALUES (0, ?, ?)")
+        insert.consistency_level = ConsistencyLevel.ONE
+        for ck in live_rows:
+            await cql0.run_async(insert, [ck, 'x' * 400])
+        await manager.server_start(servers[1].server_id, wait_others=1)
+
+        await manager.server_stop_gracefully(servers[0].server_id)
+        cql1 = await manager.get_cql_exclusive(servers[1])
+        await cql1.run_async(SimpleStatement(
+            f"DELETE FROM {table} WHERE pk = 0 AND ck >= {tombstone_start} AND ck <= {tombstone_end}",
+            consistency_level=ConsistencyLevel.ONE))
+        await manager.server_start(servers[0].server_id, wait_others=1)
+        # Both nodes have restarted. Let the shared session reconnect before
+        # the keyspace is dropped with it.
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        # The page is large enough that no replica reaches its row limit.
+        order_by = " ORDER BY ck DESC" if reverse_order else ""
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} WHERE pk = 0{order_by}",
+                                 consistency_level=ConsistencyLevel.ALL,
+                                 fetch_size=100)
+        rows = await cql0.run_async(select, all_pages=True)
+        assert [r.ck for r in rows] == (list(reversed(live_rows)) if reverse_order else live_rows)
