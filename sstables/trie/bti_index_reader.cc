@@ -15,6 +15,7 @@
 #include "bti_key_translation.hh"
 #include "utils/i_filter.hh"
 #include <seastar/core/fstream.hh>
+#include <seastar/core/trace_zone.hh>
 #include <fmt/format.h>
 #include <fmt/std.h>
 
@@ -808,7 +809,13 @@ future<bool> bti_index_reader::advance_lower_and_check_if_present(dht::ring_posi
     return advance_lower_and_check_if_present(key, hk);
 }
 
+// The zone is the whole call into the index for one single-partition read: the
+// trie walk, and however many pages of it have to come off the disk. Under
+// BYPASS CACHE that is guaranteed to leave the cpu and come back, which is
+// what makes it worth bracketing -- the tasks it becomes are one thing to
+// whoever reads the trace, and nothing but this says so.
 future<bool> bti_index_reader::advance_lower_and_check_if_present(dht::ring_position_view key, const utils::hashed_key& hash) {
+    SEASTAR_TRACE_ZONE("sstable_index_lookup");
     trie_logger.debug("bti_index_reader::advance_lower_and_check_if_present: this={} key={}", fmt::ptr(this), key);
     utils::get_local_injector().inject("advance_lower_and_check_if_present", [] { throw std::runtime_error("advance_lower_and_check_if_present"); });
     auto k = lazy_comparable_bytes_from_ring_position(_sst_ver, *_s, key);

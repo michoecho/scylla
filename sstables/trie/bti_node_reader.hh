@@ -55,6 +55,9 @@ struct bti_node_reader {
     bti_node_reader(cached_file& f);
     bool cached(int64_t pos) const;
     future<> load(int64_t pos, const reader_permit&, const tracing::trace_state_ptr&);
+    // The miss half of load(), out of line so that it can be the coroutine
+    // holding the `sstable_index_page_load` zone across the read.
+    future<> load_page(int64_t pos, const reader_permit&, const tracing::trace_state_ptr&);
     trie::load_final_node_result read_node(int64_t pos);
     trie::node_traverse_result walk_down_along_key(int64_t pos, const_bytes key);
     trie::node_traverse_sidemost_result walk_down_leftmost_path(int64_t pos);

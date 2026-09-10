@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include <seastar/core/trace_zone.hh>
+
 #include "bti_node_reader.hh"
 #include "bti_node_type.hh"
 
@@ -442,9 +444,15 @@ seastar::future<> bti_node_reader::load(int64_t pos, const reader_permit& permit
     if (cached(pos)) {
         return make_ready_future<>();
     }
-    return _file.get().get_shared_page(pos, permit, trace_ptr).then([this](cached_file::page_read_result page) {
-        _cached_page = std::move(page.ptr);
-    });
+    return load_page(pos, permit, trace_ptr);
+}
+
+// One zone per page the trie walk actually has to fetch. The hit above is not
+// in it, deliberately: what is worth seeing in a trace is the reads.
+seastar::future<> bti_node_reader::load_page(int64_t pos, const reader_permit& permit, const tracing::trace_state_ptr& trace_ptr) {
+    SEASTAR_TRACE_ZONE("sstable_index_page_load");
+    auto page = co_await _file.get().get_shared_page(pos, permit, trace_ptr);
+    _cached_page = std::move(page.ptr);
 }
 
 trie::load_final_node_result bti_node_reader::read_node(int64_t pos) {

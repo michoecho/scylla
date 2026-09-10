@@ -19,6 +19,7 @@
 #include "sstables/mx/bsearch_clustered_cursor.hh"
 #include "sstables/sstables_manager.hh"
 #include "abstract_index_reader.hh"
+#include <seastar/core/trace_zone.hh>
 
 namespace sstables {
 
@@ -496,6 +497,37 @@ private:
         return reset_clustered_cursor(bound);
     }
 
+    // Read one page of the partition index off the disk: the body of what used
+    // to be advance_to_page()'s `loader` lambda, out of line only so that the
+    // lambda can be the coroutine that holds a zone guard across it.
+    future<index_list> load_page(index_bound& bound, uint64_t summary_idx) {
+        auto& summary = _sstable->get_summary();
+        uint64_t position = summary.entries[summary_idx].position;
+        uint64_t quantity = downsampling::get_effective_index_interval_after_index(summary_idx, summary.header.sampling_level,
+            summary.header.min_index_interval);
+
+        uint64_t end;
+        if (summary_idx + 1 >= summary.header.size) {
+            end = _sstable->index_size();
+        } else {
+            end = summary.entries[summary_idx + 1].position;
+        }
+
+        return advance_context(bound, position, end, quantity).then([this, &bound] {
+            return bound.context->consume_input().then_wrapped([this, &bound] (future<> f) {
+                std::exception_ptr ex;
+                if (f.failed()) {
+                    ex = f.get_exception();
+                    sstlog.error("failed reading index for {}: {}", _sstable->get_filename(), ex);
+                }
+                if (ex) {
+                    return make_exception_future<index_list>(std::move(ex));
+                }
+                return bound.consumer->finalize();
+            });
+        });
+    }
+
     // Must be called for non-decreasing summary_idx.
     future<> advance_to_page(index_bound& bound, uint64_t summary_idx) {
         sstlog.trace("index {}: advance_to_page({}), bound {}", fmt::ptr(this), summary_idx, fmt::ptr(&bound));
@@ -510,32 +542,12 @@ private:
             sstlog.trace("index {}: eof", fmt::ptr(this));
             return advance_to_end(bound);
         }
+        // One zone per page actually read: get_or_load() calls this on a miss
+        // and not on a hit, so the zone is the reads and nothing else. A
+        // coroutine because the guard has to be held across them.
         auto loader = [this, &bound] (uint64_t summary_idx) -> future<index_list> {
-            auto& summary = _sstable->get_summary();
-            uint64_t position = summary.entries[summary_idx].position;
-            uint64_t quantity = downsampling::get_effective_index_interval_after_index(summary_idx, summary.header.sampling_level,
-                summary.header.min_index_interval);
-
-            uint64_t end;
-            if (summary_idx + 1 >= summary.header.size) {
-                end = _sstable->index_size();
-            } else {
-                end = summary.entries[summary_idx + 1].position;
-            }
-
-            return advance_context(bound, position, end, quantity).then([this, &bound] {
-                return bound.context->consume_input().then_wrapped([this, &bound] (future<> f) {
-                    std::exception_ptr ex;
-                    if (f.failed()) {
-                        ex = f.get_exception();
-                        sstlog.error("failed reading index for {}: {}", _sstable->get_filename(), ex);
-                    }
-                    if (ex) {
-                        return make_exception_future<index_list>(std::move(ex));
-                    }
-                    return bound.consumer->finalize();
-                });
-            });
+            SEASTAR_TRACE_ZONE("sstable_index_page_load");
+            co_return co_await load_page(bound, summary_idx);
         };
 
         return _index_cache.get_or_load(summary_idx, loader).then([this, &bound, summary_idx] (partition_index_cache::entry_ptr ref) {
@@ -1003,7 +1015,18 @@ public:
 
     // Like advance_to(dht::ring_position_view), but returns information whether the key was found
     // If upper_bound is provided, the upper bound within position is looked up
+    // The zone here is the whole call into the sstable index for one
+    // single-partition read: the summary lookup, however many index pages it
+    // takes, and the partition data read at the end. Under BYPASS CACHE that is
+    // guaranteed to leave the cpu and come back, which is what makes it worth
+    // bracketing -- the tasks it becomes are one thing to whoever reads the
+    // trace, and nothing but this says so.
     future<bool> advance_lower_and_check_if_present(dht::ring_position_view key) override {
+        SEASTAR_TRACE_ZONE("sstable_index_lookup");
+        co_return co_await do_advance_lower_and_check_if_present(key);
+    }
+private:
+    future<bool> do_advance_lower_and_check_if_present(dht::ring_position_view key) {
         utils::get_local_injector().inject("advance_lower_and_check_if_present", [] { throw std::runtime_error("advance_lower_and_check_if_present"); });
         return advance_to(_lower_bound, key).then([this, key] {
             if (eof()) {
@@ -1018,6 +1041,7 @@ public:
             });
         });
     }
+public:
     future<bool> advance_lower_and_check_if_present(dht::ring_position_view key, const utils::hashed_key&) override {
         return advance_lower_and_check_if_present(key);
     }
