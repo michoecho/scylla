@@ -5248,6 +5248,9 @@ class data_read_resolver : public abstract_read_resolver {
     std::optional<full_position> _earliest_replica_stop;
     // Whether the reconciled result was trimmed at _earliest_replica_stop.
     bool _trimmed_to_replica_stop = false;
+    // Whether the static row of _earliest_replica_stop's partition was dropped, because the
+    // partition's static-only row is not decided yet.
+    bool _dropped_undecided_static_row = false;
     std::vector<reply> _data_results;
     mutations_per_partition_key_map _diffs;
 private:
@@ -5361,6 +5364,12 @@ private:
         return position_in_partition::for_key(mp.clustered_rows().rbegin()->key());
     }
 
+    static bool has_live_clustering_row(const schema& s, const mutation_partition& mp, gc_clock::time_point query_time) {
+        return std::ranges::any_of(mp.non_dummy_rows(), [&] (const rows_entry& e) {
+            return e.row().is_live(s, column_kind::regular_column, mp.range_tombstone_for_row(s, e.key()), query_time);
+        });
+    }
+
     static bool got_incomplete_information_in_partition(const schema& s, const reconciliation_position& last_reconciled_position,
             const std::vector<version>& versions) {
         reconciliation_position::less_compare_in_partition position_cmp(s);
@@ -5443,16 +5452,61 @@ private:
 
             // Keep the stop partition and all partitions before it in query order.
             rp.erase(rp.begin(), it);
-
-            // Update total live count and live partition count
-            _live_partition_count = 0;
-            _total_live_count = std::ranges::fold_left(rp, uint64_t(0), [this] (uint64_t lc, const mutation_and_live_row_count& m_a_rc) {
-                _live_partition_count += !!m_a_rc.live_row_count;
-                return lc + m_a_rc.live_row_count;
-            });
         }
 
+        drop_undecided_static_row(s, cmd, *earliest_replica_stop, rp);
+
+        // Update total live count and live partition count
+        _live_partition_count = 0;
+        _total_live_count = std::ranges::fold_left(rp, uint64_t(0), [this] (uint64_t lc, const mutation_and_live_row_count& m_a_rc) {
+            _live_partition_count += !!m_a_rc.live_row_count;
+            return lc + m_a_rc.live_row_count;
+        });
+
         return false;
+    }
+
+    // Conversion to a data result emits a static-only row for a partition with a live static row
+    // and no live clustering rows, unless the query restricts clustering keys. A replica which
+    // stopped inside a partition has not examined the rest of it. The rest may hold live rows,
+    // even if trimming removed them, or none did reach reconciliation. Or the rows which
+    // trimming removed may turn out to be dead, if the stopped replica holds newer tombstones
+    // for them. So whether the partition has a static-only row is not decided yet.
+    //
+    // Drop the static row, so that the page returns nothing for the partition. Unless the page
+    // fills before the partition, it then ends at the stop (see the caller). The pager asks the
+    // next page for the static-only row, which a page returns only if it reaches the end of the
+    // partition without a live row.
+    //
+    // A DISTINCT query returns one row per partition. A live static row establishes it, whatever
+    // clustering rows follow, so keep the static row.
+    //
+    // A caller which does not set defer_undecided_static_only_row may not continue the partition
+    // for its static-only row, so keep the static row for it too.
+    void drop_undecided_static_row(const schema& s, const query::read_command& cmd,
+            const reconciliation_position& stop, std::vector<mutation_and_live_row_count>& rp) {
+        if (cmd.slice.options.contains<query::partition_slice::option::distinct>()
+                || !cmd.slice.options.contains<query::partition_slice::option::defer_undecided_static_only_row>()) {
+            return;
+        }
+        // The after-all sentinel means that the replica completed the partition.
+        if (stop.position.is_after_all_clustered_rows(s)) {
+            return;
+        }
+        auto it = std::ranges::find_if(rp, [&] (const mutation_and_live_row_count& m_a_rc) {
+            return m_a_rc.mut.decorated_key().equal(s, stop.partition);
+        });
+        if (it == rp.end()) {
+            return;
+        }
+        auto& mp = it->mut.partition();
+        if (!mp.is_static_row_live(s, cmd.timestamp) || has_live_clustering_row(s, mp, cmd.timestamp)) {
+            return;
+        }
+        mp.static_row() = lazy_row();
+        it->live_row_count = 0;
+        _is_short_read = query::short_read::yes;
+        _dropped_undecided_static_row = true;
     }
 
     bool got_incomplete_information(const schema& s, const query::read_command& cmd, uint64_t original_row_limit, uint64_t original_per_partition_limit,
@@ -5554,6 +5608,9 @@ public:
     }
     bool trimmed_to_replica_stop() const {
         return _trimmed_to_replica_stop;
+    }
+    bool dropped_undecided_static_row() const {
+        return _dropped_undecided_static_row;
     }
     future<std::optional<reconcilable_result>> resolve(const query::read_command& cmd, uint64_t original_row_limit, uint64_t original_per_partition_limit,
             uint32_t original_partition_limit) {
@@ -5684,11 +5741,16 @@ public:
             }
         }
 
+        // The differences above determine what read repair writes. Replica progress determines what
+        // the page can return, even if every replica returned the same mutations. Identical mutation
+        // pages can stop inside a partition before live rows which only one replica holds, and
+        // which made the digests differ.
+        if (got_incomplete_information(schema, cmd, original_row_limit, original_per_partition_limit,
+                                       original_partition_limit, reconciled_partitions, versions)) {
+            co_return std::nullopt;
+        }
+
         if (has_diff) {
-            if (got_incomplete_information(schema, cmd, original_row_limit, original_per_partition_limit,
-                                           original_partition_limit, reconciled_partitions, versions)) {
-                co_return std::nullopt;
-            }
             // filter out partitions with empty diffs
             for (auto it = _diffs.begin(); it != _diffs.end();) {
                 if (std::ranges::none_of(it->second | std::views::values, std::mem_fn(&std::optional<mutation>::operator bool))) {
@@ -5998,17 +6060,24 @@ protected:
                             co_await to_data_query_result(std::move(*rr_opt), _schema, _cmd->slice, _cmd->get_row_limit(), _cmd->partition_limit)));
                     if (auto stop = data_resolver->earliest_replica_stop()) {
                         const auto& converted_stop = result->last_position();
-                        // Never continue past a replica which did not reach the end of its range.
-                        // If reconciliation trimmed the result at that replica's stop, the stop is
-                        // the cursor. The trimmed mutation may retain a fragment after it (for
-                        // example, a range tombstone). Conversion also produces a partition-start
-                        // cursor if the stop partition has no static row, rows or tombstones left.
-                        // Otherwise, conversion may still consume a trailing range tombstone from a
-                        // replica which reached the end, past the stop. Lower the cursor then, but
-                        // keep an earlier converted cursor: conversion can stop at a row or
-                        // partition limit.
-                        if (data_resolver->trimmed_to_replica_stop() || !converted_stop
-                                || full_position::cmp(*_schema, *stop, *converted_stop) < 0) {
+                        // Conversion stops at the page's row or partition limit, which it can reach
+                        // before the stop. Its cursor then follows the last returned row. The next
+                        // page must continue from it, or it skips the rows which conversion did not
+                        // return.
+                        const bool conversion_filled_page = result->row_count().value_or(0) >= _cmd->get_row_limit()
+                                || result->partition_count().value_or(0) >= _cmd->partition_limit;
+                        // Otherwise, conversion consumed the whole reconciled result. If
+                        // reconciliation trimmed it at the stop, or dropped the stop partition's
+                        // undecided static row, the stop is the cursor. The trimmed mutation may
+                        // retain a fragment after the stop (for example, a range tombstone).
+                        // Conversion also produces a partition-start cursor if the stop partition
+                        // has no static row, rows or tombstones left.
+                        const bool stop_is_cursor = !conversion_filled_page
+                                && (data_resolver->trimmed_to_replica_stop() || data_resolver->dropped_undecided_static_row());
+                        // In any case, never continue past a replica which did not reach the end of
+                        // its range. Conversion may consume a trailing range tombstone from a
+                        // replica which reached the end, past the stop.
+                        if (stop_is_cursor || !converted_stop || full_position::cmp(*_schema, *stop, *converted_stop) < 0) {
                             result->set_last_position(std::move(stop));
                             // The pager must consume the lowered cursor even if no replica page was short.
                             result->mark_as_short_read();
