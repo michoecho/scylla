@@ -198,6 +198,73 @@ async def test_digest_match_lowered_cursor_keeps_paging(manager: ScyllaClusterMa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("data_tombstone", [
+    pytest.param(9, id="equal-cursors"),
+    pytest.param(5, id="earlier-data-cursor"),
+])
+async def test_digest_match_digest_replica_stop_keeps_paging(manager: ScyllaClusterManager, data_tombstone: int) -> None:
+    """
+    Keep paging when a matching digest replica stopped early, whatever its cursor.
+
+    The data replica, node 0, holds one row tombstone and finishes the
+    partition. A single-partition read reports the last fragment it consumed,
+    so the data cursor is that tombstone. The digest replica, node 1, holds row
+    tombstones at ck=0..9 and a live row at ck=100. It reaches its tombstone
+    limit at ck=9 and stops there. Both pages are empty, so the digests match.
+
+    The digest replica's cursor equals or follows the data cursor, so it does
+    not lower the data cursor. Paging must continue from it nevertheless, or
+    the live row is missed.
+    """
+    tombstone_limit = 10
+    cfg = {
+        'query_tombstone_page_limit': tombstone_limit,
+        'hinted_handoff_enabled': False,
+        # The local replica, node 0, supplies data.
+        'cache_hit_rate_read_balancing': False,
+    }
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+    cql0 = await manager.get_cql_exclusive(servers[0])
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2} "
+                                 "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        await cql0.run_async(SimpleStatement(
+            f"DELETE FROM {table} WHERE pk = 0 AND ck = {data_tombstone}",
+            consistency_level=ConsistencyLevel.ALL))
+
+        # Only the digest replica has the other tombstones and the live row.
+        # Hinted handoff is disabled, so they remain there.
+        await manager.server_stop_gracefully(servers[0].server_id)
+        cql1 = await manager.get_cql_exclusive(servers[1])
+        delete_row = cql1.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck = ?")
+        delete_row.consistency_level = ConsistencyLevel.ONE
+        for ck in range(tombstone_limit):
+            if ck != data_tombstone:
+                await cql1.run_async(delete_row, [ck])
+        divergent_row = 100
+        await cql1.run_async(SimpleStatement(
+            f"INSERT INTO {table} (pk, ck, v) VALUES (0, {divergent_row}, {divergent_row})",
+            consistency_level=ConsistencyLevel.ONE))
+        await manager.server_start(servers[0].server_id, wait_others=1)
+        # Node 0 has restarted. Let the shared session reconnect before the
+        # keyspace is dropped with it.
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        select = SimpleStatement(f"SELECT pk, ck FROM {table} WHERE pk = 0",
+                                 consistency_level=ConsistencyLevel.ALL,
+                                 fetch_size=10)
+        rows = await cql0.run_async(select, all_pages=True)
+        assert [r.ck for r in rows] == [divergent_row]
+
+
+@pytest.mark.asyncio
 async def test_digest_match_does_not_truncate_unpaged_multi_partition_read(manager: ScyllaClusterManager) -> None:
     """
     Do not mark an unpaged result short when matching digests report different cursors.

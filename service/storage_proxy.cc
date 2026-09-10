@@ -419,19 +419,21 @@ public:
         co_return rpc::tuple{make_foreign(::make_lw_shared<query::result>(std::move(result))), hit_rate.value_or(cache_temperature::invalid())};
     }
 
-    future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>>>
+    future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, std::optional<query::short_read>>>
     send_read_digest(
             locator::host_id addr, storage_proxy::clock_type::time_point timeout, tracing::trace_state_ptr tr_state,
             const query::read_command& cmd, const dht::partition_range& pr,
             query::digest_algorithm digest_algo, db::per_partition_rate_limit::info rate_limit_info,
             fencing_token fence) {
-        auto&& [d, t, hit_rate, opt_exception, opt_last_pos] =
+        auto&& [d, t, hit_rate, opt_exception, opt_last_pos, opt_short_read] =
             co_await ser::storage_proxy_rpc_verbs::send_read_digest(&_ms, addr, timeout, cmd, pr, digest_algo, rate_limit_info, fence);
         if (opt_exception.has_value() && *opt_exception) {
             co_await coroutine::return_exception_ptr((*opt_exception).into_exception_ptr());
         }
 
-        co_return rpc::tuple{d, t ? t.value() : api::missing_timestamp, hit_rate.value_or(cache_temperature::invalid()), opt_last_pos ? std::move(*opt_last_pos) : std::nullopt};
+        // A replica which predates the short-read flag does not send it.
+        co_return rpc::tuple{d, t ? t.value() : api::missing_timestamp, hit_rate.value_or(cache_temperature::invalid()), opt_last_pos ? std::move(*opt_last_pos) : std::nullopt,
+                opt_short_read ? std::optional(*opt_short_read) : std::nullopt};
     }
 
     future<> send_truncate(
@@ -972,7 +974,7 @@ private:
             std::move(pr), std::nullopt, std::nullopt, fence);
     }
 
-    using read_digest_result_t = rpc::tuple<query::result_digest, long, cache_temperature, replica::exception_variant, std::optional<full_position>>;
+    using read_digest_result_t = rpc::tuple<query::result_digest, long, cache_temperature, replica::exception_variant, std::optional<full_position>, query::short_read>;
     future<read_digest_result_t> handle_read_digest(
             const rpc::client_info& cinfo, rpc::opt_time_point t,
             query::read_command cmd1, ::compat::wrapping_partition_range pr,
@@ -4980,9 +4982,12 @@ class digest_read_resolver : public abstract_read_resolver {
     struct digest_and_last_pos {
         query::result_digest digest;
         std::optional<full_position> last_pos;
+        // Whether the replica's page is short: the replica stopped on its page size or tombstone
+        // limit. A replica which predates the flag in digest replies does not report it.
+        std::optional<query::short_read> short_read;
 
-        digest_and_last_pos(query::result_digest digest, std::optional<full_position> last_pos)
-            : digest(std::move(digest)), last_pos(std::move(last_pos))
+        digest_and_last_pos(query::result_digest digest, std::optional<full_position> last_pos, std::optional<query::short_read> short_read)
+            : digest(std::move(digest)), last_pos(std::move(last_pos)), short_read(short_read)
         { }
     };
 private:
@@ -5026,7 +5031,7 @@ public:
     void add_data(locator::host_id from, foreign_ptr<lw_shared_ptr<query::result>> result) {
         if (!_request_failed) {
             // if only one target was queried digest_check() will be skipped so we can also skip digest calculation
-            _digest_results.emplace_back(_targets_count == 1 ? query::result_digest() : *result->digest(), result->last_position());
+            _digest_results.emplace_back(_targets_count == 1 ? query::result_digest() : *result->digest(), result->last_position(), result->is_short_read());
             _last_modified = std::max(_last_modified, result->last_modified());
             if (!_data_result) {
                 _data_result = std::move(result);
@@ -5034,9 +5039,10 @@ public:
             got_response(from);
         }
     }
-    void add_digest(locator::host_id from, query::result_digest digest, api::timestamp_type last_modified, std::optional<full_position> last_pos) {
+    void add_digest(locator::host_id from, query::result_digest digest, api::timestamp_type last_modified, std::optional<full_position> last_pos,
+            std::optional<query::short_read> short_read) {
         if (!_request_failed) {
-            _digest_results.emplace_back(std::move(digest), std::move(last_pos));
+            _digest_results.emplace_back(std::move(digest), std::move(last_pos), short_read);
             _last_modified = std::max(_last_modified, last_modified);
             got_response(from);
         }
@@ -5053,15 +5059,45 @@ public:
                                        return digest.digest == first_digest;
                                    });
     }
-    // A disengaged position means that the replica exhausted its range, so it does not
-    // constrain where the next page must start. An engaged position does not prove that the
-    // replica stopped early: a single-partition read reports the last fragment it consumed
-    // even when it finished the partition. This interpretation requires empty_replica_pages;
-    // the caller checks that the cluster feature is enabled.
-    std::optional<full_position> earliest_reported_position() const {
+    // Returns the earliest position of a replica whose page is short. The next page must not
+    // start after it, because that replica stopped on its page size or tombstone limit and has
+    // not examined the data there.
+    //
+    // A page which is not short either reached the end of its range or stopped at a row or
+    // partition limit. Neither constrains the next page:
+    // - A replica which reached the end has examined everything, whatever position it reports.
+    //   A single-partition read reports the last fragment it consumed even when it finished
+    //   the partition.
+    // - A replica which stopped at a limit returned as many live rows or partitions as the
+    //   limit allows. A digest covers the key of every partition which the replica read, and
+    //   the clustering rows which it returned. Its digest matches, so the data replica read the
+    //   same partitions and returned the same clustering rows. Unless the replicas disagree
+    //   about a static-only row (see below), the data replica therefore stopped at the same
+    //   limit: after the same row, or at the end of the same partition. So the data cursor
+    //   does not pass anything which that replica has not examined.
+    //
+    // A digest covers a partition's static cells only if the query selects them. It covers the
+    // partition's key even if the replica returns nothing from the partition. So if the query
+    // selects no static column, the digest does not show whether the partition returned its
+    // static-only row. Replicas which disagree only about such a row have matching digests,
+    // although they count different rows.
+    //
+    // A replica which predates the short-read flag in digest replies does not say whether it
+    // stopped. Treat it as stopped only if it reports a position before the data replica's. This
+    // misses such a replica if it stopped at or after that position.
+    //
+    // This interpretation requires empty_replica_pages; the caller checks that the cluster
+    // feature is enabled.
+    std::optional<full_position> earliest_stop(const std::optional<full_position>& data_position) const {
         const std::optional<full_position>* earliest = nullptr;
         for (const auto& r : _digest_results) {
-            if (r.last_pos && (!earliest || full_position::cmp(*_schema, *r.last_pos, **earliest) < 0)) {
+            if (!r.last_pos) {
+                continue;
+            }
+            const bool stopped = r.short_read
+                    ? bool(*r.short_read)
+                    : !data_position || full_position::cmp(*_schema, *r.last_pos, *data_position) < 0;
+            if (stopped && (!earliest || full_position::cmp(*_schema, *r.last_pos, **earliest) < 0)) {
                 earliest = &r.last_pos;
             }
         }
@@ -5734,13 +5770,18 @@ protected:
             return _proxy->remote().send_read_data(ep, timeout, _trace_state, *cmd, _partition_range, opts.digest_algo, _rate_limit_info, fence);
         }
     }
-    future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>>> make_digest_request(locator::host_id ep, clock_type::time_point timeout) {
+    future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, std::optional<query::short_read>>> make_digest_request(locator::host_id ep, clock_type::time_point timeout) {
         ++_proxy->get_stats().digest_read_attempts.get_ep_stat(get_topology(), ep);
         auto fence = storage_proxy::get_fence(*_effective_replication_map_ptr);
         if (_proxy->is_me(*_effective_replication_map_ptr, ep)) {
             tracing::trace(_trace_state, "read_digest: querying locally");
             return _proxy->apply_fence_on_ready(_proxy->query_result_local_digest(_effective_replication_map_ptr, _schema, _cmd, _partition_range, _trace_state,
-                        timeout, digest_algorithm(*_proxy), adjust_rate_limit_for_local_operation(_rate_limit_info)), fence, _proxy->my_host_id(*_effective_replication_map_ptr));
+                        timeout, digest_algorithm(*_proxy), adjust_rate_limit_for_local_operation(_rate_limit_info)), fence, _proxy->my_host_id(*_effective_replication_map_ptr))
+                    .then([] (rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, query::short_read> r)
+                            -> rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, std::optional<query::short_read>> {
+                auto&& [digest, last_modified, hit_rate, last_pos, short_read] = r;
+                return {std::move(digest), last_modified, hit_rate, std::move(last_pos), short_read};
+            });
         } else {
             tracing::trace(_trace_state, "read_digest: sending a message to /{}", ep);
             const bool format_reverse_required = _cmd->slice.is_reversed() && !_native_reversed_queries_enabled;
@@ -5807,14 +5848,14 @@ protected:
         auto start = latency_clock::now();
         for (const locator::host_id& ep : std::ranges::subrange(begin, end)) {
             // Waited on indirectly, shared_from_this keeps `this` alive
-            (void)make_digest_request(ep, timeout).then_wrapped([this, resolver, ep, start, exec = shared_from_this()] (future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>>> f) {
+            (void)make_digest_request(ep, timeout).then_wrapped([this, resolver, ep, start, exec = shared_from_this()] (future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, std::optional<query::short_read>>> f) {
                 std::exception_ptr ex;
                 try {
                   if (!f.failed()) {
                     auto v = f.get();
                     tracing::trace(_trace_state, "read_digest: got response from /{}", ep);
                     _cf->set_hit_rate(ep, std::get<2>(v));
-                    resolver->add_digest(ep, std::get<0>(v), std::get<1>(v), std::get<3>(std::move(v)));
+                    resolver->add_digest(ep, std::get<0>(v), std::get<1>(v), std::get<3>(std::move(v)), std::get<4>(v));
                     ++_proxy->get_stats().digest_read_completed.get_ep_stat(get_topology(), ep);
                     _used_targets.push_back(ep);
                     register_request_latency(latency_clock::now() - start);
@@ -6019,18 +6060,14 @@ public:
                     // unpaged client cannot resume from it.
                     if (exec->_proxy->features().empty_replica_pages && digest_resolver->response_count() > 1
                             && exec->_cmd->slice.options.contains<query::partition_slice::option::allow_short_read>()) {
-                        auto earliest_stop = digest_resolver->earliest_reported_position();
-                        const auto& data_stop = result->last_position();
                         // A short page can be empty because the replica spent its budget on
-                        // tombstones. Its explicit stop position is then the only cursor the
-                        // pager has, so never replace it with the absent position of a replica
-                        // which exhausted its range. Among actual stops, use the earliest one:
-                        // every replica must resume from a range it has already examined.
-                        if (earliest_stop && (!data_stop || full_position::cmp(*exec->_schema, *earliest_stop, *data_stop) < 0)) {
-                            result->set_last_position(std::move(earliest_stop));
-                            // The data replica may have exhausted its range while a digest replica
-                            // stopped early. Digest replies do not say which, so ensure that the
-                            // pager consumes the lowered cursor.
+                        // tombstones. Its stop position is then the only cursor the pager has.
+                        // Continue from the earliest stop of any replica: every replica must resume
+                        // from a range it has already examined. A digest replica can stop at, before
+                        // or after the data cursor while the data replica reaches the end of its
+                        // range, so mark the result short whenever some replica stopped.
+                        if (auto stop = digest_resolver->earliest_stop(result->last_position())) {
+                            result->set_last_position(std::move(stop));
                             result->mark_as_short_read();
                         }
                     }
@@ -6310,11 +6347,12 @@ result<::shared_ptr<abstract_read_executor>> storage_proxy::get_read_executor(lw
     }
 }
 
-future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>>>
+future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, query::short_read>>
 storage_proxy::query_result_local_digest(locator::effective_replication_map_ptr erm, schema_ptr query_schema, lw_shared_ptr<query::read_command> cmd, const dht::partition_range& pr, tracing::trace_state_ptr trace_state, storage_proxy::clock_type::time_point timeout, query::digest_algorithm da, db::per_partition_rate_limit::info rate_limit_info) {
     return query_result_local(std::move(erm), std::move(query_schema), std::move(cmd), pr, query::result_options::only_digest(da), std::move(trace_state), timeout, rate_limit_info).then([] (rpc::tuple<foreign_ptr<lw_shared_ptr<query::result>>, cache_temperature> result_and_hit_rate) {
         auto&& [result, hit_rate] = result_and_hit_rate;
-        return make_ready_future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>>>(rpc::tuple(*result->digest(), result->last_modified(), hit_rate, result->last_position()));
+        return make_ready_future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, std::optional<full_position>, query::short_read>>(
+                rpc::tuple(*result->digest(), result->last_modified(), hit_rate, result->last_position(), result->is_short_read()));
     });
 }
 
