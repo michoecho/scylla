@@ -4976,6 +4976,9 @@ public:
 struct digest_read_result {
     foreign_ptr<lw_shared_ptr<query::result>> result;
     bool digests_match;
+    // If the digests match, the earliest stop of the replicas which responded by the time
+    // consistency was reached. See digest_read_resolver::earliest_stop().
+    std::optional<full_position> earliest_stop;
 };
 
 class digest_read_resolver : public abstract_read_resolver {
@@ -5115,7 +5118,13 @@ private:
             }
             if (_cl_responses >= _block_for && _data_result) {
                 _cl_reported = true;
-                _cl_promise.set_value(digest_read_result{std::move(_data_result), digests_match()});
+                // Base the digest decision and the cursor on the same responses. More responses can
+                // arrive before the caller handles the result. The decision does not account for
+                // them, so they must not move the cursor either. The background digest check
+                // handles them.
+                const bool match = digests_match();
+                auto stop = match && response_count() > 1 ? earliest_stop(_data_result->last_position()) : std::nullopt;
+                _cl_promise.set_value(digest_read_result{std::move(_data_result), match, std::move(stop)});
             }
         }
         if (is_completed()) {
@@ -6189,8 +6198,25 @@ public:
 
         make_requests(digest_resolver, timeout);
 
+        auto cl_reached = digest_resolver->has_cl();
+        if (utils::get_local_injector().is_enabled("storage_proxy::digest_read_wait_for_all_responses")) {
+            // Handle the result only after every contacted replica has responded. A test uses this to
+            // check that a response which arrives after consistency is reached does not change the result.
+            cl_reached = std::move(cl_reached).then([digest_resolver] (result<digest_read_result> res) {
+                return utils::get_local_injector().inject("storage_proxy::digest_read_wait_for_all_responses",
+                        [digest_resolver] (auto&) -> future<> {
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{1};
+                    while (!digest_resolver->is_completed() && std::chrono::steady_clock::now() < deadline) {
+                        co_await seastar::sleep(std::chrono::milliseconds{1});
+                    }
+                }).then([res = std::move(res)] () mutable {
+                    return std::move(res);
+                });
+            });
+        }
+
         // Waited on indirectly.
-        (void)digest_resolver->has_cl().then_wrapped([exec, digest_resolver, timeout] (future<result<digest_read_result>> f) mutable {
+        (void)std::move(cl_reached).then_wrapped([exec, digest_resolver, timeout] (future<result<digest_read_result>> f) mutable {
             bool background_repair_check = false;
             // All errors are handled, it's OK to discard the result.
             (void)utils::result_try([&] () -> result<> {
@@ -6200,7 +6226,7 @@ public:
                 if (!res) {
                     return std::move(res).as_failure();
                 }
-                auto&& [result, digests_match] = res.value();
+                auto&& [result, digests_match, earliest_stop] = res.value();
 
                 if (digests_match) {
                     // Only a paged read can stop early on its page size or tombstone limit. An
@@ -6208,7 +6234,7 @@ public:
                     // and nothing pages from its cursor. Never mark it short: the merger of a
                     // multi-partition read drops the partitions after a short result, and an
                     // unpaged client cannot resume from it.
-                    if (exec->_proxy->features().empty_replica_pages && digest_resolver->response_count() > 1
+                    if (exec->_proxy->features().empty_replica_pages
                             && exec->_cmd->slice.options.contains<query::partition_slice::option::allow_short_read>()) {
                         // A short page can be empty because the replica spent its budget on
                         // tombstones. Its stop position is then the only cursor the pager has.
@@ -6216,8 +6242,8 @@ public:
                         // from a range it has already examined. A digest replica can stop at, before
                         // or after the data cursor while the data replica reaches the end of its
                         // range, so mark the result short whenever some replica stopped.
-                        if (auto stop = digest_resolver->earliest_stop(result->last_position())) {
-                            result->set_last_position(std::move(stop));
+                        if (earliest_stop) {
+                            result->set_last_position(std::move(earliest_stop));
                             result->mark_as_short_read();
                         }
                     }

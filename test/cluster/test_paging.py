@@ -4,7 +4,9 @@
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
 
+import asyncio
 import struct
+import time
 
 import pytest
 from cassandra import ConsistencyLevel  # type: ignore
@@ -15,6 +17,7 @@ from test.cluster.util import new_test_keyspace
 from test.pylib.async_cql import _wrap_future
 from test.pylib.internal_types import ServerInfo
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
+from test.pylib.util import wait_for
 
 
 async def read_retries(manager: ScyllaClusterManager, server: ServerInfo) -> int:
@@ -361,6 +364,82 @@ async def test_digest_match_does_not_truncate_unpaged_multi_partition_read(manag
                                  fetch_size=None)
         rows = await cql0.run_async(select)
         assert sorted((r.pk, r.ck) for r in rows) == [(pk, ck) for pk in partitions for ck in live_rows]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip_mode(mode="release", reason="error injections are not supported in release mode")
+async def test_digest_match_ignores_cursor_of_late_replica(manager: ScyllaClusterManager) -> None:
+    """
+    Take the cursor from the same responses as the digest decision.
+
+    The coordinator decides whether digests match once enough replicas have
+    responded for the consistency level. It may have contacted more replicas.
+    Their responses can arrive before the coordinator handles the decision.
+    Such a response must not change the result's cursor, because the decision
+    does not account for it.
+
+    With speculative_retry = 'ALWAYS' and CL=ONE, the coordinator, node 0,
+    reads data from both replicas. Node 0 holds a live row at ck=100 and
+    reaches consistency alone. Node 1 holds the same row after row tombstones
+    at ck=0..29, so its page stops on the tombstone limit before the row. Its
+    response arrives before the coordinator handles the decision. If the
+    coordinator took node 1's cursor, the next page would return ck=100 again.
+    """
+    tombstone_limit = 10
+    live_row = 100
+    cfg = {
+        'query_tombstone_page_limit': tombstone_limit,
+        'hinted_handoff_enabled': False,
+        # The local replica, node 0, supplies data.
+        'cache_hit_rate_read_balancing': False,
+    }
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2} "
+                                 "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'} AND speculative_retry = 'ALWAYS'")
+        await cql.run_async(SimpleStatement(
+            f"INSERT INTO {table} (pk, ck, v) VALUES (0, {live_row}, {live_row})",
+            consistency_level=ConsistencyLevel.ALL))
+
+        # Only node 1 has the tombstones. Hinted handoff is disabled, so they
+        # remain there.
+        await manager.server_stop_gracefully(servers[0].server_id)
+        cql1 = await manager.get_cql_exclusive(servers[1])
+        delete_row = cql1.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck = ?")
+        delete_row.consistency_level = ConsistencyLevel.ONE
+        for ck in range(3 * tombstone_limit):
+            await cql1.run_async(delete_row, [ck])
+        await manager.server_start(servers[0].server_id, wait_others=1)
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        # Hold node 1's response until node 0 has reached consistency alone.
+        # The coordinator then handles the result only after node 1's response
+        # has arrived too.
+        replica_injection = "storage_proxy::handle_read"
+        coordinator_injection = "storage_proxy::digest_read_wait_for_all_responses"
+        await manager.api.enable_injection(servers[1].ip_addr, replica_injection, one_shot=True,
+                                           parameters={'cf_name': 't'})
+        await manager.api.enable_injection(servers[0].ip_addr, coordinator_injection, one_shot=True)
+
+        select = SimpleStatement(f"SELECT pk, ck FROM {table} WHERE pk = 0",
+                                 consistency_level=ConsistencyLevel.ONE,
+                                 fetch_size=10)
+        read = asyncio.ensure_future(cql0.run_async(select, all_pages=True))
+
+        async def coordinator_reached_consistency() -> bool | None:
+            entered = await manager.api.get_injection_enter_count(servers[0].ip_addr, coordinator_injection)
+            return True if entered else None
+        await wait_for(coordinator_reached_consistency, time.time() + 60)
+        await manager.api.message_injection(servers[1].ip_addr, replica_injection)
+
+        rows = await read
+        assert [r.ck for r in rows] == [live_row]
 
 
 @pytest.mark.asyncio
