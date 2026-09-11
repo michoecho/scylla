@@ -409,6 +409,85 @@ async def test_tombstone_limited_page_does_not_stop_on_dead_static_row(manager: 
 
 
 @pytest.mark.asyncio
+async def test_per_partition_limit_counts_rows_of_cursor_partition(manager: ScyllaClusterManager) -> None:
+    """
+    Count only rows of the cursor's partition against its per-partition limit.
+
+    With a per-partition limit, the pager records how many rows it has returned
+    from the partition at the cursor. The next page's filter subtracts them from
+    that partition's allowance.
+
+    Partition P precedes partition Q in token order. P has one live row. Q has
+    exactly one tombstone page's worth of row tombstones, followed by a live
+    row. With PER PARTITION LIMIT 1 and a page size of two rows, the first page
+    returns P's row and stops on the tombstone limit inside Q, before returning
+    anything from Q. The pager once counted P's row as a row of Q, so the next
+    page's filter dropped Q's row.
+    """
+    tombstone_limit = 10
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    # Pick keys whose tokens follow each other in this order, with no vnode
+    # boundary between them, so that one read returns P's row and stops in Q.
+    p, q = await keys_within_one_vnode(manager, servers[0], 2)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1} "
+                                 "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES ({p}, 0, 0)")
+        # The first page stops on Q's last tombstone.
+        delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = {q} AND ck = ?")
+        for ck in range(tombstone_limit):
+            await cql.run_async(delete_row, [ck])
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES ({q}, 1000, 1000)")
+
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} PER PARTITION LIMIT 1", fetch_size=2)
+        rows = await cql.run_async(select, all_pages=True)
+        assert [(r.pk, r.ck, r.v) for r in rows] == [(p, 0, 0), (q, 1000, 1000)]
+
+
+@pytest.mark.asyncio
+async def test_per_partition_limit_count_survives_empty_page(manager: ScyllaClusterManager) -> None:
+    """
+    Keep the per-partition count across an empty page in the same partition.
+
+    The partition has a live row, three tombstone pages' worth of row
+    tombstones, and another live row. With PER PARTITION LIMIT 1 and a page
+    size of two rows, the first page returns the first live row and stops on
+    the tombstone limit. The next pages return nothing, and stop on the
+    tombstone limit in the same partition. The pager once reset its count of
+    the partition's returned rows on such a page, so a later page returned the
+    second live row as well.
+    """
+    tombstone_limit = 10
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 0, 0)")
+        delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck = ?")
+        for ck in range(1, 1 + 3 * tombstone_limit):
+            await cql.run_async(delete_row, [ck])
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 1000, 1000)")
+
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} PER PARTITION LIMIT 1", fetch_size=2)
+        rows = await cql.run_async(select, all_pages=True)
+        assert [(r.pk, r.ck, r.v) for r in rows] == [(0, 0, 0)]
+
+
+@pytest.mark.asyncio
 async def test_tombstone_limited_page_does_not_stop_on_range_tombstone_start(manager: ScyllaClusterManager) -> None:
     """
     Do not stop a page on the range tombstone change which starts it.

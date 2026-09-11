@@ -395,6 +395,12 @@ void query_pager::handle_result(
 
     auto view = query::result_view(*results);
 
+    const auto previous_pkey = _last_pkey;
+    // The last partition of which the page's result holds a row, and the number of its rows which
+    // the page returns to the client. Filtering can reject every row of that partition.
+    std::optional<partition_key> last_returned_pkey;
+    uint64_t last_returned_partition_row_count = 0;
+
     _last_pos = position_in_partition::for_partition_start();
     uint64_t replica_row_count, row_count;
     if constexpr(!std::is_same_v<std::decay_t<Visitor>, noop_visitor>) {
@@ -403,15 +409,8 @@ void query_pager::handle_result(
 
         row_count = v.total_rows - v.dropped_rows;
         replica_row_count = v.total_rows;
-
-        // If per partition limit is defined, we need to accumulate rows fetched for last partition key if the key matches
-        if (_cmd->slice.partition_row_limit() < query::max_rows_if_set) {
-            if (_last_pkey && v.last_pkey && _last_pkey->equal(*_query_schema, *v.last_pkey)) {
-                _rows_fetched_for_last_partition += v.last_partition_row_count;
-            } else {
-                _rows_fetched_for_last_partition = v.last_partition_row_count;
-            }
-        }
+        last_returned_pkey = v.last_pkey;
+        last_returned_partition_row_count = v.last_partition_row_count;
     } else {
         row_count = results->row_count() ? *results->row_count() : std::get<1>(view.count_partitions_and_rows());
         replica_row_count = row_count;
@@ -432,6 +431,22 @@ void query_pager::handle_result(
             auto last_pos = results->get_or_calculate_last_position();
             _last_pkey = std::move(last_pos.partition);
             _last_pos = std::move(last_pos.position);
+        }
+
+        const bool continues_partition = previous_pkey && _last_pkey && previous_pkey->equal(*_query_schema, *_last_pkey);
+        const bool returned_from_cursor_partition = last_returned_pkey && _last_pkey
+                && last_returned_pkey->equal(*_query_schema, *_last_pkey);
+
+        // With a per-partition limit, the next page's filter subtracts this count from the
+        // allowance of the partition at the cursor. So count only the rows of that partition. A
+        // page can return its last rows from an earlier partition, and then stop inside the
+        // cursor's partition, for example on the tombstone limit. A page can also return nothing
+        // and stay inside the partition which the previous page returned rows from.
+        if constexpr(!std::is_same_v<std::decay_t<Visitor>, noop_visitor>) {
+            if (_cmd->slice.partition_row_limit() < query::max_rows_if_set) {
+                _rows_fetched_for_last_partition = (continues_partition ? _rows_fetched_for_last_partition : 0)
+                        + (returned_from_cursor_partition ? last_returned_partition_row_count : 0);
+            }
         }
     }
 
