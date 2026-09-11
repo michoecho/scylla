@@ -1986,7 +1986,7 @@ stop_iteration mutation_querier::consume(clustering_row&& cr, row_tombstone curr
     return stop;
 }
 
-uint64_t mutation_querier::consume_end_of_stream() {
+uint64_t mutation_querier::consume_end_of_stream(bool stopped_in_partition) {
     prepare_writers();
 
     // If we got no rows, but have live static columns, we should only
@@ -1994,9 +1994,22 @@ uint64_t mutation_querier::consume_end_of_stream() {
     // #589
     // If ck:s exist, and we do a restriction on them, we either have matching
     // rows, or return nothing, since cql does not allow "is null".
-    bool return_static_content_on_partition_with_no_rows =
-        _pw.slice().options.contains(query::partition_slice::option::always_return_static_content) ||
-        !has_ck_selector(_pw.ranges());
+    // A page which stopped inside the partition before any live row, for
+    // example on the tombstone limit, has not seen the rest of the partition.
+    // The rest may hold live rows, so the static-only row is left to the page
+    // which reaches the end of the partition. The pager records that the
+    // partition is undecided and asks that page for it.
+    // A DISTINCT query returns one row per partition. A live static row
+    // establishes it, whatever clustering rows follow. The pager does not
+    // continue a partition of a DISTINCT query, so return the row now.
+    const auto& options = _pw.slice().options;
+    // Only a caller which continues the partition for its static-only row asks
+    // to leave the row undecided (see defer_undecided_static_only_row).
+    const bool decided = !stopped_in_partition || options.contains(query::partition_slice::option::distinct)
+            || !options.contains(query::partition_slice::option::defer_undecided_static_only_row);
+    bool return_static_content_on_partition_with_no_rows = decided && (
+        options.contains(query::partition_slice::option::always_return_static_content) ||
+        !has_ck_selector(_pw.ranges()));
     if (!_live_clustering_rows && (!return_static_content_on_partition_with_no_rows || !_live_data_in_static_row)) {
         _pw.retract();
         return 0;
@@ -2067,7 +2080,7 @@ stop_iteration query_result_builder::consume(range_tombstone_change&& rtc) {
 }
 
 stop_iteration query_result_builder::consume_end_of_partition() {
-    auto live_rows_in_partition = _mutation_consumer->consume_end_of_stream();
+    auto live_rows_in_partition = _mutation_consumer->consume_end_of_stream(bool(_stop));
     if (live_rows_in_partition > 0 && !_stop) {
         _stop = _rb.memory_accounter().check();
     }

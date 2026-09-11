@@ -17,6 +17,8 @@
 #include "service/storage_proxy.hh"
 #include "utils/result_combinators.hh"
 #include "db/view/delete_ghost_rows_visitor.hh"
+#include "mutation/mutation_compactor.hh"
+#include "gms/feature_service.hh"
 
 #include <fmt/ranges.h>
 
@@ -60,6 +62,11 @@ query_pager::query_pager(service::storage_proxy& p, schema_ptr query_schema,
                 , _cmd(std::move(cmd))
                 , _ranges(std::move(ranges))
                 , _cas_shard(std::move(cas_shard))
+                , _always_return_static_content(_cmd->slice.options.contains<query::partition_slice::option::always_return_static_content>())
+                // A live static row makes a partition without live clustering rows return a row, even
+                // if the query selects no static column.
+                , _may_return_static_only_rows(_query_schema->has_static_columns()
+                        && (_always_return_static_content || !has_ck_selector(_cmd->slice.default_row_ranges())))
 {
     if (query_function_override) {
         _query_function = std::move(query_function_override);
@@ -95,6 +102,7 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
         _last_replicas = state->get_last_replicas();
         _query_read_repair_decision = state->get_query_read_repair_decision();
         _rows_fetched_for_last_partition = state->get_rows_fetched_for_last_partition();
+        _partition_undecided = state->get_partition_undecided();
     }
 
     _cmd->is_first_page = query::is_first_page(!_query_uuid);
@@ -104,6 +112,18 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
     _cmd->query_uuid = *_query_uuid;
 
     qlogger.trace("fetch_page query id {}", _cmd->query_uuid);
+
+    // A page leaves an undecided static-only row to a later page only if asked. An older
+    // coordinator does not continue the row's partition, so ask only when every node supports it.
+    // The feature can be enabled in the middle of a query, so check it on every page.
+    _cmd->slice.options.set_if<query::partition_slice::option::defer_undecided_static_only_row>(
+            bool(_proxy->features().deferred_static_only_rows));
+
+    // A continued partition may ask for static content below. Other pages keep the query's own
+    // setting.
+    if (!_always_return_static_content) {
+        _cmd->slice.options.remove<query::partition_slice::option::always_return_static_content>();
+    }
 
     if (_last_pkey) {
         auto dpk = dht::decorate_key(*_query_schema, *_last_pkey);
@@ -169,6 +189,13 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
             query::trim_clustering_row_ranges_to(*_query_schema, row_ranges, next_pos);
 
             _cmd->slice.set_range(*_query_schema, *_last_pkey, row_ranges);
+            if (_partition_undecided) {
+                // Nothing of this partition has been returned yet. Its restricted ranges would
+                // suppress the static-only row which it may still have to return. A partition is
+                // undecided only if the query does not restrict clustering keys, or already sets
+                // this option. So the option does not change what other partitions return.
+                _cmd->slice.options.set<query::partition_slice::option::always_return_static_content>();
+            }
         }
     }
 
@@ -414,6 +441,10 @@ void query_pager::handle_result(
     } else {
         row_count = results->row_count() ? *results->row_count() : std::get<1>(view.count_partitions_and_rows());
         replica_row_count = row_count;
+        // Every returned partition counts at least one row.
+        if (row_count && _may_return_static_only_rows) {
+            last_returned_pkey = view.calculate_last_position().partition;
+        }
     }
 
     {
@@ -448,6 +479,14 @@ void query_pager::handle_result(
                         + (returned_from_cursor_partition ? last_returned_partition_row_count : 0);
             }
         }
+
+        // A page which stopped inside a partition before its result held a row of it leaves the
+        // partition undecided. A continued partition stays undecided only if no earlier page's
+        // result held a row of it either.
+        _partition_undecided = _may_return_static_only_rows && !_exhausted && _last_pkey
+                && _has_clustering_keys && _last_pos.region() == partition_region::clustered
+                && (!continues_partition || _partition_undecided)
+                && !returned_from_cursor_partition;
     }
 
     qlogger.debug("Fetched {} rows (kept {}), max_remain={} {}", replica_row_count, row_count, _max, _exhausted ? "(exh)" : "");
@@ -461,7 +500,8 @@ void query_pager::handle_result(
 }
 
 lw_shared_ptr<const paging_state> query_pager::state(std::optional<query_plan> plan) const {
-    return make_lw_shared<paging_state>(_last_pkey.value_or(partition_key::make_empty()), _last_pos, _exhausted ? 0 : _max, _cmd->query_uuid, _last_replicas, _query_read_repair_decision, _rows_fetched_for_last_partition, std::move(plan));
+    return make_lw_shared<paging_state>(_last_pkey.value_or(partition_key::make_empty()), _last_pos, _exhausted ? 0 : _max, _cmd->query_uuid, _last_replicas, _query_read_repair_decision, _rows_fetched_for_last_partition, std::move(plan),
+            _partition_undecided);
 }
 
 }

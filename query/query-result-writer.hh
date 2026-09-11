@@ -228,7 +228,8 @@ public:
     // Requires that cr.has_any_live_data()
     stop_iteration consume(clustering_row&& cr, row_tombstone current_tombstone);
     stop_iteration consume(range_tombstone_change&&) { return stop_iteration::no; }
-    uint64_t consume_end_of_stream();
+    // stopped_in_partition: whether the page stopped before the end of the partition.
+    uint64_t consume_end_of_stream(bool stopped_in_partition);
 };
 
 class query_result_builder {

@@ -82,6 +82,12 @@ protected:
     lw_shared_ptr<query::read_command> _cmd;
     dht::partition_range_vector _ranges;
     std::optional<service::cas_shard> _cas_shard;
+    // Whether the query itself asks for the static content of partitions without rows.
+    const bool _always_return_static_content;
+    // Whether the query can return static-only rows.
+    const bool _may_return_static_only_rows;
+    // See paging_state::get_partition_undecided().
+    bool _partition_undecided = false;
     paging_state::replicas_per_token_range _last_replicas;
     std::optional<db::read_repair_decision> _query_read_repair_decision;
     uint64_t _rows_fetched_for_last_partition = 0;

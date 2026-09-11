@@ -565,6 +565,42 @@ SEASTAR_THREAD_TEST_CASE(test_result_size_calculation) {
     BOOST_REQUIRE_EQUAL(digest_only_builder.memory_accounter().used_memory(), result_and_digest_builder.memory_accounter().used_memory());
 }
 
+// A data page which stops on its tombstone limit inside a partition, before any
+// live row, cannot know whether the rest of the partition holds live rows. It
+// leaves the partition's static-only row to a later page only if the slice asks
+// for it. A caller which does not continue the partition for the row, such as an
+// older coordinator, would otherwise lose the row.
+SEASTAR_THREAD_TEST_CASE(test_tombstone_limited_page_defers_static_only_row_only_if_asked) {
+    auto s = make_schema();
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+    const uint64_t tombstone_limit = 10;
+
+    mutation m(s, partition_key::from_single_value(*s, "key1"));
+    m.set_static_cell("s1", data_value(bytes("S:v")), 1);
+    for (uint64_t i = 0; i < 2 * tombstone_limit; ++i) {
+        m.partition().apply_delete(*s, clustering_key::from_single_value(*s, to_bytes(fmt::format("{:02}", i))),
+                tombstone(1, gc_clock::now()));
+    }
+    auto src = make_source({m});
+
+    auto query = [&] (bool defer) {
+        auto slice = make_full_slice(*s);
+        slice.options.set<query::partition_slice::option::allow_short_read>();
+        slice.options.set_if<query::partition_slice::option::defer_undecided_static_only_row>(defer);
+        query::result::builder builder(slice, query::result_options::only_result(), make_accounter(), tombstone_limit);
+        data_query(s, semaphore.make_permit(), src, query::full_partition_range, slice, builder);
+        auto result = builder.build();
+        BOOST_REQUIRE(bool(result.is_short_read()));
+        return query::result_set::from_raw_result(s, slice, result);
+    };
+
+    assert_that(query(false))
+        .has_only(a_row()
+            .with_column("pk", data_value(bytes("key1")))
+            .with_column("s1", data_value(bytes("S:v"))));
+    assert_that(query(true)).is_empty();
+}
+
 SEASTAR_THREAD_TEST_CASE(test_frozen_mutation_consumer) {
     random_mutation_generator gen(random_mutation_generator::generate_counters::no);
     schema_ptr s = gen.schema();

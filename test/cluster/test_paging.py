@@ -364,6 +364,113 @@ async def test_digest_match_does_not_truncate_unpaged_multi_partition_read(manag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reverse_order", [False, True], ids=["forward", "reverse"])
+async def test_tombstone_limited_page_defers_static_only_row(manager: ScyllaClusterManager, reverse_order: bool) -> None:
+    """
+    Decide on a static-only row only after the whole partition has been read.
+
+    This is the plain data path, without reconciliation. A replica stops a page
+    after query_tombstone_page_limit tombstones, even inside a partition and
+    before any live row. At that point it cannot know whether the partition has
+    live rows. Partition 0 has live rows after its tombstones, so a static-only
+    row on the first page is spurious and pushes a real row out of the limit.
+    Partition 1 has no live rows, so it must return exactly one static-only row,
+    although its pages stop inside the partition and continuation pages
+    restrict clustering keys. This holds even if the query selects no static
+    column.
+    """
+    tombstone_limit = 10
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        tombstone_base = 1000 if reverse_order else 0
+        live_row_base = 0 if reverse_order else 1000
+
+        delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = ? AND ck = ?")
+        for pk in [0, 1]:
+            await cql.run_async(f"INSERT INTO {table} (pk, s) VALUES ({pk}, 1)")
+            # Every page, including the last one in partition 1, stops on the
+            # tombstone limit.
+            for ck in range(tombstone_base, tombstone_base + 3 * tombstone_limit):
+                await cql.run_async(delete_row, [pk, ck])
+        live_rows = list(range(live_row_base, live_row_base + 3))
+        for ck in live_rows:
+            await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, {ck}, {ck})")
+
+        limit = 2
+        order_by = " ORDER BY ck DESC" if reverse_order else ""
+        select = SimpleStatement(f"SELECT pk, ck, s, v FROM {table} WHERE pk = 0{order_by} LIMIT {limit}",
+                                 fetch_size=1)
+        rows = await cql.run_async(select, all_pages=True)
+        expected_rows = (list(reversed(live_rows)) if reverse_order else live_rows)[:limit]
+        assert [(r.ck, r.s, r.v) for r in rows] == [(ck, 1, ck) for ck in expected_rows]
+
+        select = SimpleStatement(f"SELECT pk, ck, s, v FROM {table} WHERE pk = 1{order_by}",
+                                 fetch_size=1)
+        rows = await cql.run_async(select, all_pages=True)
+        assert [(r.ck, r.s, r.v) for r in rows] == [(None, 1, None)]
+
+        # A live static row makes the partition return a row even if the query
+        # selects no static column (see test_static.py::test_static_not_selected).
+        # The pager must record that the row is pending for such a query too.
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} WHERE pk = 1{order_by}",
+                                 fetch_size=1)
+        rows = await cql.run_async(select, all_pages=True)
+        assert [(r.ck, r.v) for r in rows] == [(None, None)]
+
+
+@pytest.mark.asyncio
+async def test_tombstone_limited_page_returns_distinct_row_of_live_static_row(manager: ScyllaClusterManager) -> None:
+    """
+    Return a partition's DISTINCT row on a page which stops inside the partition.
+
+    A DISTINCT query returns one row per partition. A live static row
+    establishes it, whatever clustering rows follow. So a page which stops on
+    the tombstone limit inside the partition, before any live row, must still
+    return it. The pager does not continue a partition of a DISTINCT query, so
+    no later page returns it instead.
+
+    Partition 0 has a live row after its tombstones. Partition 1 has none.
+    """
+    tombstone_limit = 10
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        partitions = [0, 1]
+        delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = ? AND ck = ?")
+        for pk in partitions:
+            await cql.run_async(f"INSERT INTO {table} (pk, s) VALUES ({pk}, {pk})")
+            for ck in range(3 * tombstone_limit):
+                await cql.run_async(delete_row, [pk, ck])
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 1000, 1000)")
+
+        # Scan the whole table: a single-partition DISTINCT query is not paged.
+        select = SimpleStatement(f"SELECT DISTINCT pk, s FROM {table}", fetch_size=1)
+        rows = await cql.run_async(select, all_pages=True)
+        assert sorted((r.pk, r.s) for r in rows) == [(pk, pk) for pk in partitions]
+
+        # The live static value establishes the row even if the query does not
+        # select it.
+        select = SimpleStatement(f"SELECT DISTINCT pk FROM {table}", fetch_size=1)
+        rows = await cql.run_async(select, all_pages=True)
+        assert sorted(r.pk for r in rows) == partitions
+
+
+@pytest.mark.asyncio
 async def test_tombstone_limited_page_does_not_stop_on_dead_static_row(manager: ScyllaClusterManager) -> None:
     """
     Do not stop a page on a dead static row.
@@ -409,7 +516,9 @@ async def test_tombstone_limited_page_does_not_stop_on_dead_static_row(manager: 
 
 
 @pytest.mark.asyncio
-async def test_per_partition_limit_counts_rows_of_cursor_partition(manager: ScyllaClusterManager) -> None:
+@pytest.mark.parametrize("q_has_live_row", [False, True], ids=["static-only-row", "live-row"])
+async def test_per_partition_limit_counts_rows_of_cursor_partition(
+        manager: ScyllaClusterManager, q_has_live_row: bool) -> None:
     """
     Count only rows of the cursor's partition against its per-partition limit.
 
@@ -418,11 +527,12 @@ async def test_per_partition_limit_counts_rows_of_cursor_partition(manager: Scyl
     that partition's allowance.
 
     Partition P precedes partition Q in token order. P has one live row. Q has
-    exactly one tombstone page's worth of row tombstones, followed by a live
-    row. With PER PARTITION LIMIT 1 and a page size of two rows, the first page
-    returns P's row and stops on the tombstone limit inside Q, before returning
-    anything from Q. The pager once counted P's row as a row of Q, so the next
-    page's filter dropped Q's row.
+    exactly one tombstone page's worth of row tombstones. After them, Q has
+    either a live row, or no live row but a live static value, so that it
+    returns a static-only row. With PER PARTITION LIMIT 1 and a page size of two
+    rows, the first page returns P's row and stops on the tombstone limit
+    inside Q, before returning anything from Q. The pager once counted P's row
+    as a row of Q, so the next page's filter dropped Q's row.
     """
     tombstone_limit = 10
     servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
@@ -437,7 +547,7 @@ async def test_per_partition_limit_counts_rows_of_cursor_partition(manager: Scyl
                                  "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1} "
                                  "AND tablets = {'enabled': false}") as ks:
         table = f"{ks}.t"
-        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck)) "
                             "WITH tombstone_gc = {'mode': 'disabled'}")
 
         await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES ({p}, 0, 0)")
@@ -445,11 +555,16 @@ async def test_per_partition_limit_counts_rows_of_cursor_partition(manager: Scyl
         delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = {q} AND ck = ?")
         for ck in range(tombstone_limit):
             await cql.run_async(delete_row, [ck])
-        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES ({q}, 1000, 1000)")
+        if q_has_live_row:
+            await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES ({q}, 1000, 1000)")
+            expected_q_row = (q, 1000, None, 1000)
+        else:
+            await cql.run_async(f"INSERT INTO {table} (pk, s) VALUES ({q}, 1)")
+            expected_q_row = (q, None, 1, None)
 
-        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} PER PARTITION LIMIT 1", fetch_size=2)
+        select = SimpleStatement(f"SELECT pk, ck, s, v FROM {table} PER PARTITION LIMIT 1", fetch_size=2)
         rows = await cql.run_async(select, all_pages=True)
-        assert [(r.pk, r.ck, r.v) for r in rows] == [(p, 0, 0), (q, 1000, 1000)]
+        assert [(r.pk, r.ck, r.s, r.v) for r in rows] == [(p, 0, None, 0), expected_q_row]
 
 
 @pytest.mark.asyncio

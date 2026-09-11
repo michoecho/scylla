@@ -197,6 +197,11 @@ public:
     // rolling upgrade.
     gms::feature small_table_optimization_size_probe { *this, "SMALL_TABLE_OPTIMIZATION_SIZE_PROBE"sv };
     gms::feature alternator_composite_gsi_keys { *this, "ALTERNATOR_COMPOSITE_GSI_KEYS"sv };
+    // Gates partition_slice::option::defer_undecided_static_only_row. An older
+    // replica rejects the option. An older coordinator does not continue a
+    // partition whose static-only row a page left undecided, so it would lose
+    // the row, also on a page of a query which a newer coordinator started.
+    gms::feature deferred_static_only_rows { *this, "DEFERRED_STATIC_ONLY_ROWS"sv };
 public:
 
     const std::unordered_map<sstring, std::reference_wrapper<feature>>& registered_features() const;

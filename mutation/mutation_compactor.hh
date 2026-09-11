@@ -623,8 +623,8 @@ public:
     }
 
     /// Reset limits and query-time to the new page's ones and re-emit the
-    /// partition-header and static row if there are clustering rows or range
-    /// tombstones left in the partition.
+    /// partition-header and static row if the previous page stopped inside the
+    /// partition.
     ///
     /// \param slice the new page's slice. It can differ from the slice which
     ///     the compactor was created with: a page which continues a partition
@@ -663,10 +663,16 @@ public:
         // page's stats -- will not be called for it. Account for it here
         // instead, otherwise live_partitions can exceed total_partitions and
         // dead_partitions() underflows.
-        // A page starting at the partition-end will not emit anything from the
-        // partition, so it is not counted, to avoid misreporting it as a dead
-        // partition.
-        if (next_fragment_region == partition_region::static_row || next_fragment_region == partition_region::clustered) {
+        // The static row is re-emitted at the partition-end as well, as a new
+        // reader for the rest of the partition would emit it. The previous page
+        // may have stopped before any live row, so this page may still have to
+        // return the partition's static-only row.
+        // A page starting at the partition-end emits nothing else from the
+        // partition. Without a static row it is not counted, to avoid
+        // misreporting it as a dead partition.
+        const bool reemit_static_row = _last_static_row
+                && (next_fragment_region == partition_region::clustered || next_fragment_region == partition_region::partition_end);
+        if (next_fragment_region == partition_region::static_row || next_fragment_region == partition_region::clustered || reemit_static_row) {
             ++_stats.total_partitions;
         }
         _stop = stop_iteration::no;
@@ -676,7 +682,7 @@ public:
         if (next_fragment_region != partition_region::partition_start) {
             _validator.reset(mutation_fragment_v2::kind::partition_start, position_in_partition_view::for_partition_start(), {});
         }
-        if (next_fragment_region == partition_region::clustered && _last_static_row) {
+        if (reemit_static_row) {
             // Stopping here would cause an infinite loop so ignore return value.
             consume(*std::exchange(_last_static_row, {}), consumer, nc);
         }

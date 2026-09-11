@@ -209,6 +209,13 @@ public:
         // timestamps and expiries to support WRITETIME(col[key])/TTL(col[key])
         // and WRITETIME(col.field)/TTL(col.field) selectors.
         send_collection_timestamps,
+        // When set, a data page which stops inside a partition before any live
+        // row does not return the partition's static-only row. The rest of the
+        // partition may hold live rows, so only a page which reaches the end of
+        // the partition can decide the row. The caller must then continue the
+        // partition with always_return_static_content, or it loses the row.
+        // Needs the DEFERRED_STATIC_ONLY_ROWS cluster feature.
+        defer_undecided_static_only_row,
     };
     using option_set = enum_set<super_enum<option,
         option::send_clustering_key,
@@ -225,7 +232,8 @@ public:
         option::always_return_static_content,
         option::range_scan_data_variant,
         option::allow_mutation_read_page_without_live_row,
-        option::send_collection_timestamps>>;
+        option::send_collection_timestamps,
+        option::defer_undecided_static_only_row>>;
     clustering_row_ranges _row_ranges;
 public:
     column_id_vector static_columns; // TODO: consider using bitmap

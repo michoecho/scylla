@@ -47,6 +47,10 @@ private:
     // pin - and then nothing is pinned. See query_plan.hh and #18992.
     std::optional<query_plan> _query_plan;
 
+    // See get_partition_undecided(). A version predating this field does
+    // not record it.
+    bool _partition_undecided = false;
+
 public:
     // IDL ctor
     paging_state(partition_key pk,
@@ -60,7 +64,8 @@ public:
             uint32_t rows_fetched_for_last_partition_high_bits,
             bound_weight ck_weight,
             partition_region region,
-            std::optional<query_plan> plan);
+            std::optional<query_plan> plan,
+            bool partition_undecided = false);
 
     paging_state(partition_key pk,
             position_in_partition_view pos,
@@ -69,7 +74,8 @@ public:
             replicas_per_token_range last_replicas,
             std::optional<db::read_repair_decision> query_read_repair_decision,
             uint64_t rows_fetched_for_last_partition,
-            std::optional<query_plan> plan);
+            std::optional<query_plan> plan,
+            bool partition_undecided = false);
 
     void set_partition_key(partition_key pk) {
         _partition_key = std::move(pk);
@@ -190,6 +196,29 @@ public:
      */
     std::optional<db::read_repair_decision> get_query_read_repair_decision() const {
         return _query_read_repair_decision;
+    }
+
+    /**
+     * Whether the partition at the position is undecided: no page's result
+     * has held a row of it yet, but the partition may still have to return
+     * a row which depends on the rest of the partition.
+     *
+     * A page's result is what the storage proxy returns to the pager, before
+     * CQL filtering. A row in it decides the partition even if filtering
+     * rejects the row, and the client receives nothing from the partition.
+     * A live clustering row rules out a static-only row, whether or not
+     * filtering accepts it.
+     *
+     * A static-only row holds the static content of a partition which has no
+     * live clustering rows. Whether a partition has none is known only at its
+     * end. A page can stop inside a partition before it finds a live row, for
+     * example on the tombstone limit. Such a page's result holds no row of
+     * the partition, and the pager sets this flag. The next page, which
+     * restricts clustering keys, must then still return the static-only row
+     * if the rest of the partition has no live rows either.
+     */
+    bool get_partition_undecided() const {
+        return _partition_undecided;
     }
 
     static lw_shared_ptr<const paging_state> deserialize(bytes_opt bytes);
