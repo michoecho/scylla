@@ -5421,12 +5421,14 @@ private:
         if (!short_reads_allowed || !earliest_replica_stop) {
             return false;
         }
-        // A stop at or after the last reconciled row does not trim the result, but it still bounds
-        // the cursor of the converted page.
+        // The stop bounds the cursor of the converted page, whether or not it trims the result.
         _earliest_replica_stop = full_position(earliest_replica_stop->partition.key(), earliest_replica_stop->position);
 
-        // Short reads are allowed. Trim the reconciled result if a replica stopped before its last row.
-        if (cmp(*earliest_replica_stop, last_reconciled_position)) {
+        // Short reads are allowed. Trim the reconciled result if a replica stopped before its end.
+        // Conversion returns no row after last_reconciled_position, so trimming at a later stop
+        // removes only rows which conversion does not return. Trim there nevertheless, so that the
+        // page cannot return a row after the stop even if the caller's row count is wrong.
+        if (cmp(*earliest_replica_stop, get_reconciled_last_position(rp.front()))) {
             _is_short_read = query::short_read::yes;
             _trimmed_to_replica_stop = true;
 
