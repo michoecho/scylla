@@ -2023,8 +2023,13 @@ void query_result_builder::consume(tombstone t) {
 }
 stop_iteration query_result_builder::consume(static_row&& sr, tombstone t, bool is_live) {
     if (!is_live) {
-        _stop = _rb.bump_and_check_tombstone_limit();
-        return _stop;
+        // Count the dead static row against the tombstone limit, but do not
+        // stop on it. The position of a page which stops on the static row is
+        // not a clustering position, so the pager would skip the rest of the
+        // partition. The page stops on a later tombstone instead, or at the
+        // end of the partition.
+        _rb.count_tombstone();
+        return stop_iteration::no;
     }
     _stop = _mutation_consumer->consume(std::move(sr), t);
     return _stop;
@@ -2046,6 +2051,12 @@ stop_iteration query_result_builder::consume_end_of_partition() {
     auto live_rows_in_partition = _mutation_consumer->consume_end_of_stream();
     if (live_rows_in_partition > 0 && !_stop) {
         _stop = _rb.memory_accounter().check();
+    }
+    // A dead static row can reach the tombstone limit without stopping the
+    // page. Stop at the end of its partition then, so that the limit still
+    // bounds a scan of partitions which hold only a dead static row.
+    if (!_stop) {
+        _stop = _rb.check_tombstone_limit();
     }
     if (_stop) {
         _rb.mark_as_short_read();

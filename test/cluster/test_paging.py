@@ -352,6 +352,51 @@ async def test_digest_match_does_not_truncate_unpaged_multi_partition_read(manag
 
 
 @pytest.mark.asyncio
+async def test_tombstone_limited_page_does_not_stop_on_dead_static_row(manager: ScyllaClusterManager) -> None:
+    """
+    Do not stop a page on a dead static row.
+
+    A dead static row counts against query_tombstone_page_limit. A page which
+    stops on it has no clustering position to continue from, so the pager
+    skips the rest of the partition. Partition 0 has a retained static-cell
+    tombstone and a live row. With a tombstone limit of one, the first page
+    once stopped on the static row, and paging never returned the live row.
+
+    Dead static rows must still stop a page at the tombstone limit, or a scan
+    of partitions with only a dead static row would not be bounded. Such a
+    page stops at the end of the partition instead.
+    """
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': 1},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        rowless_table = f"{ks}.rowless"
+        for t in [table, rowless_table]:
+            await cql.run_async(f"CREATE TABLE {t} (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck)) "
+                                "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        await cql.run_async(f"DELETE s FROM {table} WHERE pk = 0")
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 100, 100)")
+
+        for where in ["", " WHERE pk = 0", " WHERE pk = 0 ORDER BY ck DESC"]:
+            select = SimpleStatement(f"SELECT pk, ck, v FROM {table}{where}", fetch_size=10)
+            rows = await cql.run_async(select, all_pages=True)
+            assert [(r.pk, r.ck, r.v) for r in rows] == [(0, 100, 100)], where
+
+        partitions = range(3)
+        for pk in partitions:
+            await cql.run_async(f"DELETE s FROM {rowless_table} WHERE pk = {pk}")
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {rowless_table}", fetch_size=10)
+        response_future = cql.execute_async(select)
+        first_page = await _wrap_future(response_future)
+        assert first_page == []
+        assert response_future.has_more_pages
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_treats_static_only_replica_as_complete_partition(manager: ScyllaClusterManager) -> None:
     """
     Do not trim a reconciled page behind a replica which returned only a static row.

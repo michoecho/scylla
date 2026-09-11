@@ -130,8 +130,17 @@ public:
 
     result_memory_accounter& memory_accounter() { return _memory_accounter; }
 
-    stop_iteration bump_and_check_tombstone_limit() {
+    void count_tombstone() {
         ++_tombstones;
+    }
+
+    stop_iteration bump_and_check_tombstone_limit() {
+        count_tombstone();
+        return check_tombstone_limit();
+    }
+
+    // Whether the page has reached its tombstone limit and should stop.
+    stop_iteration check_tombstone_limit() const {
         if (_tombstones < _tombstone_limit) {
             return stop_iteration::no;
         }
