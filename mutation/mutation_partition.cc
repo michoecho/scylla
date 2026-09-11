@@ -2009,6 +2009,30 @@ uint64_t mutation_querier::consume_end_of_stream(bool stopped_in_partition) {
     bool return_static_content_on_partition_with_no_rows = decided && (
         options.contains(query::partition_slice::option::always_return_static_content) ||
         !has_ck_selector(_pw.ranges()));
+    // Known problem: if the query selects no static column, the digest does
+    // not show whether the partition returned its static-only row. The digest
+    // covers static cells only if the query selects them, and a static-only
+    // row adds nothing else. A partition which returns nothing still leaves
+    // its key in the digest, because add_partition() hashes the key before
+    // retract() can undo the partition. So a replica which returns the
+    // static-only row and a replica which returns nothing from the partition
+    // have the same digest, if the latter reads anything in the partition,
+    // such as an unpurged tombstone. The coordinator then accepts the data
+    // replica's result, and does not start read repair. For example, if a
+    // QUORUM deletion of the static value misses the data replica, a QUORUM
+    // read which selects no static column can return the deleted static-only
+    // row. The reverse also happens. Suppose that every replica holds an
+    // unpurged tombstone for the static cell, and that a QUORUM write of a
+    // newer static value misses the data replica. The data replica returns
+    // nothing from the partition, a digest replica would return the
+    // static-only row, and the digests match. A fix needs a new digest
+    // algorithm behind a cluster feature, which hashes whether the partition
+    // returned a static-only row. Reconciling every result which returns a
+    // static-only row would remove a wrong row, but would not restore a
+    // missing one. The coordinator reconciles such a result only if a replica
+    // stopped inside the partition, whose static-only row is then undecided
+    // (see returns_static_only_row() in storage_proxy.cc). That protects the
+    // undecided row, not against this problem.
     if (!_live_clustering_rows && (!return_static_content_on_partition_with_no_rows || !_live_data_in_static_row)) {
         _pw.retract();
         return 0;
