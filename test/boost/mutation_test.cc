@@ -3647,7 +3647,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
 
         while (!reader.is_buffer_empty() || !reader.is_end_of_stream()) {
             auto c = consumer{permit, res_mut, max_rows};
-            compaction_state->start_new_page(1, max_partitions, query_time, reader.peek().get()->position().region(), c);
+            compaction_state->start_new_page(1, max_partitions, query_time, reader.peek().get()->position().region(), s->full_slice(), c);
             reader.consume(compact_for_query<consumer>(compaction_state, std::move(c))).get();
         }
 
@@ -3663,7 +3663,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_range_tombstone_spanning_many_pages) {
 
         while (!reader.is_buffer_empty() || !reader.is_end_of_stream()) {
             auto c = consumer{permit, res_mut, 2};
-            compaction_state->start_new_page(max_rows, max_partitions, query_time, reader.peek().get()->position().region(), c);
+            compaction_state->start_new_page(max_rows, max_partitions, query_time, reader.peek().get()->position().region(), s->full_slice(), c);
             reader.consume(compact_for_query<consumer>(compaction_state, std::move(c))).get();
         }
 
@@ -3765,7 +3765,7 @@ SEASTAR_THREAD_TEST_CASE(test_compactor_partition_stats_of_partition_spanning_ma
     unsigned pages_with_rows = 0;
     while (!reader.is_buffer_empty() || !reader.is_end_of_stream()) {
         noop_compacted_fragments_consumer c;
-        compaction_state->start_new_page(rows_per_page, max_partitions, query_time, reader.peek().get()->position().region(), c);
+        compaction_state->start_new_page(rows_per_page, max_partitions, query_time, reader.peek().get()->position().region(), s->full_slice(), c);
         reader.consume(compact_for_query<noop_compacted_fragments_consumer>(compaction_state, c)).get();
 
         const auto& stats = compaction_state->stats();

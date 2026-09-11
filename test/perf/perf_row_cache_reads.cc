@@ -192,7 +192,8 @@ void test_scan_with_range_delete_over_rows() {
             auto slice = partition_slice_builder(*s).build();
             auto q = replica::querier(cache_ms, s, semaphore.make_permit(), pr, slice, nullptr, tombstone_gc_state::for_tests());
             auto close_q = deferred_close(q);
-            q.consume_page(noop_compacted_fragments_consumer(),
+            q.consume_page(slice,
+                           noop_compacted_fragments_consumer(),
                            std::numeric_limits<uint32_t>::max(),
                            std::numeric_limits<uint32_t>::max(),
                            gc_clock::now()).get();

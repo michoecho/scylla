@@ -5139,7 +5139,7 @@ table::query(schema_ptr query_schema,
         }
         auto& q = *querier_opt;
 
-        future<> fut = co_await coroutine::as_future(q.consume_page(query_result_builder(*query_schema, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, trace_state));
+        future<> fut = co_await coroutine::as_future(q.consume_page(qs.cmd.slice, query_result_builder(*query_schema, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, trace_state));
 
         if (fut.failed() || !qs.done()) {
             co_await q.close();
@@ -5197,7 +5197,7 @@ table::mutation_query(schema_ptr query_schema,
     std::exception_ptr ex;
   try {
     auto rrb = reconcilable_result_builder(*query_schema, cmd.slice, std::move(accounter));
-    auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, trace_state);
+    auto r = co_await q.consume_page(cmd.slice, std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, trace_state);
 
     if (!saved_querier || (!q.are_limits_reached() && !r.is_short_read())) {
         co_await q.close();

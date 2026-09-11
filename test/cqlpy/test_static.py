@@ -11,6 +11,7 @@
 
 import pytest
 from cassandra.protocol import SyntaxException, InvalidRequest
+from cassandra.query import SimpleStatement
 from .util import new_test_table, unique_key_int
 
 @pytest.fixture(scope="module")
@@ -46,6 +47,25 @@ def test_static_not_selected(cql, table1):
     # Currently, Cassandra does the former, Scylla does the latter,
     # so the following assert fails on Scylla:
     assert list(cql.execute(f'SELECT r FROM {table1} WHERE p={p}')) == []
+
+# A paged scan must not stop early after a partition which has a live static
+# row and only dead clustering rows after the page's cursor. The partition
+# already returned a live row, so the page which continues it returns nothing
+# from it. Scylla once counted a static-only row for that page anyway, when
+# it resumed its cached reader inside the partition. The page then returned
+# fewer rows than requested without being marked short, so the client stopped
+# paging and missed the later partitions.
+def test_paging_past_partition_with_dead_rows_after_cursor(cql, test_keyspace):
+    schema = 'p int, c int, s int static, v int, PRIMARY KEY (p, c)'
+    with new_test_table(cql, test_keyspace, schema) as table:
+        partitions = range(3)
+        for p in partitions:
+            cql.execute(f'INSERT INTO {table} (p, s, c, v) VALUES ({p}, {p}, 0, {p})')
+            for c in range(1, 4):
+                cql.execute(f'DELETE FROM {table} WHERE p = {p} AND c = {c}')
+        for page_size in range(1, 5):
+            rows = cql.execute(SimpleStatement(f'SELECT p, c, s, v FROM {table}', fetch_size=page_size))
+            assert sorted(rows) == [(p, 0, p, p) for p in partitions]
 
 # Verify that if a partition has a static column set, reading an *existing*
 # clustering row will return it, but reading a *non-existing* row will not

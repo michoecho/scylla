@@ -625,12 +625,17 @@ public:
     /// Reset limits and query-time to the new page's ones and re-emit the
     /// partition-header and static row if there are clustering rows or range
     /// tombstones left in the partition.
+    ///
+    /// \param slice the new page's slice. It can differ from the slice which
+    ///     the compactor was created with: a page which continues a partition
+    ///     restricts the partition's clustering ranges.
     template <typename Consumer>
     requires CompactedFragmentsConsumer<Consumer>
     void start_new_page(uint64_t row_limit,
             uint32_t partition_limit,
             gc_clock::time_point query_time,
             partition_region next_fragment_region,
+            const query::partition_slice& slice,
             Consumer& consumer) {
         _empty_partition = true;
         _static_row_live = false;
@@ -640,6 +645,18 @@ public:
         _current_partition_limit = std::min(_row_limit, _partition_row_limit);
         _query_time = query_time;
         _stats = {};
+        // A page which continues a partition may restrict its clustering
+        // ranges, or ask for its static content. The page's result builder
+        // decides with the page's slice whether the partition returns a
+        // static-only row, so decide with it too whether to count one. With the
+        // slice of an earlier page, a page could count a row which it does not
+        // return. It would then end early without being short, and the client
+        // would stop paging.
+        if (_dk && next_fragment_region != partition_region::partition_start) {
+            _return_static_content_on_partition_with_no_rows =
+                slice.options.contains(query::partition_slice::option::always_return_static_content) ||
+                !has_ck_selector(slice.row_ranges(_schema, _dk->key()));
+        }
         // A page which continues a partition started on a previous page will
         // not see the partition-start fragment of said partition, so
         // consume_new_partition() -- which accounts for the partition in the
