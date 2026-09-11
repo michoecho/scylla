@@ -54,13 +54,13 @@ static bool ring_position_matches(const schema& s, const dht::partition_range& r
     const auto is_reversed = slice.is_reversed();
 
     const auto expected_start = dht::ring_position(dht::decorate_key(s, pos.partition));
-    // If there are no clustering columns or the select is distinct we don't
-    // have clustering rows at all. In this case we can be sure we won't have
-    // anything more in the last page's partition and thus the start bound is
-    // exclusive. Otherwise there might be clustering rows still and it is
-    // inclusive.
+    // If the page stopped at a clustering position, the pager may continue the
+    // partition, so the start bound is inclusive. Otherwise the partition has
+    // nothing more to return, and the start bound is exclusive. A DISTINCT
+    // query continues a partition only while no page has returned its row.
+    // Once a page returns the row, the pager moves on from the partition, and
+    // the querier cannot be used.
     const auto expected_inclusiveness = s.clustering_key_size() > 0 &&
-        !slice.options.contains<query::partition_slice::option::distinct>() &&
         pos.position.region() == partition_region::clustered;
     const auto comparator = dht::ring_position_comparator(s);
 

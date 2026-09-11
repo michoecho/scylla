@@ -67,6 +67,8 @@ query_pager::query_pager(service::storage_proxy& p, schema_ptr query_schema,
                 // if the query selects no static column.
                 , _may_return_static_only_rows(_query_schema->has_static_columns()
                         && (_always_return_static_content || !has_ck_selector(_cmd->slice.default_row_ranges())))
+                , _may_leave_partition_undecided(_query_schema->clustering_key_size() > 0
+                        && (_may_return_static_only_rows || _cmd->slice.options.contains<query::partition_slice::option::distinct>()))
 {
     if (query_function_override) {
         _query_function = std::move(query_function_override);
@@ -174,7 +176,9 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
         // last ck can be empty depending on whether we
         // deserialized state or not. This case means "last page ended on
         // something-not-bound-by-clustering" (i.e. a static row, alone)
-        const bool has_ck = _has_clustering_keys && _last_pos.region() == partition_region::clustered;
+        // A DISTINCT query does not continue a partition which a page returned, because the
+        // partition has no more rows to return. But it continues an undecided partition.
+        const bool has_ck = (_has_clustering_keys || _partition_undecided) && _last_pos.region() == partition_region::clustered;
 
         // If we have no clustering keys, it should mean we only have one row
         // per PK. Thus we can just bypass the last one.
@@ -189,11 +193,11 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
             query::trim_clustering_row_ranges_to(*_query_schema, row_ranges, next_pos);
 
             _cmd->slice.set_range(*_query_schema, *_last_pkey, row_ranges);
-            if (_partition_undecided) {
+            if (_partition_undecided && _may_return_static_only_rows) {
                 // Nothing of this partition has been returned yet. Its restricted ranges would
-                // suppress the static-only row which it may still have to return. A partition is
-                // undecided only if the query does not restrict clustering keys, or already sets
-                // this option. So the option does not change what other partitions return.
+                // suppress the static-only row which it may still have to return. The query can
+                // return static-only rows only if it does not restrict clustering keys, or already
+                // sets this option. So the option does not change what other partitions return.
                 _cmd->slice.options.set<query::partition_slice::option::always_return_static_content>();
             }
         }
@@ -442,7 +446,7 @@ void query_pager::handle_result(
         row_count = results->row_count() ? *results->row_count() : std::get<1>(view.count_partitions_and_rows());
         replica_row_count = row_count;
         // Every returned partition counts at least one row.
-        if (row_count && _may_return_static_only_rows) {
+        if (row_count && _may_leave_partition_undecided) {
             last_returned_pkey = view.calculate_last_position().partition;
         }
     }
@@ -483,8 +487,8 @@ void query_pager::handle_result(
         // A page which stopped inside a partition before its result held a row of it leaves the
         // partition undecided. A continued partition stays undecided only if no earlier page's
         // result held a row of it either.
-        _partition_undecided = _may_return_static_only_rows && !_exhausted && _last_pkey
-                && _has_clustering_keys && _last_pos.region() == partition_region::clustered
+        _partition_undecided = _may_leave_partition_undecided && !_exhausted && _last_pkey
+                && _last_pos.region() == partition_region::clustered
                 && (!continues_partition || _partition_undecided)
                 && !returned_from_cursor_partition;
     }

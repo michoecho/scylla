@@ -433,9 +433,9 @@ async def test_tombstone_limited_page_returns_distinct_row_of_live_static_row(ma
 
     A DISTINCT query returns one row per partition. A live static row
     establishes it, whatever clustering rows follow. So a page which stops on
-    the tombstone limit inside the partition, before any live row, must still
-    return it. The pager does not continue a partition of a DISTINCT query, so
-    no later page returns it instead.
+    the tombstone limit inside the partition, before any live row, still
+    returns it. An older coordinator does not continue a partition of a
+    DISTINCT query, so no later page would return it instead.
 
     Partition 0 has a live row after its tombstones. Partition 1 has none.
     """
@@ -468,6 +468,127 @@ async def test_tombstone_limited_page_returns_distinct_row_of_live_static_row(ma
         select = SimpleStatement(f"SELECT DISTINCT pk FROM {table}", fetch_size=1)
         rows = await cql.run_async(select, all_pages=True)
         assert sorted(r.pk for r in rows) == partitions
+
+
+@pytest.mark.asyncio
+async def test_tombstone_limited_page_continues_undecided_distinct_partition(manager: ScyllaClusterManager) -> None:
+    """
+    Continue a DISTINCT query inside a partition which no page returned yet.
+
+    A DISTINCT query returns one row per partition. Without live static
+    content, only a live clustering row establishes that row. A page which
+    stops on the tombstone limit inside a partition, before any live row,
+    returns nothing from it. The pager then skipped the rest of the
+    partition, as it does for a partition which a page returned, and lost
+    the partition.
+
+    Partition 0 has a live row after its tombstones, so it must be returned.
+    Partition 1 has only tombstones, so it must not be. Partition 2 has a
+    live row and no tombstones. Check a table without static columns, and a
+    table whose static column is not set.
+    """
+    tombstone_limit = 10
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        for table, static_column in [(f"{ks}.t", ""), (f"{ks}.t_static", "s int static, ")]:
+            await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, {static_column}v int, PRIMARY KEY (pk, ck)) "
+                                "WITH tombstone_gc = {'mode': 'disabled'}")
+
+            delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = ? AND ck = ?")
+            for pk in [0, 1]:
+                for ck in range(3 * tombstone_limit):
+                    await cql.run_async(delete_row, [pk, ck])
+            await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 1000, 1000)")
+            await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (2, 0, 0)")
+
+            # Scan the whole table: a single-partition DISTINCT query is not paged.
+            select = SimpleStatement(f"SELECT DISTINCT pk FROM {table}", fetch_size=1)
+            rows = await cql.run_async(select, all_pages=True)
+            assert sorted(r.pk for r in rows) == [0, 2], table
+
+
+@pytest.mark.asyncio
+async def test_tombstone_limited_page_continues_distinct_partition_past_range_tombstone(manager: ScyllaClusterManager) -> None:
+    """
+    Continue an undecided partition of a DISTINCT query past a range tombstone.
+
+    The pager continues a partition of a DISTINCT query which a page left
+    undecided. With a tombstone limit of one, a page stopped on the change
+    which opens a range tombstone, before the partition's first live row. The
+    next page started at the same position, and stopped on the same change
+    again, so paging never ended.
+
+    Partition 0 has a range tombstone over ck=0..9, followed by a live row at
+    ck=100.
+    """
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': 1},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+        await cql.run_async(f"DELETE FROM {table} WHERE pk = 0 AND ck >= 0 AND ck <= 9")
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 100, 100)")
+
+        # Scan the whole table: a single-partition DISTINCT query is not paged.
+        select = SimpleStatement(f"SELECT DISTINCT pk FROM {table}", fetch_size=10)
+        rows = await fetch_pages(cql, select, max_pages=10)
+        assert [r.pk for r in rows] == [0]
+
+
+@pytest.mark.asyncio
+async def test_undecided_distinct_partition_reuses_cached_querier(manager: ScyllaClusterManager) -> None:
+    """
+    Reuse the cached querier when a DISTINCT query continues an undecided partition.
+
+    The pager continues a partition of a DISTINCT query if a page stopped
+    inside it before deciding its row. The next page then starts its
+    partition range at that partition, inclusively. The replica must accept
+    that bound for its cached querier. Otherwise it drops the querier, and
+    every such page recreates its reader.
+
+    Partition 0 has row tombstones at ck=0..29 and a live row at ck=1000. The
+    first three pages stop on the tombstone limit inside the partition. The
+    fourth returns the partition's row and reaches the end of the table.
+    """
+    tombstone_limit = 10
+    # With a single shard, each page looks up exactly one cached querier.
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': tombstone_limit},
+                                        cmdline=['--smp', '1'], auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async def querier_cache_stats() -> tuple[int, int]:
+        metrics = await manager.metrics.query(servers[0].ip_addr)
+        return (int(metrics.get("scylla_database_querier_cache_lookups") or 0),
+                int(metrics.get("scylla_database_querier_cache_drops") or 0))
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+        delete_row = cql.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck = ?")
+        for ck in range(3 * tombstone_limit):
+            await cql.run_async(delete_row, [ck])
+        await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, 1000, 1000)")
+
+        lookups_before, drops_before = await querier_cache_stats()
+        # The page size exceeds the number of partitions, so no page stops
+        # after returning a partition's row. The pager moves on from such a
+        # partition, and the querier is then rightly dropped.
+        select = SimpleStatement(f"SELECT DISTINCT pk FROM {table}", fetch_size=10)
+        rows = await cql.run_async(select, all_pages=True)
+        assert [r.pk for r in rows] == [0]
+        lookups_after, drops_after = await querier_cache_stats()
+        assert lookups_after - lookups_before >= 3
+        assert drops_after == drops_before
 
 
 @pytest.mark.asyncio

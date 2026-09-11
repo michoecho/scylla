@@ -86,6 +86,9 @@ protected:
     const bool _always_return_static_content;
     // Whether the query can return static-only rows.
     const bool _may_return_static_only_rows;
+    // Whether a page can stop inside a partition before it decides the partition's static-only
+    // row or DISTINCT row.
+    const bool _may_leave_partition_undecided;
     // See paging_state::get_partition_undecided().
     bool _partition_undecided = false;
     paging_state::replicas_per_token_range _last_replicas;

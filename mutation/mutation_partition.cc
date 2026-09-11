@@ -2000,8 +2000,7 @@ uint64_t mutation_querier::consume_end_of_stream(bool stopped_in_partition) {
     // which reaches the end of the partition. The pager records that the
     // partition is undecided and asks that page for it.
     // A DISTINCT query returns one row per partition. A live static row
-    // establishes it, whatever clustering rows follow. The pager does not
-    // continue a partition of a DISTINCT query, so return the row now.
+    // establishes it, whatever clustering rows follow, so return the row now.
     const auto& options = _pw.slice().options;
     // Only a caller which continues the partition for its static-only row asks
     // to leave the row undecided (see defer_undecided_static_only_row).

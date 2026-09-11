@@ -206,16 +206,22 @@ public:
      * A page's result is what the storage proxy returns to the pager, before
      * CQL filtering. A row in it decides the partition even if filtering
      * rejects the row, and the client receives nothing from the partition.
-     * A live clustering row rules out a static-only row, whether or not
-     * filtering accepts it.
+     * A live clustering row rules out a static-only row, and establishes
+     * the row of a DISTINCT query, whether or not filtering accepts it.
      *
-     * A static-only row holds the static content of a partition which has no
-     * live clustering rows. Whether a partition has none is known only at its
-     * end. A page can stop inside a partition before it finds a live row, for
+     * A page can stop inside a partition before it finds a live row, for
      * example on the tombstone limit. Such a page's result holds no row of
-     * the partition, and the pager sets this flag. The next page, which
-     * restricts clustering keys, must then still return the static-only row
-     * if the rest of the partition has no live rows either.
+     * the partition, and the pager sets this flag. Two kinds of row depend
+     * on the rest of the partition:
+     * - A static-only row holds the static content of a partition which has
+     *   no live clustering rows. Whether a partition has none is known only
+     *   at its end. The next page, which restricts clustering keys, must
+     *   still return the static-only row if the rest of the partition has no
+     *   live rows either.
+     * - A DISTINCT query returns one row per partition. Without live static
+     *   content, only a live clustering row establishes it. The pager does
+     *   not continue a partition once a page's result held its row, but it
+     *   must continue an undecided one.
      */
     bool get_partition_undecided() const {
         return _partition_undecided;
