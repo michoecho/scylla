@@ -237,6 +237,8 @@ class query_result_builder {
     std::optional<mutation_querier> _mutation_consumer;
     // We need to remember that we requested stop, to mark the read as short in the end.
     stop_iteration _stop;
+    // The position of the page's first clustering fragment of the current partition.
+    std::optional<position_in_partition> _first_clustering_position;
 public:
     query_result_builder(const schema& s, query::result::builder& rb) noexcept;
 

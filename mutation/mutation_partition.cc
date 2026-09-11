@@ -2015,6 +2015,7 @@ query_result_builder::query_result_builder(const schema& s, query::result::build
 
 void query_result_builder::consume_new_partition(const dht::decorated_key& dk) {
     _mutation_consumer.emplace(mutation_querier(_schema, _rb.add_partition(_schema, dk.key()), _rb.memory_accounter()));
+    _first_clustering_position.reset();
 }
 
 void query_result_builder::consume(tombstone t) {
@@ -2035,6 +2036,9 @@ stop_iteration query_result_builder::consume(static_row&& sr, tombstone t, bool 
     return _stop;
 }
 stop_iteration query_result_builder::consume(clustering_row&& cr, row_tombstone t,  bool is_live) {
+    if (!_first_clustering_position) {
+        _first_clustering_position = position_in_partition(cr.position());
+    }
     if (!is_live) {
         _stop = _rb.bump_and_check_tombstone_limit();
         return _stop;
@@ -2043,6 +2047,21 @@ stop_iteration query_result_builder::consume(clustering_row&& cr, row_tombstone 
     return _stop;
 }
 stop_iteration query_result_builder::consume(range_tombstone_change&& rtc) {
+    // Count a range tombstone change against the tombstone limit, but do not
+    // stop on it at the position of the page's first clustering fragment of
+    // the partition. A page which continues a partition starts at the previous
+    // page's stop, and can start with range tombstone changes at that
+    // position. If the previous page stopped on such a change, stopping on it
+    // again would end this page at the same position, and paging would make no
+    // progress. The page stops on a later tombstone instead, or at the end of
+    // the partition.
+    if (!_first_clustering_position) {
+        _first_clustering_position = position_in_partition(rtc.position());
+    }
+    if (position_in_partition::equal_compare(_schema)(rtc.position(), *_first_clustering_position)) {
+        _rb.count_tombstone();
+        return stop_iteration::no;
+    }
     _stop = _rb.bump_and_check_tombstone_limit();
     return _stop;
 }

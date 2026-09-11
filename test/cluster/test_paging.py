@@ -45,6 +45,18 @@ async def keys_within_one_vnode(manager: ScyllaClusterManager, server: ServerInf
     raise RuntimeError(f"no vnode range holds {count} of the candidate keys")
 
 
+async def fetch_pages(cql, statement: SimpleStatement, max_pages: int) -> list:
+    """Return the rows of all pages of `statement`. Fail if it has more than `max_pages` pages."""
+    response_future = cql.execute_async(statement)
+    rows = []
+    for _ in range(max_pages):
+        rows.extend(await _wrap_future(response_future))
+        if not response_future.has_more_pages:
+            return rows
+        response_future.start_fetching_next_page()
+    pytest.fail(f"more than {max_pages} pages for {statement.query_string!r}, rows so far: {rows}")
+
+
 @pytest.mark.asyncio
 async def test_digest_match_preserves_empty_short_page_cursor(manager: ScyllaClusterManager) -> None:
     """
@@ -394,6 +406,41 @@ async def test_tombstone_limited_page_does_not_stop_on_dead_static_row(manager: 
         first_page = await _wrap_future(response_future)
         assert first_page == []
         assert response_future.has_more_pages
+
+
+@pytest.mark.asyncio
+async def test_tombstone_limited_page_does_not_stop_on_range_tombstone_start(manager: ScyllaClusterManager) -> None:
+    """
+    Do not stop a page on the range tombstone change which starts it.
+
+    A range tombstone change counts against query_tombstone_page_limit. A page
+    which stops on the change which opens a range tombstone ends before the
+    tombstone's first key. The next page starts at that position, inclusively,
+    so its reader first emits the same change again. With a tombstone limit of
+    one, that page stopped on it too, and paging never ended.
+
+    Partition 0 has live rows at ck=0 and ck=100, and a range tombstone over
+    ck=40..49 between them. Check forward and reversed order.
+    """
+    servers = await manager.servers_add(1, config={'query_tombstone_page_limit': 1},
+                                        auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+        for ck in [0, 100]:
+            await cql.run_async(f"INSERT INTO {table} (pk, ck, v) VALUES (0, {ck}, {ck})")
+        await cql.run_async(f"DELETE FROM {table} WHERE pk = 0 AND ck >= 40 AND ck <= 49")
+
+        for where, expected in [("", [0, 100]),
+                                (" WHERE pk = 0", [0, 100]),
+                                (" WHERE pk = 0 ORDER BY ck DESC", [100, 0])]:
+            select = SimpleStatement(f"SELECT pk, ck, v FROM {table}{where}", fetch_size=10)
+            rows = await fetch_pages(cql, select, max_pages=10)
+            assert [r.ck for r in rows] == expected, where
 
 
 @pytest.mark.asyncio
