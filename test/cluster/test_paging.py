@@ -4,8 +4,11 @@
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
 
+import struct
+
 import pytest
 from cassandra import ConsistencyLevel  # type: ignore
+from cassandra.metadata import Murmur3Token  # type: ignore
 from cassandra.query import SimpleStatement  # type: ignore
 
 from test.cluster.util import new_test_keyspace
@@ -17,6 +20,29 @@ from test.pylib.scylla_cluster_manager import ScyllaClusterManager
 async def read_retries(manager: ScyllaClusterManager, server: ServerInfo) -> int:
     metrics = await manager.metrics.query(server.ip_addr)
     return int(metrics.get("scylla_storage_proxy_coordinator_read_retries") or 0)
+
+
+def key_token(pk: int) -> int:
+    return Murmur3Token.from_key(struct.pack('>i', pk)).value
+
+
+async def keys_within_one_vnode(manager: ScyllaClusterManager, server: ServerInfo, count: int) -> list[int]:
+    """Return `count` int partition keys, in token order, which one vnode range holds."""
+    cql = await manager.get_cql_exclusive(server)
+    ring = [int(token)
+            for query in ["SELECT tokens FROM system.local", "SELECT tokens FROM system.peers"]
+            for row in await cql.run_async(query)
+            for token in row.tokens]
+    keys = sorted(range(10000), key=key_token)
+    for i in range(len(keys) - count + 1):
+        window = keys[i:i + count]
+        first, last = key_token(window[0]), key_token(window[-1])
+        # A vnode range (a, b] ends at a ring token b. So a ring token at or
+        # after the first key's token, and before the last key's, separates
+        # them.
+        if not any(first <= token < last for token in ring):
+            return window
+    raise RuntimeError(f"no vnode range holds {count} of the candidate keys")
 
 
 @pytest.mark.asyncio
@@ -376,6 +402,149 @@ async def test_reconciliation_treats_static_only_replica_as_complete_partition(m
         # Node 1 completed this partition. Treating it as an early stop would
         # cause either destructive trimming or an unnecessary larger retry.
         assert await read_retries(manager, servers[0]) == retries_before
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_counts_one_row_per_distinct_partition(manager: ScyllaClusterManager) -> None:
+    """
+    Count one row per partition of a DISTINCT query when reconciling a page.
+
+    A DISTINCT query returns one row per partition. Reconciliation must count
+    a partition's rows in the same way when it finds the last row which the
+    page returns.
+
+    Partitions P, Q and R follow each other in token order. Node 0 holds P's
+    row 1, row tombstones in Q and a tombstone for R's row 0. Node 1 holds
+    P's row 2, Q's row 0 and R's row 0, which is older than node 0's
+    tombstone. With a page size of three rows, node 0's mutation page stops
+    on its size limit within Q's tombstones, so it does not return R's
+    tombstone. Node 1's page returns its three rows.
+
+    The merged P has two live rows, but the page returns one row for P.
+    Reconciliation once counted two. It then took Q's row as the page's last
+    row, so it did not trim R, which follows node 0's stop. The page returned
+    R's row, although node 0 had deleted it.
+    """
+    cfg = {
+        'query_page_size_in_bytes': 1024,
+        'hinted_handoff_enabled': False,
+    }
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    # Pick keys whose tokens follow each other in this order, with no vnode
+    # boundary between them, so that the scan reconciles them in one read.
+    p, q, r = await keys_within_one_vnode(manager, servers[0], 3)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2} "
+                                 "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+
+        # Q's tombstones follow node 1's row of Q, so node 0's stop follows
+        # that row. Node 1's row of R has an old timestamp, so node 0's
+        # tombstone deletes it.
+        writes = [
+            [f"INSERT INTO {table} (pk, ck, v) VALUES ({p}, 1, 1)"]
+            + [f"DELETE FROM {table} WHERE pk = {q} AND ck = {ck}" for ck in range(1000, 1200)]
+            + [f"DELETE FROM {table} WHERE pk = {r} AND ck = 0"],
+            [f"INSERT INTO {table} (pk, ck, v) VALUES ({p}, 2, 2)",
+             f"INSERT INTO {table} (pk, ck, v) VALUES ({q}, 0, 0)",
+             f"INSERT INTO {table} (pk, ck, v) VALUES ({r}, 0, 0) USING TIMESTAMP 1"],
+        ]
+        for server_idx, statements in enumerate(writes):
+            other = servers[1 - server_idx]
+            await manager.server_stop_gracefully(other.server_id)
+            cql_one = await manager.get_cql_exclusive(servers[server_idx])
+            for statement in statements:
+                await cql_one.run_async(SimpleStatement(statement, consistency_level=ConsistencyLevel.ONE))
+            await manager.server_start(other.server_id, wait_others=1)
+        # Both nodes have restarted. Let the shared session reconnect before
+        # the keyspace is dropped with it.
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        select = SimpleStatement(f"SELECT DISTINCT pk FROM {table}",
+                                 consistency_level=ConsistencyLevel.ALL,
+                                 fetch_size=3)
+        rows = await cql0.run_async(select, all_pages=True)
+        assert [row.pk for row in rows] == [p, q]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_decides_full_distinct_page_by_returned_rows(manager: ScyllaClusterManager) -> None:
+    """
+    Decide whether a reconciled DISTINCT page is full by counting one row per partition.
+
+    Reconciliation counts the merged result's live rows. If the count reaches
+    the page's row limit, the page is full. Otherwise, if a replica returned a
+    full page, reconciliation marks the result short, so that paging goes on.
+    A DISTINCT query returns one row per partition, so the count must not
+    exceed one per partition.
+
+    Partitions P, Q and R follow each other in token order. With a page size
+    of two rows, each replica returns P and Q, and stops at its row limit.
+    Node 0 holds P's row 1, and node 1 holds P's row 2. Both hold Q's row 0,
+    which each of them considers live, but which is dead after merging. Node
+    0 holds an old value of a and a newer tombstone for b. Node 1 holds an
+    old value of b and a newer tombstone for a. Both hold R's row. The
+    replicas' static values in P differ, so their digests differ.
+
+    The merged P has two live rows, and Q none. Reconciliation once counted
+    two rows, and took the page as full. The page returned only P, and was
+    not short, so the pager ended the query and lost R.
+    """
+    cfg = {
+        'hinted_handoff_enabled': False,
+    }
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    # Pick keys whose tokens follow each other in this order, with no vnode
+    # boundary between them, so that the scan reconciles them in one read.
+    p, q, r = await keys_within_one_vnode(manager, servers[0], 3)
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2} "
+                                 "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, s int static, a int, b int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+        await cql.run_async(SimpleStatement(
+            f"INSERT INTO {table} (pk, ck, a) VALUES ({r}, 0, 0)",
+            consistency_level=ConsistencyLevel.ALL))
+
+        # Q's row has no row marker, so only its cells make it live. Node 1
+        # writes its static value later, so the merged value is 2.
+        writes = [
+            [f"INSERT INTO {table} (pk, ck, a) VALUES ({p}, 1, 1)",
+             f"UPDATE {table} SET s = 1 WHERE pk = {p}",
+             f"UPDATE {table} USING TIMESTAMP 1 SET a = 1 WHERE pk = {q} AND ck = 0",
+             f"DELETE b FROM {table} USING TIMESTAMP 4 WHERE pk = {q} AND ck = 0"],
+            [f"INSERT INTO {table} (pk, ck, a) VALUES ({p}, 2, 2)",
+             f"UPDATE {table} SET s = 2 WHERE pk = {p}",
+             f"UPDATE {table} USING TIMESTAMP 2 SET b = 1 WHERE pk = {q} AND ck = 0",
+             f"DELETE a FROM {table} USING TIMESTAMP 3 WHERE pk = {q} AND ck = 0"],
+        ]
+        for server_idx, statements in enumerate(writes):
+            other = servers[1 - server_idx]
+            await manager.server_stop_gracefully(other.server_id)
+            cql_one = await manager.get_cql_exclusive(servers[server_idx])
+            for statement in statements:
+                await cql_one.run_async(SimpleStatement(statement, consistency_level=ConsistencyLevel.ONE))
+            await manager.server_start(other.server_id, wait_others=1)
+        # Both nodes have restarted. Let the shared session reconnect before
+        # the keyspace is dropped with it.
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        select = SimpleStatement(f"SELECT DISTINCT pk, s FROM {table}",
+                                 consistency_level=ConsistencyLevel.ALL,
+                                 fetch_size=2)
+        rows = await cql0.run_async(select, all_pages=True)
+        assert [(row.pk, row.s) for row in rows] == [(p, 2), (r, None)]
 
 
 @pytest.mark.asyncio

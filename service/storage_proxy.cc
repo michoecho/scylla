@@ -5234,6 +5234,8 @@ class data_read_resolver : public abstract_read_resolver {
 
     uint64_t _total_live_count = 0;
     uint64_t _max_live_count = 0;
+    // Conversion to a data result returns at most this many rows of a partition. See resolve().
+    uint64_t _effective_partition_row_limit = query::max_rows;
     uint32_t _short_read_diff = 0;
     uint64_t _max_per_partition_live_count = 0;
     uint32_t _partition_count = 0;
@@ -5425,8 +5427,8 @@ private:
                         ranges.emplace_back(std::move(*range));
                     }
                 }
-                it->live_row_count = it->mut.partition().compact_for_query(s, it->mut.decorated_key(), cmd.timestamp, ranges, always_return_static_content,
-                        query::partition_max_rows);
+                it->live_row_count = std::min(it->mut.partition().compact_for_query(s, it->mut.decorated_key(), cmd.timestamp, ranges,
+                        always_return_static_content, query::partition_max_rows), _effective_partition_row_limit);
             }
 
             // Keep the stop partition and all partitions before it in query order.
@@ -5451,13 +5453,14 @@ private:
         // merge all results and return that to the client as the replicas that returned less row
         // may have newer data for the rows they did not send than any other node in the cluster.
         //
-        // This function is responsible for detecting whether such problem may happen. We get the
-        // position of the last row that is going to be returned to the client and check if it
-        // is in range of rows returned by each replica which may not have returned everything it
-        // has. A replica returned everything only if it returned fewer rows than it was asked for
-        // without a short read. A mutation page is short when it stops on its memory limit. It
-        // can stop there with fewer rows, or none, because it may stop after a dead row (see
-        // allow_mutation_read_page_without_live_row).
+        // This function is responsible for detecting whether such problem may happen. We find the
+        // position of the last row which conversion to a data result returns. If conversion does
+        // not reach a limit, we take the last row of the reconciled result instead. Then we check
+        // if the position is in range of rows returned by each replica which may not have
+        // returned everything it has. A replica returned everything only if it returned fewer
+        // rows than it was asked for without a short read. A mutation page is short when it stops
+        // on its memory limit. It can stop there with fewer rows, or none, because it may stop
+        // after a dead row (see allow_mutation_read_page_without_live_row).
         // The resolver schema defines query order. For a reversed query it is the reversed schema,
         // including while legacy wire-format requests are converted at the coordinator boundary.
 
@@ -5477,7 +5480,7 @@ private:
                     }
                 }
             } else {
-                auto&& last_position = get_reconciled_last_position(s, m_a_rc, cmd, rows_left);
+                auto&& last_position = get_reconciled_last_position(s, m_a_rc, cmd, std::min(rows_left, _effective_partition_row_limit));
                 return got_incomplete_information_across_partitions(s, cmd, last_position, rp, versions);
             }
             ++pv;
@@ -5607,6 +5610,14 @@ public:
             std::ranges::sort(v, std::less<locator::host_id>(), std::mem_fn(&version::from));
         } while(true);
 
+        // Conversion to a data result returns at most this many rows of a partition. A DISTINCT
+        // query returns one row per partition, although its slice does not limit the rows of a
+        // partition. Replicas can return different rows of a partition, so the reconciled partition
+        // can have more live rows than conversion returns from it. Count only the rows which
+        // conversion returns. The counts decide where the page ends, and whether it is full.
+        _effective_partition_row_limit = cmd.slice.options.contains<query::partition_slice::option::distinct>()
+                ? 1 : original_per_partition_limit;
+
         std::vector<mutation_and_live_row_count> reconciled_partitions;
         reconciled_partitions.reserve(versions.size());
 
@@ -5624,7 +5635,7 @@ public:
                     co_await apply_gently(m.partition(), schema, i->par->mut().partition(), schema, app_stats);
                 }
             }
-            auto live_row_count = m.live_row_count();
+            auto live_row_count = std::min(m.live_row_count(), _effective_partition_row_limit);
             _total_live_count += live_row_count;
             _live_partition_count += !!live_row_count;
             reconciled_partitions.emplace_back(mutation_and_live_row_count{ std::move(m), live_row_count });
