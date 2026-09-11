@@ -31,6 +31,7 @@
 #include "mutation/mutation.hh"
 #include "mutation/frozen_mutation.hh"
 #include "mutation/async_utils.hh"
+#include "query/query-result-reader.hh"
 #include "query/query_result_merger.hh"
 #include <seastar/core/do_with.hh>
 #include "message/messaging_service.hh"
@@ -5803,6 +5804,28 @@ public:
     }
 };
 
+// Whether a data result returns a static-only row for the partition: whether it returns the
+// partition without clustering rows. A result without partition keys does not show it.
+static bool returns_static_only_row(const schema& s, const query::partition_slice& slice, const query::result& result,
+        const partition_key& pk) {
+    struct visitor {
+        const schema& s;
+        const partition_key& pk;
+        bool found = false;
+
+        void accept_new_partition(uint64_t) { }
+        void accept_new_partition(const partition_key& key, uint64_t row_count) {
+            found = found || (row_count == 0 && key.equal(s, pk));
+        }
+        void accept_new_row(const clustering_key&, const query::result_row_view&, const query::result_row_view&) { }
+        void accept_new_row(const query::result_row_view&, const query::result_row_view&) { }
+        void accept_partition_end(const query::result_row_view&) { }
+    };
+    visitor v{s, pk};
+    query::result_view::consume(result, slice, v);
+    return v.found;
+}
+
 class abstract_read_executor : public enable_shared_from_this<abstract_read_executor> {
 protected:
     using targets_iterator = host_id_vector_replica_set::iterator;
@@ -6230,14 +6253,38 @@ public:
                 }
                 auto&& [result, digests_match, earliest_stop] = res.value();
 
-                if (digests_match) {
-                    // Only a paged read can stop early on its page size or tombstone limit. An
-                    // unpaged read either exhausts its range or stops at a row or partition limit,
-                    // and nothing pages from its cursor. Never mark it short: the merger of a
-                    // multi-partition read drops the partitions after a short result, and an
-                    // unpaged client cannot resume from it.
-                    if (exec->_proxy->features().empty_replica_pages
-                            && exec->_cmd->slice.options.contains<query::partition_slice::option::allow_short_read>()) {
+                // Only a paged read can stop early on its page size or tombstone limit. An
+                // unpaged read either exhausts its range or stops at a row or partition limit,
+                // and nothing pages from its cursor. Never mark it short: the merger of a
+                // multi-partition read drops the partitions after a short result, and an
+                // unpaged client cannot resume from it.
+                const bool paged = exec->_proxy->features().empty_replica_pages
+                        && exec->_cmd->slice.options.contains<query::partition_slice::option::allow_short_read>();
+                // A replica which stops inside a partition before any live row returns nothing
+                // from the partition. The rest of the partition may hold live rows, so the
+                // partition's static-only row is not decided yet. A data replica which finished
+                // the partition may still return that row. If the query selects no static column,
+                // their digests match nevertheless: a digest covers the partition's key in both
+                // cases, and static cells only if the query selects them. The returned row may be
+                // spurious, so reconcile the page. Reconciliation leaves the row to a later page
+                // (see drop_undecided_static_row()).
+                //
+                // The coordinator cannot tell whether a replica which stopped in the partition did
+                // so before the partition's end. So this also reconciles a page whose static-only
+                // row the replica decided, before it stopped at the end of the partition. That is
+                // safe.
+                //
+                // A replica which stops inside a partition of a DISTINCT query still returns the
+                // row of a live static row. So the replicas agree. So do they if the command does
+                // not set defer_undecided_static_only_row.
+                const bool undecided_static_only_row = digests_match && paged && earliest_stop
+                        && exec->_schema->has_static_columns()
+                        && !exec->_cmd->slice.options.contains<query::partition_slice::option::distinct>()
+                        && exec->_cmd->slice.options.contains<query::partition_slice::option::defer_undecided_static_only_row>()
+                        && returns_static_only_row(*exec->_schema, exec->_cmd->slice, *result, earliest_stop->partition);
+
+                if (digests_match && !undecided_static_only_row) {
+                    if (paged) {
                         // A short page can be empty because the replica spent its budget on
                         // tombstones. Its stop position is then the only cursor the pager has.
                         // Continue from the earliest stop of any replica: every replica must resume
@@ -6254,7 +6301,10 @@ public:
                         background_repair_check = true;
                     }
                     exec->on_read_resolved();
-                } else { // digest mismatch
+                } else { // digest mismatch, or an undecided static-only row
+                    if (undecided_static_only_row) {
+                        tracing::trace(exec->_trace_state, "digests match, but a replica stopped inside a partition whose static-only row the data replica returned");
+                    }
                     // Skip cross-DC repair optimization in the following cases:
                     // 1. When read_timestamp is missing or negative
                     // 2. When the latest non-matching replica's timestamp is missing or negative

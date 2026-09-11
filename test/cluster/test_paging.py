@@ -313,6 +313,75 @@ async def test_digest_match_digest_replica_stop_keeps_paging(manager: ScyllaClus
 
 
 @pytest.mark.asyncio
+async def test_digest_match_does_not_return_undecided_static_only_row(manager: ScyllaClusterManager) -> None:
+    """
+    Do not return a static-only row which a matching digest replica left undecided.
+
+    A static-only row is the row which a partition with a live static row, but
+    no live clustering rows, returns if the query does not restrict clustering
+    keys. A page which stops inside a partition before any live row leaves this
+    row to a later page.
+
+    Both replicas hold the static value s=1. The data replica, node 0, has no
+    clustering rows. It finishes the partition and returns its static-only row.
+    The digest replica, node 1, also holds row tombstones at ck=0..29 and live
+    rows at ck=100 and 101. It stops on its tombstone limit at ck=9, and returns
+    nothing from the partition.
+
+    The query selects no static column. A digest covers static cells only if
+    the query selects them, and covers a partition's key even if the replica
+    returns nothing from the partition. So both digests hold only the key, and
+    they match. The coordinator then returned node 0's static-only row,
+    although node 1's live rows follow. The row also counted against the
+    limit, which then excluded ck=101.
+    """
+    tombstone_limit = 10
+    cfg = {
+        'query_tombstone_page_limit': tombstone_limit,
+        'hinted_handoff_enabled': False,
+        # The local replica, node 0, supplies data.
+        'cache_hit_rate_read_balancing': False,
+    }
+    servers = await manager.servers_add(2, config=cfg, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+    cql0 = await manager.get_cql_exclusive(servers[0])
+
+    async with new_test_keyspace(manager, "WITH replication = "
+                                 "{'class': 'NetworkTopologyStrategy', 'replication_factor': 2} "
+                                 "AND tablets = {'enabled': false}") as ks:
+        table = f"{ks}.t"
+        await cql.run_async(f"CREATE TABLE {table} (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck)) "
+                            "WITH tombstone_gc = {'mode': 'disabled'}")
+        await cql0.run_async(SimpleStatement(
+            f"INSERT INTO {table} (pk, s) VALUES (0, 1)",
+            consistency_level=ConsistencyLevel.ALL))
+
+        # Only the digest replica has the tombstones and the live rows.
+        # Hinted handoff is disabled, so they remain there.
+        await manager.server_stop_gracefully(servers[0].server_id)
+        cql1 = await manager.get_cql_exclusive(servers[1])
+        delete_row = cql1.prepare(f"DELETE FROM {table} WHERE pk = 0 AND ck = ?")
+        delete_row.consistency_level = ConsistencyLevel.ONE
+        for ck in range(3 * tombstone_limit):
+            await cql1.run_async(delete_row, [ck])
+        for ck in [100, 101]:
+            await cql1.run_async(SimpleStatement(
+                f"INSERT INTO {table} (pk, ck, v) VALUES (0, {ck}, {ck})",
+                consistency_level=ConsistencyLevel.ONE))
+        await manager.server_start(servers[0].server_id, wait_others=1)
+        # Node 0 has restarted. Let the shared session reconnect before the
+        # keyspace is dropped with it.
+        await manager.get_ready_cql(servers)
+        cql0 = await manager.get_cql_exclusive(servers[0])
+
+        select = SimpleStatement(f"SELECT pk, ck, v FROM {table} WHERE pk = 0 LIMIT 2",
+                                 consistency_level=ConsistencyLevel.ALL,
+                                 fetch_size=1)
+        rows = await cql0.run_async(select, all_pages=True)
+        assert [(r.ck, r.v) for r in rows] == [(100, 100), (101, 101)]
+
+
+@pytest.mark.asyncio
 async def test_digest_match_does_not_truncate_unpaged_multi_partition_read(manager: ScyllaClusterManager) -> None:
     """
     Do not mark an unpaged result short when matching digests report different cursors.
