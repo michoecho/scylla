@@ -248,3 +248,13 @@ Known gaps, which could hide defects:
   left at the per-partition limit, so a scan with PER PARTITION LIMIT sends
   about one more key per partition.
 - On 20000 runs of `test_general` with seed 1, after E and A: 840 failures.
+- The small defect of `frozen_mutation_consumer_adaptor`: commit `75d936dba2`.
+- B: `service::frontier_reconciliation` and the frontier rule of
+  `decide_digest_page()`, used by storage_proxy and the harness when
+  `READ_FRONTIERS` is enabled. Without the feature, both keep master's code.
+  The digest rule takes E only from the replies which the consistency level
+  saw, because a later reply's digest may differ.
+- On 20000 runs of `test_general` with seed 1, after B: 525 failures. The
+  484 failures without the feature run master's code. The 41 failures with
+  it are change C's: 22 spurious static-only rows, and 19 DISTINCT rows lost
+  when a short page's cursor lies inside a partition.
