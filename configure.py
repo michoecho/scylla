@@ -1765,6 +1765,7 @@ deps['test/boost/combined_tests'] += [
     'test/boost/pluggable_test.cc',
     'test/boost/querier_cache_test.cc',
     'test/boost/query_processor_test.cc',
+    'test/boost/read_page_resolution_test.cc',
     'test/boost/reader_concurrency_semaphore_test.cc',
     'test/boost/repair_test.cc',
     'test/boost/replicator_test.cc',
