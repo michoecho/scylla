@@ -288,3 +288,8 @@ Known gaps, which could hide defects:
   with `READ_FRONTIERS` fails. Without it, 1393, 1395 and 1413 runs fail,
   all on master's path. On 20000 runs with seed 1: 146 failures, all
   without the feature.
+- The small defect of `partition_slice_builder`: commit `7378876053`.
+- Acceptance, the witnesses: `test_witnesses_of_first_attempt` (commit
+  `3b9b345ff4`) runs all 35 witnesses of progress.md with every feature,
+  and all pass. Twelve were recorded with a feature disabled; ten of them
+  still fail that way, on master's path.
