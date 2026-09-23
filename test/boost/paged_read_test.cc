@@ -283,6 +283,52 @@ SEASTAR_THREAD_TEST_CASE(test_distinct_page_continues_undecided_partition) {
     });
 }
 
+// PER PARTITION LIMIT counts the rows of the cursor's partition in the
+// paging state. Page 0 returns row 5 of partition 2, and stops short on the
+// tombstone limit inside partition 4, before its row 3. The count must be 0
+// for partition 4, not the count of partition 2.
+SEASTAR_THREAD_TEST_CASE(test_per_partition_limit_counts_rows_of_cursor_partition) {
+    with_harness([] (harness& hs) {
+        for (bool read_frontiers : {true, false}) {
+            read_options opts{.replica_count = 1, .page_size = 100, .tombstone_limit = 4};
+            opts.read_frontiers = read_frontiers;
+            run_and_check(hs, read_case{
+                placed_history{
+                    {regular_cell_write{2, 5, regular_column::v2, 1, 13, lifetime::permanent}, 0b1},
+                    {regular_cell_write{4, 3, regular_column::v1, 3, 20, lifetime::permanent}, 0b1},
+                    {range_deletion{1, bound{1, true}, bound{5, true}, 14}, 0b1},
+                    {range_deletion{4, std::nullopt, bound{2, true}, 8}, 0b1},
+                    {row_marker_write{3, 1, 16, lifetime::permanent}, 0b1},
+                },
+                select_query{.select_v1 = false, .select_v2 = false, .per_partition_limit = 1},
+                opts,
+            });
+        }
+    });
+}
+
+// Page 0 returns row 1 of partition 4. Page 1 is empty, and stops short
+// inside the partition. It must keep the count of partition 4, so that page
+// 2 does not return row 5 beyond the limit.
+SEASTAR_THREAD_TEST_CASE(test_per_partition_limit_keeps_count_over_empty_page) {
+    with_harness([] (harness& hs) {
+        for (bool read_frontiers : {true, false}) {
+            read_options opts{.replica_count = 2, .page_size = 3, .page_size_in_bytes = 22};
+            opts.read_frontiers = read_frontiers;
+            run_and_check(hs, read_case{
+                placed_history{
+                    {regular_cell_write{4, 4, regular_column::v1, 1, 4, lifetime::expiring}, 0b10},
+                    {row_marker_write{4, 1, 10, lifetime::expiring}, 0b1},
+                    {regular_cell_write{4, 5, regular_column::v1, 2, 7, lifetime::permanent}, 0b1},
+                    {range_deletion{4, bound{0, true}, bound{5, false}, 9}, 0b1},
+                },
+                select_query{.select_v1 = false, .per_partition_limit = 1},
+                opts,
+            });
+        }
+    });
+}
+
 namespace {
 
 // 1 to 4 replicas, of which all but one may be extra replicas.
