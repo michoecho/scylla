@@ -273,3 +273,18 @@ Known gaps, which could hide defects:
   the feature; the 41 of change C with it.
 - New: two PER PARTITION LIMIT defects of the pager, also with the feature.
   See the handoff.
+- C: commit `3475be00e1`. The coordinator leaves out a static-only row of
+  a partition which the page's frontier cuts before the end of its
+  clustering rows. The paging state's new field `partition_row_pending`
+  says that no page returned a row of the cursor's partition yet. The next
+  page then continues the partition, also for DISTINCT, and asks for
+  static content. The feature is `READ_FRONTIERS`, like A, B and E. No
+  slice option is needed: replicas behave as before, and storage_proxy
+  tells the pager through
+  `storage_proxy_coordinator_query_result::rows_decided_before_cursor`.
+- The PER PARTITION LIMIT defects of the pager: commit `6be7e1f771`. They
+  predate the rework; both witnesses also fail without the feature.
+- On 200000 runs of `test_general` with each of seeds 1, 2 and 3, no run
+  with `READ_FRONTIERS` fails. Without it, 1393, 1395 and 1413 runs fail,
+  all on master's path. On 20000 runs with seed 1: 146 failures, all
+  without the feature.
