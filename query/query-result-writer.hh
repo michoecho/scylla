@@ -228,8 +228,26 @@ class query_result_builder {
     std::optional<mutation_querier> _mutation_consumer;
     // We need to remember that we requested stop, to mark the read as short in the end.
     stop_iteration _stop;
+    // The partition which the page starts inside, until the page reaches it
+    // or passes it.
+    std::optional<partition_key> _start_partition;
+    // While the page is in its start partition, the position where it
+    // starts there: the start of the partition's first clustering range.
+    // The page's reader emits the partition's state again before that
+    // position, which an earlier page already read, so only the tombstones
+    // after it count against the tombstone limit. Then every page which
+    // stops on the limit consumed at least one fragment after its start.
+    std::optional<position_in_partition> _page_start;
+
+    stop_iteration count_tombstone(position_in_partition_view pos);
 public:
-    query_result_builder(const schema& s, query::result::builder& rb) noexcept;
+    // `start_partition` is the partition which the page starts inside, if
+    // any. See start_partition_of().
+    query_result_builder(const schema& s, query::result::builder& rb, std::optional<partition_key> start_partition = {}) noexcept;
+
+    // The partition which a page of `range` starts inside, if any: the first
+    // partition of the range, if the range includes it.
+    static std::optional<partition_key> start_partition_of(const dht::partition_range& range);
 
     void consume_new_partition(const dht::decorated_key& dk);
     void consume(tombstone t);

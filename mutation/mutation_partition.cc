@@ -2009,37 +2009,56 @@ uint64_t mutation_querier::consume_end_of_stream() {
     }
 }
 
-query_result_builder::query_result_builder(const schema& s, query::result::builder& rb) noexcept
-    : _schema(s), _rb(rb)
+query_result_builder::query_result_builder(const schema& s, query::result::builder& rb, std::optional<partition_key> start_partition) noexcept
+    : _schema(s), _rb(rb), _start_partition(std::move(start_partition))
 { }
 
+std::optional<partition_key> query_result_builder::start_partition_of(const dht::partition_range& range) {
+    const auto& start = range.start();
+    if (!start || !start->is_inclusive() || !start->value().has_key()) {
+        return {};
+    }
+    return *start->value().key();
+}
+
+stop_iteration query_result_builder::count_tombstone(position_in_partition_view pos) {
+    if (_page_start && position_in_partition::tri_compare(_schema)(pos, *_page_start) <= 0) {
+        return _stop;
+    }
+    _page_start.reset();
+    _stop = _rb.bump_and_check_tombstone_limit();
+    return _stop;
+}
+
 void query_result_builder::consume_new_partition(const dht::decorated_key& dk) {
+    _page_start.reset();
+    if (auto pk = std::exchange(_start_partition, std::nullopt); pk && pk->equal(_schema, dk.key())) {
+        const auto& ranges = _rb.slice().row_ranges(_schema, dk.key());
+        _page_start = ranges.empty() ? position_in_partition::after_all_clustered_rows() : position_in_partition::for_range_start(ranges.front());
+    }
     _mutation_consumer.emplace(mutation_querier(_schema, _rb.add_partition(_schema, dk.key()), _rb.memory_accounter()));
 }
 
 void query_result_builder::consume(tombstone t) {
     _mutation_consumer->consume(t);
-    _stop = _rb.bump_and_check_tombstone_limit();
+    count_tombstone(position_in_partition_view::for_partition_start());
 }
 stop_iteration query_result_builder::consume(static_row&& sr, tombstone t, bool is_live) {
     if (!is_live) {
-        _stop = _rb.bump_and_check_tombstone_limit();
-        return _stop;
+        return count_tombstone(sr.position());
     }
     _stop = _mutation_consumer->consume(std::move(sr), t);
     return _stop;
 }
 stop_iteration query_result_builder::consume(clustering_row&& cr, row_tombstone t,  bool is_live) {
     if (!is_live) {
-        _stop = _rb.bump_and_check_tombstone_limit();
-        return _stop;
+        return count_tombstone(cr.position());
     }
     _stop = _mutation_consumer->consume(std::move(cr), t);
     return _stop;
 }
 stop_iteration query_result_builder::consume(range_tombstone_change&& rtc) {
-    _stop = _rb.bump_and_check_tombstone_limit();
-    return _stop;
+    return count_tombstone(rtc.position());
 }
 
 stop_iteration query_result_builder::consume_end_of_partition() {

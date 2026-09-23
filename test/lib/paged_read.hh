@@ -68,7 +68,9 @@ class cql_test_env;
 //   and all replicas own all ranges;
 // - delivers the replies of a read only after all replicas read their pages;
 // - reads with fresh readers, or keeps queriers in a querier cache for each
-//   replica, with random evictions;
+//   replica, with random evictions. It reads every page which a replica
+//   serves with a cached querier again with a new querier, and checks that
+//   the two pages are equal;
 // - gives up on a range after 16 reconciliation rounds. storage_proxy
 //   retries until the read times out;
 // - reports a short result which has neither a partition nor a cursor as a
@@ -202,8 +204,10 @@ struct outcome {
     // The number of repair mutations which the coordinator planned.
     size_t repair_mutations = 0;
     // The properties which the coordinator's reads violated: a repair
-    // mutation adds data which no replica has, or the result of a range
-    // exceeds the limits of its command. Each property appears once.
+    // mutation adds data which no replica has, the result of a range
+    // exceeds the limits of its command, or a page which a replica read
+    // with a cached querier differs from the page which a new querier reads.
+    // Each property appears once.
     std::vector<std::string> coordinator_violations;
 };
 
