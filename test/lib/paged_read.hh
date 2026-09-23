@@ -52,8 +52,9 @@ class cql_test_env;
 // The query function plays the coordinator. For each partition range, it
 // runs the production decisions of service/read_page_resolution.hh:
 // foreground_reply_collector and decide_digest_page() in the first round,
-// and prepare_mutation_read() and resolve_mutation_page() in the
-// reconciliation rounds. It merges the results of several ranges with
+// and frontier_reconciliation in the reconciliation rounds, or
+// prepare_mutation_read() and resolve_mutation_page() without
+// read_frontiers. It merges the results of several ranges with
 // query::result_merger, like storage_proxy::query_singular() and
 // storage_proxy::query_partition_key_range().
 //
@@ -79,8 +80,8 @@ class cql_test_env;
 //   reply has none, so its read keeps the per-partition limit. The frontier
 //   of a short reply must be a stop, and the stop must be
 //   after the start of the page;
-// - gives up on a range after 16 reconciliation rounds. storage_proxy
-//   retries until the read times out;
+// - gives up on a range after as many reconciliation rounds as the client
+//   may read pages. storage_proxy retries until the read times out;
 // - reports a short result which has neither a partition nor a cursor as a
 //   failed read. The pager would fail an assertion on it;
 // - checks that no repair mutation adds data which no replica has, and
@@ -150,8 +151,11 @@ struct read_options {
     // enables it also enables native_reverse_queries. With it, the replicas
     // compute digests which cover a partition's static-row liveness even when
     // the query selects no static column, like storage_proxy's
-    // digest_algorithm(). Without it, replicas which disagree about a
-    // static-only row can have matching digests.
+    // digest_algorithm(), and the coordinator asks the replicas for
+    // frontiers and decides pages by them, see
+    // service::frontier_reconciliation. Without it,
+    // replicas which disagree about a static-only row can have matching
+    // digests.
     bool read_frontiers = true;
     // Whether each replica keeps its queriers between pages in a querier
     // cache, like replica::database. Otherwise the replicas read every page

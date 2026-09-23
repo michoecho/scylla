@@ -175,6 +175,7 @@ struct digest_reply {
     query::result_digest digest;
     api::timestamp_type last_modified;
     std::optional<full_position> last_pos;
+    std::optional<query::read_frontier> frontier;
 };
 
 struct test_env {
@@ -222,12 +223,15 @@ struct test_env {
     digest_reply read_digest_page(schema_ptr query_schema, const utils::chunked_vector<mutation>& contents, const query::read_command& cmd,
             query::max_result_size max_size = unlimited_size) {
         auto result = read_data_page(query_schema, contents, cmd, query::result_options::only_digest(query::digest_algorithm::xxHash), max_size);
-        return digest_reply{*result->digest(), result->last_modified(), result->last_position()};
+        if (auto frontier = result->frontier()) {
+            return digest_reply{*result->digest(), result->last_modified(), std::nullopt, std::move(frontier)};
+        }
+        return digest_reply{*result->digest(), result->last_modified(), result->last_position(), std::nullopt};
     }
 };
 
 void add_digest(foreground_reply_collector& replies, bool counts_for_cl, digest_reply reply) {
-    replies.add_digest(counts_for_cl, std::move(reply.digest), reply.last_modified, std::move(reply.last_pos));
+    replies.add_digest(counts_for_cl, std::move(reply.digest), reply.last_modified, std::move(reply.last_pos), std::move(reply.frontier));
 }
 
 full_position row_position(const schema& s, int32_t pk, int32_t ck) {
@@ -738,16 +742,16 @@ digest_page_decision decide_data_and_digest(test_env& env, const query::read_com
     auto cl = replies.has_cl();
     add_digest(replies, true, env.read_digest_page(s, digest_contents, cmd));
     replies.add_data(true, env.read_data_page(s, data_contents, cmd, data_and_digest));
-    return decide_digest_page(*s, cl.get().value(), replies, empty_replica_pages);
+    return decide_digest_page(*s, cmd, cl.get().value(), replies, empty_replica_pages, false);
 }
 
 // Attaches the decision to has_cl() the way abstract_read_executor::execute()
 // does: in a continuation. The continuation runs later than the add_data() or
 // add_digest() call which reached the consistency level. Replies added in
 // between are visible to the decision.
-future<digest_page_decision> decide_at_cl(const schema& s, foreground_reply_collector& replies, bool empty_replica_pages) {
-    return replies.has_cl().then([&s, &replies, empty_replica_pages] (exceptions::coordinator_result<digest_read_result> cl_result) {
-        return decide_digest_page(s, std::move(cl_result).value(), replies, empty_replica_pages);
+future<digest_page_decision> decide_at_cl(const schema& s, const query::read_command& cmd, foreground_reply_collector& replies, bool empty_replica_pages) {
+    return replies.has_cl().then([&s, &cmd, &replies, empty_replica_pages] (exceptions::coordinator_result<digest_read_result> cl_result) {
+        return decide_digest_page(s, cmd, std::move(cl_result).value(), replies, empty_replica_pages, false);
     });
 }
 
@@ -773,7 +777,7 @@ SEASTAR_THREAD_TEST_CASE(test_single_data_reply_reaches_cl) {
     BOOST_REQUIRE(cl.available());
     BOOST_REQUIRE(replies.is_completed());
 
-    auto decision = decide_digest_page(*s, cl.get().value(), replies, true);
+    auto decision = decide_digest_page(*s, cmd, cl.get().value(), replies, true, false);
     auto& page = require_accepted(decision);
     BOOST_REQUIRE_EQUAL(rows_of(s, cmd, *page.result), (rows{{1, 10}, {2, 20}}));
     require_position(*s, page.result->last_position(), row_position(*s, 1, 2));
@@ -889,7 +893,7 @@ SEASTAR_THREAD_TEST_CASE(test_reply_after_cl_moves_the_cursor) {
     // CL=ONE with a read repair to a second target.
     foreground_reply_collector replies(s, 1);
     replies.add_wait_targets(2);
-    auto decision = decide_at_cl(*s, replies, true);
+    auto decision = decide_at_cl(*s, cmd, replies, true);
     replies.add_data(true, std::move(data));
     BOOST_REQUIRE(!decision.available());
     add_digest(replies, true, std::move(digest));
@@ -900,7 +904,7 @@ SEASTAR_THREAD_TEST_CASE(test_reply_after_cl_moves_the_cursor) {
     // The same read without the late reply keeps the cursor of the data reply.
     foreground_reply_collector replay(s, 1);
     replay.add_wait_targets(2);
-    auto replay_decision = decide_at_cl(*s, replay, true);
+    auto replay_decision = decide_at_cl(*s, cmd, replay, true);
     replay.add_data(true, env.read_data_page(s, replicas.b, cmd, data_and_digest));
     auto on_time = replay_decision.get();
     require_position(*s, require_accepted(on_time).result->last_position(), row_position(*s, 1, 3));
@@ -933,7 +937,7 @@ SEASTAR_THREAD_TEST_CASE(test_conflicting_short_reply_after_cl) {
     // CL=ONE with a read repair to a second target.
     foreground_reply_collector replies(s, 1);
     replies.add_wait_targets(2);
-    auto decision = decide_at_cl(*s, replies, true);
+    auto decision = decide_at_cl(*s, cmd, replies, true);
     replies.add_data(true, std::move(data));
     BOOST_REQUIRE(!decision.available());
     add_digest(replies, true, std::move(late));
@@ -961,7 +965,7 @@ SEASTAR_THREAD_TEST_CASE(test_failure_after_cl_drops_the_replies) {
 
     foreground_reply_collector replies(s, 2);
     replies.add_wait_targets(3);
-    auto decision = decide_at_cl(*s, replies, true);
+    auto decision = decide_at_cl(*s, cmd, replies, true);
     add_digest(replies, true, env.read_digest_page(s, replicas.a, cmd));
     replies.add_data(true, env.read_data_page(s, replicas.b, cmd, data_and_digest));
     BOOST_REQUIRE(!decision.available());

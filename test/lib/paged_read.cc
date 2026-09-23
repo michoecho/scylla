@@ -47,10 +47,6 @@ namespace {
 using read_model::answer_row;
 using query_result = exceptions::coordinator_result<service::storage_proxy_coordinator_query_result>;
 
-// The maximum number of reconciliation rounds for one range. storage_proxy
-// has no such limit. It retries until the read times out.
-constexpr size_t max_reconciliation_rounds = 16;
-
 locator::host_id replica_id(size_t i) {
     return locator::host_id{utils::UUID(0, i + 1)};
 }
@@ -300,6 +296,9 @@ class coordinator {
     // The time relative to which the values of the contents expire.
     gc_clock::time_point _query_time;
     const read_options& _opts;
+    // The maximum number of reconciliation rounds for one range.
+    // storage_proxy has no such limit. It retries until the read times out.
+    size_t _max_reconciliation_rounds;
     tests::reader_concurrency_semaphore_wrapper _semaphore;
     // Replies and results hold memory units of this limiter, so it must
     // outlive them.
@@ -727,15 +726,68 @@ class coordinator {
         return reply;
     }
 
+    // Checks and counts the repair mutations of an accepted reconciled page,
+    // and returns the number of them.
+    size_t repair(const service::mutations_per_partition_key_map& repair_diffs) {
+        size_t repairs = 0;
+        for (const auto& [pk, diffs] : repair_diffs) {
+            for (const auto& [host, diff] : diffs) {
+                if (diff) {
+                    ++repairs;
+                    repair(replica_of(host), *diff);
+                }
+            }
+        }
+        _repair_mutations += repairs;
+        return repairs;
+    }
+
+    // Reconciles the mutation pages of `range` from the replicas `targets`,
+    // like abstract_read_executor::reconcile_by_frontiers().
+    foreign_ptr<lw_shared_ptr<query::result>> reconcile_by_frontiers(schema_ptr query_schema, lw_shared_ptr<query::read_command> cmd,
+            const dht::partition_range& range, const std::vector<size_t>& targets) {
+        const auto& s = *query_schema;
+        trace("  reconciling replicas {} by their frontiers", fmt::join(targets, ", "));
+        service::frontier_reconciliation reconciliation(query_schema, cmd, range);
+        for (size_t round = 1; round <= _max_reconciliation_rounds; ++round) {
+            const auto& round_cmd = *reconciliation.round_command();
+            const auto& round_range = reconciliation.round_range();
+            if (round > 1) {
+                trace("  round {}: range {}, slice {}", round, describe(s, round_range), round_cmd.slice);
+            }
+            std::vector<service::mutation_page_reply> replies;
+            for (auto i : targets) {
+                auto reply = read_mutations(i, query_schema, round_cmd, round_range);
+                trace("  round {}: replica {} mutations: {} partitions, {} rows, {}, frontier {}", round, i, reply.partitions().size(), reply.row_count(),
+                        describe(reply.is_short_read()), describe(s, reply));
+                replies.push_back({replica_id(i), make_foreign(make_lw_shared<reconcilable_result>(std::move(reply)))});
+            }
+            // The reconciliation gets the replies in the order of their
+            // arrival.
+            shuffle(replies);
+            auto page = reconciliation.add_round(std::move(replies)).get();
+            if (page) {
+                const auto repairs = repair(page->repair_diffs);
+                trace("  round {}: accepted {} rows, {}, cursor {}, {} repair mutations", round, page->result.row_count().value_or(0),
+                        describe(page->result.is_short_read()), describe(s, page->result.last_position()), repairs);
+                return make_foreign(make_lw_shared<query::result>(std::move(page->result)));
+            }
+        }
+        throw std::runtime_error(fmt::format("{} reconciliation rounds did not give a page", _max_reconciliation_rounds));
+    }
+
     // Reconciles the mutation pages of `range` from the replicas `targets`,
     // like abstract_read_executor::reconcile().
     foreign_ptr<lw_shared_ptr<query::result>> reconcile(schema_ptr query_schema, lw_shared_ptr<query::read_command> cmd, const dht::partition_range& range,
             const std::vector<size_t>& targets) {
+        if (_opts.read_frontiers) {
+            return reconcile_by_frontiers(std::move(query_schema), std::move(cmd), range, targets);
+        }
         const auto& s = *query_schema;
         trace("  reconciling replicas {}", fmt::join(targets, ", "));
         // The first round sends the client's command.
         auto round_cmd = cmd;
-        for (size_t round = 1; round <= max_reconciliation_rounds; ++round) {
+        for (size_t round = 1; round <= _max_reconciliation_rounds; ++round) {
             service::prepare_mutation_read(*round_cmd, _opts.empty_replica_mutation_pages);
             std::vector<service::mutation_page_reply> replies;
             for (auto i : targets) {
@@ -748,16 +800,7 @@ class coordinator {
             shuffle(replies);
             auto resolution = service::resolve_mutation_page(query_schema, *cmd, *round_cmd, std::move(replies)).get();
             if (auto* page = std::get_if<service::accepted_mutation_page>(&resolution)) {
-                size_t repairs = 0;
-                for (const auto& [pk, diffs] : page->repair_diffs) {
-                    for (const auto& [host, diff] : diffs) {
-                        if (diff) {
-                            ++repairs;
-                            repair(replica_of(host), *diff);
-                        }
-                    }
-                }
-                _repair_mutations += repairs;
+                const auto repairs = repair(page->repair_diffs);
                 trace("  round {}: accepted {} rows, {}, cursor {}, {} repair mutations", round, page->result.row_count().value_or(0),
                         describe(page->result.is_short_read()), describe(s, page->result.last_position()), repairs);
                 return make_foreign(make_lw_shared<query::result>(std::move(page->result)));
@@ -766,7 +809,7 @@ class coordinator {
             trace("  round {}: retry with row limit {}, per-partition limit {}, partition limit {}", round, round_cmd->get_row_limit(),
                     round_cmd->slice.partition_row_limit(), round_cmd->partition_limit);
         }
-        throw std::runtime_error(fmt::format("{} reconciliation rounds did not give a page", max_reconciliation_rounds));
+        throw std::runtime_error(fmt::format("{} reconciliation rounds did not give a page", _max_reconciliation_rounds));
     }
 
     // Reads `range` from all replicas, like abstract_read_executor::execute().
@@ -825,14 +868,23 @@ class coordinator {
         service::foreground_reply_collector replies(query_schema, block_for);
         replies.add_wait_targets(targets);
         auto decision = replies.has_cl().then([&] (exceptions::coordinator_result<service::digest_read_result> cl_result) {
-            return service::decide_digest_page(s, std::move(cl_result).value(), replies, _opts.empty_replica_pages);
+            return service::decide_digest_page(s, *cmd, std::move(cl_result).value(), replies, _opts.empty_replica_pages, _opts.read_frontiers);
         });
         auto deliver = [&] (first_round_reply& r) {
             const bool counts_for_cl = r.replica < block_for;
             if (r.data) {
                 replies.add_data(counts_for_cl, make_foreign(std::move(r.result)));
             } else {
-                replies.add_digest(counts_for_cl, *r.result->digest(), r.result->last_modified(), r.result->last_position());
+                // Like storage_proxy::query_result_local_digest() and
+                // abstract_read_executor::make_digest_requests(), the reply
+                // carries the position of the wire, which the command tells
+                // the meaning of.
+                auto pos = r.result->wire_position();
+                if (cmd->slice.options.contains<query::partition_slice::option::send_read_frontier>()) {
+                    replies.add_digest(counts_for_cl, *r.result->digest(), r.result->last_modified(), std::nullopt, query::read_frontier{std::move(pos)});
+                } else {
+                    replies.add_digest(counts_for_cl, *r.result->digest(), r.result->last_modified(), std::move(pos), std::nullopt);
+                }
             }
         };
         // The replies reach the consistency level when all replicas which
@@ -934,6 +986,11 @@ class coordinator {
             const auto configured = cmd->max_result_size.value();
             cmd->max_result_size = query::max_result_size(configured.soft_limit, configured.hard_limit, *_opts.page_size_in_bytes);
         }
+        // Like storage_proxy::do_query(), which asks the replicas for
+        // frontiers when read_frontiers is enabled.
+        if (_opts.read_frontiers) {
+            cmd->slice.options.set<query::partition_slice::option::send_read_frontier>();
+        }
         // Like storage_proxy::get_tombstone_limit(), which gives the statement
         // the configured limit only when empty_replica_pages is enabled.
         if (!_opts.empty_replica_pages) {
@@ -1001,7 +1058,7 @@ class coordinator {
 
 public:
     coordinator(schema_ptr s, std::vector<lw_shared_ptr<utils::chunked_vector<mutation>>> contents, utils::chunked_vector<mutation> merged,
-            gc_clock::time_point query_time, const read_options& opts)
+            gc_clock::time_point query_time, const read_options& opts, size_t max_reconciliation_rounds)
         : _schema(std::move(s))
         , _contents(std::move(contents))
         , _replicas(_contents
@@ -1010,6 +1067,7 @@ public:
         , _merged(std::move(merged))
         , _query_time(query_time)
         , _opts(opts)
+        , _max_reconciliation_rounds(max_reconciliation_rounds)
     {
         if (_opts.schedule_seed) {
             _schedule.emplace(*_opts.schedule_seed);
@@ -1201,7 +1259,9 @@ outcome harness::run(const read_case& c) {
     }
     const size_t max_pages = 2 * (2 * h.size() + 3 * pks.size()) + 10;
 
-    coordinator coord(s, std::move(contents), read_model::to_mutations(s, complete_history(h), query_time), query_time, opts);
+    // Unpaged reads may need many reconciliation rounds, each of which moves
+    // past a fragment.
+    coordinator coord(s, std::move(contents), read_model::to_mutations(s, complete_history(h), query_time), query_time, opts, max_pages);
     auto stop_coordinator = defer([&coord] () noexcept { coord.stop(); });
     // The number of reads for the current page. For an unpaged query with a
     // filter, the statement pages internally until the pager is exhausted.
