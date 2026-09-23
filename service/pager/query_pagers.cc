@@ -463,7 +463,7 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
             return false;
         } else if (cmd.partition_limit <= 1
                 || (ranges.size() == 1 && query::is_single_partition(ranges.front()))) {
-            auto effective_partition_row_limit = cmd.slice.options.contains<query::partition_slice::option::distinct>() ? 1 : cmd.slice.partition_row_limit();
+            auto effective_partition_row_limit = query::effective_partition_row_limit(cmd.slice);
 
             auto& cr_ranges = cmd.slice.default_row_ranges();
             if (effective_partition_row_limit <= 1 || cr_ranges.empty()
