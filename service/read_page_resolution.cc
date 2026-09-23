@@ -20,6 +20,7 @@
 #include "service/read_page_resolution.hh"
 #include "mutation/async_utils.hh"
 #include "mutation/mutation_partition.hh"
+#include "query/query-result-reader.hh"
 #include "utils/assert.hh"
 #include "utils/chunked_vector.hh"
 #include "utils/log.hh"
@@ -495,6 +496,13 @@ public:
     }
 };
 
+// Whether a read which stopped at `pos` read everything which decides the
+// rows of the partition: its static row and all its clustering rows.
+bool decides_partition(const schema& s, position_in_partition_view pos) {
+    return pos.region() == partition_region::partition_end
+            || (pos.region() == partition_region::clustered && pos.is_after_all_clustered_rows(s));
+}
+
 // The cursor of a page which ends at the frontier stop `stop`. The pager
 // moves past the partition of a cursor outside the clustering rows, so a stop
 // before the static row becomes a cursor before the clustering rows. The
@@ -504,6 +512,18 @@ full_position cursor_of(full_position stop) {
         stop.position = position_in_partition::before_all_clustered_rows();
     }
     return stop;
+}
+
+// Whether `result` ends with a static-only row of the partition of `stop`,
+// which `stop` does not decide. Such a row may be spurious, because the
+// partition may have a live clustering row after `stop`. A partition without
+// a key may be that partition.
+bool ends_with_undecided_static_row(const schema& s, const query::result& result, const full_position& stop) {
+    if (decides_partition(s, stop.position)) {
+        return false;
+    }
+    auto last = query::result_view::do_with(result, [] (query::result_view v) { return v.last_partition(); });
+    return last && last->row_count == 0 && (!last->key || last->key->equal(s, stop.partition));
 }
 
 // `m` without what lies at or after `pos`, in the order of `m`'s schema. The
@@ -743,6 +763,11 @@ digest_page_decision decide_digest_page(const schema& s, const query::read_comma
             result->set_last_position(std::nullopt);
             return accepted_digest_page{std::move(result)};
         }
+        if (ends_with_undecided_static_row(s, *result, *stop)) {
+            // The page may not hold the row. The reconciliation leaves it
+            // out.
+            return digest_page_mismatch{};
+        }
         result->ensure_counts();
         if (*result->row_count() >= cmd.get_row_limit() || *result->partition_count() >= cmd.partition_limit) {
             result->set_last_position(cursor_of(std::move(*stop)));
@@ -943,10 +968,19 @@ future<std::optional<accepted_mutation_page>> frontier_reconciliation::add_round
     merged.clear();
     versions.clear();
 
+    // A partition which E cuts, and which has no live clustering row before
+    // E, would yield a static-only row. Whether it has one depends on the
+    // rest of the partition, so the conversion leaves the partition out. A
+    // skip cuts only partitions with live clustering rows.
+    size_t whole = _reconciled.size();
+    if (end && !decides_partition(s, end->position) && whole && _reconciled.back().decorated_key().equal(s, *end_key)
+            && live_clustering_row_count(_reconciled.back(), _cmd->timestamp) == 0) {
+        --whole;
+    }
     utils::chunked_vector<partition> partitions;
-    partitions.reserve(_reconciled.size());
+    partitions.reserve(whole);
     uint64_t row_count = 0;
-    for (const auto& m : _reconciled) {
+    for (const auto& m : _reconciled | std::views::take(whole)) {
         const auto live_rows = m.live_row_count(_cmd->timestamp);
         row_count += live_rows;
         partitions.emplace_back(live_rows, freeze(m));
@@ -973,7 +1007,7 @@ future<std::optional<accepted_mutation_page>> frontier_reconciliation::add_round
         // reads the rest of the partition's clustering ranges.
         const auto& ek = *end_key;
         std::optional<query::clustering_row_ranges> ranges;
-        if (end->position.region() != partition_region::partition_end) {
+        if (!decides_partition(s, end->position)) {
             auto rest = _cmd->slice.row_ranges(s, end->partition);
             query::trim_clustering_row_ranges_to(s, rest, cursor_of(*end).position);
             if (!rest.empty()) {

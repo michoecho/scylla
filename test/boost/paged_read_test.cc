@@ -224,6 +224,65 @@ SEASTAR_THREAD_TEST_CASE(test_page_without_partition_or_cursor_fails) {
     });
 }
 
+// A static-only row depends on the whole partition. Partition 4 has a live
+// static cell, a live row 4, and a deleted row 2. Replica 0 stops its data
+// page and its mutation page inside the partition, after row 2. The
+// reconciled page may not hold the static-only row, because row 4 cancels
+// it. The next page reads the rest of the partition.
+SEASTAR_THREAD_TEST_CASE(test_reconciled_page_leaves_out_undecided_static_row) {
+    with_harness([] (harness& hs) {
+        auto o = run_and_check(hs, read_case{
+            placed_history{
+                {range_deletion{4, bound{0, true}, bound{6, true}, 16}, 0b10},
+                {regular_cell_write{4, 2, regular_column::v1, 2, 13, lifetime::permanent}, 0b1},
+                {regular_cell_write{4, 4, regular_column::v1, 5, 22, lifetime::permanent}, 0b1},
+                {static_cell_write{4, 4, 6, lifetime::permanent}, 0b1},
+            },
+            select_query{.select_s = false, .select_v1 = false, .select_v2 = false},
+            read_options{.replica_count = 2, .page_size = 3, .page_size_in_bytes = 41},
+        });
+        BOOST_REQUIRE_GE(count_trace_lines(o, "row of the partition pending"), 1);
+    });
+}
+
+// A single replica stops its data page on the tombstone limit, after the
+// live static row and the deleted row 1 of partition 1. Its page holds the
+// static-only row, but row 2 cancels it. The coordinator reconciles, and
+// the reconciled page leaves the row out.
+SEASTAR_THREAD_TEST_CASE(test_data_page_with_undecided_static_row_is_reconciled) {
+    with_harness([] (harness& hs) {
+        auto o = run_and_check(hs, read_case{
+            on_replicas({
+                static_cell_write{1, 5, 1},
+                row_deletion{1, 1, 2},
+                row_marker_write{1, 2, 3},
+            }, 0b1),
+            select_query{},
+            read_options{.replica_count = 1, .tombstone_limit = 1},
+        });
+        BOOST_REQUIRE_GE(count_trace_lines(o, "reconciling"), 1);
+    });
+}
+
+// A DISTINCT row of a partition without a live static row is decided at its
+// first live clustering row. Replica 0 stops its mutation page in partition
+// 4, after the deleted row 1 and before the live row 4. The next page
+// continues the partition, although a DISTINCT query has no clustering key.
+SEASTAR_THREAD_TEST_CASE(test_distinct_page_continues_undecided_partition) {
+    with_harness([] (harness& hs) {
+        auto o = run_and_check(hs, read_case{
+            placed_history{
+                {range_deletion{1, std::nullopt, bound{2, false}, 3}, 0b1},
+                {regular_cell_write{4, 1, regular_column::v1, std::nullopt, 1, lifetime::permanent}, 0b1},
+                {row_marker_write{4, 4, 2, lifetime::permanent}, 0b1},
+            },
+            select_query{.distinct = true, .select_v1 = false, .select_v2 = false},
+            read_options{.replica_count = 2, .page_size = 5, .page_size_in_bytes = 427},
+        });
+        BOOST_REQUIRE_GE(count_trace_lines(o, "row of the partition pending"), 1);
+    });
+}
+
 namespace {
 
 // 1 to 4 replicas, of which all but one may be extra replicas.
