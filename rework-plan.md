@@ -233,3 +233,18 @@ Known gaps, which could hide defects:
   test of the features.
 - A performance check of unpaged reads, which change B may send through more
   rounds.
+
+## Progress
+
+- D: commit `ac0a69d94a`.
+- E: commit `632b5c6a20`. The feature is `READ_FRONTIERS`; the harness
+  option is `read_options::read_frontiers`.
+- A: commits `246a4d8218` and `e9d25290a3`. Replicas report
+  `query::read_frontier` in every reply, and the harness checks it against a
+  read of what it covers. No coordinator uses it yet. The DISTINCT limit
+  gives way to an explicit per-partition limit in the slice, but
+  `select_statement` does not set one yet.
+- Known cost of A: the skips list one position per partition which a read
+  left at the per-partition limit, so a scan with PER PARTITION LIMIT sends
+  about one more key per partition.
+- On 20000 runs of `test_general` with seed 1, after E and A: 840 failures.
