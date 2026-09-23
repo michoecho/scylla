@@ -171,7 +171,7 @@ SEASTAR_THREAD_TEST_CASE(test_identical_replicas_with_legacy_reversed_format) {
         size_t legacy_reads = 0;
         for (uint32_t seed = 1; seed <= 5; ++seed) {
             for (auto page_size : {1, 3, 100}) {
-                const read_options opts{.page_size = page_size, .native_reverse_queries = false, .schedule_seed = seed};
+                const read_options opts{.page_size = page_size, .native_reverse_queries = false, .read_frontiers = false, .schedule_seed = seed};
                 const auto q = select_query{.partitions = std::vector<int32_t>{1}, .reversed = true};
                 const auto o = run_and_check(hs, read_case{on_replicas(mixed_partitions(), 0b11), q, opts});
                 legacy_reads += count_trace_lines(o, "legacy reversed format");
@@ -247,6 +247,7 @@ read_options random_options(read_options opts) {
     opts.empty_replica_pages = tests::random::get_int(0, 3) != 0;
     opts.empty_replica_mutation_pages = opts.empty_replica_pages && tests::random::get_int(0, 3) != 0;
     opts.native_reverse_queries = opts.empty_replica_mutation_pages && tests::random::get_int(0, 3) != 0;
+    opts.read_frontiers = opts.native_reverse_queries && tests::random::get_int(0, 3) != 0;
     opts.querier_cache = tests::random::get_bool();
     opts.apply_repairs = !opts.querier_cache && tests::random::get_bool();
     opts.schedule_seed = tests::random::get_int<uint32_t>();

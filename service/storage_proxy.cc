@@ -1300,7 +1300,7 @@ using namespace exceptions;
 
 static inline
 query::digest_algorithm digest_algorithm(service::storage_proxy& proxy) {
-    return query::digest_algorithm::xxHash;
+    return proxy.features().read_frontiers ? query::digest_algorithm::xxHash_with_static_row : query::digest_algorithm::xxHash;
 }
 
 static inline

@@ -1901,9 +1901,19 @@ mutation_querier::mutation_querier(const schema& s, query::result::partition_wri
 {
 }
 
-void mutation_querier::query_static_row(const row& r, tombstone current_tombstone)
+void mutation_querier::query_static_row(const row& r, tombstone current_tombstone, bool live)
 {
     const query::partition_slice& slice = _pw.slice();
+    if (_pw.requested_digest() && _pw.digests_static_row_liveness()) {
+        // Cover the static row's liveness, so that a replica which returns the
+        // partition's static-only row and one which returns nothing from the
+        // partition get different digests. The cells below are hashed only
+        // when the query selects static columns, and the partition key alone
+        // is hashed even for a partition which returns nothing, so without
+        // this the two replicas would agree.
+        _pw.digest().feed_hash(static_row_liveness_hash_value);
+        _pw.digest().feed_hash(live);
+    }
     if (!slice.static_columns.empty()) {
         if (_pw.requested_result()) {
             auto start = _static_cells_wr._out.size();
@@ -1930,7 +1940,7 @@ void mutation_querier::query_static_row(const row& r, tombstone current_tombston
 }
 
 stop_iteration mutation_querier::consume(static_row&& sr, tombstone current_tombstone) {
-    query_static_row(sr.cells(), current_tombstone);
+    query_static_row(sr.cells(), current_tombstone, true);
     _live_data_in_static_row = true;
     return stop_iteration::no;
 }
@@ -1938,7 +1948,7 @@ stop_iteration mutation_querier::consume(static_row&& sr, tombstone current_tomb
 void mutation_querier::prepare_writers() {
     if (!_rows_wr) {
         row empty_row;
-        query_static_row(empty_row, { });
+        query_static_row(empty_row, { }, false);
         _live_data_in_static_row = false;
     }
 }

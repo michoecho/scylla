@@ -89,6 +89,11 @@ public:
     digester& digest() {
         return _digest;
     }
+    // Whether the digest covers a partition's static-row liveness even when
+    // the query selects no static column.
+    bool digests_static_row_liveness() const {
+        return query::digests_static_row_liveness(_digest.algorithm());
+    }
     uint64_t& row_count() {
         return _row_count;
     }
@@ -208,7 +213,11 @@ class mutation_querier {
     uint64_t _live_clustering_rows = 0;
     std::optional<ser::qr_partition__rows<bytes_ostream>> _rows_wr;
 private:
-    void query_static_row(const row& r, tombstone current_tombstone);
+    // A discriminator which precedes the static row's liveness in the digest,
+    // so that the liveness cannot be confused with neighbouring data.
+    static constexpr int static_row_liveness_hash_value = 0x57a71c00;
+    // live: whether the partition has a live static row.
+    void query_static_row(const row& r, tombstone current_tombstone, bool live);
     void prepare_writers();
 public:
     mutation_querier(const schema& s, query::result::partition_writer pw,
