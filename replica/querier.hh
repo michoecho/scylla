@@ -243,6 +243,17 @@ public:
         return full_position_view(dk->key(), _compaction_state->current_position());
     }
 
+    /// How far the last page read. See query::read_frontier.
+    query::read_frontier frontier() const {
+        return _compaction_state->frontier();
+    }
+
+    /// Where the last page left partitions at the per-partition row limit.
+    /// See compact_mutation_state::skips().
+    const std::vector<full_position>& skips() const {
+        return _compaction_state->skips();
+    }
+
     /// Whether the last page stopped inside the partition of
     /// current_position(). Otherwise the reader is at the next partition.
     bool stopped_inside_partition() const {
@@ -280,6 +291,10 @@ public:
 /// the page's start count against the tombstone limit. See
 /// query_result_builder.
 ///
+/// If the command asks for a frontier, the result holds one instead of the
+/// last position. It tells how far the page read, over all of `ranges`. See
+/// query::read_frontier.
+///
 /// `saved_querier` is an input and an output. On input, it holds the querier
 /// which the previous page saved, if any. That querier reads the first range.
 /// On output, it holds the querier to save for the next page, if any. Pass
@@ -309,7 +324,9 @@ future<lw_shared_ptr<query::result>> read_data_page(mutation_source source,
 ///
 /// A mutation page holds the replica's data with its tombstones, which the
 /// coordinator merges with other replicas' pages to reconcile them. Unlike a
-/// data page, it carries no last position.
+/// data page, it carries no last position. If the command asks for a
+/// frontier, the page holds one, which tells how far the page read, and its
+/// partitions tell where the page left them at the per-partition row limit.
 ///
 /// See read_data_page() for `saved_querier`, `before_new_querier` and the
 /// requirements. The saved querier reads `range`. replica::table::mutation_query() and tests use this

@@ -71,6 +71,14 @@ class cql_test_env;
 //   replica, with random evictions. It reads every page which a replica
 //   serves with a cached querier again with a new querier, and checks that
 //   the two pages are equal;
+// - checks the frontier of every data, digest and mutation reply, see
+//   query::read_frontier. A reply has one only if its command asks for one.
+//   A new querier which reads only the replica's contents that the frontier
+//   covers, without the row and partition limits, must return the same
+//   page. The covered contents of a mutation reply end at its skips; a data
+//   reply has none, so its read keeps the per-partition limit. The frontier
+//   of a short reply must be a stop, and the stop must be
+//   after the start of the page;
 // - gives up on a range after 16 reconciliation rounds. storage_proxy
 //   retries until the read times out;
 // - reports a short result which has neither a partition nor a cursor as a
@@ -212,9 +220,9 @@ struct outcome {
     size_t repair_mutations = 0;
     // The properties which the coordinator's reads violated: a repair
     // mutation adds data which no replica has, the result of a range
-    // exceeds the limits of its command, or a page which a replica read
-    // with a cached querier differs from the page which a new querier reads.
-    // Each property appears once.
+    // exceeds the limits of its command, a page which a replica read with a
+    // cached querier differs from the page which a new querier reads, or a
+    // reply's frontier is wrong. Each property appears once.
     std::vector<std::string> coordinator_violations;
 };
 

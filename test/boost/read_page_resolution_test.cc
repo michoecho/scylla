@@ -57,6 +57,19 @@
 #include "schema/schema_builder.hh"
 #include "schema/schema_registry.hh"
 #include "service/read_page_resolution.hh"
+#include "serializer_impl.hh"
+#include "idl/keys.dist.hh"
+#include "idl/position_in_partition.dist.hh"
+#include "idl/full_position.dist.hh"
+#include "idl/frozen_mutation.dist.hh"
+#include "idl/result.dist.hh"
+#include "idl/reconcilable_result.dist.hh"
+#include "idl/keys.dist.impl.hh"
+#include "idl/position_in_partition.dist.impl.hh"
+#include "idl/full_position.dist.impl.hh"
+#include "idl/frozen_mutation.dist.impl.hh"
+#include "idl/result.dist.impl.hh"
+#include "idl/reconcilable_result.dist.impl.hh"
 #include "test/lib/cql_test_env.hh"
 #include "test/lib/mutation_assertions.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
@@ -1110,12 +1123,56 @@ keyed_rows keyed_rows_of(schema_ptr s, const query::read_command& cmd, const que
     }) | std::ranges::to<std::vector>();
 }
 
+// The position right after row `ck` of partition `pk`.
+full_position after_row(const schema& s, int32_t pk, int32_t ck) {
+    return full_position(make_pk(s, pk), position_in_partition::after_key(s, make_ck(s, ck)));
+}
+
+full_position end_of_partition(const schema& s, int32_t pk) {
+    return full_position(make_pk(s, pk), position_in_partition::for_partition_end());
+}
+
+void require_frontier(const schema& s, const std::optional<query::read_frontier>& actual, const query::read_frontier& expected) {
+    BOOST_REQUIRE(actual);
+    BOOST_REQUIRE_MESSAGE(actual->equal(s, expected), fmt::format("frontier {}, expected {}",
+            query::read_frontier::printer{s, *actual}, query::read_frontier::printer{s, expected}));
+}
+
 void require_same_position(const schema& s, const std::optional<full_position>& actual, const std::optional<full_position>& expected) {
     BOOST_REQUIRE_EQUAL(bool(actual), bool(expected));
     if (expected) {
         require_position(s, actual, *expected);
     }
 }
+
+// The skips of `r`, with the keys of their partitions. See
+// reconcilable_result::skips().
+std::vector<full_position> skips_of(const schema& s, const reconcilable_result& r) {
+    return r.skips() | std::views::transform([&] (const partition_skip& skip) {
+        return full_position(r.partitions()[skip.partition].mut().key(), skip.position);
+    }) | std::ranges::to<std::vector>();
+}
+
+void require_skips(const schema& s, const reconcilable_result& r, const std::vector<full_position>& expected) {
+    const auto actual = skips_of(s, r);
+    BOOST_REQUIRE_EQUAL(actual.size(), expected.size());
+    for (auto&& [a, e] : std::views::zip(actual, expected)) {
+        require_position(s, a, e);
+    }
+}
+
+// `cmd`, asking for a frontier. See query::partition_slice::option::send_read_frontier.
+query::read_command with_read_frontier(query::read_command cmd) {
+    cmd.slice.options.set<query::partition_slice::option::send_read_frontier>();
+    return cmd;
+}
+
+// A frontier, and the skips of a mutation page. See
+// reconcilable_result::skips().
+struct frontier_and_skips {
+    query::read_frontier frontier;
+    std::vector<full_position> skips;
+};
 
 // One case of test_page_driver_and_multishard_producer, with the expected
 // data page of each producer.
@@ -1129,9 +1186,186 @@ struct producer_case {
     std::optional<full_position> multishard_cursor;
     // The cursor of read_data_page().
     std::optional<full_position> driver_cursor;
+    // The frontier of the data and mutation pages of both producers, and the
+    // skips of their mutation pages, when the command asks for a frontier.
+    frontier_and_skips frontier;
 };
 
 } // anonymous namespace
+
+namespace {
+
+// The body of test_page_driver_and_multishard_producer. With `tablets`, the
+// table uses tablets, and the multishard producer's cursors are not checked.
+void compare_producers(cql_test_env& env, bool tablets) {
+    const auto ks = tablets ? "ks_tablets" : "ks_vnodes";
+    env.execute_cql(fmt::format("CREATE KEYSPACE {} WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}}"
+            " AND tablets = {{'enabled': {}}}", ks, tablets ? "true, 'initial': 4" : "false")).get();
+    env.execute_cql(fmt::format("CREATE TABLE {}.cf (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck))"
+            " WITH tombstone_gc = {{'mode': 'disabled'}}", ks)).get();
+    auto s = env.local_db().find_schema(ks, "cf");
+
+    // Partition p has live rows 1 and 2, and a deletion of row 3.
+    // Partition q has live rows 1 and 2.
+    auto pks = in_ring_order(*s, {1, 2});
+    const int32_t p = pks[0];
+    const int32_t q = pks[1];
+    std::vector<mutation> muts{make_row(s, p, 1, 10 * p + 1, 1), make_row(s, p, 2, 10 * p + 2, 1), make_row_deletion(s, p, 3, 2),
+            make_row(s, q, 1, 10 * q + 1, 1), make_row(s, q, 2, 10 * q + 2, 1)};
+    for (const auto& m : muts) {
+        const auto shard = env.local_db().find_column_family(s).shard_for_reads(m.decorated_key().token());
+        smp::submit_to(shard, [&env, gs = global_schema_ptr(s), fm = freeze(m)] () mutable {
+            return env.local_db().apply(gs.get(), std::move(fm), {}, db::commitlog_force_sync::no, db::no_timeout);
+        }).get();
+    }
+    auto contents = make_contents(muts);
+
+    const keyed_rows all_rows{{p, 1, 10 * p + 1}, {p, 2, 10 * p + 2}, {q, 1, 10 * q + 1}, {q, 2, 10 * q + 2}};
+    const keyed_rows rows_of_p{{p, 1, 10 * p + 1}, {p, 2, 10 * p + 2}};
+    const dht::partition_range_vector full_range{query::full_partition_range};
+    // Two ranges. The second one has no data.
+    const auto q_pos = dht::ring_position(dht::decorate_key(*s, make_pk(*s, q)));
+    const dht::partition_range_vector split_ranges{
+            dht::partition_range::make_ending_with({q_pos, true}),
+            dht::partition_range::make_starting_with({q_pos, false})};
+
+    auto full_slice = partition_slice_builder(*s).build();
+    auto short_cmd = make_command(*s, partition_slice_builder(*s).with_option<query::partition_slice::option::allow_short_read>().build(),
+            query::max_rows);
+    short_cmd.max_result_size = query::max_result_size(1);
+
+    const auto end = frontier_and_skips{query::read_frontier::end(), {}};
+    const auto stop_at = [] (full_position pos) {
+        return frontier_and_skips{query::read_frontier{std::move(pos)}, {}};
+    };
+    // Each partition stops after its first row.
+    const auto first_rows = frontier_and_skips{query::read_frontier::end(), {after_row(*s, p, 1), after_row(*s, q, 1)}};
+
+    std::vector<producer_case> cases;
+    cases.push_back({"exhausted", make_command(*s, full_slice, query::max_rows), full_range, all_rows, query::short_read::no,
+            std::nullopt, row_position(*s, q, 2), end});
+    cases.push_back({"row limit", make_command(*s, full_slice, 2), full_range, rows_of_p, query::short_read::no,
+            row_position(*s, p, 2), row_position(*s, p, 2), stop_at(after_row(*s, p, 2))});
+    // The page consumes the dead row 3 before it reaches the end of p, so
+    // both cursors are at row 3. The page stops at the end of p.
+    cases.push_back({"partition limit", make_command(*s, full_slice, query::max_rows, 1), full_range, rows_of_p, query::short_read::no,
+            row_position(*s, p, 3), row_position(*s, p, 3), stop_at(end_of_partition(*s, p))});
+    cases.push_back({"short read", short_cmd, full_range, {{p, 1, 10 * p + 1}}, query::short_read::yes,
+            row_position(*s, p, 1), row_position(*s, p, 1), stop_at(after_row(*s, p, 1))});
+    // The per-partition limit stops each partition early, but the page is
+    // exhausted.
+    cases.push_back({"per-partition limit", make_command(*s, partition_slice_builder(*s).with_partition_row_limit(1).build(), query::max_rows),
+            full_range, {{p, 1, 10 * p + 1}, {q, 1, 10 * q + 1}}, query::short_read::no, std::nullopt, row_position(*s, q, 1), first_rows});
+    // DISTINCT limits each partition to one row, like a per-partition
+    // limit of one.
+    cases.push_back({"distinct", make_command(*s, partition_slice_builder(*s).with_option<query::partition_slice::option::distinct>().build(),
+            query::max_rows), full_range, {{p, 1, 10 * p + 1}, {q, 1, 10 * q + 1}}, query::short_read::no, std::nullopt,
+            row_position(*s, q, 1), first_rows});
+    // The page driver reads the second range with a new querier. That
+    // querier consumes nothing, so it has no position.
+    cases.push_back({"empty last range", make_command(*s, full_slice, query::max_rows), split_ranges, all_rows, query::short_read::no,
+            std::nullopt, std::nullopt, end});
+
+    test_env local;
+    for (const auto& c : cases) {
+      for (const bool read_frontier : {false, true}) {
+        BOOST_TEST_CONTEXT(c.name << (read_frontier ? ", with a frontier" : "")) {
+            const auto cmd = read_frontier ? with_read_frontier(c.cmd) : c.cmd;
+            auto multishard = std::get<0>(replica::query_data_on_all_shards(env.db(), s, cmd, c.ranges, query::result_options::only_result(),
+                    nullptr, db::no_timeout).get());
+            auto driver = local.query_data(s, contents, cmd, data_only, c.ranges, *cmd.max_result_size, nullptr);
+            BOOST_REQUIRE_EQUAL(keyed_rows_of(s, cmd, *multishard), c.rows);
+            BOOST_REQUIRE_EQUAL(keyed_rows_of(s, cmd, *driver), c.rows);
+            BOOST_REQUIRE(multishard->is_short_read() == c.short_read);
+            BOOST_REQUIRE(driver->is_short_read() == c.short_read);
+            if (read_frontier) {
+                require_frontier(*s, multishard->frontier(), c.frontier.frontier);
+                require_frontier(*s, driver->frontier(), c.frontier.frontier);
+            } else {
+                BOOST_REQUIRE(!multishard->frontier());
+                BOOST_REQUIRE(!driver->frontier());
+                if (!tablets) {
+                    require_same_position(*s, multishard->last_position(), c.multishard_cursor);
+                }
+                require_same_position(*s, driver->last_position(), c.driver_cursor);
+            }
+
+            // The page driver reads mutation pages of a single range.
+            if (c.ranges.size() == 1) {
+                auto multishard_mutations = std::get<0>(replica::query_mutations_on_all_shards(env.db(), s, cmd, c.ranges, nullptr,
+                        db::no_timeout).get());
+                auto driver_mutations = local.query_mutations(s, contents, cmd, c.ranges.front(), *cmd.max_result_size, nullptr);
+                BOOST_REQUIRE_EQUAL(multishard_mutations->row_count(), driver_mutations.row_count());
+                BOOST_REQUIRE(multishard_mutations->is_short_read() == driver_mutations.is_short_read());
+                BOOST_REQUIRE_EQUAL(multishard_mutations->partitions().size(), driver_mutations.partitions().size());
+                if (read_frontier) {
+                    require_frontier(*s, multishard_mutations->frontier(), c.frontier.frontier);
+                    require_frontier(*s, driver_mutations.frontier(), c.frontier.frontier);
+                    require_skips(*s, *multishard_mutations, c.frontier.skips);
+                    require_skips(*s, driver_mutations, c.frontier.skips);
+                } else {
+                    BOOST_REQUIRE(!multishard_mutations->frontier());
+                    BOOST_REQUIRE(!driver_mutations.frontier());
+                    require_skips(*s, *multishard_mutations, {});
+                    require_skips(*s, driver_mutations, {});
+                }
+                for (auto&& [m, d] : std::views::zip(multishard_mutations->partitions(), driver_mutations.partitions())) {
+                    BOOST_REQUIRE_EQUAL(m.row_count(), d.row_count());
+                    assert_that(m.mut().unfreeze(s)).is_equal_to(d.mut().unfreeze(s));
+                }
+            }
+        }
+      }
+    }
+
+}
+
+} // anonymous namespace
+
+// The wire carries a frontier's stop in the place of the last position, so
+// a received reply holds a last position until the receiver, which asked for
+// a frontier, reinterprets it. The skips of a mutation reply travel with
+// it.
+SEASTAR_THREAD_TEST_CASE(test_frontier_on_the_wire) {
+    test_env env;
+    auto s = env.table_schema;
+    auto pks = in_ring_order(*s, {1, 2});
+    auto contents = make_contents({make_row(s, pks[0], 1, 1, 1), make_row(s, pks[0], 2, 2, 1),
+            make_row(s, pks[1], 1, 3, 1), make_row(s, pks[1], 2, 4, 1)});
+    // The per-partition limit leaves the first partition after its first
+    // row, and the row limit stops the page after the first row of the
+    // second partition.
+    const auto cmd = with_read_frontier(make_command(*s, partition_slice_builder(*s).with_partition_row_limit(1).build(), 2));
+    const auto stop = query::read_frontier{after_row(*s, pks[1], 1)};
+    const std::vector<full_position> skips{after_row(*s, pks[0], 1)};
+
+    auto data = env.query_data(s, contents, cmd, data_only, {query::full_partition_range}, unlimited_size, nullptr);
+    require_frontier(*s, data->frontier(), stop);
+    auto received_data = ser::deserialize_from_buffer(ser::serialize_to_buffer<bytes>(*data), std::type_identity<query::result>());
+    BOOST_REQUIRE(!received_data.frontier());
+    require_position(*s, received_data.last_position(), *stop.stop);
+    received_data.reinterpret_position_as_frontier();
+    require_frontier(*s, received_data.frontier(), stop);
+    BOOST_REQUIRE(received_data.buf() == data->buf());
+
+    auto mutations = env.query_mutations(s, contents, cmd, query::full_partition_range, unlimited_size, nullptr);
+    require_frontier(*s, mutations.frontier(), stop);
+    require_skips(*s, mutations, skips);
+    auto received_mutations = ser::deserialize_from_buffer(ser::serialize_to_buffer<bytes>(mutations), std::type_identity<reconcilable_result>());
+    BOOST_REQUIRE(!received_mutations.frontier());
+    require_skips(*s, received_mutations, skips);
+    received_mutations.reinterpret_position_as_frontier();
+    require_frontier(*s, received_mutations.frontier(), stop);
+
+    // A frontier at the end of the range travels as no position.
+    const auto exhausting_cmd = with_read_frontier(make_command(*s, partition_slice_builder(*s).build(), query::max_rows));
+    auto exhausted = env.query_mutations(s, contents, exhausting_cmd, query::full_partition_range, unlimited_size, nullptr);
+    require_frontier(*s, exhausted.frontier(), query::read_frontier::end());
+    auto received_exhausted = ser::deserialize_from_buffer(ser::serialize_to_buffer<bytes>(exhausted), std::type_identity<reconcilable_result>());
+    BOOST_REQUIRE(!received_exhausted.frontier());
+    received_exhausted.reinterpret_position_as_frontier();
+    require_frontier(*s, received_exhausted.frontier(), query::read_frontier::end());
+}
 
 // Compares the pages of the replica page driver with those of the multishard
 // producer on a few cases.
@@ -1148,92 +1382,24 @@ struct producer_case {
 // Their cursors differ when the page is exhausted. The multishard producer
 // sets a cursor only when the page reaches a limit or stops short. The page
 // driver sets one whenever the querier which read last has a position. The
-// mutation pages of both producers are the same.
+// mutation pages of both producers are the same. When the command asks for a
+// frontier, all pages of both producers hold the same frontier instead of a
+// cursor, and the mutation pages have the same skips.
 SEASTAR_THREAD_TEST_CASE(test_page_driver_and_multishard_producer) {
     do_with_cql_env_thread([] (cql_test_env& env) {
-        env.execute_cql("CREATE KEYSPACE ks_vnodes WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}"
-                " AND tablets = {'enabled': 'false'}").get();
-        env.execute_cql("CREATE TABLE ks_vnodes.cf (pk int, ck int, s int static, v int, PRIMARY KEY (pk, ck))"
-                " WITH tombstone_gc = {'mode': 'disabled'}").get();
-        auto s = env.local_db().find_schema("ks_vnodes", "cf");
+        compare_producers(env, false);
+    }, config_with_tombstone_gc_extension()).get();
+}
 
-        // Partition p has live rows 1 and 2, and a deletion of row 3.
-        // Partition q has live rows 1 and 2.
-        auto pks = in_ring_order(*s, {1, 2});
-        const int32_t p = pks[0];
-        const int32_t q = pks[1];
-        std::vector<mutation> muts{make_row(s, p, 1, 10 * p + 1, 1), make_row(s, p, 2, 10 * p + 2, 1), make_row_deletion(s, p, 3, 2),
-                make_row(s, q, 1, 10 * q + 1, 1), make_row(s, q, 2, 10 * q + 2, 1)};
-        for (const auto& m : muts) {
-            smp::submit_to(dht::static_shard_of(*s, m.decorated_key().token()), [&env, gs = global_schema_ptr(s), fm = freeze(m)] () mutable {
-                return env.local_db().apply(gs.get(), std::move(fm), {}, db::commitlog_force_sync::no, db::no_timeout);
-            }).get();
-        }
-        auto contents = make_contents(muts);
-
-        const keyed_rows all_rows{{p, 1, 10 * p + 1}, {p, 2, 10 * p + 2}, {q, 1, 10 * q + 1}, {q, 2, 10 * q + 2}};
-        const keyed_rows rows_of_p{{p, 1, 10 * p + 1}, {p, 2, 10 * p + 2}};
-        const dht::partition_range_vector full_range{query::full_partition_range};
-        // Two ranges. The second one has no data.
-        const auto q_pos = dht::ring_position(dht::decorate_key(*s, make_pk(*s, q)));
-        const dht::partition_range_vector split_ranges{
-                dht::partition_range::make_ending_with({q_pos, true}),
-                dht::partition_range::make_starting_with({q_pos, false})};
-
-        auto full_slice = partition_slice_builder(*s).build();
-        auto short_cmd = make_command(*s, partition_slice_builder(*s).with_option<query::partition_slice::option::allow_short_read>().build(),
-                query::max_rows);
-        short_cmd.max_result_size = query::max_result_size(1);
-
-        std::vector<producer_case> cases;
-        cases.push_back({"exhausted", make_command(*s, full_slice, query::max_rows), full_range, all_rows, query::short_read::no,
-                std::nullopt, row_position(*s, q, 2)});
-        cases.push_back({"row limit", make_command(*s, full_slice, 2), full_range, rows_of_p, query::short_read::no,
-                row_position(*s, p, 2), row_position(*s, p, 2)});
-        // The page consumes the dead row 3 before it reaches the end of p, so
-        // both cursors are at row 3.
-        cases.push_back({"partition limit", make_command(*s, full_slice, query::max_rows, 1), full_range, rows_of_p, query::short_read::no,
-                row_position(*s, p, 3), row_position(*s, p, 3)});
-        cases.push_back({"short read", short_cmd, full_range, {{p, 1, 10 * p + 1}}, query::short_read::yes,
-                row_position(*s, p, 1), row_position(*s, p, 1)});
-        // The per-partition limit stops each partition early, but the page is
-        // exhausted.
-        cases.push_back({"per-partition limit", make_command(*s, partition_slice_builder(*s).with_partition_row_limit(1).build(), query::max_rows),
-                full_range, {{p, 1, 10 * p + 1}, {q, 1, 10 * q + 1}}, query::short_read::no, std::nullopt, row_position(*s, q, 1)});
-        // The page driver reads the second range with a new querier. That
-        // querier consumes nothing, so it has no position.
-        cases.push_back({"empty last range", make_command(*s, full_slice, query::max_rows), split_ranges, all_rows, query::short_read::no,
-                std::nullopt, std::nullopt});
-
-        test_env local;
-        for (const auto& c : cases) {
-            BOOST_TEST_CONTEXT(c.name) {
-                auto multishard = std::get<0>(replica::query_data_on_all_shards(env.db(), s, c.cmd, c.ranges, query::result_options::only_result(),
-                        nullptr, db::no_timeout).get());
-                auto driver = local.query_data(s, contents, c.cmd, data_only, c.ranges, *c.cmd.max_result_size, nullptr);
-                BOOST_REQUIRE_EQUAL(keyed_rows_of(s, c.cmd, *multishard), c.rows);
-                BOOST_REQUIRE_EQUAL(keyed_rows_of(s, c.cmd, *driver), c.rows);
-                BOOST_REQUIRE(multishard->is_short_read() == c.short_read);
-                BOOST_REQUIRE(driver->is_short_read() == c.short_read);
-                require_same_position(*s, multishard->last_position(), c.multishard_cursor);
-                require_same_position(*s, driver->last_position(), c.driver_cursor);
-
-                // The page driver reads mutation pages of a single range.
-                if (c.ranges.size() == 1) {
-                    auto multishard_mutations = std::get<0>(replica::query_mutations_on_all_shards(env.db(), s, c.cmd, c.ranges, nullptr,
-                            db::no_timeout).get());
-                    auto driver_mutations = local.query_mutations(s, contents, c.cmd, c.ranges.front(), *c.cmd.max_result_size, nullptr);
-                    BOOST_REQUIRE_EQUAL(multishard_mutations->row_count(), driver_mutations.row_count());
-                    BOOST_REQUIRE(multishard_mutations->is_short_read() == driver_mutations.is_short_read());
-                    BOOST_REQUIRE_EQUAL(multishard_mutations->partitions().size(), driver_mutations.partitions().size());
-                    for (auto&& [m, d] : std::views::zip(multishard_mutations->partitions(), driver_mutations.partitions())) {
-                        BOOST_REQUIRE_EQUAL(m.row_count(), d.row_count());
-                        assert_that(m.mut().unfreeze(s)).is_equal_to(d.mut().unfreeze(s));
-                    }
-                }
-            }
-        }
+// Like test_page_driver_and_multishard_producer, for a table with tablets.
+// storage_proxy's local read then reads each tablet through the page driver
+// and merges the pages. The merged pages have the rows, the short-read flag
+// and the frontier of the page driver's page of the whole range.
+SEASTAR_THREAD_TEST_CASE(test_page_driver_and_tablet_producer) {
+    do_with_cql_env_thread([] (cql_test_env& env) {
+        compare_producers(env, true);
     }, config_with_tombstone_gc_extension()).get();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
