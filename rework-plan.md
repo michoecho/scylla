@@ -293,3 +293,21 @@ Known gaps, which could hide defects:
   `3b9b345ff4`) runs all 35 witnesses of progress.md with every feature,
   and all pass. Twelve were recorded with a feature disabled; ten of them
   still fail that way, on master's path.
+- Decisions of the user on 2026-09-24:
+  - The harness contract without the feature: check only for internal
+    errors, other than the allowed one, and the coordinator violations.
+    Commit `9cde68a73a`. On 200000 runs of `test_general` with each of
+    seeds 1, 2 and 3, no run fails.
+  - Run the existing cluster tests; no mixed-version test for now. These
+    pass: `test_read_repair.py`, `test_secondary_index_paging.py`,
+    `test_random_tables.py`, `test_cluster_features.py`,
+    `test_raft_cluster_features.py`, `test_deprecating_cluster_features.py`,
+    `test_conflicting_keys_read_repair.py`,
+    `test_reversed_queries_during_simulated_upgrade_process.py`,
+    `test_select_from_mutation_fragments.py`,
+    `test_reader_concurrency_semaphore_shared_pool.py`,
+    `test_view_build_status.py` and `test_tablets.py`.
+  - No performance check, and no work on the harness gaps for now. The known
+    costs stay described in the commit messages. One of them is to be fixed:
+    frontier_reconciliation converts the data of all rounds in every round,
+    so a read with k rounds does work quadratic in k. See the handoff.
