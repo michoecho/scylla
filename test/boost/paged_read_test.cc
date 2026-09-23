@@ -266,7 +266,10 @@ read_options random_options(read_options opts) {
 // value is the number of histories. The test reports each failure with a
 // shrunk case, and logs the number of failures of each kind. When the
 // environment variable SCYLLA_PAGED_READ_STOP_AT_FAILURE is set, the test
-// stops after its first failure.
+// stops after its first failure. When the environment variable
+// SCYLLA_PAGED_READ_VIOLATION is set, a run fails only if one of its
+// violations contains the variable's value. This keeps a campaign on one
+// kind of defect while the baseline still has others.
 SEASTAR_THREAD_TEST_CASE(test_general) {
     const char* histories = std::getenv("SCYLLA_PAGED_READ_CAMPAIGN");
     if (!histories) {
@@ -275,7 +278,8 @@ SEASTAR_THREAD_TEST_CASE(test_general) {
     }
     const int history_count = std::stoi(histories);
     const bool stop_at_failure = std::getenv("SCYLLA_PAGED_READ_STOP_AT_FAILURE");
-    with_harness([history_count, stop_at_failure] (harness& hs) {
+    const char* violation_filter = std::getenv("SCYLLA_PAGED_READ_VIOLATION");
+    with_harness([history_count, stop_at_failure, violation_filter] (harness& hs) {
         size_t runs = 0;
         std::map<std::string, size_t> failures;
         auto stopped = [&] { return stop_at_failure && !failures.empty(); };
@@ -289,7 +293,9 @@ SEASTAR_THREAD_TEST_CASE(test_general) {
                 testlog.debug("Running {}", describe(c));
                 ++runs;
                 const auto violations = hs.violations(c);
-                if (violations.empty()) {
+                if (violations.empty() || (violation_filter && std::ranges::none_of(violations, [&] (const std::string& v) {
+                        return v.contains(violation_filter);
+                    }))) {
                     continue;
                 }
                 ++failures[violation_kind(violations)];
