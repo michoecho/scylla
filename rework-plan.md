@@ -258,3 +258,18 @@ Known gaps, which could hide defects:
   484 failures without the feature run master's code. The 41 failures with
   it are change C's: 22 spurious static-only rows, and 19 DISTINCT rows lost
   when a short page's cursor lies inside a partition.
+- Master's path, decided by the user on 2026-09-24: without `READ_FRONTIERS`,
+  master's defects stay. The only change there prevents a crash:
+  `calculate_last_position()` reports a page without a partition with
+  `on_internal_error()` instead of `SCYLLA_ASSERT` (commit `7e50a5022f`).
+  The harness allows that error without the feature (commit `ea2e203236`).
+  Fixes of master's resolver were tried and dropped: the port of
+  `7906af0cae` turned crashes into silently wrong rows, and the change of
+  `min_position()` is not needed once the crash is an error.
+- The harness still reports the wrong results of master's path. The
+  campaign therefore keeps failing without the feature; see the handoff.
+- On 20000 runs of `test_general` with seed 1: 189 failures, after 336
+  allowed internal errors. 144 wrong results and 4 exhausted retries without
+  the feature; the 41 of change C with it.
+- New: two PER PARTITION LIMIT defects of the pager, also with the feature.
+  See the handoff.
