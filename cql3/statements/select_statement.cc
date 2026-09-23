@@ -428,6 +428,15 @@ select_statement::do_execute(query_processor& qp,
                           service::query_state& state,
                           const query_options& options) const
 {
+    return execute_with_query_function(qp, state, options, {});
+}
+
+future<shared_ptr<cql_transport::messages::result_message>>
+select_statement::execute_with_query_function(query_processor& qp,
+                          service::query_state& state,
+                          const query_options& options,
+                          service::pager::query_function query_function) const
+{
     if (!qp.db().try_find_table(_schema->id())) {
         return make_exception_future<shared_ptr<cql_transport::messages::result_message>>(
                 exceptions::invalid_request_exception(format("unconfigured table {}", column_family())));
@@ -532,11 +541,12 @@ select_statement::do_execute(query_processor& qp,
     if (!aggregate && !needs_post_filtering() && (page_size <= 0
             || !service::pager::query_pagers::may_need_paging(*_query_schema, page_size,
                     *command, key_ranges))) {
-        f = execute_without_checking_exception_message_non_aggregate_unpaged(qp, command, std::move(key_ranges), state, options, now, std::move(cas_shard));
+        f = execute_without_checking_exception_message_non_aggregate_unpaged(qp, command, std::move(key_ranges), state, options, now, std::move(cas_shard),
+                std::move(query_function));
     } else {
         f = execute_without_checking_exception_message_aggregate_or_paged(qp, command,
             std::move(key_ranges), state, options, now, page_size, aggregate,
-            nonpaged_filtering, parsed_limit, std::move(cas_shard));
+            nonpaged_filtering, parsed_limit, std::move(cas_shard), std::move(query_function));
     }
 
     if (!tablet_info.has_value() && !tablet_info_v2.has_value()) {
@@ -560,12 +570,13 @@ future<::shared_ptr<cql_transport::messages::result_message>>
 select_statement::execute_without_checking_exception_message_aggregate_or_paged(query_processor& qp,
         lw_shared_ptr<query::read_command> command, dht::partition_range_vector&& key_ranges, service::query_state& state,
         const query_options& options, gc_clock::time_point now, int32_t page_size, bool aggregate, bool nonpaged_filtering,
-        uint64_t limit, std::optional<service::cas_shard> cas_shard) const {
+        uint64_t limit, std::optional<service::cas_shard> cas_shard, service::pager::query_function query_function) const {
     command->slice.options.set<query::partition_slice::option::allow_short_read>();
     auto timeout_duration = get_timeout(state.get_client_state(), options);
     auto timeout = db::timeout_clock::now() + timeout_duration;
     auto p = service::pager::query_pagers::pager(qp.proxy(), _query_schema, _selection,
-            state, options, command, std::move(key_ranges), needs_post_filtering() ? _restrictions : nullptr, std::move(cas_shard));
+            state, options, command, std::move(key_ranges), needs_post_filtering() ? _restrictions : nullptr, std::move(cas_shard),
+            std::move(query_function));
 
     auto per_partition_limit = get_limit(options, _per_partition_limit, true);
 
@@ -906,6 +917,19 @@ view_indexed_table_select_statement::execute_base_query(
     }));
 }
 
+// Reads through `query_function`, or through storage_proxy::query_result()
+// when `query_function` is empty.
+static future<exceptions::coordinator_result<service::storage_proxy_coordinator_query_result>>
+query_through(const service::pager::query_function& query_function, service::storage_proxy& proxy, schema_ptr query_schema,
+        lw_shared_ptr<query::read_command> cmd, dht::partition_range_vector&& partition_ranges, db::consistency_level cl,
+        service::storage_proxy_coordinator_query_options query_options, std::optional<service::cas_shard> cas_shard) {
+    if (query_function) {
+        return query_function(proxy, std::move(query_schema), std::move(cmd), std::move(partition_ranges), cl, std::move(query_options),
+                std::move(cas_shard));
+    }
+    return proxy.query_result(std::move(query_schema), std::move(cmd), std::move(partition_ranges), cl, std::move(query_options), std::move(cas_shard));
+}
+
 future<shared_ptr<cql_transport::messages::result_message>>
 select_statement::execute_non_aggregate_unpaged(query_processor& qp,
                           lw_shared_ptr<query::read_command> cmd,
@@ -925,7 +949,8 @@ select_statement::execute_without_checking_exception_message_non_aggregate_unpag
                           service::query_state& state,
                           const query_options& options,
                           gc_clock::time_point now,
-                          std::optional<service::cas_shard> cas_shard) const
+                          std::optional<service::cas_shard> cas_shard,
+                          service::pager::query_function query_function) const
 {
     // If this is a query with IN on partition key, ORDER BY clause and LIMIT
     // is specified we need to get "limit" rows from each partition since there
@@ -933,13 +958,15 @@ select_statement::execute_without_checking_exception_message_non_aggregate_unpag
     // doing post-query ordering.
     auto timeout = db::timeout_clock::now() + get_timeout(state.get_client_state(), options);
     if (needs_post_query_ordering() && _limit) {
-        return do_with(std::forward<dht::partition_range_vector>(partition_ranges), [this, &qp, &state, &options, cmd, timeout, cas_shard = std::move(cas_shard)](auto& prs) {
+        return do_with(std::forward<dht::partition_range_vector>(partition_ranges), [this, &qp, &state, &options, cmd, timeout, cas_shard = std::move(cas_shard),
+                query_function = std::move(query_function)](auto& prs) {
             throwing_assert(cmd->partition_limit == query::max_partitions);
             query::result_merger merger(cmd->get_row_limit() * prs.size(), query::max_partitions);
-            return utils::result_map_reduce(prs.begin(), prs.end(), [this, &qp, &state, &options, cmd, timeout, cas_shard = std::move(cas_shard)] (auto& pr) {
+            return utils::result_map_reduce(prs.begin(), prs.end(), [this, &qp, &state, &options, cmd, timeout, cas_shard = std::move(cas_shard),
+                    query_function] (auto& pr) {
                 dht::partition_range_vector prange { pr };
                 auto command = ::make_lw_shared<query::read_command>(*cmd);
-                return qp.proxy().query_result(_query_schema,
+                return query_through(query_function, qp.proxy(), _query_schema,
                         command,
                         std::move(prange),
                         options.get_consistency(),
@@ -952,7 +979,7 @@ select_statement::execute_without_checking_exception_message_non_aggregate_unpag
             return this->process_results(std::move(result), cmd, options, now);
         }));
     } else {
-        return qp.proxy().query_result(_query_schema, cmd, std::move(partition_ranges), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state(), {}, {}, options.get_specific_options().node_local_only}, std::move(cas_shard))
+        return query_through(query_function, qp.proxy(), _query_schema, cmd, std::move(partition_ranges), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state(), {}, {}, options.get_specific_options().node_local_only}, std::move(cas_shard))
             .then(wrap_result_to_error_message([this, &options, now, cmd] (service::storage_proxy::coordinator_query_result qr) {
                 return this->process_results(std::move(qr.query_result), cmd, options, now);
             }));
