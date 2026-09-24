@@ -13,8 +13,8 @@ restore.
 
 ## Starting point
 
-Branch `worktree/paging-rework` starts from `f4c5fca223` ("Local patches"),
-which is upstream master `5f352afcf4` plus local tooling. On top of it are:
+Branch `worktree/paging-rework` starts from `ca7703ac04` ("Local patches"),
+which is upstream master `ab7945b1c8` plus local tooling. On top of it are:
 - the extraction of the coordinator's page decisions into
   [service/read_page_resolution.hh](service/read_page_resolution.hh), and of
   the replica's page driver into `read_data_page()` and `read_mutation_page()`
@@ -236,10 +236,10 @@ Known gaps, which could hide defects:
 
 ## Progress
 
-- D: commit `ac0a69d94a`.
-- E: commit `632b5c6a20`. The feature is `READ_FRONTIERS`; the harness
+- D: commit `91b3fa15d0`.
+- E: commit `6a2430e135`. The feature is `READ_FRONTIERS`; the harness
   option is `read_options::read_frontiers`.
-- A: commits `246a4d8218` and `e9d25290a3`. Replicas report
+- A: commits `0b38bbbed6` and `a19b0d17e5`. Replicas report
   `query::read_frontier` in every reply, and the harness checks it against a
   read of what it covers. No coordinator uses it yet. The DISTINCT limit
   gives way to an explicit per-partition limit in the slice, but
@@ -248,7 +248,7 @@ Known gaps, which could hide defects:
   left at the per-partition limit, so a scan with PER PARTITION LIMIT sends
   about one more key per partition.
 - On 20000 runs of `test_general` with seed 1, after E and A: 840 failures.
-- The small defect of `frozen_mutation_consumer_adaptor`: commit `75d936dba2`.
+- The small defect of `frozen_mutation_consumer_adaptor`: commit `917d15bfe2`.
 - B: `service::frontier_reconciliation` and the frontier rule of
   `decide_digest_page()`, used by storage_proxy and the harness when
   `READ_FRONTIERS` is enabled. Without the feature, both keep master's code.
@@ -261,8 +261,8 @@ Known gaps, which could hide defects:
 - Master's path, decided by the user on 2026-09-24: without `READ_FRONTIERS`,
   master's defects stay. The only change there prevents a crash:
   `calculate_last_position()` reports a page without a partition with
-  `on_internal_error()` instead of `SCYLLA_ASSERT` (commit `7e50a5022f`).
-  The harness allows that error without the feature (commit `ea2e203236`).
+  `on_internal_error()` instead of `SCYLLA_ASSERT` (commit `61bf269863`).
+  The harness allows that error without the feature (commit `35728107f4`).
   Fixes of master's resolver were tried and dropped: the port of
   `7906af0cae` turned crashes into silently wrong rows, and the change of
   `min_position()` is not needed once the crash is an error.
@@ -273,7 +273,7 @@ Known gaps, which could hide defects:
   the feature; the 41 of change C with it.
 - New: two PER PARTITION LIMIT defects of the pager, also with the feature.
   See the handoff.
-- C: commit `3475be00e1`. The coordinator leaves out a static-only row of
+- C: commit `30e35d0b70`. The coordinator leaves out a static-only row of
   a partition which the page's frontier cuts before the end of its
   clustering rows. The paging state's new field `partition_row_pending`
   says that no page returned a row of the cursor's partition yet. The next
@@ -282,21 +282,21 @@ Known gaps, which could hide defects:
   slice option is needed: replicas behave as before, and storage_proxy
   tells the pager through
   `storage_proxy_coordinator_query_result::rows_decided_before_cursor`.
-- The PER PARTITION LIMIT defects of the pager: commit `6be7e1f771`. They
+- The PER PARTITION LIMIT defects of the pager: commit `6373123984`. They
   predate the rework; both witnesses also fail without the feature.
 - On 200000 runs of `test_general` with each of seeds 1, 2 and 3, no run
   with `READ_FRONTIERS` fails. Without it, 1393, 1395 and 1413 runs fail,
   all on master's path. On 20000 runs with seed 1: 146 failures, all
   without the feature.
-- The small defect of `partition_slice_builder`: commit `7378876053`.
+- The small defect of `partition_slice_builder`: commit `8467eb4433`.
 - Acceptance, the witnesses: `test_witnesses_of_first_attempt` (commit
-  `3b9b345ff4`) runs all 35 witnesses of progress.md with every feature,
+  `da9199ec25`) runs all 35 witnesses of progress.md with every feature,
   and all pass. Twelve were recorded with a feature disabled; ten of them
   still fail that way, on master's path.
 - Decisions of the user on 2026-09-24:
   - The harness contract without the feature: check only for internal
     errors, other than the allowed one, and the coordinator violations.
-    Commit `9cde68a73a`. On 200000 runs of `test_general` with each of
+    Commit `8fc5834723`. On 200000 runs of `test_general` with each of
     seeds 1, 2 and 3, no run fails.
   - Run the existing cluster tests; no mixed-version test for now. These
     pass: `test_read_repair.py`, `test_secondary_index_paging.py`,
@@ -312,7 +312,7 @@ Known gaps, which could hide defects:
     frontier_reconciliation converts the data of all rounds in every round,
     so a read with k rounds does work quadratic in k. See the handoff.
 - The quadratic cost of frontier_reconciliation is fixed in commit
-  `73fb9e4d10`. Each partition is converted once, when it becomes final.
+  `65d23bcb41`. Each partition is converted once, when it becomes final.
   Only the last partition is converted in every round, and between rounds
   it keeps only its live data, fewer rows than the row limit. So a round's
   work is proportional to the data which it read. The new
