@@ -262,6 +262,12 @@ future<mutation_page_resolution> resolve_mutation_page(schema_ptr schema, const 
 //
 // Every round moves E forward, because every replica reads at least one
 // fragment after the start of its page.
+//
+// Each partition is converted once, when it becomes final: all partitions
+// but the last one, because the next round starts in the last partition or
+// after it. Only the last partition is converted again in each round, and
+// it keeps only its live data between rounds. So the work of a round does
+// not grow with the rounds before it.
 class frontier_reconciliation {
     schema_ptr _schema;
     lw_shared_ptr<const query::read_command> _cmd;
@@ -270,10 +276,25 @@ class frontier_reconciliation {
     dht::partition_range _round_range;
     // The common frontier of the previous round, where this round starts.
     std::optional<full_position> _round_start;
-    // The reconciled data of all rounds, in ring order. It uses the query
-    // schema.
+    // The reconciled data which is not converted yet, in ring order. It uses
+    // the query schema. Between rounds, it holds at most the last partition.
     utils::chunked_vector<mutation> _reconciled;
+    // The conversions of the final partitions, in ring order, and the rows
+    // and partitions which they count toward the client's limits. They never
+    // reach the limits, or the page would have ended.
+    std::vector<foreign_ptr<lw_shared_ptr<query::result>>> _converted;
+    uint64_t _converted_rows = 0;
+    uint32_t _converted_partitions = 0;
     mutations_per_partition_key_map _diffs;
+
+    // Converts the first `count` partitions of `_reconciled`, within the
+    // limits which the kept conversions left. The result's frontier tells
+    // where the limits stopped the conversion, if they did.
+    future<query::result> convert(size_t count);
+    // Adds a conversion to `_converted`, without its frontier.
+    void keep(query::result result);
+    // The page of all conversions so far, without a cursor.
+    query::result converted_page();
 public:
     // Reconciles the page of `range` which the client's command `cmd` asks
     // for. `cmd` must ask for frontiers, see

@@ -1411,5 +1411,112 @@ SEASTAR_THREAD_TEST_CASE(test_page_driver_and_tablet_producer) {
     }, config_with_tombstone_gc_extension()).get();
 }
 
+namespace {
+
+mutation make_range_deletion(schema_ptr s, int32_t pk, int32_t first_ck, int32_t last_ck, api::timestamp_type ts) {
+    mutation m(s, make_pk(*s, pk));
+    m.partition().apply_delete(*s, range_tombstone(make_ck(*s, first_ck), bound_kind::incl_start, make_ck(*s, last_ck), bound_kind::incl_end,
+            tombstone(ts, query_time)));
+    return m;
+}
+
+// Reconciles the page of `cmd` over the full range from the contents `a` of
+// replica_a and `b` of replica_b, like
+// abstract_read_executor::reconcile_by_frontiers(). Returns the page and the
+// number of rounds.
+std::pair<accepted_mutation_page, size_t> reconcile_by_frontiers(test_env& env, const query::read_command& cmd,
+        const utils::chunked_vector<mutation>& a, const utils::chunked_vector<mutation>& b) {
+    frontier_reconciliation reconciliation(env.table_schema, make_lw_shared<const query::read_command>(with_read_frontier(cmd)), query::full_partition_range);
+    for (size_t round = 1; round <= 1000; ++round) {
+        std::vector<mutation_page_reply> replies;
+        for (const auto& [host, contents] : {std::pair(replica_a, &a), std::pair(replica_b, &b)}) {
+            auto reply = env.query_mutations(env.table_schema, *contents, *reconciliation.round_command(), reconciliation.round_range(),
+                    unlimited_size, nullptr);
+            replies.push_back({host, make_foreign(make_lw_shared<reconcilable_result>(std::move(reply)))});
+        }
+        if (auto page = reconciliation.add_round(std::move(replies)).get()) {
+            return {std::move(*page), round};
+        }
+    }
+    throw std::runtime_error("1000 reconciliation rounds did not give a page");
+}
+
+} // anonymous namespace
+
+// An unpaged read loops inside the coordinator while the replicas count rows
+// as live which the merge finds dead. The reconciliation converts each final
+// partition once, and only the last partition in every round. The page of
+// many rounds must equal the data page of the merged contents, which one
+// round over all the data gives.
+SEASTAR_THREAD_TEST_CASE(test_frontier_reconciliation_over_many_rounds) {
+    test_env env;
+    auto s = env.table_schema;
+
+    struct reconciliation_case {
+        std::string name;
+        std::vector<mutation> a;
+        std::vector<mutation> b;
+        uint64_t row_limit;
+        uint32_t partition_limit;
+        size_t min_rounds;
+    };
+    std::vector<reconciliation_case> cases;
+
+    // Replica a holds rows 1 to 40 of one partition, and range tombstones of
+    // replica b delete all of them but rows 11 and 12. b holds rows 41 to 50.
+    // Each round stops inside the partition, and the next round extends it.
+    // Rounds go on after the rows of a reach the conversion.
+    {
+        reconciliation_case c{"one partition", {}, {}, 5, query::max_partitions, 8};
+        for (int32_t ck = 1; ck <= 40; ++ck) {
+            c.a.push_back(make_row(s, 1, ck, ck, 1));
+        }
+        c.b.push_back(make_range_deletion(s, 1, 1, 10, 2));
+        c.b.push_back(make_range_deletion(s, 1, 13, 40, 2));
+        for (int32_t ck = 41; ck <= 50; ++ck) {
+            c.b.push_back(make_row(s, 1, ck, ck, 1));
+        }
+        cases.push_back(std::move(c));
+    }
+
+    // In each of six partitions, replica a holds rows 1 to 20, and replica b
+    // deletes all of them but rows 11 and 12. The page takes rows of
+    // partitions which became final in different rounds.
+    const auto several_partitions = [&] (std::string name, uint64_t row_limit, uint32_t partition_limit) {
+        reconciliation_case c{std::move(name), {}, {}, row_limit, partition_limit, 4};
+        for (int32_t pk = 1; pk <= 6; ++pk) {
+            for (int32_t ck = 1; ck <= 20; ++ck) {
+                c.a.push_back(make_row(s, pk, ck, 100 * pk + ck, 1));
+            }
+            c.b.push_back(make_range_deletion(s, pk, 1, 10, 2));
+            c.b.push_back(make_range_deletion(s, pk, 13, 20, 2));
+        }
+        return c;
+    };
+    cases.push_back(several_partitions("several partitions", 5, query::max_partitions));
+    // The partition limit stops a conversion at the end of the partition in
+    // which E lies. The next round continues after that partition.
+    cases.push_back(several_partitions("partition limit", 5, 2));
+
+    for (const auto& c : cases) {
+        BOOST_TEST_CONTEXT(c.name) {
+            const auto cmd = make_command(*s, partition_slice_builder(*s).build(), c.row_limit, c.partition_limit);
+            const auto a = make_contents(c.a);
+            const auto b = make_contents(c.b);
+            auto all = c.a;
+            std::ranges::copy(c.b, std::back_inserter(all));
+            auto expected = env.read_data_page(s, make_contents(std::move(all)), cmd, data_only);
+            expected->ensure_counts();
+
+            auto [page, rounds] = reconcile_by_frontiers(env, cmd, a, b);
+            BOOST_REQUIRE_GE(rounds, c.min_rounds);
+            BOOST_REQUIRE_EQUAL(keyed_rows_of(s, cmd, page.result), keyed_rows_of(s, cmd, *expected));
+            BOOST_REQUIRE_EQUAL(page.result.row_count(), expected->row_count());
+            BOOST_REQUIRE_EQUAL(page.result.partition_count(), expected->partition_count());
+            BOOST_REQUIRE(page.result.is_short_read() == query::short_read::no);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 

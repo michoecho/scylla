@@ -21,6 +21,7 @@
 #include "mutation/async_utils.hh"
 #include "mutation/mutation_partition.hh"
 #include "query/query-result-reader.hh"
+#include "query/query_result_merger.hh"
 #include "utils/assert.hh"
 #include "utils/chunked_vector.hh"
 #include "utils/log.hh"
@@ -552,6 +553,27 @@ mutation cut_before(const mutation& m, position_in_partition_view pos) {
     std::abort();
 }
 
+// Removes the data of `m` which is dead at every query time: the cells
+// which tombstones cover, the rows without live data, and the range
+// tombstones, which then cover nothing. Nothing expires at the minimal time,
+// like in to_data_query_result(). Keeps the partition tombstone and the
+// tombstones of live rows.
+void drop_dead_data(mutation& m) {
+    static const std::vector<query::clustering_range> all_rows = {query::clustering_range::make_open_ended_both_sides()};
+    const auto& s = *m.schema();
+    auto& mp = m.partition();
+    mp.compact_for_query(s, m.decorated_key(), gc_clock::time_point::min(), all_rows, true, query::partition_max_rows);
+    auto& rows = mp.mutable_clustered_rows();
+    for (auto it = rows.begin(); it != rows.end();) {
+        if (!it->dummy() && !it->row().is_live(s, column_kind::regular_column, tombstone(), gc_clock::time_point::min())) {
+            it = rows.erase_and_dispose(it, current_deleter<rows_entry>());
+        } else {
+            ++it;
+        }
+    }
+    mp.mutable_row_tombstones().clear();
+}
+
 // The number of live clustering rows of `m` at `query_time`. Unlike
 // mutation_partition::live_row_count(), a live static row does not count.
 uint64_t live_clustering_row_count(const mutation& m, gc_clock::time_point query_time) {
@@ -806,6 +828,43 @@ frontier_reconciliation::frontier_reconciliation(schema_ptr schema, lw_shared_pt
     prepare_mutation_read(*_round_cmd, true);
 }
 
+future<query::result> frontier_reconciliation::convert(size_t count) {
+    utils::chunked_vector<partition> partitions;
+    partitions.reserve(count);
+    uint64_t row_count = 0;
+    for (const auto& m : _reconciled | std::views::take(count)) {
+        const auto live_rows = m.live_row_count(_cmd->timestamp);
+        row_count += live_rows;
+        partitions.emplace_back(live_rows, freeze(m));
+        co_await coroutine::maybe_yield();
+    }
+    const reconcilable_result reconciled(row_count, std::move(partitions), query::short_read::no);
+    rplogger.trace("reconciled: {}", reconciled.pretty_printer(_schema));
+    // A per-partition limit applies within one partition, so a conversion
+    // which starts at a partition boundary needs only the row and partition
+    // limits which remain.
+    co_return co_await to_data_query_result(reconciled, _schema, _cmd->slice, _cmd->get_row_limit() - _converted_rows,
+            _cmd->partition_limit - _converted_partitions);
+}
+
+void frontier_reconciliation::keep(query::result result) {
+    result.set_frontier(std::nullopt);
+    result.ensure_counts();
+    _converted_rows += *result.row_count();
+    _converted_partitions += *result.partition_count();
+    _converted.push_back(make_foreign(make_lw_shared<query::result>(std::move(result))));
+}
+
+query::result frontier_reconciliation::converted_page() {
+    query::result_merger merger(_cmd->get_row_limit(), _cmd->partition_limit);
+    merger.reserve(_converted.size());
+    for (auto& r : _converted) {
+        merger(std::move(r));
+    }
+    _converted.clear();
+    return std::move(*merger.get());
+}
+
 future<std::optional<accepted_mutation_page>> frontier_reconciliation::add_round(std::vector<mutation_page_reply> replies) {
     const schema& s = *_schema;
     const position_in_partition::tri_compare pos_cmp(s);
@@ -972,36 +1031,41 @@ future<std::optional<accepted_mutation_page>> frontier_reconciliation::add_round
     // E, would yield a static-only row. Whether it has one depends on the
     // rest of the partition, so the conversion leaves the partition out. A
     // skip cuts only partitions with live clustering rows.
-    size_t whole = _reconciled.size();
-    if (end && !decides_partition(s, end->position) && whole && _reconciled.back().decorated_key().equal(s, *end_key)
-            && live_clustering_row_count(_reconciled.back(), _cmd->timestamp) == 0) {
-        --whole;
+    const bool convert_last = !_reconciled.empty() && !(end && !decides_partition(s, end->position)
+            && _reconciled.back().decorated_key().equal(s, *end_key)
+            && live_clustering_row_count(_reconciled.back(), _cmd->timestamp) == 0);
+
+    // All partitions but the last one are final. Convert them once, and keep
+    // only their conversion. Then convert the last partition, unless the
+    // final partitions reached the limits. Its conversion counts only if the
+    // page ends, because the next round converts it again.
+    std::optional<full_position> conversion_stop;
+    if (_reconciled.size() > 1) {
+        auto conversion = co_await convert(_reconciled.size() - 1);
+        conversion_stop = conversion.frontier().value().stop;
+        keep(std::move(conversion));
+        auto last = std::move(_reconciled.back());
+        _reconciled.clear();
+        _reconciled.push_back(std::move(last));
     }
-    utils::chunked_vector<partition> partitions;
-    partitions.reserve(whole);
-    uint64_t row_count = 0;
-    for (const auto& m : _reconciled | std::views::take(whole)) {
-        const auto live_rows = m.live_row_count(_cmd->timestamp);
-        row_count += live_rows;
-        partitions.emplace_back(live_rows, freeze(m));
-        co_await coroutine::maybe_yield();
+    std::optional<query::result> last_conversion;
+    if (!conversion_stop && convert_last) {
+        last_conversion = co_await convert(1);
+        conversion_stop = last_conversion->frontier().value().stop;
     }
-    const reconcilable_result reconciled(row_count, std::move(partitions), query::short_read::no);
-    rplogger.trace("reconciled: {}", reconciled.pretty_printer(_schema));
-    auto result = co_await to_data_query_result(reconciled, _schema, _cmd->slice, _cmd->get_row_limit(), _cmd->partition_limit);
 
     // The conversion stops at the end of a partition when it reaches the
     // partition limit there. If E lies inside that partition, the rest of the
     // partition may hold more rows of the page, so the limits did not end it.
-    auto conversion_stop = result.frontier().value().stop;
     if (conversion_stop && end && conversion_stop->position.region() == partition_region::partition_end
             && end->position.region() != partition_region::partition_end && conversion_stop->partition.equal(s, end->partition)) {
         conversion_stop.reset();
     }
-    result.set_frontier(std::nullopt);
 
+    bool short_page = false;
+    std::optional<full_position> page_cursor;
     if (conversion_stop) {
-        result.set_last_position(cursor_of(std::move(*conversion_stop)));
+        page_cursor = cursor_of(std::move(*conversion_stop));
     } else if (end) {
         // The next round starts at E. With a cursor inside a partition, it
         // reads the rest of the partition's clustering ranges.
@@ -1025,8 +1089,8 @@ future<std::optional<accepted_mutation_page>> frontier_reconciliation::add_round
             // Nothing of the range remains after E, so the page reached the
             // end of the range.
         } else if (_cmd->slice.options.contains<query::partition_slice::option::allow_short_read>()) {
-            result.set_short_read(query::short_read::yes);
-            result.set_last_position(cursor_of(*end));
+            short_page = true;
+            page_cursor = cursor_of(*end);
         } else {
             if (_round_start && full_position::cmp(s, *end, *_round_start) <= 0) {
                 on_internal_error(rplogger, fmt::format("A reconciliation round of {}.{} did not move past its start {}",
@@ -1040,8 +1104,24 @@ future<std::optional<accepted_mutation_page>> frontier_reconciliation::add_round
                 _round_cmd->slice.set_range(s, end->partition, std::move(*ranges));
             }
             prepare_mutation_read(*_round_cmd, true);
+            // The next round converts the last partition again. Keep only its
+            // live data, so that it does not grow with the rounds.
+            if (!_reconciled.empty()) {
+                drop_dead_data(_reconciled.back());
+            }
             co_return std::nullopt;
         }
+    }
+
+    if (last_conversion) {
+        keep(std::move(*last_conversion));
+    }
+    auto result = converted_page();
+    if (short_page) {
+        result.set_short_read(query::short_read::yes);
+    }
+    if (page_cursor) {
+        result.set_last_position(std::move(*page_cursor));
     }
 
     // Drop the partitions without diffs. Un-reverse the diffs of reversed
