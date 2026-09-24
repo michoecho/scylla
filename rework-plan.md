@@ -311,3 +311,12 @@ Known gaps, which could hide defects:
     costs stay described in the commit messages. One of them is to be fixed:
     frontier_reconciliation converts the data of all rounds in every round,
     so a read with k rounds does work quadratic in k. See the handoff.
+- The quadratic cost of frontier_reconciliation is fixed in commit
+  `73fb9e4d10`. Each partition is converted once, when it becomes final.
+  Only the last partition is converted in every round, and between rounds
+  it keeps only its live data, fewer rows than the row limit. So a round's
+  work is proportional to the data which it read. The new
+  `test_frontier_reconciliation_over_many_rounds` covers reads of many
+  rounds. The fixed tests of `paged_read_test` and
+  `read_page_resolution_test` pass, and on 200000 runs of `test_general`
+  with each of seeds 1, 2 and 3, no run fails.
