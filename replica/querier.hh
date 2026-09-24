@@ -11,6 +11,7 @@
 #include <seastar/util/closeable.hh>
 
 #include "mutation/mutation_compactor.hh"
+#include "query/query-result.hh"
 #include "reader_concurrency_semaphore.hh"
 #include "readers/mutation_source.hh"
 #include "keys/full_position.hh"
@@ -18,6 +19,8 @@
 #include <boost/intrusive/set.hpp>
 
 #include <variant>
+
+class reconcilable_result;
 
 namespace replica {
 
@@ -212,6 +215,63 @@ public:
         return full_position_view(dk->key(), _compaction_state->current_position());
     }
 };
+
+/// Reads one page of a data query from `source`.
+///
+/// Reads `ranges` in order, with a new querier for each range, until the page
+/// reaches its limits or stops short. A short page is one which stopped early
+/// on a size or tombstone limit.
+///
+/// The result's last position is the position of the last fragment which the
+/// querier that read last consumed. It is set whenever that querier entered a
+/// partition, also when the page read its ranges to the end. So it tells where
+/// the reader is, not whether the page stopped before the end of its ranges.
+///
+/// `saved_querier` is an input and an output. On input, it holds the querier
+/// which the previous page saved, if any. That querier reads the first range.
+/// On output, it holds the querier to save for the next page, if any. Pass
+/// nullptr when queriers are not saved.
+///
+/// `before_new_querier`, if set, is awaited with the range of each new querier
+/// before the querier is created. replica::table uses it to wait for a tablet
+/// truncate. A saved querier does not wait.
+///
+/// The command's limits must be positive. The caller creates `accounter`, and
+/// handles admission, gates and metrics. replica::table::query() and tests
+/// use this function.
+future<lw_shared_ptr<query::result>> read_data_page(mutation_source source,
+        schema_ptr query_schema,
+        reader_permit permit,
+        const query::read_command& cmd,
+        query::result_options opts,
+        const dht::partition_range_vector& ranges,
+        tracing::trace_state_ptr trace_state,
+        query::result_memory_accounter accounter,
+        tombstone_gc_state gc_state,
+        querier_base::querier_config config,
+        std::optional<querier>* saved_querier,
+        std::function<future<>(const dht::partition_range&)> before_new_querier = {});
+
+/// Reads one page of a mutation query of `range` from `source`.
+///
+/// A mutation page holds the replica's data with its tombstones, which the
+/// coordinator merges with other replicas' pages to reconcile them. Unlike a
+/// data page, it carries no last position.
+///
+/// See read_data_page() for `saved_querier`, `before_new_querier` and the
+/// requirements. The saved querier reads `range`. replica::table::mutation_query() and tests use this
+/// function.
+future<reconcilable_result> read_mutation_page(mutation_source source,
+        schema_ptr query_schema,
+        reader_permit permit,
+        const query::read_command& cmd,
+        const dht::partition_range& range,
+        tracing::trace_state_ptr trace_state,
+        query::result_memory_accounter accounter,
+        tombstone_gc_state gc_state,
+        querier_base::querier_config config,
+        std::optional<querier>* saved_querier,
+        std::function<future<>(const dht::partition_range&)> before_new_querier = {});
 
 /// Local state of a multishard query.
 ///

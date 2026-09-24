@@ -7,9 +7,14 @@
  */
 
 #include <seastar/core/coroutine.hh>
+#include <seastar/coroutine/as_future.hh>
+#include <seastar/coroutine/exception.hh>
 
 #include "replica/querier.hh"
+#include "replica/query_state.hh"
 #include "dht/i_partitioner.hh"
+#include "mutation_query.hh"
+#include "query/query-result-writer.hh"
 #include "reader_concurrency_semaphore.hh"
 #include "schema/schema.hh"
 #include "utils/log.hh"
@@ -492,6 +497,108 @@ future<> querier_cache::stop() noexcept {
             --_stats.population;
         }
     }
+}
+
+future<lw_shared_ptr<query::result>> read_data_page(mutation_source source,
+        schema_ptr query_schema,
+        reader_permit permit,
+        const query::read_command& cmd,
+        query::result_options opts,
+        const dht::partition_range_vector& ranges,
+        tracing::trace_state_ptr trace_state,
+        query::result_memory_accounter accounter,
+        tombstone_gc_state gc_state,
+        querier_base::querier_config config,
+        std::optional<querier>* saved_querier,
+        std::function<future<>(const dht::partition_range&)> before_new_querier) {
+    query_state qs(query_schema, cmd, opts, ranges, std::move(accounter));
+
+    std::optional<querier> querier_opt;
+    if (saved_querier) {
+        querier_opt = std::move(*saved_querier);
+    }
+
+    while (!qs.done()) {
+        auto&& range = *qs.current_partition_range++;
+
+        if (!querier_opt) {
+            if (before_new_querier) {
+                co_await before_new_querier(range);
+            }
+            querier_opt = querier(source, query_schema, permit, range, qs.cmd.slice, trace_state, gc_state, config);
+        }
+        auto& q = *querier_opt;
+
+        future<> fut = co_await coroutine::as_future(q.consume_page(query_result_builder(*query_schema, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, trace_state));
+
+        if (fut.failed() || !qs.done()) {
+            co_await q.close();
+            querier_opt = {};
+        }
+        if (fut.failed()) {
+            co_return coroutine::exception(fut.get_exception());
+        }
+    }
+
+    std::optional<full_position> last_pos;
+    if (querier_opt) {
+        if (querier_opt->current_position()) {
+            last_pos.emplace(*querier_opt->current_position());
+        }
+        if (!saved_querier || (!querier_opt->are_limits_reached() && !qs.builder.is_short_read())) {
+            co_await querier_opt->close();
+            querier_opt = {};
+        }
+    }
+    if (saved_querier) {
+        *saved_querier = std::move(querier_opt);
+    }
+
+    co_return make_lw_shared<query::result>(qs.builder.build(std::move(last_pos)));
+}
+
+future<reconcilable_result> read_mutation_page(mutation_source source,
+        schema_ptr query_schema,
+        reader_permit permit,
+        const query::read_command& cmd,
+        const dht::partition_range& range,
+        tracing::trace_state_ptr trace_state,
+        query::result_memory_accounter accounter,
+        tombstone_gc_state gc_state,
+        querier_base::querier_config config,
+        std::optional<querier>* saved_querier,
+        std::function<future<>(const dht::partition_range&)> before_new_querier) {
+    std::optional<querier> querier_opt;
+    if (saved_querier) {
+        querier_opt = std::move(*saved_querier);
+    }
+    if (!querier_opt) {
+        if (before_new_querier) {
+            co_await before_new_querier(range);
+        }
+        querier_opt = querier(source, query_schema, permit, range, cmd.slice, trace_state, gc_state, config);
+    }
+    auto& q = *querier_opt;
+
+    std::exception_ptr ex;
+  try {
+    auto rrb = reconcilable_result_builder(*query_schema, cmd.slice, std::move(accounter));
+    auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, trace_state);
+
+    if (!saved_querier || (!q.are_limits_reached() && !r.is_short_read())) {
+        co_await q.close();
+        querier_opt = {};
+    }
+    if (saved_querier) {
+        *saved_querier = std::move(querier_opt);
+    }
+
+    co_return r;
+  } catch (...) {
+    ex = std::current_exception();
+  }
+    co_await q.close();
+    co_return coroutine::exception(std::move(ex));
 }
 
 } // namespace replica

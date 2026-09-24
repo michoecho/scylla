@@ -26,7 +26,6 @@
 #include "replica/compaction_group.hh"
 #include "replica/logstor/compaction.hh"
 #include "replica/logstor/types.hh"
-#include "replica/query_state.hh"
 #include "sstables/shared_sstable.hh"
 #include "sstables/sstable_set.hh"
 #include "sstables/sstables.hh"
@@ -5128,13 +5127,6 @@ table::query(schema_ptr query_schema,
              ? memory_limiter.new_digest_read(permit.max_result_size(), short_read_allowed)
              : memory_limiter.new_data_read(permit.max_result_size(), short_read_allowed));
 
-    query_state qs(query_schema, cmd, opts, partition_ranges, std::move(accounter));
-
-    std::optional<querier> querier_opt;
-    if (saved_querier) {
-        querier_opt = std::move(*saved_querier);
-    }
-
     co_await utils::get_local_injector().inject("replica_query_wait", [&] (auto& handler) -> future<> {
         auto table_name = handler.template get<std::string_view>("table");
         if (table_name && *table_name == _schema->cf_name()) {
@@ -5143,42 +5135,14 @@ table::query(schema_ptr query_schema,
         }
     });
 
-    while (!qs.done()) {
-        auto&& range = *qs.current_partition_range++;
-
-        if (!querier_opt) {
-            co_await wait_for_tablet_truncate(range);
-            querier_base::querier_config conf(_config.tombstone_warn_threshold);
-            querier_opt = querier(as_mutation_source(), query_schema, permit, range, qs.cmd.slice, trace_state, get_tombstone_gc_state(), conf);
-        }
-        auto& q = *querier_opt;
-
-        future<> fut = co_await coroutine::as_future(q.consume_page(query_result_builder(*query_schema, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, trace_state));
-
-        if (fut.failed() || !qs.done()) {
-            co_await q.close();
-            querier_opt = {};
-        }
-        if (fut.failed()) {
-            co_return coroutine::exception(fut.get_exception());
-        }
+    querier_base::querier_config conf(_config.tombstone_warn_threshold);
+    auto fut = co_await coroutine::as_future(read_data_page(as_mutation_source(), std::move(query_schema), std::move(permit), cmd, opts,
+            partition_ranges, std::move(trace_state), std::move(accounter), get_tombstone_gc_state(), conf, saved_querier,
+            [this] (const dht::partition_range& pr) { return wait_for_tablet_truncate(pr); }));
+    if (fut.failed()) {
+        co_return coroutine::exception(fut.get_exception());
     }
-
-    std::optional<full_position> last_pos;
-    if (querier_opt) {
-        if (querier_opt->current_position()) {
-            last_pos.emplace(*querier_opt->current_position());
-        }
-        if (!saved_querier || (!querier_opt->are_limits_reached() && !qs.builder.is_short_read())) {
-            co_await querier_opt->close();
-            querier_opt = {};
-        }
-    }
-    if (saved_querier) {
-        *saved_querier = std::move(querier_opt);
-    }
-
-    co_return make_lw_shared<query::result>(qs.builder.build(std::move(last_pos)));
+    co_return fut.get();
 }
 
 future<reconcilable_result>
@@ -5197,37 +5161,15 @@ table::mutation_query(schema_ptr query_schema,
 
     const auto table_async_gate_holder = _async_gate.hold();
 
-    std::optional<querier> querier_opt;
-    if (saved_querier) {
-        querier_opt = std::move(*saved_querier);
+    auto gc_state = tombstone_gc_enabled ? get_tombstone_gc_state() : tombstone_gc_state::no_gc();
+    querier_base::querier_config conf(_config.tombstone_warn_threshold);
+    auto fut = co_await coroutine::as_future(read_mutation_page(as_mutation_source(), std::move(query_schema), std::move(permit), cmd, range,
+            std::move(trace_state), std::move(accounter), gc_state, conf, saved_querier,
+            [this] (const dht::partition_range& pr) { return wait_for_tablet_truncate(pr); }));
+    if (fut.failed()) {
+        co_return coroutine::exception(fut.get_exception());
     }
-    if (!querier_opt) {
-        co_await wait_for_tablet_truncate(range);
-        auto tombstone_gc_state = tombstone_gc_enabled ? get_tombstone_gc_state() : tombstone_gc_state::no_gc();
-        querier_base::querier_config conf(_config.tombstone_warn_threshold);
-        querier_opt = querier(as_mutation_source(), query_schema, permit, range, cmd.slice, trace_state, tombstone_gc_state, conf);
-    }
-    auto& q = *querier_opt;
-
-    std::exception_ptr ex;
-  try {
-    auto rrb = reconcilable_result_builder(*query_schema, cmd.slice, std::move(accounter));
-    auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, trace_state);
-
-    if (!saved_querier || (!q.are_limits_reached() && !r.is_short_read())) {
-        co_await q.close();
-        querier_opt = {};
-    }
-    if (saved_querier) {
-        *saved_querier = std::move(querier_opt);
-    }
-
-    co_return r;
-  } catch (...) {
-    ex = std::current_exception();
-  }
-    co_await q.close();
-    co_return coroutine::exception(std::move(ex));
+    co_return fut.get();
 }
 
 mutation_source
