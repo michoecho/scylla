@@ -303,12 +303,11 @@ public:
 };
 
 // The number of live rows which a read takes from each partition. A DISTINCT
-// query takes one row from each partition, unless its slice sets a
-// per-partition row limit, which then applies instead. CQL rejects PER
-// PARTITION LIMIT with DISTINCT, so the slice of a DISTINCT statement sets
-// none. A coordinator can set one to ask for more rows of a partition.
+// query takes one row from each partition, whatever per-partition row limit
+// its slice sets. The filtering pager sets that limit to the page size also
+// for a DISTINCT query, and coordinators of older versions send such slices.
 inline uint64_t effective_partition_row_limit(const partition_slice& slice) {
-    if (slice.options.contains<partition_slice::option::distinct>() && slice.partition_row_limit() == partition_max_rows) {
+    if (slice.options.contains<partition_slice::option::distinct>()) {
         return 1;
     }
     return slice.partition_row_limit();

@@ -1265,12 +1265,11 @@ void compare_producers(cql_test_env& env, bool tablets) {
     cases.push_back({"distinct", make_command(*s, partition_slice_builder(*s).with_option<query::partition_slice::option::distinct>().build(),
             query::max_rows), full_range, {{p, 1, 10 * p + 1}, {q, 1, 10 * q + 1}}, query::short_read::no, std::nullopt,
             row_position(*s, q, 1), first_rows});
-    // A per-partition limit in the slice of a DISTINCT query applies instead
-    // of the limit of one.
+    // A per-partition limit in the slice of a DISTINCT query does not change
+    // its limit of one. The filtering pager sets such a limit.
     cases.push_back({"distinct with a per-partition limit", make_command(*s, partition_slice_builder(*s)
             .with_option<query::partition_slice::option::distinct>().with_partition_row_limit(2).build(), query::max_rows), full_range,
-            all_rows, query::short_read::no, std::nullopt, row_position(*s, q, 2),
-            frontier_and_skips{query::read_frontier::end(), {after_row(*s, p, 2), after_row(*s, q, 2)}}});
+            {{p, 1, 10 * p + 1}, {q, 1, 10 * q + 1}}, query::short_read::no, std::nullopt, row_position(*s, q, 1), first_rows});
     // The page driver reads the second range with a new querier. That
     // querier consumes nothing, so it has no position.
     cases.push_back({"empty last range", make_command(*s, full_slice, query::max_rows), split_ranges, all_rows, query::short_read::no,
