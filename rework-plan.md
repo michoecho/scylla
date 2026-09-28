@@ -242,8 +242,8 @@ Known gaps, which could hide defects:
 - A: commits `0b38bbbed6` and `a19b0d17e5`. Replicas report
   `query::read_frontier` in every reply, and the harness checks it against a
   read of what it covers. No coordinator uses it yet. The DISTINCT limit
-  gives way to an explicit per-partition limit in the slice, but
-  `select_statement` does not set one yet.
+  stays one, whatever per-partition limit the slice sets, because the
+  filtering pager and older coordinators send such limits.
 - Known cost of A: the skips list one position per partition which a read
   left at the per-partition limit, so a scan with PER PARTITION LIMIT sends
   about one more key per partition.
