@@ -108,6 +108,8 @@ using replicas_per_token_range = std::unordered_map<dht::token_range, std::vecto
 struct query_partition_key_range_concurrent_result {
     std::vector<foreign_ptr<lw_shared_ptr<query::result>>> result;
     replicas_per_token_range replicas;
+    // See storage_proxy_coordinator_query_result.
+    std::optional<uint8_t> reconciliation_limit_exponent;
 };
 
 struct view_update_backlog_timestamped {
@@ -132,6 +134,10 @@ public:
     replicas_per_token_range preferred_replicas;
     std::optional<db::read_repair_decision> read_repair_decision;
     node_local_only node_local_only;
+    // The exponent of the per-partition row limit of the reconciliation
+    // rounds, see frontier_reconciliation and
+    // service::pager::paging_state::get_reconciliation_limit_exponent().
+    uint8_t reconciliation_limit_exponent;
 
     storage_proxy_coordinator_query_options(storage_proxy_clock_type::time_point timeout,
             service_permit permit_,
@@ -139,14 +145,16 @@ public:
             tracing::trace_state_ptr trace_state = nullptr,
             replicas_per_token_range preferred_replicas = { },
             std::optional<db::read_repair_decision> read_repair_decision = { },
-            service::node_local_only node_local_only_ = service::node_local_only::no)
+            service::node_local_only node_local_only_ = service::node_local_only::no,
+            uint8_t reconciliation_limit_exponent = 0)
         : _timeout(timeout)
         , permit(std::move(permit_))
         , cstate(client_state_)
         , trace_state(std::move(trace_state))
         , preferred_replicas(std::move(preferred_replicas))
         , read_repair_decision(read_repair_decision)
-        , node_local_only(node_local_only_) {
+        , node_local_only(node_local_only_)
+        , reconciliation_limit_exponent(reconciliation_limit_exponent) {
     }
 
     storage_proxy_clock_type::time_point timeout(storage_proxy& sp) const {
@@ -164,6 +172,12 @@ struct storage_proxy_coordinator_query_result {
     // row after the cursor may cancel it. See
     // service::pager::paging_state::get_partition_row_pending().
     bool rows_decided_before_cursor = false;
+    // The exponent of the per-partition row limit which the reconciliations
+    // of the page suggest for the next page: the largest suggestion of the
+    // page's reads. nullopt if no read suggested one, and the next page
+    // keeps the exponent of this page. See
+    // frontier_reconciliation::suggested_limit_exponent().
+    std::optional<uint8_t> reconciliation_limit_exponent;
 
     storage_proxy_coordinator_query_result(foreign_ptr<lw_shared_ptr<query::result>> query_result,
             replicas_per_token_range last_replicas = {},
@@ -471,7 +485,8 @@ private:
             uint32_t remaining_partition_count,
             replicas_per_token_range preferred_replicas,
             service_permit permit,
-            node_local_only node_local_only);
+            node_local_only node_local_only,
+            uint8_t reconciliation_limit_exponent);
 
     future<result<coordinator_query_result>> do_query(schema_ptr,
         lw_shared_ptr<query::read_command> cmd,

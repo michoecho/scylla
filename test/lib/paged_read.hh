@@ -170,6 +170,12 @@ struct read_options {
     // because a cached querier keeps reading the contents from before the
     // repair.
     bool apply_repairs = false;
+    // The exponent of the reconciliations' per-partition row limit which the
+    // client puts into the first paging state that it sends back, instead
+    // of the coordinator's, like a client which forges its paging state. See
+    // service::pager::paging_state::get_reconciliation_limit_exponent().
+    // nullopt sends the paging state as it is.
+    std::optional<uint8_t> forged_limit_exponent;
     // Seeds the schedule, which is the set of random choices of the
     // coordinator. For the whole query, the seed chooses:
     // - up to 4 vnode boundaries at which a scan splits;

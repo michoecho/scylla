@@ -51,6 +51,10 @@ private:
     // and it defaults to false.
     bool _partition_row_pending = false;
 
+    // See get_reconciliation_limit_exponent(). Older versions do not write
+    // the field, and it defaults to 0.
+    uint8_t _reconciliation_limit_exponent = 0;
+
 public:
     // IDL ctor
     paging_state(partition_key pk,
@@ -65,7 +69,8 @@ public:
             bound_weight ck_weight,
             partition_region region,
             std::optional<query_plan> plan,
-            bool partition_row_pending = false);
+            bool partition_row_pending = false,
+            uint8_t reconciliation_limit_exponent = 0);
 
     paging_state(partition_key pk,
             position_in_partition_view pos,
@@ -75,7 +80,8 @@ public:
             std::optional<db::read_repair_decision> query_read_repair_decision,
             uint64_t rows_fetched_for_last_partition,
             std::optional<query_plan> plan,
-            bool partition_row_pending = false);
+            bool partition_row_pending = false,
+            uint8_t reconciliation_limit_exponent = 0);
 
     // The row of the new partition is not pending.
     void set_partition_key(partition_key pk) {
@@ -214,6 +220,21 @@ public:
      */
     bool get_partition_row_pending() const {
         return _partition_row_pending;
+    }
+
+    /**
+     * The exponent k of the per-partition row limit which the next page
+     * sends to the replicas in the rounds of a reconciliation: the query's
+     * limit times 2 to the power k. Only the reconciliation's mutation reads
+     * use it, and the page still applies the query's limit, so any value
+     * gives a correct page. See service::frontier_reconciliation.
+     *
+     * The value comes from the client, so the coordinator clamps it.
+     * Only a coordinator with the READ_FRONTIERS cluster feature uses it. An
+     * older coordinator drops it, which resets the limit to the query's.
+     */
+    uint8_t get_reconciliation_limit_exponent() const {
+        return _reconciliation_limit_exponent;
     }
 
     static lw_shared_ptr<const paging_state> deserialize(bytes_opt bytes);

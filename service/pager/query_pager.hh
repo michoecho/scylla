@@ -87,6 +87,8 @@ protected:
     uint64_t _rows_fetched_for_last_partition = 0;
     // See paging_state::get_partition_row_pending().
     bool _partition_row_pending = false;
+    // See paging_state::get_reconciliation_limit_exponent().
+    uint8_t _reconciliation_limit_exponent = 0;
     // Whether the query itself asks for static content of partitions
     // without rows. A page which continues a pending partition asks for it
     // too.

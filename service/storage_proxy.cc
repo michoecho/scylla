@@ -5159,6 +5159,8 @@ protected:
     lw_shared_ptr<replica::column_family> _cf;
     service_permit _permit; // holds admission permit until operation completes
     db::per_partition_rate_limit::info _rate_limit_info;
+    uint8_t _reconciliation_limit_exponent = 0;
+    std::optional<uint8_t> _suggested_reconciliation_limit_exponent;
 
 private:
     void on_read_resolved() noexcept {
@@ -5196,6 +5198,20 @@ public:
     /// execute()'s future is ready.
     host_id_vector_replica_set used_targets() const {
         return _used_targets;
+    }
+
+    // Sets the exponent of the per-partition row limit of the
+    // reconciliation rounds. Call before execute().
+    void set_reconciliation_limit_exponent(uint8_t exponent) {
+        _reconciliation_limit_exponent = exponent;
+    }
+
+    // The exponent which the reconciliation of the page suggests, see
+    // frontier_reconciliation::suggested_limit_exponent(). nullopt if the
+    // page needed no reconciliation. Call only after execute()'s future is
+    // ready.
+    std::optional<uint8_t> suggested_reconciliation_limit_exponent() const {
+        return _suggested_reconciliation_limit_exponent;
     }
 
 protected:
@@ -5412,6 +5428,7 @@ protected:
                 }
                 auto page = co_await reconciliation->add_round(data_resolver->take_replies());
                 if (page) {
+                    _suggested_reconciliation_limit_exponent = reconciliation->suggested_limit_exponent();
                     accept_reconciled_page(std::move(*page), std::move(exec));
                 } else {
                     tracing::trace(_trace_state, "The replies do not decide the page, reading another round for read-repair");
@@ -5471,7 +5488,8 @@ protected:
     }
     void reconcile(db::consistency_level cl, storage_proxy::clock_type::time_point timeout) {
         if (_read_frontiers) {
-            reconcile_by_frontiers(cl, timeout, make_lw_shared<frontier_reconciliation>(_schema, _cmd, _partition_range));
+            reconcile_by_frontiers(cl, timeout, make_lw_shared<frontier_reconciliation>(_schema, _cmd, _partition_range,
+                    _reconciliation_limit_exponent));
         } else {
             reconcile(cl, timeout, _cmd);
         }
@@ -5889,6 +5907,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
         if (!r_read_executor) {
             co_return std::move(r_read_executor).as_failure();
         }
+        r_read_executor.value()->set_reconciliation_limit_exponent(query_options.reconciliation_limit_exponent);
 
         exec.emplace_back(r_read_executor.value(), std::move(token_range));
     }
@@ -5897,6 +5916,9 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
     }
 
     replicas_per_token_range used_replicas;
+    // The largest suggestion of the reads. An engaged optional compares
+    // greater than nullopt.
+    std::optional<uint8_t> reconciliation_limit_exponent;
 
     // keeps sp alive for the co-routine lifetime
     auto p = shared_from_this();
@@ -5913,6 +5935,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
         auto handle_completion = [&] (std::pair<::shared_ptr<abstract_read_executor>, dht::token_range>& executor_and_token_range) {
                 auto& [rex, token_range] = executor_and_token_range;
                 used_replicas.emplace(std::move(token_range), rex->used_targets() | std::ranges::to<std::vector<locator::host_id>>());
+                reconciliation_limit_exponent = std::max(reconciliation_limit_exponent, rex->suggested_reconciliation_limit_exponent());
                 auto latency = rex->max_request_latency();
                 if (latency) {
                     rex->get_cf()->add_coordinator_read_latency(*latency);
@@ -5954,6 +5977,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
     // The executors decide by frontiers if the command asks for them. See
     // do_query().
     qr.rows_decided_before_cursor = cmd->slice.options.contains<query::partition_slice::option::send_read_frontier>();
+    qr.reconciliation_limit_exponent = reconciliation_limit_exponent;
     co_return qr;
 }
 
@@ -5995,8 +6019,11 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
         uint32_t remaining_partition_count,
         replicas_per_token_range preferred_replicas,
         service_permit permit,
-        node_local_only node_local_only) {
+        node_local_only node_local_only,
+        uint8_t reconciliation_limit_exponent) {
     std::vector<foreign_ptr<lw_shared_ptr<query::result>>> results;
+    // The largest suggestion of the reads, see query_singular().
+    std::optional<uint8_t> suggested_reconciliation_limit_exponent;
     schema_ptr schema = local_schema_registry().get(cmd->schema_version);
     auto p = shared_from_this();
     auto cf = _db.local().find_column_family(schema).shared_from_this();
@@ -6153,6 +6180,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
             }
 
             exec.push_back(::make_shared<never_speculating_read_executor>(schema, cf, p, erm, cmd, std::move(range), cl, std::move(filtered_endpoints), trace_state, permit, std::monostate()));
+            exec.back()->set_reconciliation_limit_exponent(reconciliation_limit_exponent);
             ranges_per_exec.emplace(exec.back().get(), std::move(merged_ranges));
         }
 
@@ -6170,6 +6198,9 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
         }
 
         foreign_ptr<lw_shared_ptr<query::result>> result = std::move(wrapped_result).value();
+        for (auto& e : exec) {
+            suggested_reconciliation_limit_exponent = std::max(suggested_reconciliation_limit_exponent, e->suggested_reconciliation_limit_exponent());
+        }
         result->ensure_counts();
         remaining_row_count -= result->row_count().value();
         remaining_partition_count -= result->partition_count().value();
@@ -6186,7 +6217,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
                     used_replicas.emplace(std::move(r), e->used_targets() | std::ranges::to<std::vector<locator::host_id>>());
                 }
             }
-            co_return query_partition_key_range_concurrent_result{std::move(results), std::move(used_replicas)};
+            co_return query_partition_key_range_concurrent_result{std::move(results), std::move(used_replicas), suggested_reconciliation_limit_exponent};
         } else {
             cmd->set_row_limit(remaining_row_count);
             cmd->partition_limit = remaining_partition_count;
@@ -6240,7 +6271,8 @@ storage_proxy::query_partition_key_range(lw_shared_ptr<query::read_command> cmd,
             cmd->partition_limit,
             std::move(query_options.preferred_replicas),
             std::move(query_options.permit),
-            query_options.node_local_only);
+            query_options.node_local_only,
+            query_options.reconciliation_limit_exponent);
 
     if (!wrapped_result) {
         co_return bo::failure(std::move(wrapped_result).assume_error());
@@ -6260,6 +6292,7 @@ storage_proxy::query_partition_key_range(lw_shared_ptr<query::read_command> cmd,
     coordinator_query_result qr(merger.get(), std::move(used_replicas));
     // See query_singular().
     qr.rows_decided_before_cursor = cmd->slice.options.contains<query::partition_slice::option::send_read_frontier>();
+    qr.reconciliation_limit_exponent = query_result.reconciliation_limit_exponent;
     co_return qr;
 }
 
