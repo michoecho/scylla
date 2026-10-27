@@ -11,8 +11,6 @@
 #include <compare>
 #include <cstdint>
 #include <optional>
-#include <utility>
-#include <variant>
 #include <fmt/format.h>
 
 #include "utils/assert.hh"
@@ -20,6 +18,21 @@
 namespace sstables {
 
 class sstable_position_offset;
+
+namespace detail {
+
+// The extent_hint of an encoded logical position or offset. See sstable_position.
+constexpr int32_t logical_marker = -1;
+
+// Kind checks are compiled out of release builds. These operations are on the
+// hot path of the sstable reader.
+inline void debug_check_position_kind([[maybe_unused]] bool ok) noexcept {
+#ifndef SCYLLA_BUILD_MODE_RELEASE
+    SCYLLA_ASSERT(ok);
+#endif
+}
+
+} // namespace detail
 
 // A position in an sstable data file. A logical position is an offset in the
 // uncompressed data. A physical position identifies a compression chunk and an
@@ -34,14 +47,14 @@ class sstable_position_offset;
 // size). Ordering and equality compare the chunk position first and the offset
 // within the chunk second. Thus, they are correct only for positions in this
 // normal form.
+//
+// Both position types share one representation, so that the operations don't
+// have to branch on the type. A logical position `v` is encoded as the physical
+// position (chunk_position=v, extent_hint=-1, offset_within_chunk=0). With this
+// encoding, the physical ordering and arithmetic are also correct for logical
+// positions. A physical position never has a negative extent_hint, so the -1
+// identifies logical positions. The checks that use it run only in debug builds.
 class sstable_position {
-    // Used by uncompressed and logically indexed sstables.
-    struct logical {
-        int64_t value;
-        auto operator<=>(const logical&) const = default;
-        bool operator==(const logical&) const = default;
-    };
-
     // Used by physically indexed compressed sstables.
     struct physical {
         // Start position of the chunk within the file.
@@ -63,15 +76,24 @@ class sstable_position {
         // - After the chunk is loaded: the exact extent.
         //
         // This field does not participate in position ordering.
-        int64_t extent_hint;
+        //
+        // In an encoded logical position, this field is detail::logical_marker
+        // instead (see the class comment).
+        //
+        // This field and offset_within_chunk are bounded by the size of a
+        // compression chunk, so 32 bits are enough.
+        int32_t extent_hint;
         // Offset of this position within the chunk after decompression.
-        int64_t offset_within_chunk;
+        int32_t offset_within_chunk;
     };
 
-    std::variant<logical, physical> _value;
+    physical _value;
 
-    explicit sstable_position(logical v) noexcept : _value(v) {}
     explicit sstable_position(physical v) noexcept : _value(v) {}
+
+    bool same_kind(const sstable_position& other) const noexcept {
+        return is_physical() == other.is_physical();
+    }
 public:
     sstable_position(const sstable_position&) = default;
     sstable_position& operator=(const sstable_position&) = default;
@@ -79,41 +101,37 @@ public:
     // The ordering is weak: extent_hint does not take part in it, so equal
     // positions can have different hints.
     std::weak_ordering operator<=>(const sstable_position& other) const noexcept {
-        SCYLLA_ASSERT(_value.index() == other._value.index());
-        if (auto* a = std::get_if<logical>(&_value)) {
-            auto* b = std::get_if<logical>(&other._value);
-            return a->value <=> b->value;
-        }
-        auto* a = std::get_if<physical>(&_value);
-        auto* b = std::get_if<physical>(&other._value);
-        if (auto cmp = a->chunk_position <=> b->chunk_position; cmp != 0) {
+        detail::debug_check_position_kind(same_kind(other));
+        if (auto cmp = _value.chunk_position <=> other._value.chunk_position; cmp != 0) {
             return cmp;
         }
-        return a->offset_within_chunk <=> b->offset_within_chunk;
+        return _value.offset_within_chunk <=> other._value.offset_within_chunk;
     }
     bool operator==(const sstable_position& other) const noexcept {
         return (*this <=> other) == 0;
     }
     static sstable_position from_logical(int64_t v) noexcept {
-        return sstable_position(logical{v});
+        return sstable_position(physical{v, detail::logical_marker, 0});
     }
-    static sstable_position from_physical(int64_t chunk_position, int64_t extent_hint, int64_t offset_within_chunk) noexcept {
+    static sstable_position from_physical(int64_t chunk_position, int32_t extent_hint, int32_t offset_within_chunk) noexcept {
+        detail::debug_check_position_kind(extent_hint >= 0);
         return sstable_position(physical{chunk_position, extent_hint, offset_within_chunk});
     }
 
     bool is_physical() const noexcept {
-        return std::holds_alternative<physical>(_value);
+        return _value.extent_hint != detail::logical_marker;
     }
-    const physical& as_physical() const {
-        SCYLLA_ASSERT(std::holds_alternative<physical>(_value));
-        return std::get<physical>(_value);
+    const physical& as_physical() const noexcept {
+        detail::debug_check_position_kind(is_physical());
+        return _value;
     }
-    physical& as_physical() {
-        return const_cast<physical&>(std::as_const(*this).as_physical());
+    physical& as_physical() noexcept {
+        detail::debug_check_position_kind(is_physical());
+        return _value;
     }
     int64_t to_logical() const noexcept {
-        SCYLLA_ASSERT(std::holds_alternative<logical>(_value));
-        return std::get<logical>(_value).value;
+        detail::debug_check_position_kind(!is_physical());
+        return _value.chunk_position;
     }
 
     friend sstable_position operator+(sstable_position pos, sstable_position_offset off) noexcept;
@@ -140,44 +158,46 @@ struct disk_read_range {
 // A logical offset is a plain difference of offsets. In a physical offset, only
 // chunk_position is relative. extent_hint and offset_within_chunk are
 // copied unchanged from the absolute position (see operator+ and operator-).
+//
+// The encoding of logical offsets is the same as in sstable_position. The
+// physical arithmetic then also computes the logical result.
 class sstable_position_offset {
-    struct logical {
-        int64_t value;
-    };
     struct physical {
         int64_t chunk_position;
-        int64_t extent_hint;
-        int64_t offset_within_chunk;
+        // detail::logical_marker in an encoded logical offset.
+        int32_t extent_hint;
+        int32_t offset_within_chunk;
     };
 
-    std::variant<logical, physical> _value;
+    physical _value;
 
-    explicit sstable_position_offset(logical v) noexcept : _value(v) {}
     explicit sstable_position_offset(physical v) noexcept : _value(v) {}
 public:
     sstable_position_offset(const sstable_position_offset&) = default;
     sstable_position_offset& operator=(const sstable_position_offset&) = default;
 
     static sstable_position_offset from_logical(int64_t v) noexcept {
-        return sstable_position_offset(logical{v});
+        return sstable_position_offset(physical{v, detail::logical_marker, 0});
     }
-    static sstable_position_offset from_physical(int64_t chunk_position, int64_t extent_hint, int64_t offset_within_chunk) noexcept {
+    static sstable_position_offset from_physical(int64_t chunk_position, int32_t extent_hint, int32_t offset_within_chunk) noexcept {
+        detail::debug_check_position_kind(extent_hint >= 0);
         return sstable_position_offset(physical{chunk_position, extent_hint, offset_within_chunk});
     }
     int64_t to_logical() const noexcept {
-        SCYLLA_ASSERT(std::holds_alternative<logical>(_value));
-        return std::get<logical>(_value).value;
+        detail::debug_check_position_kind(!holds_physical());
+        return _value.chunk_position;
     }
     bool holds_physical() const noexcept {
-        return std::holds_alternative<physical>(_value);
+        return _value.extent_hint != detail::logical_marker;
     }
 
-    const physical& as_physical() const {
-        SCYLLA_ASSERT(std::holds_alternative<physical>(_value));
-        return std::get<physical>(_value);
+    const physical& as_physical() const noexcept {
+        detail::debug_check_position_kind(holds_physical());
+        return _value;
     }
-    physical& as_physical() {
-        return const_cast<physical&>(std::as_const(*this).as_physical());
+    physical& as_physical() noexcept {
+        detail::debug_check_position_kind(holds_physical());
+        return _value;
     }
 
     friend sstable_position operator+(sstable_position pos, sstable_position_offset off) noexcept;
@@ -185,36 +205,26 @@ public:
     friend struct fmt::formatter<sstable_position_offset>;
 };
 
+// For logical positions, these compute the plain sum and difference: the
+// offset within chunk is always 0 and the extent_hint is always the marker.
 inline sstable_position operator+(sstable_position pos, sstable_position_offset off) noexcept {
-    SCYLLA_ASSERT(pos._value.index() == off._value.index());
-    if (auto* p = std::get_if<sstable_position::logical>(&pos._value)) {
-        auto* o = std::get_if<sstable_position_offset::logical>(&off._value);
-        return sstable_position(sstable_position::logical{p->value + o->value});
-    }
-    auto* p = std::get_if<sstable_position::physical>(&pos._value);
-    auto* o = std::get_if<sstable_position_offset::physical>(&off._value);
+    detail::debug_check_position_kind(pos.is_physical() == off.holds_physical());
     // chunk_position is relative to `pos`. This decreases its encoded width.
     // extent_hint and offset_within_chunk are absolute. Relative values
     // for these fields need signed types and do not save space.
     return sstable_position(sstable_position::physical{
-        p->chunk_position + o->chunk_position,
-        o->extent_hint,
-        o->offset_within_chunk,
+        pos._value.chunk_position + off._value.chunk_position,
+        off._value.extent_hint,
+        off._value.offset_within_chunk,
     });
 }
 
 inline sstable_position_offset operator-(sstable_position a, sstable_position b) noexcept {
-    SCYLLA_ASSERT(a._value.index() == b._value.index());
-    if (auto* la = std::get_if<sstable_position::logical>(&a._value)) {
-        auto* lb = std::get_if<sstable_position::logical>(&b._value);
-        return sstable_position_offset(sstable_position_offset::logical{la->value - lb->value});
-    }
-    auto* pa = std::get_if<sstable_position::physical>(&a._value);
-    auto* pb = std::get_if<sstable_position::physical>(&b._value);
+    detail::debug_check_position_kind(a.same_kind(b));
     return sstable_position_offset(sstable_position_offset::physical{
-        pa->chunk_position - pb->chunk_position,
-        pa->extent_hint,
-        pa->offset_within_chunk,
+        a._value.chunk_position - b._value.chunk_position,
+        a._value.extent_hint,
+        a._value.offset_within_chunk,
     });
 }
 
@@ -224,12 +234,11 @@ template <>
 struct fmt::formatter<sstables::sstable_position> {
     constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
     auto format(const sstables::sstable_position& p, fmt::format_context& ctx) const {
-        if (auto* l = std::get_if<sstables::sstable_position::logical>(&p._value)) {
-            return fmt::format_to(ctx.out(), "{}", l->value);
+        if (!p.is_physical()) {
+            return fmt::format_to(ctx.out(), "{}", p._value.chunk_position);
         }
-        auto* ph = std::get_if<sstables::sstable_position::physical>(&p._value);
         return fmt::format_to(ctx.out(), "{{chunk_position={}, extent_hint={}, offset_within_chunk={}}}",
-            ph->chunk_position, ph->extent_hint, ph->offset_within_chunk);
+            p._value.chunk_position, p._value.extent_hint, p._value.offset_within_chunk);
     }
 };
 
@@ -237,11 +246,10 @@ template <>
 struct fmt::formatter<sstables::sstable_position_offset> {
     constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
     auto format(const sstables::sstable_position_offset& o, fmt::format_context& ctx) const {
-        if (auto* l = std::get_if<sstables::sstable_position_offset::logical>(&o._value)) {
-            return fmt::format_to(ctx.out(), "{}", l->value);
+        if (!o.holds_physical()) {
+            return fmt::format_to(ctx.out(), "{}", o._value.chunk_position);
         }
-        auto* ph = std::get_if<sstables::sstable_position_offset::physical>(&o._value);
         return fmt::format_to(ctx.out(), "{{chunk_position={}, extent_hint={}, offset_within_chunk={}}}",
-            ph->chunk_position, ph->extent_hint, ph->offset_within_chunk);
+            o._value.chunk_position, o._value.extent_hint, o._value.offset_within_chunk);
     }
 };
