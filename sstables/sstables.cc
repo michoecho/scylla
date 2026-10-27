@@ -3769,29 +3769,21 @@ static future<bool> do_validate_compressed(input_stream<char>& stream, const sst
     auto accessor = c.offsets.get_accessor();
     for (size_t i = 0; i < c.chunk_count(); ++i) {
         uint64_t chunk_len;
+        // Empty for an unframed chunk.
+        temporary_buffer<char> header;
+        // The rest of a framed chunk, or the whole of an unframed one.
         temporary_buffer<char> buf;
 
         if (codec.framed()) {
             // A physically indexed ("mu") sstable doesn't keep its chunk offsets in
             // memory, so the length of this chunk comes from its own header
             // rather than from the offset of the next one.
-            // Throws if the header is truncated, or if the length is obviously
-            // too large, which the caller turns into a validation failure.
-            auto [header, overread] = co_await codec.read_header(stream, offset);
-            chunk_len = codec.extent_from_header(std::string_view(header.get(), header.size()));
-            const auto head_len = header.size() + overread.size();
-            auto body = co_await stream.read_exactly(chunk_len - head_len);
-            if (body.size() < chunk_len - head_len) {
-                sstlog.error("Truncated file at offset {}: expected to get chunk of size {}, got {}", offset, chunk_len, head_len + body.size());
-                valid = false;
-                break;
-            }
-            // Reassemble the header and the bytes read with it with the rest
-            // into a single buffer.
-            buf = temporary_buffer<char>(chunk_len);
-            auto out = std::copy_n(header.get(), header.size(), buf.get_write());
-            out = std::copy_n(overread.get(), overread.size(), out);
-            std::copy_n(body.get(), body.size(), out);
+            // Throws if the header is corrupt, or if the file is truncated, which
+            // the caller turns into a validation failure.
+            auto chunk = co_await read_framed_chunk(stream, codec, offset, c.compressed_file_length());
+            header = std::move(chunk.header);
+            buf = std::move(chunk.rest);
+            chunk_len = header.size() + buf.size();
         } else {
             auto current_pos = accessor.at(i);
             auto next_pos = i + 1 == c.chunk_count() ? c.compressed_file_length() : accessor.at(i + 1);
@@ -3813,7 +3805,9 @@ static future<bool> do_validate_compressed(input_stream<char>& stream, const sst
 
         // Throws if the chunk is too small to hold its framing and checksum,
         // which the caller turns into a validation failure.
-        auto chunk = codec.parse(std::string_view(buf.get(), buf.size()));
+        auto chunk = codec.framed()
+                ? codec.parse(std::string_view(header.get(), header.size()), std::string_view(buf.get(), buf.size()))
+                : codec.parse(std::string_view(buf.get(), buf.size()));
         auto actual_checksum = chunk.template compute_checksum<ChecksumType>();
         if (actual_checksum != chunk.stored_checksum) {
             sstlog.error("Compressed chunk checksum mismatch at offset {}, for chunk #{} of size {}: expected={}, actual={}", offset, i, chunk_len, chunk.stored_checksum, actual_checksum);
