@@ -623,6 +623,8 @@ class compressed_raw_file_data_source_impl : public data_source_impl {
     reader_permit _permit;
     uint64_t _pos{0};
     uint64_t _current_chunk_index{0};
+    // The second buffer of the last chunk read, not yet returned by get().
+    temporary_buffer<char> _pending;
 
 private:
     uint64_t get_chunk_len(uint64_t chunk_index) const {
@@ -656,7 +658,10 @@ public:
         };
     }
 
-    virtual future<temporary_buffer<char>> get() override {
+private:
+    // Reads and verifies the next chunk. Returns its first buffer, and leaves
+    // the second one, if any, in _pending.
+    future<temporary_buffer<char>> read_chunk() {
         if (_pos >= _compression_metadata->compressed_file_length()) {
             co_return temporary_buffer<char>();
         }
@@ -666,24 +671,31 @@ public:
         }
 
         uint64_t chunk_len;
+        // Empty for an unframed chunk.
+        temporary_buffer<char> header;
+        // The rest of the chunk. A framed chunk is returned as two buffers,
+        // the header and the rest, so that the rest, usually shared from the
+        // stream's buffer, doesn't have to be copied after the header.
         temporary_buffer<char> buf;
         std::optional<reader_permit::resource_units> res_units;
         if (_codec.framed()) {
             // A framed chunk's header holds its length.
-            auto [header, overread] = co_await _codec.read_header(*_input_stream, _pos);
+            auto [hdr, overread] = co_await _codec.read_header(*_input_stream, _pos);
+            header = std::move(hdr);
             chunk_len = _codec.extent_from_header(std::string_view(header.get(), header.size()));
             res_units = co_await _permit.request_memory(chunk_len);
             const auto head_len = header.size() + overread.size();
-            auto body = co_await _input_stream->read_exactly(chunk_len - head_len);
-            if (body.size() != chunk_len - head_len) {
-                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, head_len + body.size()));
+            buf = co_await _input_stream->read_exactly(chunk_len - head_len);
+            if (buf.size() != chunk_len - head_len) {
+                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, head_len + buf.size()));
             }
-            // Reassemble the header and the bytes read with it with the rest
-            // into a single buffer.
-            buf = temporary_buffer<char>(chunk_len);
-            auto out = std::copy_n(header.get(), header.size(), buf.get_write());
-            out = std::copy_n(overread.get(), overread.size(), out);
-            std::copy_n(body.get(), body.size(), out);
+            if (!overread.empty()) {
+                // Only a short chunk has bytes read along with its header, so
+                // gluing them to the rest is cheap.
+                temporary_buffer<char> glued(overread.size() + buf.size());
+                std::copy_n(buf.get(), buf.size(), std::copy_n(overread.get(), overread.size(), glued.get_write()));
+                buf = std::move(glued);
+            }
         } else {
             chunk_len = get_chunk_len(_current_chunk_index);
             if (!chunk_len) {
@@ -696,7 +708,9 @@ public:
             }
         }
 
-        auto chunk = _codec.parse(std::string_view(buf.get(), buf.size()));
+        auto chunk = _codec.framed()
+                ? _codec.parse(std::string_view(header.get(), header.size()), std::string_view(buf.get(), buf.size()))
+                : _codec.parse(std::string_view(buf.get(), buf.size()));
         auto actual_checksum = chunk.verify_checksum<crc32_utils>(_pos);
 
         if constexpr (check_digest) {
@@ -706,7 +720,7 @@ public:
         }
 
         _current_chunk_index++;
-        _pos += buf.size();
+        _pos += chunk_len;
 
         if constexpr (check_digest) {
             if (_digests.can_calculate_digest
@@ -716,7 +730,22 @@ public:
             }
         }
 
-        co_return make_tracked_temporary_buffer(std::move(buf), std::move(*res_units));
+        buf = make_tracked_temporary_buffer(std::move(buf), std::move(*res_units));
+        if (header.empty()) {
+            co_return buf;
+        }
+        _pending = std::move(buf);
+        co_return header;
+    }
+
+public:
+    virtual future<temporary_buffer<char>> get() override {
+        // The rest of a framed chunk is never empty: it holds at least the
+        // checksum.
+        if (!_pending.empty()) {
+            return make_ready_future<temporary_buffer<char>>(std::exchange(_pending, {}));
+        }
+        return read_chunk();
     }
 
     virtual future<> close() override {
