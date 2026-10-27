@@ -48,6 +48,10 @@ public:
     sstable_run(shared_sstable);
     // Returns false if sstable being inserted cannot satisfy the disjoint invariant. Then caller should pick another run for it.
     [[nodiscard]] bool insert(shared_sstable sst);
+    // Inserts all fragments of other, if none of them overlaps with the fragments of this run.
+    // Returns false, leaving this run unchanged, otherwise.
+    // Run identifiers of the fragments are left untouched.
+    [[nodiscard]] bool splice(const sstable_run& other);
     void erase(shared_sstable sst);
     bool empty() const noexcept {
         return _all.empty();

@@ -79,6 +79,16 @@ bool sstable_run::insert(shared_sstable sst) {
     return true;
 }
 
+bool sstable_run::splice(const sstable_run& other) {
+    // Fragments of other are disjoint with one another, so checking them against
+    // the fragments of this run is enough.
+    if (std::ranges::any_of(other._all, [this] (const shared_sstable& sst) { return will_introduce_overlapping(sst); })) {
+        return false;
+    }
+    _all.insert(other._all.begin(), other._all.end());
+    return true;
+}
+
 void sstable_run::erase(shared_sstable sst) {
     _all.erase(sst);
 }
