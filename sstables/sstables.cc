@@ -3771,30 +3771,27 @@ static future<bool> do_validate_compressed(input_stream<char>& stream, const sst
         uint64_t chunk_len;
         temporary_buffer<char> buf;
 
-        if (const auto frame_len = codec.frame_len()) {
+        if (codec.framed()) {
             // A physically indexed ("mu") sstable doesn't keep its chunk offsets in
-            // memory, so the length of this chunk comes from its own header - the
-            // first frame_len bytes of the chunk - rather than from the offset of
-            // the next one.
-            auto header = co_await stream.read_exactly(frame_len);
-            if (header.size() < frame_len) {
-                sstlog.error("Truncated file at offset {}: expected to get chunk header of size {}, got {}", offset, frame_len, header.size());
+            // memory, so the length of this chunk comes from its own header
+            // rather than from the offset of the next one.
+            // Throws if the header is truncated, or if the length is obviously
+            // too large, which the caller turns into a validation failure.
+            auto [header, overread] = co_await codec.read_header(stream, offset);
+            chunk_len = codec.extent_from_header(std::string_view(header.get(), header.size()));
+            const auto head_len = header.size() + overread.size();
+            auto body = co_await stream.read_exactly(chunk_len - head_len);
+            if (body.size() < chunk_len - head_len) {
+                sstlog.error("Truncated file at offset {}: expected to get chunk of size {}, got {}", offset, chunk_len, head_len + body.size());
                 valid = false;
                 break;
             }
-            // Throws if the length is obviously too large, which the caller turns
-            // into a validation failure.
-            chunk_len = codec.extent_from_frame(header.get());
-            auto body = co_await stream.read_exactly(chunk_len - frame_len);
-            if (body.size() < chunk_len - frame_len) {
-                sstlog.error("Truncated file at offset {}: expected to get chunk of size {}, got {}", offset, chunk_len, frame_len + body.size());
-                valid = false;
-                break;
-            }
-            // Reassemble the header with the rest into a single buffer.
+            // Reassemble the header and the bytes read with it with the rest
+            // into a single buffer.
             buf = temporary_buffer<char>(chunk_len);
-            std::copy_n(header.get(), frame_len, buf.get_write());
-            std::copy_n(body.get(), body.size(), buf.get_write() + frame_len);
+            auto out = std::copy_n(header.get(), header.size(), buf.get_write());
+            out = std::copy_n(overread.get(), overread.size(), out);
+            std::copy_n(body.get(), body.size(), out);
         } else {
             auto current_pos = accessor.at(i);
             auto next_pos = i + 1 == c.chunk_count() ? c.compressed_file_length() : accessor.at(i + 1);
