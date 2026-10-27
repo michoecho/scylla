@@ -658,22 +658,22 @@ public:
         uint64_t chunk_len;
         temporary_buffer<char> buf;
         std::optional<reader_permit::resource_units> res_units;
-        if (const auto frame_len = _codec.frame_len()) {
+        if (_codec.framed()) {
             // A framed chunk's header holds its length.
-            auto header = co_await _input_stream->read_exactly(frame_len);
-            if (header.size() != frame_len) {
-                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk header of {} bytes, actual={}", _pos, frame_len, header.size()));
-            }
-            chunk_len = _codec.extent_from_frame(header.get());
+            auto [header, overread] = co_await _codec.read_header(*_input_stream, _pos);
+            chunk_len = _codec.extent_from_header(std::string_view(header.get(), header.size()));
             res_units = co_await _permit.request_memory(chunk_len);
-            auto body = co_await _input_stream->read_exactly(chunk_len - frame_len);
-            if (body.size() != chunk_len - frame_len) {
-                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, frame_len + body.size()));
+            const auto head_len = header.size() + overread.size();
+            auto body = co_await _input_stream->read_exactly(chunk_len - head_len);
+            if (body.size() != chunk_len - head_len) {
+                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, head_len + body.size()));
             }
-            // Reassemble the header with the rest into a single buffer.
+            // Reassemble the header and the bytes read with it with the rest
+            // into a single buffer.
             buf = temporary_buffer<char>(chunk_len);
-            std::copy_n(header.get(), frame_len, buf.get_write());
-            std::copy_n(body.get(), body.size(), buf.get_write() + frame_len);
+            auto out = std::copy_n(header.get(), header.size(), buf.get_write());
+            out = std::copy_n(overread.get(), overread.size(), out);
+            std::copy_n(body.get(), body.size(), out);
         } else {
             chunk_len = get_chunk_len(_current_chunk_index);
             if (!chunk_len) {
