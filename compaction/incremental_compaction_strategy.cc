@@ -445,6 +445,43 @@ future<int64_t> incremental_compaction_strategy::estimated_pending_compactions(c
     co_return n;
 }
 
+std::vector<std::vector<sstables::frozen_sstable_run>>
+incremental_compaction_strategy::get_runs_to_splice(std::vector<sstables::frozen_sstable_run> runs) const {
+    std::vector<std::vector<sstables::frozen_sstable_run>> ret;
+    if (runs.size() < 2) {
+        return ret;
+    }
+    struct spliced_run {
+        sstables::sstable_run fragments;
+        std::vector<sstables::frozen_sstable_run> runs;
+    };
+    for (auto& bucket : get_buckets(runs)) {
+        if (bucket.size() < 2) {
+            continue;
+        }
+        // Largest runs go first, so that each spliced run is named after its largest member.
+        // Ties are broken by run identifier, so the outcome doesn't depend on the order of the input.
+        std::ranges::sort(bucket, std::greater{}, [] (const sstables::frozen_sstable_run& run) {
+            return std::pair(run->data_size(), run->run_identifier());
+        });
+        std::vector<spliced_run> spliced_runs;
+        for (auto& run : bucket) {
+            auto it = std::ranges::find_if(spliced_runs, [&run] (spliced_run& s) { return s.fragments.splice(*run); });
+            if (it != spliced_runs.end()) {
+                it->runs.push_back(std::move(run));
+            } else {
+                spliced_runs.push_back(spliced_run{*run, {run}});
+            }
+        }
+        for (auto& s : spliced_runs) {
+            if (s.runs.size() > 1) {
+                ret.push_back(std::move(s.runs));
+            }
+        }
+    }
+    return ret;
+}
+
 std::vector<sstables::shared_sstable>
 incremental_compaction_strategy::runs_to_sstables(std::vector<sstables::frozen_sstable_run> runs) {
     return runs

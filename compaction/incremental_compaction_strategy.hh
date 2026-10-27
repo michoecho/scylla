@@ -107,6 +107,10 @@ public:
 
     virtual std::unique_ptr<sstables::sstable_set_impl> make_sstable_set(const compaction_group_view& ts) const override;
 
+    // Disjoint runs which fall into the same size bucket are spliced, since compacting them
+    // together would rewrite them without merging any data.
+    virtual std::vector<std::vector<sstables::frozen_sstable_run>> get_runs_to_splice(std::vector<sstables::frozen_sstable_run> runs) const override;
+
     friend class compaction::incremental_backlog_tracker;
 };
 
