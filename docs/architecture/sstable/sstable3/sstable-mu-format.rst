@@ -31,10 +31,14 @@ All other quantities derive from ``L``:
 ``D_max = L + floor(L / 2)``
   The maximum length of the compressed data of one chunk.
 
-``F = ceil_div(bit_width(D_max), 8)``
-  The width, in bytes, of a chunk-length field.
+``F(D)``
+  The width, in bytes, of the unsigned vint encoding of ``D``. It is 1 for
+  ``D < 2^7``, 2 for ``D < 2^14``, and 3 for ``D < 2^21``.
 
-``N_max = ceil_div(511 + D_max + 2 * F + 4, 512)``
+``F_max = F(D_max)``
+  The maximum width, in bytes, of a chunk-length field.
+
+``N_max = ceil_div(511 + D_max + 2 * F_max + 4, 512)``
   The maximum number of 512-byte blocks that one chunk can touch.
 
 ``W_N = bit_width(N_max - 1)``
@@ -51,7 +55,7 @@ The table lists these values for the chunk lengths that a table schema allows:
 
    * - ``L`` (KiB)
      - ``D_max``
-     - ``F``
+     - ``F_max``
      - ``N_max``
      - ``W_N``
      - ``W_O``
@@ -81,13 +85,13 @@ The table lists these values for the chunk lengths that a table schema allows:
      - 13
    * - 16
      - 24576
-     - 2
+     - 3
      - 50
      - 6
      - 14
    * - 32
      - 49152
-     - 2
+     - 3
      - 98
      - 7
      - 15
@@ -113,8 +117,9 @@ them. Each chunk has this layout::
     [ header ][ compressed data ][ checksum ][ footer ]
 
 ``header``
-  ``F`` bytes. The length ``D`` of the compressed data, as an unsigned
-  little-endian integer.
+  ``F(D)`` bytes. The length ``D`` of the compressed data, as an unsigned
+  vint, in its shortest encoding. A reader must treat a longer encoding, or a
+  header wider than ``F_max``, as corruption.
 
 ``compressed data``
   ``D`` bytes. ``D`` is at most ``D_max``. A writer must not write a longer
@@ -125,9 +130,10 @@ them. Each chunk has this layout::
   big-endian integer. It does not cover the footer.
 
 ``footer``
-  ``F`` bytes. The same value as the header.
+  ``F(D)`` bytes. The bytes of the header, in reverse order. Thus, the last
+  byte of the footer is the first byte of the vint, which gives its width.
 
-The *extent* of a chunk is its size in ``Data.db``: ``D + 2 * F + 4`` bytes.
+The *extent* of a chunk is its size in ``Data.db``: ``D + 2 * F(D) + 4`` bytes.
 
 As in ``mt``, every chunk except the last decompresses to exactly ``L`` bytes.
 The last chunk decompresses to at most ``L`` bytes.
