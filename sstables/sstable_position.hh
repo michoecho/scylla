@@ -19,7 +19,7 @@ namespace sstables {
 
 class sstable_position_offset;
 
-namespace detail {
+namespace sstable_position_detail {
 
 // The extent_hint of an encoded logical position or offset. See sstable_position.
 constexpr int32_t logical_marker = -1;
@@ -32,7 +32,7 @@ inline void debug_check_position_kind([[maybe_unused]] bool ok) noexcept {
 #endif
 }
 
-} // namespace detail
+} // namespace sstable_position_detail
 
 // A position in an sstable data file. A logical position is an offset in the
 // uncompressed data. A physical position identifies a compression chunk and an
@@ -77,7 +77,7 @@ class sstable_position {
         //
         // This field does not participate in position ordering.
         //
-        // In an encoded logical position, this field is detail::logical_marker
+        // In an encoded logical position, this field is sstable_position_detail::logical_marker
         // instead (see the class comment).
         //
         // This field and offset_within_chunk are bounded by the size of a
@@ -101,7 +101,7 @@ public:
     // The ordering is weak: extent_hint does not take part in it, so equal
     // positions can have different hints.
     std::weak_ordering operator<=>(const sstable_position& other) const noexcept {
-        detail::debug_check_position_kind(same_kind(other));
+        sstable_position_detail::debug_check_position_kind(same_kind(other));
         if (auto cmp = _value.chunk_position <=> other._value.chunk_position; cmp != 0) {
             return cmp;
         }
@@ -111,26 +111,26 @@ public:
         return (*this <=> other) == 0;
     }
     static sstable_position from_logical(int64_t v) noexcept {
-        return sstable_position(physical{v, detail::logical_marker, 0});
+        return sstable_position(physical{v, sstable_position_detail::logical_marker, 0});
     }
     static sstable_position from_physical(int64_t chunk_position, int32_t extent_hint, int32_t offset_within_chunk) noexcept {
-        detail::debug_check_position_kind(extent_hint >= 0);
+        sstable_position_detail::debug_check_position_kind(extent_hint >= 0);
         return sstable_position(physical{chunk_position, extent_hint, offset_within_chunk});
     }
 
     bool is_physical() const noexcept {
-        return _value.extent_hint != detail::logical_marker;
+        return _value.extent_hint != sstable_position_detail::logical_marker;
     }
     const physical& as_physical() const noexcept {
-        detail::debug_check_position_kind(is_physical());
+        sstable_position_detail::debug_check_position_kind(is_physical());
         return _value;
     }
     physical& as_physical() noexcept {
-        detail::debug_check_position_kind(is_physical());
+        sstable_position_detail::debug_check_position_kind(is_physical());
         return _value;
     }
     int64_t to_logical() const noexcept {
-        detail::debug_check_position_kind(!is_physical());
+        sstable_position_detail::debug_check_position_kind(!is_physical());
         return _value.chunk_position;
     }
 
@@ -164,7 +164,7 @@ struct disk_read_range {
 class sstable_position_offset {
     struct physical {
         int64_t chunk_position;
-        // detail::logical_marker in an encoded logical offset.
+        // sstable_position_detail::logical_marker in an encoded logical offset.
         int32_t extent_hint;
         int32_t offset_within_chunk;
     };
@@ -177,26 +177,26 @@ public:
     sstable_position_offset& operator=(const sstable_position_offset&) = default;
 
     static sstable_position_offset from_logical(int64_t v) noexcept {
-        return sstable_position_offset(physical{v, detail::logical_marker, 0});
+        return sstable_position_offset(physical{v, sstable_position_detail::logical_marker, 0});
     }
     static sstable_position_offset from_physical(int64_t chunk_position, int32_t extent_hint, int32_t offset_within_chunk) noexcept {
-        detail::debug_check_position_kind(extent_hint >= 0);
+        sstable_position_detail::debug_check_position_kind(extent_hint >= 0);
         return sstable_position_offset(physical{chunk_position, extent_hint, offset_within_chunk});
     }
     int64_t to_logical() const noexcept {
-        detail::debug_check_position_kind(!holds_physical());
+        sstable_position_detail::debug_check_position_kind(!holds_physical());
         return _value.chunk_position;
     }
     bool holds_physical() const noexcept {
-        return _value.extent_hint != detail::logical_marker;
+        return _value.extent_hint != sstable_position_detail::logical_marker;
     }
 
     const physical& as_physical() const noexcept {
-        detail::debug_check_position_kind(holds_physical());
+        sstable_position_detail::debug_check_position_kind(holds_physical());
         return _value;
     }
     physical& as_physical() noexcept {
-        detail::debug_check_position_kind(holds_physical());
+        sstable_position_detail::debug_check_position_kind(holds_physical());
         return _value;
     }
 
@@ -208,7 +208,7 @@ public:
 // For logical positions, these compute the plain sum and difference: the
 // offset within chunk is always 0 and the extent_hint is always the marker.
 inline sstable_position operator+(sstable_position pos, sstable_position_offset off) noexcept {
-    detail::debug_check_position_kind(pos.is_physical() == off.holds_physical());
+    sstable_position_detail::debug_check_position_kind(pos.is_physical() == off.holds_physical());
     // chunk_position is relative to `pos`. This decreases its encoded width.
     // extent_hint and offset_within_chunk are absolute. Relative values
     // for these fields need signed types and do not save space.
@@ -220,7 +220,7 @@ inline sstable_position operator+(sstable_position pos, sstable_position_offset 
 }
 
 inline sstable_position_offset operator-(sstable_position a, sstable_position b) noexcept {
-    detail::debug_check_position_kind(a.same_kind(b));
+    sstable_position_detail::debug_check_position_kind(a.same_kind(b));
     return sstable_position_offset(sstable_position_offset::physical{
         a._value.chunk_position - b._value.chunk_position,
         a._value.extent_hint,
