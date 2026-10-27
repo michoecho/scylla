@@ -10,11 +10,15 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include <array>
+#include <algorithm>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "sstables/compress.hh"
 #include "sstables/exceptions.hh"
+#include "sstables/framed_chunk.hh"
+#include "vint-serialization.hh"
 
 BOOST_AUTO_TEST_CASE(segmented_offsets_basic_functionality) {
     sstables::compression::segmented_offsets offsets;
@@ -148,64 +152,95 @@ BOOST_AUTO_TEST_CASE(segmented_offsets_corner_cases) {
     BOOST_REQUIRE(accessor.at(4080) == 4080);
 }
 
-BOOST_AUTO_TEST_CASE(chunk_length_field_bits_and_size) {
-    // A valid compressed length is at most compressed_chunk_length_limit, so a
-    // chunk-length field stores the length in exactly the minimal number of bits
-    // that can hold that limit, rounded up to ceil(bits / 8) bytes. The 87381/
-    // 87382 pair straddles the boundary where the limit crosses 2^17.
-    for (uint32_t uncompressed_chunk_length : {1u << 10, 1u << 12, 1u << 16, (1u << 16) + 1, 87381u, 87382u}) {
+BOOST_AUTO_TEST_CASE(chunk_frame_len) {
+    // A frame is the compressed length as an unsigned vint, so the widest frame
+    // is the vint of compressed_chunk_length_limit. The 10922/10923 pair
+    // straddles the boundary where the limit crosses 2^14, which is where the
+    // vint grows from 2 to 3 bytes.
+    for (uint32_t uncompressed_chunk_length : {1u << 10, 1u << 12, 10922u, 10923u, 1u << 16, 1u << 17}) {
         BOOST_TEST_CONTEXT("uncompressed_chunk_length=" << uncompressed_chunk_length) {
             const uint64_t limit = sstables::compressed_chunk_length_limit(uncompressed_chunk_length);
-            const auto bits = sstables::chunk_length_field_bits(uncompressed_chunk_length);
-            // Enough bits to represent any length up to the limit, and not one more.
-            BOOST_CHECK_GT(uint64_t(1) << bits, limit);
-            BOOST_CHECK_LT(uint64_t(1) << (bits - 1), limit);
-            BOOST_CHECK_EQUAL(sstables::chunk_length_field_size(uncompressed_chunk_length),
-                    (bits + 7) / 8);
+            const auto codec = sstables::framed_chunk_codec::for_framed_chunks(uncompressed_chunk_length);
+            BOOST_CHECK_EQUAL(codec.max_frame_len(), unsigned_vint::serialized_size(limit));
+            BOOST_CHECK_EQUAL(codec.frame_len(limit), codec.max_frame_len());
+            BOOST_CHECK_EQUAL(codec.extent(limit), limit + 2 * codec.max_frame_len() + sizeof(uint32_t));
         }
     }
+    BOOST_CHECK_EQUAL(sstables::framed_chunk_codec::for_framed_chunks(10922).max_frame_len(), 2);
+    BOOST_CHECK_EQUAL(sstables::framed_chunk_codec::for_framed_chunks(10923).max_frame_len(), 3);
+
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(1u << 12);
+    BOOST_CHECK_EQUAL(codec.frame_len(0), 1);
+    BOOST_CHECK_EQUAL(codec.frame_len(127), 1);
+    BOOST_CHECK_EQUAL(codec.frame_len(128), 2);
+    BOOST_CHECK_EQUAL(codec.extent(127), 127 + 2 + sizeof(uint32_t));
+    BOOST_CHECK_EQUAL(codec.extent(128), 128 + 4 + sizeof(uint32_t));
+
+    // Unframed chunks have no frames.
+    const auto unframed = sstables::framed_chunk_codec(sstables::sstable_version_types::me, 1u << 12);
+    BOOST_CHECK(!unframed.framed());
+    BOOST_CHECK_EQUAL(unframed.frame_len(128), 0);
+    BOOST_CHECK_EQUAL(unframed.extent(128), 128 + sizeof(uint32_t));
 }
 
-BOOST_AUTO_TEST_CASE(chunk_length_field_roundtrip) {
+BOOST_AUTO_TEST_CASE(chunk_frames_roundtrip) {
     const uint32_t uncompressed_chunk_length = 1u << 12; // 4096
     const uint32_t limit = sstables::compressed_chunk_length_limit(uncompressed_chunk_length); // 6144
-    const size_t size = sstables::chunk_length_field_size(uncompressed_chunk_length);
-    std::vector<char> buf(size + 4, char(0xAA)); // extra bytes must stay untouched
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(uncompressed_chunk_length);
 
-    // A real compressed length is at most compressed_chunk_length_limit, so it fits
-    // in chunk_length_field_bits bits and is accepted by the reader.
-    for (uint32_t len : {0u, 1u, limit, uncompressed_chunk_length}) {
+    for (uint32_t len : {0u, 1u, 127u, 128u, uncompressed_chunk_length, limit}) {
         BOOST_TEST_CONTEXT("len=" << len) {
-            sstables::write_chunk_length_field(buf.data(), uncompressed_chunk_length, len);
-            BOOST_CHECK_EQUAL(sstables::read_chunk_length_field(buf.data(), uncompressed_chunk_length), len);
-            // The field must not spill past chunk_length_field_size bytes.
-            for (size_t i = size; i < buf.size(); ++i) {
+            const auto frame = codec.frame_len(len);
+            const auto extent = codec.extent(len);
+            std::vector<char> buf(extent + 4, char(0xAA)); // extra bytes must stay untouched
+            codec.write_frames(buf.data(), len);
+
+            const auto header = std::string_view(buf.data(), frame);
+            const auto footer = std::string_view(buf.data() + extent - frame, frame);
+            BOOST_CHECK_EQUAL(codec.frame_len_from_first_byte(header.front()), frame);
+            BOOST_CHECK_EQUAL(codec.frame_len_from_first_byte(footer.back()), frame);
+            BOOST_CHECK_EQUAL(codec.extent_from_header(header), extent);
+            BOOST_CHECK_EQUAL(codec.extent_from_footer(footer), extent);
+            // The footer is the header, reversed.
+            BOOST_CHECK(std::equal(header.begin(), header.end(), footer.rbegin()));
+            // The frames must not touch the compressed data, the checksum, or
+            // the bytes past the chunk.
+            for (size_t i = frame; i < extent - frame; ++i) {
+                BOOST_CHECK_EQUAL(static_cast<unsigned char>(buf[i]), 0xAAu);
+            }
+            for (size_t i = extent; i < buf.size(); ++i) {
                 BOOST_CHECK_EQUAL(static_cast<unsigned char>(buf[i]), 0xAAu);
             }
         }
     }
 }
 
-BOOST_AUTO_TEST_CASE(chunk_length_field_rejects_out_of_range) {
-    // A length exceeding compressed_chunk_length_limit signals corruption; the
-    // reader must throw rather than size a read from a bogus length. We can only
-    // materialise such a value on disk by hand, since the writer never emits it.
-    // The limit (36) is not a power of two, so chunk_length_field_bits leaves room
-    // (2^6 == 64 > 36) to encode an out-of-range value that the reader rejects.
-    const uint32_t uncompressed_chunk_length = 24; // limit 36, 6 bits
+BOOST_AUTO_TEST_CASE(chunk_frames_reject_corrupt_lengths) {
+    // The writer never emits these frames, so craft them by hand.
+    const uint32_t uncompressed_chunk_length = 1u << 12; // limit 6144, at most 2-byte frames
     const uint64_t limit = sstables::compressed_chunk_length_limit(uncompressed_chunk_length);
-    const size_t bits = sstables::chunk_length_field_bits(uncompressed_chunk_length);
-    const size_t size = sstables::chunk_length_field_size(uncompressed_chunk_length);
-    std::vector<char> buf(size, 0);
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(uncompressed_chunk_length);
+    auto encode = [] (uint64_t v) {
+        bytes b(bytes::initialized_later(), unsigned_vint::serialized_size(v));
+        unsigned_vint::serialize(v, b.begin());
+        return std::string(reinterpret_cast<const char*>(b.data()), b.size());
+    };
 
-    // Craft a raw field value just past the limit.
-    const uint64_t bad = limit + 1;
-    for (size_t i = 0; i < size; ++i) {
-        buf[i] = static_cast<char>(static_cast<uint8_t>(bad >> (8 * i)));
-    }
-    BOOST_CHECK_LT(bad, uint64_t(1) << bits); // fits in the field, but exceeds the bound
+    // A length exceeding compressed_chunk_length_limit signals corruption; the
+    // reader must throw rather than size a read from a bogus length.
+    const auto too_long = encode(limit + 1);
+    BOOST_REQUIRE_EQUAL(too_long.size(), codec.max_frame_len());
+    BOOST_CHECK_THROW(codec.extent_from_header(too_long), sstables::malformed_sstable_exception);
+    BOOST_CHECK_THROW(codec.extent_from_footer(std::string(too_long.rbegin(), too_long.rend())), sstables::malformed_sstable_exception);
 
-    BOOST_CHECK_THROW(
-            sstables::read_chunk_length_field(buf.data(), uncompressed_chunk_length),
-            sstables::malformed_sstable_exception);
+    // A frame wider than any valid frame is rejected from its first byte.
+    const auto too_wide = encode(uint64_t(1) << 14);
+    BOOST_REQUIRE_GT(too_wide.size(), codec.max_frame_len());
+    BOOST_CHECK_THROW(codec.frame_len_from_first_byte(too_wide.front()), sstables::malformed_sstable_exception);
+
+    // 5 in two bytes is a valid vint, but not the shortest encoding, so the
+    // width of the frame doesn't follow from the length.
+    const auto non_minimal = std::string{char(0x80), char(0x05)};
+    BOOST_REQUIRE_EQUAL(codec.frame_len_from_first_byte(non_minimal.front()), 2);
+    BOOST_CHECK_THROW(codec.extent_from_header(non_minimal), sstables::malformed_sstable_exception);
 }

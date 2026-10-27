@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+#include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <cstdlib>
 
@@ -28,7 +30,7 @@
 #include "utils/unqualified_name.hh"
 #include "reader_permit.hh"
 #include "data_source_types.hh"
-#include "utils/div_ceil.hh"
+#include "vint-serialization.hh"
 
 namespace sstables {
 
@@ -77,79 +79,106 @@ inline bit_displacement displacement_for(uint64_t prefix_bits, uint8_t size_bits
     return {prefix_bits, make_mask(size_bits, prefix_bits, t)};
 }
 
-size_t chunk_length_field_bits(uint32_t uncompressed_chunk_length) {
-    // A valid compressed chunk is at most compressed_chunk_length_limit bytes, so
-    // this many bits can represent any valid length.
-    return log2ceil(compressed_chunk_length_limit(uncompressed_chunk_length));
-}
-
-size_t chunk_length_field_size(uint32_t uncompressed_chunk_length) {
-    // One length, rounded up to whole bytes.
-    return div_ceil(chunk_length_field_bits(uncompressed_chunk_length), 8);
-}
-
-// Read/write an n-byte (n <= 8) little-endian integer. Unlike seastar's
-// read_le/write_le these touch exactly n bytes, so they are safe when the
-// backing buffer is only chunk_length_field_size bytes long.
-static uint64_t read_le_bytes(const char* p, size_t n) {
-    uint64_t v = 0;
-    for (size_t i = 0; i < n; ++i) {
-        v |= uint64_t(static_cast<uint8_t>(p[i])) << (8 * i);
-    }
-    return v;
-}
-
-static void write_le_bytes(char* p, size_t n, uint64_t v) {
-    for (size_t i = 0; i < n; ++i) {
-        p[i] = static_cast<char>(static_cast<uint8_t>(v >> (8 * i)));
-    }
-}
-
-void write_chunk_length_field(char* dst, uint32_t uncompressed_chunk_length,
-        uint32_t compressed_len) {
-    write_le_bytes(dst, chunk_length_field_size(uncompressed_chunk_length), compressed_len);
-}
-
-uint32_t read_chunk_length_field(const char* src, uint32_t uncompressed_chunk_length) {
-    const uint64_t compressed_len = read_le_bytes(src, chunk_length_field_size(uncompressed_chunk_length));
-    const uint64_t bound = compressed_chunk_length_limit(uncompressed_chunk_length);
-    if (compressed_len > bound) {
-        throw_malformed_sstable_exception(format(
-                "compressed chunk length field out of range: got {}, expected at most {}",
-                compressed_len, bound));
-    }
-    return compressed_len;
-}
-
 void framed_chunk::throw_checksum_mismatch(uint64_t file_offset, uint32_t actual) const {
     throw_malformed_sstable_exception(format("compressed chunk of size {} at file offset {} failed checksum, expected={}, actual={}",
             extent(), file_offset, stored_checksum, actual));
 }
 
+static uint32_t max_frame_len_for(uint32_t uncompressed_chunk_length) {
+    return unsigned_vint::serialized_size(compressed_chunk_length_limit(uncompressed_chunk_length));
+}
+
 framed_chunk_codec::framed_chunk_codec(sstable_version_types v, uint32_t uncompressed_chunk_length)
-    : framed_chunk_codec(uncompressed_chunk_length, chunk_has_length_framing(v) ? chunk_length_field_size(uncompressed_chunk_length) : 0)
+    : framed_chunk_codec(uncompressed_chunk_length, chunk_has_length_framing(v) ? max_frame_len_for(uncompressed_chunk_length) : 0)
 {}
 
 framed_chunk_codec framed_chunk_codec::for_framed_chunks(uint32_t uncompressed_chunk_length) {
-    return framed_chunk_codec(uncompressed_chunk_length, chunk_length_field_size(uncompressed_chunk_length));
+    return framed_chunk_codec(uncompressed_chunk_length, max_frame_len_for(uncompressed_chunk_length));
 }
 
-uint64_t framed_chunk_codec::extent_from_frame(const char* frame) const {
-    return extent(read_chunk_length_field(frame, _uncompressed_chunk_length));
+uint32_t framed_chunk_codec::frame_len(uint64_t compressed_len) const noexcept {
+    return framed() ? unsigned_vint::serialized_size(compressed_len) : 0;
+}
+
+uint32_t framed_chunk_codec::frame_len_from_first_byte(char first_byte) const {
+    SCYLLA_ASSERT(framed());
+    const uint32_t len = unsigned_vint::serialized_size_from_first_byte(first_byte);
+    if (len > _max_frame_len) {
+        throw_malformed_sstable_exception(format("compressed chunk length field of {} bytes is wider than the maximum of {} bytes",
+                len, _max_frame_len));
+    }
+    return len;
+}
+
+uint64_t framed_chunk_codec::read_compressed_length(std::string_view vint) const {
+    SCYLLA_ASSERT(!vint.empty() && vint.size() == unsigned_vint::serialized_size_from_first_byte(vint[0]));
+    const uint64_t compressed_len = unsigned_vint::deserialize(bytes_view(reinterpret_cast<const int8_t*>(vint.data()), vint.size()));
+    const uint64_t bound = compressed_chunk_length_limit(_uncompressed_chunk_length);
+    if (compressed_len > bound) {
+        throw_malformed_sstable_exception(format(
+                "compressed chunk length field out of range: got {}, expected at most {}",
+                compressed_len, bound));
+    }
+    // The width of a frame follows from the length only if the encoding is the
+    // shortest one.
+    if (frame_len(compressed_len) != vint.size()) {
+        throw_malformed_sstable_exception(format(
+                "compressed chunk length field encodes {} in {} bytes, expected {} bytes",
+                compressed_len, vint.size(), frame_len(compressed_len)));
+    }
+    return compressed_len;
+}
+
+uint64_t framed_chunk_codec::extent_from_header(std::string_view header) const {
+    return extent(read_compressed_length(header));
+}
+
+uint64_t framed_chunk_codec::extent_from_footer(std::string_view footer) const {
+    SCYLLA_ASSERT(footer.size() <= max_vint_length);
+    std::array<char, max_vint_length> header;
+    std::reverse_copy(footer.begin(), footer.end(), header.begin());
+    return extent_from_header(std::string_view(header.data(), footer.size()));
+}
+
+future<framed_chunk_codec::header_read> framed_chunk_codec::read_header(input_stream<char>& in, uint64_t file_offset) const {
+    auto head = co_await in.read_exactly(typical_frame_len);
+    if (head.empty()) {
+        throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
+    }
+    const auto len = frame_len_from_first_byte(head[0]);
+    if (len <= head.size()) {
+        co_return header_read{head.share(0, len), head.share(len, head.size() - len)};
+    }
+    // A wide header. Read the rest of it, and glue it to the bytes already read.
+    auto more = co_await in.read_exactly(len - head.size());
+    if (head.size() + more.size() != len) {
+        throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
+    }
+    temporary_buffer<char> header(len);
+    std::copy_n(more.get(), more.size(), std::copy_n(head.get(), head.size(), header.get_write()));
+    co_return header_read{std::move(header), {}};
 }
 
 framed_chunk framed_chunk_codec::parse(std::string_view chunk) const {
-    if (chunk.size() < extent(0)) {
-        throw_malformed_sstable_exception(format("compressed chunk of size {} is too small to hold its {}-byte framing and its checksum",
-                chunk.size(), 2 * _frame_len));
-    }
     if (framed()) {
-        auto result = parse(chunk.substr(0, _frame_len), chunk.substr(_frame_len));
+        if (chunk.empty()) {
+            throw_malformed_sstable_exception("compressed chunk is empty");
+        }
+        const auto header_len = frame_len_from_first_byte(chunk[0]);
+        if (chunk.size() < header_len) {
+            throw_malformed_sstable_exception(format("compressed chunk of size {} is too small to hold its {}-byte header",
+                    chunk.size(), header_len));
+        }
+        auto result = parse(chunk.substr(0, header_len), chunk.substr(header_len));
         if (result.extent() != chunk.size()) {
             throw_malformed_sstable_exception(format("compressed chunk header declares size {}, but the chunk has size {}",
                     result.extent(), chunk.size()));
         }
         return result;
+    }
+    if (chunk.size() < sizeof(uint32_t)) {
+        throw_malformed_sstable_exception(format("compressed chunk of size {} is too small to hold its checksum",
+                chunk.size()));
     }
     const auto compressed_len = chunk.size() - sizeof(uint32_t);
     return framed_chunk{
@@ -159,17 +188,17 @@ framed_chunk framed_chunk_codec::parse(std::string_view chunk) const {
 }
 
 framed_chunk framed_chunk_codec::parse(std::string_view header, std::string_view rest) const {
-    SCYLLA_ASSERT(framed() && header.size() == _frame_len);
-    const uint64_t compressed_len = read_chunk_length_field(header.data(), _uncompressed_chunk_length);
-    if (rest.size() < compressed_len + sizeof(uint32_t) + _frame_len) {
+    SCYLLA_ASSERT(framed());
+    const uint64_t compressed_len = read_compressed_length(header);
+    if (rest.size() < compressed_len + sizeof(uint32_t) + header.size()) {
         throw_malformed_sstable_exception(format("compressed chunk header declares size {}, but got buffer of size {}",
-                extent(compressed_len), _frame_len + rest.size()));
+                extent(compressed_len), header.size() + rest.size()));
     }
     return framed_chunk{
         .header = header,
         .compressed = rest.substr(0, compressed_len),
         .stored_checksum = read_be<uint32_t>(rest.data() + compressed_len),
-        .footer = rest.substr(compressed_len + sizeof(uint32_t), _frame_len),
+        .footer = rest.substr(compressed_len + sizeof(uint32_t), header.size()),
     };
 }
 
@@ -183,8 +212,9 @@ temporary_buffer<char> framed_chunk_codec::decompress(const compressor& c, const
 
 void framed_chunk_codec::write_frames(char* chunk, uint32_t compressed_len) const {
     SCYLLA_ASSERT(framed());
-    write_chunk_length_field(chunk, _uncompressed_chunk_length, compressed_len);
-    write_chunk_length_field(chunk + _frame_len + compressed_len + sizeof(uint32_t), _uncompressed_chunk_length, compressed_len);
+    auto header = reinterpret_cast<int8_t*>(chunk);
+    const auto len = unsigned_vint::serialize(compressed_len, header);
+    std::reverse_copy(header, header + len, header + len + compressed_len + sizeof(uint32_t));
 }
 
 std::pair<bucket_info, segment_info> params_for_chunk_size(uint32_t chunk_size) {
