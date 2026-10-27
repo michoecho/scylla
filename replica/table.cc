@@ -1719,6 +1719,10 @@ compaction_group& table::compaction_group_for_logstor_segment(logstor::log_segme
     return _sg_manager->compaction_group_for_logstor_segment(seg_id, first_token, last_token);
 }
 
+future<> table::splice_sstable_runs() {
+    co_await parallel_foreach_compaction_group(std::mem_fn(&compaction_group::splice_sstable_runs));
+}
+
 future<> table::parallel_foreach_compaction_group(std::function<future<>(compaction_group&)> action) {
     co_await _sg_manager->parallel_foreach_storage_group([&] (storage_group& sg) -> future<> {
         co_await utils::get_local_injector().inject("foreach_compaction_group_wait", [this, &sg] (auto& handler) -> future<> {
@@ -2739,6 +2743,60 @@ compaction_group::merge_logstor_segments_from(compaction_group& group) {
     }
     auto permit = co_await _t.get_sstable_list_permit();
     co_await logstor_segments().merge(group.logstor_segments());
+}
+
+future<> compaction_group::splice_sstable_runs() noexcept {
+    struct spliced_sstable {
+        sstables::shared_sstable sst;
+        sstables::run_id original_run_id;
+        sstables::run_id new_run_id;
+    };
+    try {
+        auto permit = co_await _t.get_sstable_list_permit();
+        auto& cm = get_compaction_manager();
+        std::vector<spliced_sstable> spliced;
+        // Sstables of different views are never compacted together, so there's no point in splicing across views.
+        for (auto* view : all_views()) {
+            auto runs = co_await cm.get_candidate_runs(*view);
+            for (auto& runs_to_splice : _t._compaction_strategy.get_runs_to_splice(std::move(runs))) {
+                auto run_id = runs_to_splice.front()->run_identifier();
+                tlogger.debug("Splicing sstable runs [{}] into run {} in compaction group {} of {}.{}",
+                        fmt::join(runs_to_splice | std::views::transform(std::mem_fn(&sstables::sstable_run::run_identifier)), ", "),
+                        run_id, group_id(), schema()->ks_name(), schema()->cf_name());
+                for (auto& run : runs_to_splice | std::views::drop(1)) {
+                    for (auto& sst : run->all()) {
+                        spliced.push_back(spliced_sstable{sst, sst->run_identifier(), run_id});
+                    }
+                }
+            }
+        }
+        if (spliced.empty()) {
+            co_return;
+        }
+
+        // Sstable sets index sstables by run identifier, so the main set is rebuilt with the new
+        // identifiers in place. Until it replaces the current one, which was built with the old
+        // identifiers, nothing can modify the latter, as we hold the sstable list permit. Should
+        // rebuilding fail, the old identifiers are restored.
+        auto restore_run_ids = defer([&spliced] () noexcept {
+            for (auto& s : spliced) {
+                s.sst->set_run_identifier(s.original_run_id);
+            }
+        });
+        for (auto& s : spliced) {
+            s.sst->set_run_identifier(s.new_run_id);
+        }
+        table::sstable_list_builder builder(_t, std::move(permit));
+        auto res = co_await builder.build_new_list(*main_sstables(), make_main_sstable_set(), {}, {});
+        set_main_sstables(std::move(res.new_sstable_set));
+        restore_run_ids.cancel();
+        // Let the backlog tracker account for the spliced runs.
+        auto spliced_sstables = spliced | std::views::transform(&spliced_sstable::sst) | std::ranges::to<std::vector>();
+        backlog_tracker_adjust_charges(spliced_sstables, spliced_sstables);
+    } catch (...) {
+        tlogger.warn("Failed to splice sstable runs in compaction group {} of {}.{}: {}. Ignored.",
+                group_id(), schema()->ks_name(), schema()->cf_name(), std::current_exception());
+    }
 }
 
 future<>

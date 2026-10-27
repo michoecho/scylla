@@ -1161,3 +1161,62 @@ SEASTAR_TEST_CASE(ics_runs_to_splice_test) {
         }
     });
 }
+
+SEASTAR_TEST_CASE(ics_splice_sstable_runs_test) {
+    return test_env::do_with_async([] (test_env& env) {
+        // With min_threshold=2, any two runs of similar size get compacted together.
+        auto s = make_ics_schema("ics_splice_sstable_runs_test", 2);
+        auto cf = env.make_table_for_tests(s);
+        auto close_cf = deferred_stop(cf);
+        auto& cs = cf->get_compaction_strategy();
+        auto control = make_strategy_control_for_test(false);
+        auto keys = tests::generate_partition_keys(16, s);
+        constexpr uint64_t gb = 1024 * 1024 * 1024;
+
+        auto add_run = [&] (unsigned first, unsigned last, uint64_t fragment_size) {
+            auto run = make_fake_run(env, s, keys, first, last, fragment_size);
+            for (auto& sst : run->all()) {
+                column_family_test(cf).add_sstable(sst).get();
+            }
+            return run;
+        };
+        // The halves of a merged tablet, along with a run spanning both, all of the same size.
+        auto left = add_run(0, 8, gb);
+        auto right = add_run(8, 16, gb);
+        auto whole = add_run(0, 16, gb / 2);
+        auto main_runs = [&] {
+            return cf.as_compaction_group_view().main_sstable_set().get()->all_sstable_runs();
+        };
+        BOOST_REQUIRE_EQUAL(main_runs().size(), 3);
+        BOOST_REQUIRE_EQUAL(cs.get_sstables_for_compaction(cf.as_compaction_group_view(), *control).get().sstables.size(),
+                left->all().size() + right->all().size() + whole->all().size());
+        // A run's identifier is that of its fragments, so it has to be captured before splicing.
+        // The halves are of the same size, so the one with the greater identifier names the spliced run.
+        auto spliced_run_id = std::max(left->run_identifier(), right->run_identifier());
+        auto whole_run_id = whole->run_identifier();
+
+        cf->splice_sstable_runs().get();
+
+        auto runs = main_runs();
+        BOOST_REQUIRE_EQUAL(runs.size(), 2);
+        BOOST_REQUIRE_EQUAL(cf->get_sstables()->size(), left->all().size() + right->all().size() + whole->all().size());
+        for (auto& run : {left, right}) {
+            for (auto& sst : run->all()) {
+                BOOST_REQUIRE(sst->run_identifier() == spliced_run_id);
+            }
+        }
+        for (auto& sst : whole->all()) {
+            BOOST_REQUIRE(sst->run_identifier() == whole_run_id);
+        }
+        auto spliced = std::ranges::find(runs, spliced_run_id, std::mem_fn(&sstable_run::run_identifier));
+        BOOST_REQUIRE(spliced != runs.end());
+        BOOST_REQUIRE_EQUAL((*spliced)->all().size(), left->all().size() + right->all().size());
+
+        // The spliced run is twice the size of the remaining one, so they're no longer compacted together.
+        BOOST_REQUIRE(cs.get_sstables_for_compaction(cf.as_compaction_group_view(), *control).get().sstables.empty());
+
+        // Nothing is left to splice.
+        cf->splice_sstable_runs().get();
+        BOOST_REQUIRE_EQUAL(main_runs().size(), 2);
+    });
+}
