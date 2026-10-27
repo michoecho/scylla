@@ -784,13 +784,15 @@ public:
 private:
     future<> do_put(temporary_buffer<char> buf) {
         // Leave room for the header, if any, before the compressed data, and
-        // for the checksum and the footer, if any, after it.
-        const size_t frame = _codec.frame_len();
+        // for the checksum and the footer, if any, after it. The width of the
+        // header depends on the compressed length, which isn't known yet, so
+        // leave room for the widest header.
+        const size_t max_frame = _codec.max_frame_len();
         auto output_len = _compression_metadata->get_compressor().compress_max_size(buf.size());
-        temporary_buffer<char> compressed(_codec.extent(output_len));
+        temporary_buffer<char> compressed(2 * max_frame + output_len + sizeof(uint32_t));
 
-        // compress flushed data, placing it right after the header.
-        auto len = _compression_metadata->get_compressor().compress(buf.get(), buf.size(), compressed.get_write() + frame, output_len);
+        // compress flushed data, placing it right after the widest header.
+        auto len = _compression_metadata->get_compressor().compress(buf.get(), buf.size(), compressed.get_write() + max_frame, output_len);
         if (len > output_len) {
             return make_exception_future(std::runtime_error("possible overflow during compression"));
         }
@@ -813,6 +815,9 @@ private:
         auto chunk_size = _codec.extent(len);
         _pos += chunk_size;
         _compression_metadata->set_compressed_file_length(_pos);
+        // Drop the room that the actual header doesn't need.
+        const size_t frame = _codec.frame_len(len);
+        compressed.trim_front(max_frame - frame);
         compressed.trim(chunk_size);
 
         // The footer lets a backward reader at the start of the next chunk find
