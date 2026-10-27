@@ -360,7 +360,72 @@ std::string read_to_end(sstables::decompressing_cursor& input) {
     return data;
 }
 
+// A stream of `data` that returns at most `fragment_size` bytes at a time.
+input_stream<char> make_stream(std::string_view data, size_t fragment_size) {
+    std::vector<temporary_buffer<char>> bufs;
+    for (size_t pos = 0; pos < data.size(); pos += fragment_size) {
+        bufs.emplace_back(data.data() + pos, std::min(fragment_size, data.size() - pos));
+    }
+    return seastar::util::as_input_stream(std::move(bufs));
+}
+
 } // anonymous namespace
+
+// read_framed_chunk() reads chunks with headers of every width, whether the
+// stream returns all of them at once or one byte at a time.
+SEASTAR_THREAD_TEST_CASE(test_read_framed_chunk_reads_headers_of_every_width) {
+    const auto payload_strings = mixed_width_payloads();
+    const std::vector<std::string_view> payloads(payload_strings.begin(), payload_strings.end());
+    const auto file = make_file(payloads, mixed_width_chunk_length);
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(mixed_width_chunk_length);
+
+    for (size_t fragment_size : {file.size(), size_t(1)}) {
+        BOOST_TEST_CONTEXT("fragment_size=" << fragment_size) {
+            auto in = make_stream(std::string_view(file.get(), file.size()), fragment_size);
+            uint64_t offset = 0;
+            for (const auto payload : payloads) {
+                auto chunk = sstables::read_framed_chunk(in, codec, offset, file.size()).get();
+                BOOST_REQUIRE_EQUAL(chunk.header.size(), codec.frame_len(payload.size()));
+                BOOST_REQUIRE_EQUAL(chunk.header.size() + chunk.rest.size(), codec.extent(payload.size()));
+                const auto parsed = codec.parse(std::string_view(chunk.header.get(), chunk.header.size()),
+                        std::string_view(chunk.rest.get(), chunk.rest.size()));
+                parsed.verify_checksum<crc32_utils>(offset);
+                BOOST_REQUIRE(parsed.compressed == payload);
+                offset += parsed.extent();
+            }
+            BOOST_REQUIRE_EQUAL(offset, file.size());
+            in.close().get();
+        }
+    }
+}
+
+// read_framed_chunk() rejects a header that puts the end of the chunk past the
+// end of the file, and a stream that ends inside a header or inside a chunk.
+SEASTAR_THREAD_TEST_CASE(test_read_framed_chunk_rejects_corrupt_and_truncated_chunks) {
+    const auto payload_strings = mixed_width_payloads();
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(mixed_width_chunk_length);
+    auto expect_malformed = [&] (std::string_view data, uint64_t file_end) {
+        auto in = make_stream(data, std::max<size_t>(data.size(), 1));
+        BOOST_REQUIRE_THROW(sstables::read_framed_chunk(in, codec, 0, file_end).get(), sstables::malformed_sstable_exception);
+        in.close().get();
+    };
+
+    // The chunks with a 1-byte header and with a 3-byte header.
+    for (size_t i : {0, 2}) {
+        const std::string_view payload = payload_strings[i];
+        const auto file = make_file(std::span(&payload, 1), mixed_width_chunk_length);
+        const auto chunk = std::string_view(file.get(), file.size());
+        const auto header_len = codec.frame_len(payload.size());
+        BOOST_TEST_CONTEXT("header_len=" << header_len) {
+            // The header puts the end of the chunk past the end of the file.
+            expect_malformed(chunk, chunk.size() - 1);
+            // The stream ends before the end of the header.
+            expect_malformed(chunk.substr(0, header_len - 1), chunk.size());
+            // The stream ends before the end of the chunk.
+            expect_malformed(chunk.substr(0, chunk.size() - 1), chunk.size());
+        }
+    }
+}
 
 SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_reads_headers_of_every_width) {
     const auto payload_strings = mixed_width_payloads();

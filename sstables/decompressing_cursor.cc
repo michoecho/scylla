@@ -61,16 +61,6 @@ class sequential_chunk_source final : public framed_chunk_source {
     std::optional<input_stream<char>> _input;
     // The file position of the next byte that _input returns.
     uint64_t _input_pos;
-
-    future<temporary_buffer<char>> read_exactly(uint64_t n) {
-        auto buf = co_await _input->read_exactly(n);
-        if (buf.size() < n) {
-            throw_malformed_sstable_exception(format("Unexpected eof at {}, wanted {}, got {}.",
-                    _input_pos + buf.size(), n, buf.size()));
-        }
-        _input_pos += n;
-        co_return buf;
-    }
 public:
     sequential_chunk_source(decompressing_cursor_source_opener open_source, framed_chunk_codec codec,
             uint64_t compressed_file_length, uint64_t source_start)
@@ -95,26 +85,9 @@ public:
             co_await _input->skip(chunk_start - _input_pos);
             _input_pos = chunk_start;
         }
-        auto [header, overread] = co_await _codec.read_header(*_input, _input_pos);
-        _input_pos += header.size() + overread.size();
-        const auto extent = _codec.extent_from_header(std::string_view(header.get(), header.size()));
-        // A corrupt header can contain a length that extent_from_header()
-        // accepts, but that puts the end of the chunk past the end of the file.
-        // Report this as a corrupt header, not as an unexpected end of file.
-        if (chunk_start + extent > _compressed_file_length) {
-            throw_malformed_sstable_exception(format(
-                    "compressed chunk at file offset {} has a corrupt length header: chunk of size {} would end at {}, past the compressed file length {}",
-                    chunk_start, extent, chunk_start + extent, _compressed_file_length));
-        }
-        auto rest = co_await read_exactly(extent - header.size() - overread.size());
-        if (!overread.empty()) {
-            // Only a short chunk has bytes read along with its header, so
-            // gluing them to the rest is cheap.
-            temporary_buffer<char> glued(overread.size() + rest.size());
-            std::copy_n(rest.get(), rest.size(), std::copy_n(overread.get(), overread.size(), glued.get_write()));
-            rest = std::move(glued);
-        }
-        co_return raw_chunk{std::move(header), std::move(rest)};
+        auto chunk = co_await read_framed_chunk(*_input, _codec, chunk_start, _compressed_file_length);
+        _input_pos += chunk.header.size() + chunk.rest.size();
+        co_return raw_chunk{std::move(chunk.header), std::move(chunk.rest)};
     }
 
     future<uint64_t> read_previous_extent(uint64_t chunk_end) override {
