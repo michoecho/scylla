@@ -140,23 +140,33 @@ uint64_t framed_chunk_codec::extent_from_footer(std::string_view footer) const {
     return extent_from_header(std::string_view(header.data(), footer.size()));
 }
 
-future<framed_chunk_codec::header_read> framed_chunk_codec::read_header(input_stream<char>& in, uint64_t file_offset) const {
-    auto head = co_await in.read_exactly(typical_frame_len);
-    if (head.empty()) {
-        throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
-    }
-    const auto len = frame_len_from_first_byte(head[0]);
-    if (len <= head.size()) {
-        co_return header_read{head.share(0, len), head.share(len, head.size() - len)};
-    }
-    // A wide header. Read the rest of it, and glue it to the bytes already read.
+// The slow path of framed_chunk_codec::read_header(), for a header wider than
+// `head`. `head` holds the first bytes of the header, and `len` is its width.
+static future<framed_chunk_codec::header_read> read_wide_header(input_stream<char>& in, temporary_buffer<char> head, uint32_t len, uint64_t file_offset) {
+    // Read the rest of the header, and glue it to the bytes already read.
     auto more = co_await in.read_exactly(len - head.size());
     if (head.size() + more.size() != len) {
         throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
     }
     temporary_buffer<char> header(len);
     std::copy_n(more.get(), more.size(), std::copy_n(head.get(), head.size(), header.get_write()));
-    co_return header_read{std::move(header), {}};
+    co_return framed_chunk_codec::header_read{std::move(header), {}};
+}
+
+// Not a coroutine: it runs once per chunk, and its read is usually served from
+// the stream's buffer. A continuation on a ready future doesn't allocate, unlike
+// a coroutine frame.
+future<framed_chunk_codec::header_read> framed_chunk_codec::read_header(input_stream<char>& in, uint64_t file_offset) const {
+    return in.read_exactly(typical_frame_len).then([this, &in, file_offset] (temporary_buffer<char> head) {
+        if (head.empty()) {
+            throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
+        }
+        const auto len = frame_len_from_first_byte(head[0]);
+        if (len <= head.size()) {
+            return make_ready_future<header_read>(header_read{head.share(0, len), head.share(len, head.size() - len)});
+        }
+        return read_wide_header(in, std::move(head), len, file_offset);
+    });
 }
 
 framed_chunk framed_chunk_codec::parse(std::string_view chunk) const {
