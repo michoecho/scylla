@@ -140,32 +140,76 @@ uint64_t framed_chunk_codec::extent_from_footer(std::string_view footer) const {
     return extent_from_header(std::string_view(header.data(), footer.size()));
 }
 
-// The slow path of framed_chunk_codec::read_header(), for a header wider than
-// `head`. `head` holds the first bytes of the header, and `len` is its width.
-static future<framed_chunk_codec::header_read> read_wide_header(input_stream<char>& in, temporary_buffer<char> head, uint32_t len, uint64_t file_offset) {
-    // Read the rest of the header, and glue it to the bytes already read.
-    auto more = co_await in.read_exactly(len - head.size());
-    if (head.size() + more.size() != len) {
-        throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
-    }
-    temporary_buffer<char> header(len);
-    std::copy_n(more.get(), more.size(), std::copy_n(head.get(), head.size(), header.get_write()));
-    co_return framed_chunk_codec::header_read{std::move(header), {}};
+uint64_t framed_chunk_codec::max_extent() const noexcept {
+    return extent(compressed_chunk_length_limit(_uncompressed_chunk_length));
 }
 
-// Not a coroutine: it runs once per chunk, and its read is usually served from
-// the stream's buffer. A continuation on a ready future doesn't allocate, unlike
-// a coroutine frame.
-future<framed_chunk_codec::header_read> framed_chunk_codec::read_header(input_stream<char>& in, uint64_t file_offset) const {
-    return in.read_exactly(typical_frame_len).then([this, &in, file_offset] (temporary_buffer<char> head) {
+[[noreturn]] static void throw_eof_in_header(uint64_t file_offset) {
+    throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
+}
+
+// Reads the rest of the chunk whose header is `header`. `overread` holds the
+// bytes after the header that were read along with it.
+static future<framed_chunk_buffers> read_framed_chunk_rest(input_stream<char>& in, const framed_chunk_codec& codec,
+        uint64_t file_offset, uint64_t file_end, temporary_buffer<char> header, temporary_buffer<char> overread) {
+    const auto extent = codec.extent_from_header(std::string_view(header.get(), header.size()));
+    // A corrupt header can contain a length that extent_from_header() accepts,
+    // but that puts the end of the chunk past the end of the file. Report this
+    // as a corrupt header, not as an unexpected end of file.
+    if (file_offset + extent > file_end) {
+        throw_malformed_sstable_exception(format(
+                "compressed chunk at file offset {} has a corrupt length header: chunk of size {} would end at {}, past the compressed file length {}",
+                file_offset, extent, file_offset + extent, file_end));
+    }
+    const auto rest_len = extent - header.size();
+    return in.read_exactly(rest_len - overread.size()).then(
+            [header = std::move(header), overread = std::move(overread), rest_len, file_offset, extent] (temporary_buffer<char> rest) mutable {
+        if (overread.size() + rest.size() != rest_len) {
+            throw_malformed_sstable_exception(format("Unexpected eof in the compressed chunk at file offset {}: expected {} bytes, got {}",
+                    file_offset, extent, header.size() + overread.size() + rest.size()));
+        }
+        if (!overread.empty()) {
+            // Only a short chunk has bytes read along with its header, so
+            // gluing them to the rest is cheap.
+            temporary_buffer<char> glued(rest_len);
+            std::copy_n(rest.get(), rest.size(), std::copy_n(overread.get(), overread.size(), glued.get_write()));
+            rest = std::move(glued);
+        }
+        return framed_chunk_buffers{std::move(header), std::move(rest)};
+    });
+}
+
+// The slow path of read_framed_chunk(), for a header wider than `head`. `head`
+// holds the first bytes of the header, and `header_len` is its width.
+static future<framed_chunk_buffers> read_wide_framed_chunk(input_stream<char>& in, const framed_chunk_codec& codec,
+        uint64_t file_offset, uint64_t file_end, temporary_buffer<char> head, uint32_t header_len) {
+    // Read the rest of the header, and glue it to the bytes already read.
+    auto more = co_await in.read_exactly(header_len - head.size());
+    if (head.size() + more.size() != header_len) {
+        throw_eof_in_header(file_offset);
+    }
+    temporary_buffer<char> header(header_len);
+    std::copy_n(more.get(), more.size(), std::copy_n(head.get(), head.size(), header.get_write()));
+    co_return co_await read_framed_chunk_rest(in, codec, file_offset, file_end, std::move(header), {});
+}
+
+// Not a coroutine: it runs once per chunk, and its reads are usually served
+// from the stream's buffer. A continuation on a ready future doesn't allocate,
+// unlike a coroutine frame.
+future<framed_chunk_buffers> read_framed_chunk(input_stream<char>& in, const framed_chunk_codec& codec,
+        uint64_t file_offset, uint64_t file_end) {
+    SCYLLA_ASSERT(codec.framed());
+    return in.read_exactly(framed_chunk_codec::typical_frame_len).then([&in, &codec, file_offset, file_end] (temporary_buffer<char> head) {
         if (head.empty()) {
-            throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", file_offset));
+            throw_eof_in_header(file_offset);
         }
-        const auto len = frame_len_from_first_byte(head[0]);
-        if (len <= head.size()) {
-            return make_ready_future<header_read>(header_read{head.share(0, len), head.share(len, head.size() - len)});
+        const auto header_len = codec.frame_len_from_first_byte(head[0]);
+        if (header_len > head.size()) {
+            return read_wide_framed_chunk(in, codec, file_offset, file_end, std::move(head), header_len);
         }
-        return read_wide_header(in, std::move(head), len, file_offset);
+        auto header = head.share(0, header_len);
+        head.trim_front(header_len);
+        return read_framed_chunk_rest(in, codec, file_offset, file_end, std::move(header), std::move(head));
     });
 }
 

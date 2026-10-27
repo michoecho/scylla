@@ -147,16 +147,6 @@ public:
     // the chunk.
     static constexpr uint32_t typical_frame_len = 2;
 
-    // The bytes that read_header() reads from the start of a chunk.
-    struct header_read {
-        // Exactly the header.
-        temporary_buffer<char> header;
-        // The bytes after the header that read_header() read along with it.
-        // They are the first bytes of the rest of the chunk. Non-empty only for
-        // a header narrower than typical_frame_len, so only for a short chunk.
-        temporary_buffer<char> overread;
-    };
-
     // The codec of the chunks of an sstable of version `v`.
     framed_chunk_codec(sstable_version_types v, uint32_t uncompressed_chunk_length);
 
@@ -193,6 +183,9 @@ public:
         return 2 * frame_len(compressed_len) + compressed_len + sizeof(uint32_t);
     }
 
+    // Framed chunks only. The extent of the largest valid chunk.
+    uint64_t max_extent() const noexcept;
+
     // Framed chunks only. Reads a header, and returns the extent of its chunk.
     // `header` holds exactly the header. Throws malformed_sstable_exception if
     // the length is too large.
@@ -200,12 +193,6 @@ public:
 
     // Framed chunks only. Like extent_from_header(), but reads a footer.
     uint64_t extent_from_footer(std::string_view footer) const;
-
-    // Framed chunks only. Reads the header of the chunk that starts at
-    // `file_offset`, from `in`. It can read some bytes past the header too;
-    // see header_read. Throws malformed_sstable_exception if the header is too
-    // wide, or if `in` ends before the end of the header.
-    future<header_read> read_header(input_stream<char>& in, uint64_t file_offset) const;
 
     // Splits a chunk. `chunk` holds exactly one chunk. Throws
     // malformed_sstable_exception if `chunk` is too short, or if a framed
@@ -224,5 +211,21 @@ public:
     // starts at `chunk` and has `compressed_len` bytes of compressed data.
     void write_frames(char* chunk, uint32_t compressed_len) const;
 };
+
+// One framed chunk read from a stream, as two buffers. They aren't copied
+// into one, because `rest` is usually shared from the stream's buffer.
+struct framed_chunk_buffers {
+    // Exactly the header.
+    temporary_buffer<char> header;
+    // Exactly the rest of the chunk.
+    temporary_buffer<char> rest;
+};
+
+// Reads the framed chunk that starts at `file_offset` from `in`. `file_end` is
+// the end of the data in the file. Doesn't verify the checksum. Throws
+// malformed_sstable_exception if the header is corrupt, if it puts the end of
+// the chunk past `file_end`, or if `in` ends before the end of the chunk.
+future<framed_chunk_buffers> read_framed_chunk(input_stream<char>& in, const framed_chunk_codec& codec,
+        uint64_t file_offset, uint64_t file_end);
 
 } // namespace sstables
