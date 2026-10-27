@@ -16,6 +16,8 @@
 
 #include <boost/test/unit_test.hpp>
 #include <seastar/core/byteorder.hh>
+#include <seastar/core/file.hh>
+#include <seastar/core/fstream.hh>
 #include <seastar/testing/thread_test_case.hh>
 #include <seastar/util/memory-data-source.hh>
 
@@ -24,6 +26,7 @@
 #include "sstables/compressor.hh"
 #include "sstables/framed_chunk.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
+#include "test/lib/tmpdir.hh"
 
 namespace {
 
@@ -382,6 +385,44 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_reads_headers_of_every_width)
     BOOST_REQUIRE(read_to_end(*input) == concat(payload_strings));
 
     input->close().get();
+}
+
+// Like test_decompressing_cursor_reads_headers_of_every_width, but through a
+// file_cursor, in both directions. Forward, the cursor reads each header
+// without an extent hint. Backward, it reads each footer.
+SEASTAR_THREAD_TEST_CASE(test_bidirectional_decompressing_cursor_reads_frames_of_every_width) {
+    const auto payload_strings = mixed_width_payloads();
+    const std::vector<std::string_view> payloads(payload_strings.begin(), payload_strings.end());
+    const auto contents = make_file(payloads, mixed_width_chunk_length);
+    const auto file_size = contents.size();
+    const auto expected = concat(payload_strings);
+
+    tmpdir dir;
+    const auto path = (dir.path() / "Data.db").native();
+    {
+        auto f = open_file_dma(path, open_flags::create | open_flags::wo).get();
+        auto out = make_file_output_stream(std::move(f)).get();
+        out.write(contents.get(), contents.size()).get();
+        out.close().get();
+    }
+    auto f = open_file_dma(path, open_flags::ro).get();
+    noop_compressor compressor;
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+    const auto range = sstables::disk_read_range(sstables::sstable_position::from_physical(0, 0, 0),
+            sstables::sstable_position::from_physical(file_size, 0, 0));
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(mixed_width_chunk_length);
+
+    auto forward = sstables::make_bidirectional_decompressing_cursor(f, file_size, range, compressor, codec, semaphore.make_permit());
+    forward->init_stream_position(sstables::sstable_position::from_physical(0, 0, 0));
+    BOOST_REQUIRE(read_to_end(*forward) == expected);
+    forward->close().get();
+
+    auto backward = sstables::make_bidirectional_decompressing_cursor(f, file_size, range, compressor, codec, semaphore.make_permit());
+    backward->init_stream_position(sstables::sstable_position::from_physical(file_size, 0, 0));
+    BOOST_REQUIRE(to_string(backward->read_backwards_exactly(expected.size() + 1).get()) == expected);
+    backward->close().get();
+
+    f.close().get();
 }
 
 // In-chunk offsets come from the index, which has no checksum. An offset at or

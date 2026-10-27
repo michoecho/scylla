@@ -149,32 +149,51 @@ public:
     {}
 
     future<raw_chunk> read_chunk(uint64_t chunk_start, uint64_t extent_hint, direction dir, uint64_t forward_limit) override {
-        const uint64_t frame_len = _codec.frame_len();
         if (!extent_hint) {
-            auto header = co_await read(chunk_start, chunk_start + frame_len, dir, forward_limit);
-            if (header.size() != frame_len) {
+            auto header = co_await read(chunk_start, chunk_start + framed_chunk_codec::typical_frame_len, dir, forward_limit);
+            if (header.empty()) {
                 throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", chunk_start));
             }
-            extent_hint = _codec.extent_from_frame(header.get());
+            const uint64_t header_len = _codec.frame_len_from_first_byte(header[0]);
+            if (header.size() < header_len) {
+                // A wide header. The cursor can seek back, so read it again whole.
+                header = co_await read(chunk_start, chunk_start + header_len, dir, forward_limit);
+                if (header.size() != header_len) {
+                    throw_malformed_sstable_exception(format("Unexpected eof in the header of the compressed chunk at file offset {}", chunk_start));
+                }
+            }
+            extent_hint = _codec.extent_from_header(std::string_view(header.get(), header_len));
         }
         // The hint bounds the chunk end from above. It can point past the end
         // of the file or past the cursor's bounds, so clamp it.
         const auto end = std::min<uint64_t>(chunk_start + extent_hint, _cursor.upper_bound());
         auto buf = co_await read(chunk_start, end, dir, forward_limit);
-        if (buf.size() < frame_len) {
+        if (buf.empty()) {
             throw_malformed_sstable_exception(format("Unexpected eof in the compressed chunk at file offset {}", chunk_start));
         }
-        co_return raw_chunk{buf.share(0, frame_len), buf.share(frame_len, buf.size() - frame_len)};
+        const uint64_t header_len = _codec.frame_len_from_first_byte(buf[0]);
+        if (buf.size() < header_len) {
+            throw_malformed_sstable_exception(format("Unexpected eof in the compressed chunk at file offset {}", chunk_start));
+        }
+        co_return raw_chunk{buf.share(0, header_len), buf.share(header_len, buf.size() - header_len)};
     }
 
     future<uint64_t> read_previous_extent(uint64_t chunk_end) override {
-        const uint64_t frame_len = _codec.frame_len();
         _cursor.seek(chunk_end);
-        auto footer = co_await _cursor.read_backwards_exactly(frame_len);
-        if (footer.size() != frame_len) {
+        auto footer = co_await _cursor.read_backwards_exactly(framed_chunk_codec::typical_frame_len);
+        if (footer.empty()) {
             throw_malformed_sstable_exception(format("Unexpected eof in the footer of the compressed chunk that ends at file offset {}", chunk_end));
         }
-        co_return _codec.extent_from_frame(footer.get());
+        const uint64_t footer_len = _codec.frame_len_from_first_byte(footer[footer.size() - 1]);
+        if (footer.size() < footer_len) {
+            // A wide footer. Read it again whole.
+            _cursor.seek(chunk_end);
+            footer = co_await _cursor.read_backwards_exactly(footer_len);
+            if (footer.size() != footer_len) {
+                throw_malformed_sstable_exception(format("Unexpected eof in the footer of the compressed chunk that ends at file offset {}", chunk_end));
+            }
+        }
+        co_return _codec.extent_from_footer(std::string_view(footer.get() + footer.size() - footer_len, footer_len));
     }
 
     future<> close() override {
@@ -495,12 +514,18 @@ make_bidirectional_decompressing_cursor(shared_sstable sst, disk_read_range rang
     if (trace_state) {
         f = tracing::make_traced_file(std::move(f), std::move(trace_state), seastar::format("{}:", sst->get_filename()));
     }
+    return make_bidirectional_decompressing_cursor(std::move(f), file_size, range,
+            sst->get_compression().get_compressor(), sst->get_chunk_codec(), std::move(permit));
+}
+
+std::unique_ptr<decompressing_cursor>
+make_bidirectional_decompressing_cursor(file f, uint64_t file_size, disk_read_range range,
+        const compressor& compressor, const framed_chunk_codec& codec, reader_permit permit) {
     file_cursor cursor(std::move(f), file_size, permit);
     cursor.set_bounds(range.start.as_physical().chunk_position, source_end(range.end, file_size));
-    const auto codec = sst->get_chunk_codec();
     return std::make_unique<decompressing_cursor>(
             std::make_unique<file_cursor_chunk_source>(std::move(cursor), codec),
-            codec, sst->get_compression().get_compressor(), std::move(permit), file_size, range, std::nullopt);
+            codec, compressor, std::move(permit), file_size, range, std::nullopt);
 }
 
 } // namespace sstables

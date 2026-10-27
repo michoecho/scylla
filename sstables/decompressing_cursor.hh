@@ -166,4 +166,11 @@ std::unique_ptr<decompressing_cursor>
 make_bidirectional_decompressing_cursor(shared_sstable sst, disk_read_range range, reader_permit permit,
         tracing::trace_state_ptr trace_state);
 
+// Reads `range` of the Data.db file `f`, of size `file_size`, in both
+// directions, through a file_cursor. Doesn't check the range. The chunks must
+// be framed. The cursor doesn't own `f`; the caller closes it.
+std::unique_ptr<decompressing_cursor>
+make_bidirectional_decompressing_cursor(file f, uint64_t file_size, disk_read_range range,
+        const compressor& compressor, const framed_chunk_codec& codec, reader_permit permit);
+
 } // namespace sstables
