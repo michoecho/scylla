@@ -723,23 +723,13 @@ private:
         temporary_buffer<char> buf;
         std::optional<reader_permit::resource_units> res_units;
         if (_codec.framed()) {
-            // A framed chunk's header holds its length.
-            auto [hdr, overread] = co_await _codec.read_header(*_input_stream, _pos);
-            header = std::move(hdr);
-            chunk_len = _codec.extent_from_header(std::string_view(header.get(), header.size()));
-            res_units = co_await _permit.request_memory(chunk_len);
-            const auto head_len = header.size() + overread.size();
-            buf = co_await _input_stream->read_exactly(chunk_len - head_len);
-            if (buf.size() != chunk_len - head_len) {
-                sstables::throw_malformed_sstable_exception(format("compressed raw reader hit premature end-of-file at file offset {}, expected chunk_len={}, actual={}", _pos, chunk_len, head_len + buf.size()));
-            }
-            if (!overread.empty()) {
-                // Only a short chunk has bytes read along with its header, so
-                // gluing them to the rest is cheap.
-                temporary_buffer<char> glued(overread.size() + buf.size());
-                std::copy_n(buf.get(), buf.size(), std::copy_n(overread.get(), overread.size(), glued.get_write()));
-                buf = std::move(glued);
-            }
+            // The length of a framed chunk is known only from its header, so
+            // charge for the largest valid chunk before reading it.
+            res_units = co_await _permit.request_memory(_codec.max_extent());
+            auto chunk = co_await sstables::read_framed_chunk(*_input_stream, _codec, _pos, _compression_metadata->compressed_file_length());
+            header = std::move(chunk.header);
+            buf = std::move(chunk.rest);
+            chunk_len = header.size() + buf.size();
         } else {
             chunk_len = get_chunk_len(_current_chunk_index);
             if (!chunk_len) {
