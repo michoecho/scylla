@@ -22,6 +22,7 @@
 #include "sstables/checksum_utils.hh"
 #include "sstables/compress.hh"
 #include "sstables/compressor.hh"
+#include "sstables/framed_chunk.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
 
 namespace {
@@ -52,16 +53,20 @@ public:
 std::vector<char> make_chunk(std::string_view payload, uint32_t uncompressed_chunk_length) {
     // On-disk layout: [header][compressed data][checksum][footer], with the
     // header and footer both holding this chunk's compressed length.
-    const auto frame_size = sstables::chunk_length_field_size(uncompressed_chunk_length);
-    std::vector<char> chunk(frame_size + payload.size() + sizeof(uint32_t) + frame_size);
-    sstables::write_chunk_length_field(chunk.data(), uncompressed_chunk_length, payload.size());
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(uncompressed_chunk_length);
+    const auto frame_size = codec.frame_len(payload.size());
+    std::vector<char> chunk(codec.extent(payload.size()));
+    codec.write_frames(chunk.data(), payload.size());
     std::copy(payload.begin(), payload.end(), chunk.begin() + frame_size);
     // The checksum covers the header and the compressed data, not the footer.
     const auto checksum = crc32_utils::checksum(chunk.data(), frame_size + payload.size());
     write_be<uint32_t>(chunk.data() + frame_size + payload.size(), checksum);
-    sstables::write_chunk_length_field(chunk.data() + frame_size + payload.size() + sizeof(uint32_t),
-            uncompressed_chunk_length, payload.size());
     return chunk;
+}
+
+// The size in Data.db of the chunk that make_chunk() makes.
+uint64_t chunk_extent(std::string_view payload, uint32_t uncompressed_chunk_length) {
+    return sstables::framed_chunk_codec::for_framed_chunks(uncompressed_chunk_length).extent(payload.size());
 }
 
 temporary_buffer<char> make_file(std::span<const std::string_view> payloads, uint32_t uncompressed_chunk_length) {
@@ -92,8 +97,8 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_replaces_hint_with_exact_exte
     const std::string_view payloads[] = {"abcde", "fghijk"};
     auto file = make_file(payloads, uncompressed_chunk_length);
     const auto file_size = file.size();
-    const auto first_exact_extent = 2 * sstables::chunk_length_field_size(uncompressed_chunk_length) + payloads[0].size() + sizeof(uint32_t);
-    const auto second_exact_extent = 2 * sstables::chunk_length_field_size(uncompressed_chunk_length) + payloads[1].size() + sizeof(uint32_t);
+    const auto first_exact_extent = chunk_extent(payloads[0], uncompressed_chunk_length);
+    const auto second_exact_extent = chunk_extent(payloads[1], uncompressed_chunk_length);
     // An index gives the first chunk a hint that reaches the end of its
     // 512-byte block.
     const auto start = sstables::sstable_position::from_physical(0, 512, 1);
@@ -148,7 +153,7 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_caps_hint_at_file_end) {
     const std::string_view payloads[] = {"abcde", "fghijk"};
     auto file = make_file(payloads, uncompressed_chunk_length);
     const auto file_size = file.size();
-    const auto first_exact_extent = 2 * sstables::chunk_length_field_size(uncompressed_chunk_length) + payloads[0].size() + sizeof(uint32_t);
+    const auto first_exact_extent = chunk_extent(payloads[0], uncompressed_chunk_length);
     noop_compressor compressor;
     tests::reader_concurrency_semaphore_wrapper semaphore;
 
@@ -182,7 +187,7 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_skip_to_preserves_cached_chun
     const std::string_view payloads[] = {"abcdefgh"};
     auto file = make_file(payloads, uncompressed_chunk_length);
     const auto file_size = file.size();
-    const auto exact_extent = 2 * sstables::chunk_length_field_size(uncompressed_chunk_length) + payloads[0].size() + sizeof(uint32_t);
+    const auto exact_extent = chunk_extent(payloads[0], uncompressed_chunk_length);
     noop_compressor compressor;
     tests::reader_concurrency_semaphore_wrapper semaphore;
 
@@ -226,7 +231,7 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_reuses_chunk_after_remainder_
     const std::string_view payloads[] = {"abcdefgh"};
     auto file = make_file(payloads, uncompressed_chunk_length);
     const auto file_size = file.size();
-    const auto exact_extent = 2 * sstables::chunk_length_field_size(uncompressed_chunk_length) + payloads[0].size() + sizeof(uint32_t);
+    const auto exact_extent = chunk_extent(payloads[0], uncompressed_chunk_length);
     noop_compressor compressor;
     tests::reader_concurrency_semaphore_wrapper semaphore;
 
@@ -270,9 +275,8 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_stops_at_range_end) {
     constexpr uint32_t uncompressed_chunk_length = 8;
     const std::string_view payloads[] = {"abcde", "fghijk", "lmn"};
     auto file = make_file(payloads, uncompressed_chunk_length);
-    const auto frame_size = sstables::chunk_length_field_size(uncompressed_chunk_length);
-    const auto first_extent = 2 * frame_size + payloads[0].size() + sizeof(uint32_t);
-    const auto second_extent = 2 * frame_size + payloads[1].size() + sizeof(uint32_t);
+    const auto first_extent = chunk_extent(payloads[0], uncompressed_chunk_length);
+    const auto second_extent = chunk_extent(payloads[1], uncompressed_chunk_length);
     const auto file_size = file.size();
     // The range ends at the start of the third chunk. The source ends there
     // too, as a bounded sstable source does.
@@ -315,13 +319,78 @@ SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_stops_at_range_end) {
     input->close().get();
 }
 
+// A reader reads the first framed_chunk_codec::typical_frame_len bytes of a
+// header or a footer before it knows its width. These payloads make chunks with
+// headers and footers of every width, narrower and wider than that.
+namespace {
+
+constexpr uint32_t mixed_width_chunk_length = 20000;
+
+std::vector<std::string> mixed_width_payloads() {
+    std::vector<std::string> payloads = {std::string(5, 'a'), std::string(200, 'b'), std::string(20000, 'c'), std::string(5, 'd')};
+    const auto codec = sstables::framed_chunk_codec::for_framed_chunks(mixed_width_chunk_length);
+    BOOST_REQUIRE_EQUAL(codec.frame_len(payloads[0].size()), 1);
+    BOOST_REQUIRE_EQUAL(codec.frame_len(payloads[1].size()), 2);
+    BOOST_REQUIRE_EQUAL(codec.frame_len(payloads[2].size()), 3);
+    return payloads;
+}
+
+std::string concat(const std::vector<std::string>& strings) {
+    std::string result;
+    for (const auto& s : strings) {
+        result += s;
+    }
+    return result;
+}
+
+// Reads forward from the current position to the end of the stream.
+std::string read_to_end(sstables::decompressing_cursor& input) {
+    std::string data;
+    bool eof = false;
+    while (!eof) {
+        input.consume_one(std::nullopt, [&] (temporary_buffer<char> buf) -> consumption_result<char> {
+            eof = buf.empty();
+            data += to_string(buf);
+            return continue_consuming{};
+        }).get();
+    }
+    return data;
+}
+
+} // anonymous namespace
+
+SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_reads_headers_of_every_width) {
+    const auto payload_strings = mixed_width_payloads();
+    const std::vector<std::string_view> payloads(payload_strings.begin(), payload_strings.end());
+    auto file = make_file(payloads, mixed_width_chunk_length);
+    const auto file_size = file.size();
+    noop_compressor compressor;
+    tests::reader_concurrency_semaphore_wrapper semaphore;
+
+    auto input = sstables::make_decompressing_cursor(
+            sstables::decompressing_cursor_source_opener([file = std::move(file)] () mutable {
+                return make_ready_future<data_source>(data_source(std::make_unique<seastar::util::temporary_buffer_data_source>(std::move(file))));
+            }),
+            sstables::disk_read_range(sstables::sstable_position::from_physical(0, 0, 0),
+                    sstables::sstable_position::from_physical(file_size, 0, 0)),
+            compressor,
+            sstables::framed_chunk_codec::for_framed_chunks(mixed_width_chunk_length),
+            file_size,
+            semaphore.make_permit());
+    input->init_stream_position(sstables::sstable_position::from_physical(0, 0, 0));
+
+    BOOST_REQUIRE(read_to_end(*input) == concat(payload_strings));
+
+    input->close().get();
+}
+
 // In-chunk offsets come from the index, which has no checksum. An offset at or
 // past the end of the decompressed chunk must give a malformed sstable error,
 // both when the chunk is loaded and when the cursor seeks into a loaded chunk.
 SEASTAR_THREAD_TEST_CASE(test_decompressing_cursor_rejects_offset_outside_chunk) {
     constexpr uint32_t uncompressed_chunk_length = 8;
     const std::string_view payloads[] = {"abcde"};
-    const auto exact_extent = 2 * sstables::chunk_length_field_size(uncompressed_chunk_length) + payloads[0].size() + sizeof(uint32_t);
+    const auto exact_extent = chunk_extent(payloads[0], uncompressed_chunk_length);
     noop_compressor compressor;
     tests::reader_concurrency_semaphore_wrapper semaphore;
 

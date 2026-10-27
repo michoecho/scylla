@@ -95,9 +95,10 @@ public:
             co_await _input->skip(chunk_start - _input_pos);
             _input_pos = chunk_start;
         }
-        auto header = co_await read_exactly(_codec.frame_len());
-        const auto extent = _codec.extent_from_frame(header.get());
-        // A corrupt header can contain a length that extent_from_frame()
+        auto [header, overread] = co_await _codec.read_header(*_input, _input_pos);
+        _input_pos += header.size() + overread.size();
+        const auto extent = _codec.extent_from_header(std::string_view(header.get(), header.size()));
+        // A corrupt header can contain a length that extent_from_header()
         // accepts, but that puts the end of the chunk past the end of the file.
         // Report this as a corrupt header, not as an unexpected end of file.
         if (chunk_start + extent > _compressed_file_length) {
@@ -105,7 +106,14 @@ public:
                     "compressed chunk at file offset {} has a corrupt length header: chunk of size {} would end at {}, past the compressed file length {}",
                     chunk_start, extent, chunk_start + extent, _compressed_file_length));
         }
-        auto rest = co_await read_exactly(extent - _codec.frame_len());
+        auto rest = co_await read_exactly(extent - header.size() - overread.size());
+        if (!overread.empty()) {
+            // Only a short chunk has bytes read along with its header, so
+            // gluing them to the rest is cheap.
+            temporary_buffer<char> glued(overread.size() + rest.size());
+            std::copy_n(rest.get(), rest.size(), std::copy_n(overread.get(), overread.size(), glued.get_write()));
+            rest = std::move(glued);
+        }
         co_return raw_chunk{std::move(header), std::move(rest)};
     }
 

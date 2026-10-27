@@ -33,8 +33,8 @@ class framed_chunk_source {
 public:
     enum class direction { forward, backward };
 
-    // The bytes of one chunk. `header` holds the chunk's first frame_len()
-    // bytes, and `rest` holds the bytes after them. `rest` can extend past the
+    // The bytes of one chunk. `header` holds the chunk's header, and `rest`
+    // holds the bytes after it. `rest` can extend past the
     // end of the chunk.
     struct raw_chunk {
         temporary_buffer<char> header;
