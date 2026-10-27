@@ -589,7 +589,7 @@ private:
         sstables::deletion_time partition_tombstone;
     };
     using index_write = std::variant<index_partition_start, index_row_block, index_partition_end>;
-    static uint64_t position_of(const index_write& w) noexcept {
+    static uint64_t index_write_position(const index_write& w) noexcept {
         return std::visit([] (const auto& x) { return x.position; }, w);
     }
     std::deque<index_write> _buffered_index_writes;
@@ -1154,7 +1154,7 @@ void writer::close_data_writer() {
 
 void writer::queue_index_write(index_write w) {
     SCYLLA_ASSERT(_bti_partition_index_writer);
-    auto pos = position_of(w);
+    auto pos = index_write_position(w);
     SCYLLA_ASSERT(pos >= _last_index_write_position);
     _last_index_write_position = pos;
     _buffered_index_writes.push_back(std::move(w));
@@ -1167,7 +1167,7 @@ void writer::flush_ready_index_writes() {
     SCYLLA_ASSERT(_bti_partition_index_writer);
     while (!_buffered_index_writes.empty()) {
         auto& w = _buffered_index_writes.front();
-        auto pos = _index_position_resolver.resolve(position_of(w));
+        auto pos = _index_position_resolver.resolve(index_write_position(w));
         if (!pos) {
             break;
         }
@@ -1216,7 +1216,7 @@ void writer::flush_ready_index_writes() {
     // or before the last queued write if the queue is empty.
     _index_position_resolver.discard_before(_buffered_index_writes.empty()
             ? _last_index_write_position
-            : position_of(_buffered_index_writes.front()));
+            : index_write_position(_buffered_index_writes.front()));
 }
 
 void writer::close_index_writer() {
